@@ -64,6 +64,30 @@ export function App() {
     localStorage.setItem("openclaw-cui-language", language);
   }, [language]);
 
+  useEffect(() => {
+    const preventGesture = (event: Event) => {
+      event.preventDefault();
+    };
+
+    const preventZoomGesture = (event: WheelEvent) => {
+      if (event.ctrlKey) {
+        event.preventDefault();
+      }
+    };
+
+    document.addEventListener("gesturestart", preventGesture, { passive: false });
+    document.addEventListener("gesturechange", preventGesture, { passive: false });
+    document.addEventListener("gestureend", preventGesture, { passive: false });
+    document.addEventListener("wheel", preventZoomGesture, { passive: false });
+
+    return () => {
+      document.removeEventListener("gesturestart", preventGesture);
+      document.removeEventListener("gesturechange", preventGesture);
+      document.removeEventListener("gestureend", preventGesture);
+      document.removeEventListener("wheel", preventZoomGesture);
+    };
+  }, []);
+
   const hydrateWorkspace = useCallback(
     async (options?: { workflowId?: string; runId?: string }) => {
       const [nextWorkflows, nextCatalog, nextRuns, nextApprovals, nextDashboard, nextRuntime] = await Promise.all([
@@ -110,6 +134,18 @@ export function App() {
   const latestRunForWorkflow = useMemo(
     () => (workflow ? runs.find((runView) => runView.run.workflowId === workflow.id) : undefined),
     [runs, workflow]
+  );
+
+  const selectWorkflow = useCallback(
+    (workflowId: string) => {
+      const next = workflows.find((item) => item.id === workflowId);
+      if (!next) return;
+      setWorkflow(next);
+      setSelectedNodeId(undefined);
+      const latestRunForNextWorkflow = runs.find((runView) => runView.run.workflowId === next.id);
+      setSelectedRunId(latestRunForNextWorkflow?.run.id);
+    },
+    [runs, workflows]
   );
 
   const sidebarMeta = useMemo(
@@ -334,6 +370,26 @@ export function App() {
     setLanguage((current) => (current === "zh-CN" ? "en" : "zh-CN"));
   }, []);
 
+  useEffect(() => {
+    const activeRun =
+      section === "runs"
+        ? runs.find((runView) => runView.run.id === selectedRunId)
+        : latestRunForWorkflow;
+
+    if (!activeRun || !["queued", "running", "waiting_approval"].includes(activeRun.run.status)) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      void hydrateWorkspace({
+        workflowId: selectedWorkflowIdRef.current,
+        runId: section === "runs" ? selectedRunIdRef.current : activeRun.run.id
+      }).catch(() => undefined);
+    }, 2500);
+
+    return () => window.clearTimeout(timer);
+  }, [hydrateWorkspace, latestRunForWorkflow, runs, section, selectedRunId]);
+
   const renderSection = () => {
     if (section === "workflow") {
       return (
@@ -356,9 +412,11 @@ export function App() {
         <RunsPage
           runs={runs}
           workflows={workflows}
+          workflow={workflow}
           selectedRunId={selectedRunId}
           language={language}
           t={t}
+          onSelectWorkflow={selectWorkflow}
           onSelectRun={setSelectedRunId}
         />
       );
@@ -458,9 +516,7 @@ export function App() {
               <select
                 value={workflow?.id ?? ""}
                 onChange={(event) => {
-                  const next = workflows.find((item) => item.id === event.target.value);
-                  setWorkflow(next);
-                  setSelectedNodeId(undefined);
+                  selectWorkflow(event.target.value);
                 }}
               >
                 {workflows.map((item) => (

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   addEdge,
+  applyNodeChanges,
   Background,
   Controls,
   MiniMap,
@@ -8,8 +9,11 @@ import {
   ReactFlowProvider,
   type Connection,
   type Edge,
+  type EdgeMouseHandler,
   type Node,
-  type OnNodeDrag
+  type NodeMouseHandler,
+  type OnNodeDrag,
+  type OnNodesChange
 } from "@xyflow/react";
 import { Bot, Check, GitBranch, Plus, Send, ShieldCheck, X } from "lucide-react";
 import type {
@@ -66,7 +70,28 @@ export function WorkflowStudioPage({
   t: Messages;
 }) {
   const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId);
+  const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
+  const inspectedNode = workflow?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [localNodes, setLocalNodes] = useState<Node<WorkflowNodeCardData>[]>([]);
+  const [localEdges, setLocalEdges] = useState<Edge[]>([]);
+  const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
+  const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number }>({ x: 88, y: 252 });
+  const [nodeContextMenu, setNodeContextMenu] = useState<{ open: boolean; x: number; y: number; nodeId?: string }>({
+    open: false,
+    x: 0,
+    y: 0,
+    nodeId: undefined
+  });
+
+  const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
+    setSelectedCanvasNodeIds((current) => {
+      if (current.length === nextIds.length && current.every((item, index) => item === nextIds[index])) {
+        return current;
+      }
+      return nextIds;
+    });
+  }, []);
 
   const statusByNode = useMemo(() => {
     const map = new Map<string, WorkflowNodeRun>();
@@ -76,34 +101,13 @@ export function WorkflowStudioPage({
     return map;
   }, [runView]);
 
-  const flowNodes = useMemo<Node<WorkflowNodeCardData>[]>(() => {
-    return (workflow?.nodes ?? []).map((node) => {
-      const status = statusByNode.get(node.id)?.status;
-      return {
-        id: node.id,
-        type: "workflowNode",
-        position: node.position,
-        data: {
-          label: node.config.label,
-          type: node.type,
-          kindLabel: t.nodeTypes[node.type],
-          status,
-          statusLabel: t.status[status ?? "idle"]
-        }
-      };
-    });
-  }, [statusByNode, t, workflow?.nodes]);
+  useEffect(() => {
+    setLocalNodes(buildFlowNodes(workflow, statusByNode, t));
+  }, [statusByNode, t, workflow]);
 
-  const flowEdges = useMemo<Edge[]>(() => {
-    return (workflow?.edges ?? []).map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      label: edge.label,
-      animated: runView?.run.status === "running",
-      className: "workflow-edge"
-    }));
-  }, [runView?.run.status, workflow?.edges]);
+  useEffect(() => {
+    setLocalEdges(buildFlowEdges(workflow, runView?.run.status));
+  }, [runView?.run.status, workflow]);
 
   const patchNodeConfig = useCallback(
     (nodeId: string, patch: Partial<WorkflowNode["config"]>) => {
@@ -125,6 +129,13 @@ export function WorkflowStudioPage({
     [onUpdateWorkflow]
   );
 
+  const onNodesChange: OnNodesChange<Node<WorkflowNodeCardData>> = useCallback(
+    (changes) => {
+      setLocalNodes((current) => applyNodeChanges(changes, current));
+    },
+    []
+  );
+
   const onNodeDragStop: OnNodeDrag<Node<WorkflowNodeCardData>> = useCallback(
     (_event, draggedNode) => {
       onUpdateWorkflow((current) => ({
@@ -140,6 +151,7 @@ export function WorkflowStudioPage({
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
+      setLocalEdges((current) => addEdge(connection, current));
       onUpdateWorkflow((current) => ({
         ...current,
         edges: addEdge(connection, current.edges.map(toFlowEdge)).map(fromFlowEdge)
@@ -163,8 +175,51 @@ export function WorkflowStudioPage({
           nodes: [...current.nodes, node]
         };
       });
+      setNodeMenuOpen(false);
     },
     [onUpdateWorkflow, t]
+  );
+
+  const openNodeMenuAt = useCallback((x: number, y: number) => {
+    setNodeMenuAnchor({ x, y });
+    setNodeContextMenu((current) => (current.open ? { ...current, open: false } : current));
+    setNodeMenuOpen(true);
+  }, []);
+
+  const closeNodeMenu = useCallback(() => {
+    setNodeMenuOpen(false);
+  }, []);
+
+  const closeNodeContextMenu = useCallback(() => {
+    setNodeContextMenu({ open: false, x: 0, y: 0, nodeId: undefined });
+  }, []);
+
+  const deleteNodeById = useCallback(
+    (nodeId: string) => {
+      onUpdateWorkflow((current) => ({
+        ...current,
+        nodes: current.nodes.filter((node) => node.id !== nodeId),
+        edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId)
+      }));
+      setLocalNodes((current) => current.filter((node) => node.id !== nodeId));
+      setLocalEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
+      if (selectedNodeId === nodeId) onSelectNode(undefined);
+      if (inspectedNodeId === nodeId) setInspectedNodeId(undefined);
+      setSelectedCanvasNodeIdsIfChanged([]);
+      closeNodeContextMenu();
+    },
+    [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateWorkflow, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
+  );
+
+  const toggleNodeDisabled = useCallback(
+    (nodeId: string) => {
+      onUpdateWorkflow((current) => ({
+        ...current,
+        nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, disabled: !node.disabled } : node))
+      }));
+      closeNodeContextMenu();
+    },
+    [closeNodeContextMenu, onUpdateWorkflow]
   );
 
   useEffect(() => {
@@ -194,42 +249,79 @@ export function WorkflowStudioPage({
       if (selectedNodeId && selectedSet.has(selectedNodeId)) {
         onSelectNode(undefined);
       }
+      if (inspectedNodeId && selectedSet.has(inspectedNodeId)) {
+        setInspectedNodeId(undefined);
+      }
 
-      setSelectedCanvasNodeIds([]);
+      setSelectedCanvasNodeIdsIfChanged([]);
+      closeNodeContextMenu();
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onSelectNode, onUpdateWorkflow, selectedCanvasNodeIds, selectedNodeId]);
+  }, [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateWorkflow, selectedCanvasNodeIds, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]);
+
+  const onNodeClick: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
+    (_event, node) => {
+      closeNodeMenu();
+      closeNodeContextMenu();
+      if (selectedNodeId === node.id) {
+        setInspectedNodeId(node.id);
+        return;
+      }
+      setSelectedCanvasNodeIdsIfChanged([node.id]);
+      onSelectNode(node.id);
+      setInspectedNodeId(undefined);
+    },
+    [closeNodeContextMenu, closeNodeMenu, onSelectNode, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
+  );
+
+  const onNodeContextMenu: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
+    (event, node) => {
+      event.preventDefault();
+      const panel = (event.currentTarget as HTMLElement).closest(".workflow-canvas-panel") as HTMLDivElement | null;
+      const rect = panel?.getBoundingClientRect();
+      setSelectedCanvasNodeIdsIfChanged([node.id]);
+      onSelectNode(node.id);
+      setInspectedNodeId(undefined);
+      closeNodeMenu();
+      setNodeContextMenu({
+        open: true,
+        x: rect ? event.clientX - rect.left : event.clientX,
+        y: rect ? event.clientY - rect.top : event.clientY,
+        nodeId: node.id
+      });
+    },
+    [closeNodeMenu, onSelectNode, setSelectedCanvasNodeIdsIfChanged]
+  );
+
+  const onEdgeClick: EdgeMouseHandler<Edge> = useCallback(
+    (event, edge) => {
+      if (!event.altKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setLocalEdges((current) => current.filter((item) => item.id !== edge.id));
+      onUpdateWorkflow((current) => ({
+        ...current,
+        edges: current.edges.filter((item) => item.id !== edge.id)
+      }));
+    },
+    [onUpdateWorkflow]
+  );
 
   return (
     <ReactFlowProvider>
       <section className="workflow-shell compact-workflow-shell">
         <section className="workflow-canvas-panel expanded-workflow-panel">
-          <div className="workflow-overlay workflow-overlay-left">
-            <div className="floating-node-palette">
-              <span className="floating-palette-title">{t.panels.nodes}</span>
-              <div className="floating-node-actions">
-                {palette.map((item) => {
-                  const Icon = item.icon;
-                  const label = t.nodeTypes[item.type];
-                  return (
-                    <button
-                      key={item.type}
-                      type="button"
-                      className="floating-node-button"
-                      title={`${t.actions.add} ${label}`}
-                      onClick={() => addNode(item.type)}
-                      disabled={!workflow || busy}
-                    >
-                      <Icon size={15} />
-                      {label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
+          <button
+            type="button"
+            className="node-menu-trigger"
+            title={t.actions.add}
+            onClick={() => openNodeMenuAt(88, 252)}
+            disabled={!workflow || busy}
+          >
+            <Plus size={18} />
+          </button>
 
           {runView && (
             <div className="workflow-overlay workflow-overlay-right">
@@ -247,25 +339,35 @@ export function WorkflowStudioPage({
           )}
 
           <ReactFlow
-            nodes={flowNodes}
-            edges={flowEdges}
+            key={workflow?.id ?? "empty-workflow"}
+            nodes={localNodes}
+            edges={localEdges}
             nodeTypes={nodeTypes}
-            onNodeClick={(_event, node) => {
-              setSelectedCanvasNodeIds([node.id]);
-              onSelectNode(node.id);
-            }}
+            defaultViewport={workflow?.display.viewport ?? { x: 0, y: 0, zoom: 1 }}
+            onNodeClick={onNodeClick}
+            onNodeContextMenu={onNodeContextMenu}
+            onEdgeClick={onEdgeClick}
             onPaneClick={() => {
-              setSelectedCanvasNodeIds([]);
+              setSelectedCanvasNodeIdsIfChanged([]);
               onSelectNode(undefined);
+              closeNodeMenu();
+              closeNodeContextMenu();
+              setInspectedNodeId(undefined);
             }}
-            onPaneContextMenu={(event) => event.preventDefault()}
-            onSelectionChange={({ nodes }) => setSelectedCanvasNodeIds(nodes.map((node) => node.id))}
+            onPaneContextMenu={(event) => {
+              event.preventDefault();
+              const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+              closeNodeContextMenu();
+              setInspectedNodeId(undefined);
+              openNodeMenuAt(event.clientX - rect.left, event.clientY - rect.top);
+            }}
+            onSelectionChange={({ nodes }) => setSelectedCanvasNodeIdsIfChanged(nodes.map((node) => node.id))}
+            onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             selectionOnDrag
-            panOnDrag={[2]}
+            panOnDrag={[1]}
             deleteKeyCode={null}
-            fitView
             minZoom={0.35}
             maxZoom={1.5}
           >
@@ -273,17 +375,71 @@ export function WorkflowStudioPage({
             <MiniMap pannable zoomable />
             <Controls position="bottom-right" />
           </ReactFlow>
+
+          {nodeMenuOpen && workflow && (
+            <div
+              className="node-menu-popover"
+              style={{
+                left: nodeMenuAnchor.x,
+                top: nodeMenuAnchor.y
+              }}
+            >
+              <div className="node-menu-title">{t.panels.nodes}</div>
+              <div className="node-menu-list">
+                {palette.map((item) => {
+                  const Icon = item.icon;
+                  const label = t.nodeTypes[item.type];
+                  return (
+                    <button
+                      key={item.type}
+                      type="button"
+                      className="node-menu-item"
+                      title={`${t.actions.add} ${label}`}
+                      onClick={() => addNode(item.type)}
+                      disabled={busy}
+                    >
+                      <Icon size={15} />
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {nodeContextMenu.open && nodeContextMenu.nodeId && (
+            <div
+              className="node-context-menu"
+              style={{
+                left: nodeContextMenu.x,
+                top: nodeContextMenu.y
+              }}
+            >
+              <button type="button" className="node-context-item" onClick={() => toggleNodeDisabled(nodeContextMenu.nodeId!)}>
+                {workflow?.nodes.find((node) => node.id === nodeContextMenu.nodeId)?.disabled
+                  ? language === "zh-CN"
+                    ? "启用节点"
+                    : "Enable node"
+                  : language === "zh-CN"
+                    ? "禁用节点"
+                    : "Disable node"}
+              </button>
+              <button type="button" className="node-context-item danger" onClick={() => deleteNodeById(nodeContextMenu.nodeId!)}>
+                {language === "zh-CN" ? "删除节点" : "Delete node"}
+              </button>
+            </div>
+          )}
         </section>
 
-        {selectedNode && workflow && (
+        {inspectedNode && workflow && (
           <NodeDetailModal
             catalog={catalog}
-            node={selectedNode}
-            nodeRun={statusByNode.get(selectedNode.id)}
+            node={inspectedNode}
+            nodeRun={statusByNode.get(inspectedNode.id)}
             language={language}
             t={t}
-            onClose={() => onSelectNode(undefined)}
-            onPatchConfig={(patch) => patchNodeConfig(selectedNode.id, patch)}
+            onClose={() => setInspectedNodeId(undefined)}
+            onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
           />
         )}
       </section>
@@ -695,6 +851,39 @@ function AgentSkillPanel({
 function formatOutput(output: unknown): string {
   if (typeof output === "string") return output;
   return JSON.stringify(output, null, 2);
+}
+
+function buildFlowNodes(
+  workflow: WorkflowDefinition | undefined,
+  statusByNode: Map<string, WorkflowNodeRun>,
+  t: Messages
+): Node<WorkflowNodeCardData>[] {
+  return (workflow?.nodes ?? []).map((node) => {
+    const status = statusByNode.get(node.id)?.status;
+    return {
+      id: node.id,
+      type: "workflowNode",
+      position: node.position,
+      data: {
+        label: node.config.label,
+        type: node.type,
+        kindLabel: t.nodeTypes[node.type],
+        status,
+        statusLabel: t.status[status ?? "idle"]
+      }
+    };
+  });
+}
+
+function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: WorkflowRunView["run"]["status"]): Edge[] {
+  return (workflow?.edges ?? []).map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    label: edge.label,
+    animated: runStatus === "running",
+    className: "workflow-edge"
+  }));
 }
 
 export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode["config"] {

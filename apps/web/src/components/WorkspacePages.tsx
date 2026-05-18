@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Activity, BadgeCheck, BookOpenText, Clock3, Database, FolderKanban, MessageSquareText, PanelsTopLeft, Tag, Trash2 } from "lucide-react";
 import type {
   CatalogSnapshot,
@@ -11,6 +11,8 @@ import type {
   WorkspaceNote,
   WorkspaceTag,
   WorkflowDefinition,
+  WorkflowNode,
+  WorkflowNodeRunStatus,
   WorkflowRunStatus,
   WorkflowRunView
 } from "@openclaw-cui/shared";
@@ -23,92 +25,289 @@ const runStatuses: WorkflowRunStatus[] = ["queued", "running", "succeeded", "fai
 export function RunsPage({
   runs,
   workflows,
+  workflow,
   selectedRunId,
   language,
   t,
+  onSelectWorkflow,
   onSelectRun
 }: {
   runs: WorkflowRunView[];
   workflows: WorkflowDefinition[];
+  workflow?: WorkflowDefinition;
   selectedRunId?: string;
   language: Language;
   t: Messages;
+  onSelectWorkflow: (workflowId: string) => void;
   onSelectRun: (runId: string) => void;
 }) {
-  const [workflowFilter, setWorkflowFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const copy =
+    language === "zh-CN"
+      ? {
+          title: "流程追踪",
+          subtitle: "左侧按线性任务顺序查看 issue，右侧查看当前节点的模型输出。",
+          runLabel: "运行记录",
+          issueTitle: "Issue 列表",
+          outputTitle: "模型输出",
+          noRun: "当前工作流还没有运行记录。",
+          noIssue: "当前还没有可展示的 issue。",
+          noOutput: "当前节点还没有输出。",
+          completed: "已完成",
+          inProgress: "正在进行",
+          pending: "未完成",
+          flowStarted: "流程开始",
+          flowFinished: "流程结束",
+          openConfig: "打开配置",
+          selectedIssue: "当前 Issue",
+          selectRun: "选择运行记录"
+        }
+      : {
+          title: "Flow Trace",
+          subtitle: "Review issues in linear task order on the left, and read model output on the right.",
+          runLabel: "Run",
+          issueTitle: "Issue list",
+          outputTitle: "Model output",
+          noRun: "This workflow has no run history yet.",
+          noIssue: "No issues are available for this run.",
+          noOutput: "This node has no output yet.",
+          completed: "Completed",
+          inProgress: "In progress",
+          pending: "Pending",
+          flowStarted: "Flow started",
+          flowFinished: "Flow finished",
+          openConfig: "Open config",
+          selectedIssue: "Current issue",
+          selectRun: "Select a run"
+        };
 
-  const filteredRuns = useMemo(() => {
-    return runs.filter((runView) => {
-      if (workflowFilter && runView.run.workflowId !== workflowFilter) return false;
-      if (statusFilter && runView.run.status !== statusFilter) return false;
-      return true;
+  const workflowRuns = useMemo(
+    () => (workflow ? runs.filter((runView) => runView.run.workflowId === workflow.id) : []),
+    [runs, workflow]
+  );
+  const activeRun = workflowRuns.find((runView) => runView.run.id === selectedRunId) ?? workflowRuns[0];
+  const [activeIssueNodeId, setActiveIssueNodeId] = useState<string | undefined>();
+  const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
+
+  const issues = useMemo(() => {
+    const nodeRunsById = new Map(activeRun?.nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun]) ?? []);
+    return orderedNodes.map((node, index) => {
+      const nodeRun = nodeRunsById.get(node.id);
+      return {
+        index: index + 1,
+        node,
+        nodeRun,
+        issueStatus: toIssueStatus(nodeRun?.status),
+        outputPreview: summarizeOutput(nodeRun?.output),
+        events: (activeRun?.events ?? []).filter((event) => event.nodeRunId === nodeRun?.id)
+      };
     });
-  }, [runs, statusFilter, workflowFilter]);
+  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes]);
 
-  const selectedRun = filteredRuns.find((runView) => runView.run.id === selectedRunId) ?? filteredRuns[0];
+  const activeIssue =
+    issues.find((issue) => issue.node.id === activeIssueNodeId) ??
+    issues.find((issue) => issue.nodeRun) ??
+    issues[0];
+
+  const currentNodeName = activeIssue?.node.config.label ?? copy.selectRun;
+
+  useEffect(() => {
+    if (activeIssueNodeId && issues.some((issue) => issue.node.id === activeIssueNodeId)) {
+      return;
+    }
+    const nextIssue = issues.find((issue) => issue.nodeRun) ?? issues[0];
+    setActiveIssueNodeId(nextIssue?.node.id);
+  }, [activeIssueNodeId, issues]);
 
   return (
-    <section className="page-grid page-grid-runs">
-      <div className="content-card stack-card">
+    <section className="page-grid trace-page-grid">
+      <div className="content-card stack-card trace-page-header">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{t.pages.runs.title}</h3>
-            <p>{t.metrics.runs(filteredRuns.length)}</p>
+            <h3>{copy.title}</h3>
+            <p>{copy.subtitle}</p>
           </div>
-          <div className="toolbar-cluster">
-            <select value={workflowFilter} onChange={(event) => setWorkflowFilter(event.target.value)}>
-              <option value="">{t.common.allWorkflows}</option>
-              {workflows.map((workflow) => (
-                <option key={workflow.id} value={workflow.id}>
-                  {workflow.name}
+          <div className="toolbar-cluster trace-toolbar">
+            <select value={workflow?.id ?? ""} onChange={(event) => onSelectWorkflow(event.target.value)}>
+              {workflows.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
                 </option>
               ))}
             </select>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="">{t.common.allStatuses}</option>
-              {runStatuses.map((status) => (
-                <option key={status} value={status}>
-                  {t.status[status]}
-                </option>
-              ))}
+            <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={workflowRuns.length === 0}>
+              {workflowRuns.length === 0 ? (
+                <option value="">{copy.selectRun}</option>
+              ) : (
+                workflowRuns.map((runView) => (
+                  <option key={runView.run.id} value={runView.run.id}>
+                    {`${copy.runLabel} ${runView.run.id.slice(-6)} · ${formatDateTime(runView.run.startedAt, language)}`}
+                  </option>
+                ))
+              )}
             </select>
           </div>
-        </div>
-        <div className="list-shell">
-          {filteredRuns.length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noRuns}</div>
-          ) : (
-            filteredRuns.map((runView) => (
-              <button
-                key={runView.run.id}
-                type="button"
-                className={`list-row card-list-row ${selectedRun?.run.id === runView.run.id ? "selected" : ""}`}
-                onClick={() => onSelectRun(runView.run.id)}
-              >
-                <div className="list-row-main">
-                  <strong>{workflowNameFor(workflows, runView.run.workflowId)}</strong>
-                  <span>{runView.run.id}</span>
-                </div>
-                <div className="list-row-meta">
-                  <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-                  <time>{formatDateTime(runView.run.startedAt, language)}</time>
-                </div>
-              </button>
-            ))
-          )}
         </div>
       </div>
 
-      <div className="content-card stack-card">
-        {selectedRun ? (
-          <RunDetailCard runView={selectedRun} workflows={workflows} language={language} t={t} />
-        ) : (
-          <div className="empty-state page-empty">{t.empty.selectRun}</div>
-        )}
-      </div>
+      <section className="trace-layout">
+        <div className="content-card stack-card trace-issue-column">
+          <div className="trace-column-header">
+            <h3>{copy.issueTitle}</h3>
+            {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
+          </div>
+          <div className="trace-issue-list">
+            {!workflow ? (
+              <div className="empty-state page-empty">{copy.noIssue}</div>
+            ) : issues.length === 0 ? (
+              <div className="empty-state page-empty">{copy.noRun}</div>
+            ) : (
+              issues.map((issue) => (
+                <button
+                  key={issue.node.id}
+                  type="button"
+                  className={`trace-issue-card ${activeIssue?.node.id === issue.node.id ? "selected" : ""}`}
+                  onClick={() => setActiveIssueNodeId(issue.node.id)}
+                >
+                  <div className="trace-issue-index">{issue.index}</div>
+                  <div className="trace-issue-main">
+                    <div className="trace-issue-topline">
+                      <strong>{issue.node.config.label}</strong>
+                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus, copy)}</span>
+                    </div>
+                    <span>{issue.outputPreview}</span>
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div className="content-card stack-card trace-output-column">
+          {activeIssue ? (
+            <>
+              <div className="trace-column-header">
+                <div>
+                  <h3>{copy.outputTitle}</h3>
+                  <p>{`${copy.selectedIssue}: ${currentNodeName}`}</p>
+                </div>
+              </div>
+              <div className="trace-output-stream">
+                <TraceBubble
+                  role="system"
+                  title={copy.flowStarted}
+                  body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"}
+                />
+                {activeIssue.nodeRun?.startedAt && (
+                  <TraceBubble
+                    role="system"
+                    title={t.status[activeIssue.nodeRun.status]}
+                    body={formatDateTime(activeIssue.nodeRun.startedAt, language)}
+                  />
+                )}
+                {activeIssue.events.map((event) => (
+                  <TraceBubble key={event.id} role="system" title={t.events[event.type]} body={event.message} />
+                ))}
+                {activeIssue.nodeRun?.output !== undefined ? (
+                  <TraceBubble role="assistant" title={activeIssue.node.config.label} body={formatOutput(activeIssue.nodeRun.output)} />
+                ) : activeIssue.nodeRun?.error ? (
+                  <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
+                ) : (
+                  <div className="empty-state compact-empty-state">{copy.noOutput}</div>
+                )}
+                {activeRun?.run.endedAt && (
+                  <TraceBubble role="system" title={copy.flowFinished} body={formatDateTime(activeRun.run.endedAt, language)} />
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="empty-state page-empty">{copy.noRun}</div>
+          )}
+        </div>
+      </section>
     </section>
   );
+}
+
+type LinearIssueStatus = "completed" | "in_progress" | "pending";
+
+function toIssueStatus(status?: WorkflowNodeRunStatus): LinearIssueStatus {
+  if (status === "running" || status === "waiting_approval") return "in_progress";
+  if (status === "succeeded" || status === "skipped") return "completed";
+  return "pending";
+}
+
+function labelForIssueStatus(
+  status: LinearIssueStatus,
+  copy: {
+    completed: string;
+    inProgress: string;
+    pending: string;
+  }
+): string {
+  if (status === "completed") return copy.completed;
+  if (status === "in_progress") return copy.inProgress;
+  return copy.pending;
+}
+
+function TraceBubble({
+  role,
+  title,
+  body
+}: {
+  role: "system" | "assistant" | "error";
+  title: string;
+  body: string;
+}) {
+  return (
+    <article className={`trace-bubble trace-bubble-${role}`}>
+      <div className="trace-bubble-title">{title}</div>
+      <pre className="trace-bubble-body">{body}</pre>
+    </article>
+  );
+}
+
+function summarizeOutput(output: unknown): string {
+  const normalized = formatOutput(output ?? "");
+  if (!normalized.trim()) return "No output yet";
+  const flattened = normalized.replace(/\s+/g, " ").trim();
+  return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
+}
+
+function getWorkflowNodeOrder(workflow?: WorkflowDefinition): WorkflowNode[] {
+  if (!workflow) return [];
+
+  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const indegree = new Map<string, number>(workflow.nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map<string, string[]>();
+
+  for (const edge of workflow.edges) {
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+  }
+
+  const queue = workflow.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
+  const ordered: WorkflowNode[] = [];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    if (!currentId || visited.has(currentId)) continue;
+    visited.add(currentId);
+    const node = nodesById.get(currentId);
+    if (node) ordered.push(node);
+
+    for (const targetId of outgoing.get(currentId) ?? []) {
+      const nextDegree = (indegree.get(targetId) ?? 1) - 1;
+      indegree.set(targetId, nextDegree);
+      if (nextDegree === 0) queue.push(targetId);
+    }
+  }
+
+  for (const node of workflow.nodes) {
+    if (!visited.has(node.id)) ordered.push(node);
+  }
+
+  return ordered;
 }
 
 export function ApprovalsPage({

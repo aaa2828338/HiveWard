@@ -9,6 +9,7 @@ export interface WorkflowNodeCardData extends Record<string, unknown> {
   kindLabel: string;
   status?: WorkflowNodeRunStatus;
   statusLabel: string;
+  disabled?: boolean;
 }
 
 const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
@@ -44,7 +45,7 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected 
   const StatusIcon = statusIcon(nodeData.status);
 
   return (
-    <div className={`workflow-node ${selected ? "selected" : ""}`}>
+    <div className={`workflow-node ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}>
       <Handle className="node-handle" type="target" position={Position.Left} />
       <div className="node-topline">
         <span className={`node-type node-type-${nodeData.type}`}>

@@ -94,6 +94,7 @@ export interface WorkflowNode {
   type: WorkflowNodeType;
   position: CanvasPosition;
   config: WorkflowNodeConfig;
+  disabled?: boolean;
 }
 
 export interface WorkflowEdge {

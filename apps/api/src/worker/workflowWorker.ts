@@ -340,7 +340,7 @@ export class WorkflowWorker {
   }
 
   private isExecutable(node: WorkflowNode): boolean {
-    return executableTypes.has(node.type);
+    return executableTypes.has(node.type) && !node.disabled;
   }
 
   private async event(
