@@ -24,6 +24,7 @@ npm run dev
 - `OPENCLAW_GATEWAY_PASSWORD=...`
 - `OPENCLAW_GATEWAY_ORIGIN=http://127.0.0.1:18789`
 - `OPENCLAW_GATEWAY_LOCALE=zh-CN`
+- `OPENCLAW_AGENT_START_TIMEOUT_MS=20000`
 
 前端右上角语言按钮支持 `中文` / `EN` 切换，选择会保存在浏览器本地存储中。
 
