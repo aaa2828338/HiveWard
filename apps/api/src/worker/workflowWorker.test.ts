@@ -191,6 +191,114 @@ describe("WorkflowWorker", () => {
     expect((adapter.calls[1]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
     expect((adapter.calls[2]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
   });
+
+  it("lets a manager node route numbered slots and return to an earlier agent slot", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = createWorkflow(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 3,
+            maxHandoffs: 6,
+            instructions: "Route product, developer, and test slots."
+          }
+        },
+        createAgentNode("product", "Product", { x: 420, y: 80 }),
+        createAgentNode("dev", "Dev", { x: 420, y: 220 }),
+        createAgentNode("test", "Test", { x: 420, y: 360 })
+      ],
+      [
+        { id: "m-product", source: "manager", sourceHandle: "manager-out-1", target: "product", condition: "success" },
+        { id: "product-m", source: "product", target: "manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "m-dev", source: "manager", sourceHandle: "manager-out-2", target: "dev", condition: "success" },
+        { id: "dev-m", source: "dev", target: "manager", targetHandle: "manager-in-2", condition: "success" },
+        { id: "m-test", source: "manager", sourceHandle: "manager-out-3", target: "test", condition: "success" },
+        { id: "test-m", source: "test", target: "manager", targetHandle: "manager-in-3", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2"),
+      createStartedAgentTask("task-3"),
+      createStartedAgentTask("task-4"),
+      createStartedAgentTask("task-5")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "prd ready"),
+      createCompletedAgentTask("task-2", "succeeded", "app draft"),
+      createCompletedAgentTask("task-3", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
+      createCompletedAgentTask("task-4", "succeeded", "app fixed"),
+      createCompletedAgentTask("task-5", "succeeded", JSON.stringify({ status: "pass" }))
+    ]);
+    const worker = new WorkflowWorker(store, adapter);
+
+    const run = await worker.startRun(workflow, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "dev" && nodeRun.status === "succeeded")).toHaveLength(2);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "test" && nodeRun.status === "succeeded")).toHaveLength(2);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["product", "dev", "test", "dev", "test"]);
+  });
+
+  it("reruns the loop output branch until the loop reaches max iterations", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = createWorkflow(
+      [
+        createAgentNode("brief", "Brief"),
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const worker = new WorkflowWorker(
+      store,
+      new ScriptedAdapter([
+        createStartedAgentTask("task-1"),
+        createStartedAgentTask("task-2")
+      ], [
+        createCompletedAgentTask("task-1", "succeeded", "brief ready"),
+        createCompletedAgentTask("task-2", "succeeded", "brief ready again")
+      ])
+    );
+
+    const run = await worker.startRun(workflow, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "brief" && nodeRun.status === "succeeded")).toHaveLength(2);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "loop").map((nodeRun) => (nodeRun.output as { status?: string }).status)).toEqual([
+      "rerun",
+      "completed"
+    ]);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "loop").at(-1)?.output).toEqual({
+      status: "completed",
+      iteration: 2,
+      maxIterations: 2,
+      rerunTargets: [{ nodeId: "brief", nodeLabel: "Brief" }],
+      upstream: [{ nodeId: "brief", nodeLabel: "Brief", output: "brief ready again" }]
+    });
+  });
 });
 
 function createStartedAgentTask(taskId: string): StartedAgentTaskResult {

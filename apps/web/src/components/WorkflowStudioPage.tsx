@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addEdge,
   applyNodeChanges,
@@ -15,12 +15,14 @@ import {
   type OnNodeDrag,
   type OnNodesChange
 } from "@xyflow/react";
-import { Bot, Check, GitBranch, MessagesSquare, Plus, Send, ShieldCheck, X } from "lucide-react";
+import { Bot, Check, GitBranch, MessagesSquare, Network, Plus, Repeat2, Send, ShieldCheck, X } from "lucide-react";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
   CatalogSnapshot,
   ConditionNodeConfig,
+  LoopNodeConfig,
+  ManagerNodeConfig,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
   ParallelAgentsNodeConfig,
@@ -42,6 +44,8 @@ const nodeTypes = {
 
 const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
+  { type: "manager", icon: Network },
+  { type: "loop", icon: Repeat2 },
   { type: "condition", icon: GitBranch },
   { type: "summary", icon: MessagesSquare },
   { type: "approval", icon: ShieldCheck },
@@ -87,6 +91,7 @@ export function WorkflowStudioPage({
     y: 0,
     nodeId: undefined
   });
+  const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean } | undefined>(undefined);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
     setSelectedCanvasNodeIds((current) => {
@@ -156,7 +161,15 @@ export function WorkflowStudioPage({
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
       onUpdateWorkflow((current) => {
-        if (current.edges.some((edge) => edge.source === connection.source && edge.target === connection.target)) {
+        if (
+          current.edges.some(
+            (edge) =>
+              edge.source === connection.source &&
+              edge.target === connection.target &&
+              edge.sourceHandle === connection.sourceHandle &&
+              edge.targetHandle === connection.targetHandle
+          )
+        ) {
           return current;
         }
 
@@ -321,7 +334,33 @@ export function WorkflowStudioPage({
   return (
     <ReactFlowProvider>
       <section className="workflow-shell compact-workflow-shell">
-        <section className="workflow-canvas-panel expanded-workflow-panel">
+        <section
+          className="workflow-canvas-panel expanded-workflow-panel"
+          onPointerDownCapture={(event) => {
+            if (event.button !== 2) return;
+            rightDragStateRef.current = {
+              x: event.clientX,
+              y: event.clientY,
+              moved: false
+            };
+          }}
+          onPointerMoveCapture={(event) => {
+            const state = rightDragStateRef.current;
+            if (!state || (event.buttons & 2) !== 2) return;
+            if (Math.hypot(event.clientX - state.x, event.clientY - state.y) > 4) {
+              state.moved = true;
+            }
+          }}
+          onContextMenuCapture={(event) => {
+            if (!rightDragStateRef.current?.moved) return;
+            event.preventDefault();
+            event.stopPropagation();
+            rightDragStateRef.current = undefined;
+            closeNodeContextMenu();
+            closeNodeMenu();
+            setInspectedNodeId(undefined);
+          }}
+        >
           <button
             type="button"
             className="node-menu-trigger"
@@ -365,6 +404,14 @@ export function WorkflowStudioPage({
             }}
             onPaneContextMenu={(event) => {
               event.preventDefault();
+              const rightDragState = rightDragStateRef.current;
+              rightDragStateRef.current = undefined;
+              if (rightDragState?.moved) {
+                closeNodeContextMenu();
+                closeNodeMenu();
+                setInspectedNodeId(undefined);
+                return;
+              }
               const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
               closeNodeContextMenu();
               setInspectedNodeId(undefined);
@@ -375,7 +422,7 @@ export function WorkflowStudioPage({
             onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             selectionOnDrag
-            panOnDrag={[1]}
+            panOnDrag={[1, 2]}
             deleteKeyCode={null}
             minZoom={0.35}
             maxZoom={1.5}
@@ -637,6 +684,68 @@ function NodeConfigForm({
         <label className="field-span-full">
           <span>{t.fields.prompt}</span>
           <textarea rows={10} value={config.prompt} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
+        </label>
+      </div>
+    );
+  }
+
+  if (node.type === "manager") {
+    const config = node.config as ManagerNodeConfig;
+    return (
+      <div className="config-form node-modal-form">
+        <label>
+          <span>{t.fields.label}</span>
+          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
+        </label>
+        <label>
+          <span>Ports</span>
+          <input
+            min={1}
+            max={8}
+            type="number"
+            value={config.portCount}
+            onChange={(event) => onPatchConfig({ portCount: clampNumberInput(event.target.value, 1, 8, 3) })}
+          />
+        </label>
+        <label>
+          <span>Max handoffs</span>
+          <input
+            min={1}
+            max={50}
+            type="number"
+            value={config.maxHandoffs}
+            onChange={(event) => onPatchConfig({ maxHandoffs: clampNumberInput(event.target.value, 1, 50, 12) })}
+          />
+        </label>
+        <label className="field-span-full">
+          <span>Instructions</span>
+          <textarea
+            rows={8}
+            value={config.instructions ?? ""}
+            onChange={(event) => onPatchConfig({ instructions: event.target.value })}
+          />
+        </label>
+      </div>
+    );
+  }
+
+  if (node.type === "loop") {
+    const config = node.config as LoopNodeConfig;
+    return (
+      <div className="config-form node-modal-form">
+        <label>
+          <span>{t.fields.label}</span>
+          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
+        </label>
+        <label>
+          <span>Max iterations</span>
+          <input
+            min={1}
+            max={25}
+            type="number"
+            value={config.maxIterations}
+            onChange={(event) => onPatchConfig({ maxIterations: clampNumberInput(event.target.value, 1, 25, 3) })}
+          />
         </label>
       </div>
     );
@@ -943,6 +1052,12 @@ function formatOutput(output: unknown): string {
   return JSON.stringify(output, null, 2);
 }
 
+function clampNumberInput(value: string, min: number, max: number, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 function buildFlowNodes(
   workflow: WorkflowDefinition | undefined,
   statusByNode: Map<string, WorkflowNodeRun>,
@@ -960,7 +1075,9 @@ function buildFlowNodes(
         kindLabel: t.nodeTypes[node.type],
         status,
         statusLabel: t.status[status ?? "idle"],
-        disabled: node.disabled
+        disabled: node.disabled,
+        managerPortCount:
+          node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined
       }
     };
   });
@@ -971,6 +1088,8 @@ function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: Wo
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
     label: edge.label ?? defaultVisibleEdgeLabel(edge.condition),
     animated: runStatus === "running",
     className: "workflow-edge"
@@ -1021,6 +1140,21 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
       waitFor: "all"
     };
   }
+  if (type === "manager") {
+    return {
+      label: t.defaults.managerLabel,
+      portCount: 3,
+      maxHandoffs: 12,
+      instructions:
+        "Route work through numbered slots. Agents may return JSON with status and nextSlot or returnToSlot."
+    };
+  }
+  if (type === "loop") {
+    return {
+      label: t.defaults.loopLabel,
+      maxIterations: 3
+    };
+  }
   if (type === "note") {
     return {
       label: t.defaults.noteLabel,
@@ -1038,6 +1172,8 @@ function toFlowEdge(edge: WorkflowEdge): Edge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
     label: edge.label ?? defaultVisibleEdgeLabel(edge.condition)
   };
 }
@@ -1047,6 +1183,8 @@ function fromFlowEdge(edge: Edge): WorkflowEdge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
+    sourceHandle: edge.sourceHandle ?? undefined,
+    targetHandle: edge.targetHandle ?? undefined,
     label: typeof edge.label === "string" ? edge.label : undefined
   };
 }
@@ -1057,6 +1195,8 @@ function createWorkflowEdge(workflow: WorkflowDefinition, connection: Connection
     id: `edge-${connection.source}-${connection.target}-${Math.random().toString(36).slice(2, 8)}`,
     source: connection.source!,
     target: connection.target!,
+    sourceHandle: connection.sourceHandle ?? undefined,
+    targetHandle: connection.targetHandle ?? undefined,
     condition,
     label: defaultVisibleEdgeLabel(condition)
   };

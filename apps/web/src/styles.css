@@ -1243,6 +1243,13 @@ dd {
   box-shadow: 0 14px 30px rgb(20 39 48 / 0.18);
 }
 
+.node-menu-trigger:hover:not(:disabled) {
+  border-color: #8aa8a5;
+  background: #f5faf9;
+  box-shadow: 0 16px 34px rgb(20 39 48 / 0.22);
+  transform: translateY(-50%);
+}
+
 .node-menu-popover {
   position: absolute;
   z-index: 8;
@@ -1491,6 +1498,10 @@ dd {
   box-shadow: 0 14px 28px rgb(38 51 77 / 0.12);
 }
 
+.workflow-node-manager {
+  padding-bottom: 16px;
+}
+
 .workflow-node.selected {
   border-color: color-mix(in srgb, var(--accent) 72%, white);
   box-shadow: 0 0 0 3px rgb(15 118 110 / 0.28), 0 14px 28px rgb(38 51 77 / 0.12);
@@ -1521,6 +1532,16 @@ dd {
 .node-type-agent {
   background: #e0f2f1;
   color: var(--accent);
+}
+
+.node-type-manager {
+  background: #e8e4ff;
+  color: #5141a4;
+}
+
+.node-type-loop {
+  background: #e5f8e7;
+  color: #1f7a3d;
 }
 
 .node-type-parallel_agents,
@@ -1586,6 +1607,31 @@ dd {
   height: 10px;
   background: var(--accent);
   border: 2px solid #ffffff;
+}
+
+.manager-port-stack {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 26px;
+  border-radius: 12px;
+  background: rgb(245 248 250 / 0.86);
+}
+
+.manager-port-stack span {
+  min-height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgb(19 38 47 / 0.08);
+  background: rgb(255 255 255 / 0.9);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.manager-slot-handle {
+  background: #5141a4;
 }
 
 .workflow-edge {

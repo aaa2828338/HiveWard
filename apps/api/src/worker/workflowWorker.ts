@@ -5,6 +5,8 @@ import type {
   ApprovalNodeConfig,
   AgentTaskResult,
   ConditionNodeConfig,
+  LoopNodeConfig,
+  ManagerNodeConfig,
   OpenClawObjectRef,
   ParallelAgentsNodeConfig,
   SendNodeConfig,
@@ -19,8 +21,28 @@ import type {
 } from "@openclaw-cui/shared";
 import type { FileCuiStore } from "../store/fileCuiStore";
 
-const executableTypes = new Set(["agent", "parallel_agents", "condition", "summary", "approval", "send"]);
+const executableTypes = new Set(["agent", "parallel_agents", "manager", "loop", "condition", "summary", "approval", "send"]);
+const managerInHandlePrefix = "manager-in-";
+const managerOutHandlePrefix = "manager-out-";
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
+
+interface ManagerTraceItem {
+  handoff: number;
+  slot: number;
+  nodeId: string;
+  nodeLabel: string;
+  status: AgentTaskResult["status"];
+  output?: string;
+  error?: string;
+  returnEdgePresent: boolean;
+  decision?: ManagerDecision;
+}
+
+interface ManagerDecision {
+  status: "continue" | "retry" | "complete";
+  nextSlot?: number;
+  reason?: string;
+}
 
 export class WorkflowWorker {
   private readonly activeRuns = new Map<string, Promise<void>>();
@@ -73,9 +95,9 @@ export class WorkflowWorker {
         if (!currentRun) return;
 
         const failed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "failed");
-        await this.store.updateWorkflowRun(failed);
         const message = error instanceof Error ? error.message : "Workflow worker crashed unexpectedly.";
         await this.event(run.id, "workflow.run.failed", `Workflow ${workflow.name} crashed: ${message}`);
+        await this.store.updateWorkflowRun(failed);
       })
       .finally(() => {
         this.activeRuns.delete(run.id);
@@ -98,8 +120,8 @@ export class WorkflowWorker {
       const failedNodeRun = nodeRuns.find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
       if (failedNodeRun) {
         const failed = await this.applyRunTotals(run, startedAt, "failed");
-        await this.store.updateWorkflowRun(failed);
         await this.event(run.id, "workflow.run.failed", `Workflow ${workflow.name} failed at node ${failedNodeRun.nodeLabel}.`);
+        await this.store.updateWorkflowRun(failed);
         return;
       }
       if (nodeRuns.some((nodeRun) => nodeRun.status === "waiting_approval")) {
@@ -109,17 +131,22 @@ export class WorkflowWorker {
 
       const readyNodes = this.findReadyNodes(workflow, nodeRuns);
       if (readyNodes.length === 0) {
-        const pending = workflow.nodes.filter((node) => this.isWorkflowStep(node) && !this.hasTerminalNodeRun(node, nodeRuns));
+        const pending = workflow.nodes.filter(
+          (node) =>
+            this.isWorkflowStep(node) &&
+            !this.isManagedParticipant(workflow, node) &&
+            !this.hasCurrentTerminalNodeRun(workflow, node, nodeRuns)
+        );
         if (pending.length === 0) {
           const completed = await this.applyRunTotals(run, startedAt, "succeeded");
-          await this.store.updateWorkflowRun(completed);
           await this.event(run.id, "workflow.run.completed", `Workflow ${workflow.name} completed.`);
+          await this.store.updateWorkflowRun(completed);
           return;
         }
 
         const failed = await this.applyRunTotals(run, startedAt, "failed");
-        await this.store.updateWorkflowRun(failed);
         await this.event(run.id, "workflow.run.failed", `Workflow ${workflow.name} could not continue. Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
+        await this.store.updateWorkflowRun(failed);
         return;
       }
 
@@ -130,28 +157,33 @@ export class WorkflowWorker {
   private findReadyNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
       if (!this.isRunnableNode(node)) return false;
-      if (this.hasNodeRun(node, nodeRuns)) return false;
+      if (this.isManagedParticipant(workflow, node)) return false;
+      if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
-      const incoming = workflow.edges.filter((edge) => edge.target === node.id);
+      const incoming = this.getSchedulingIncomingEdges(workflow, node);
       if (incoming.length === 0) return true;
 
-      return incoming.every((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns) === "satisfied");
+      const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
+      return incoming.every((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns, requiredAfterIndex) === "satisfied");
     });
   }
 
   private findSkippableNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
       if (!this.isWorkflowStep(node)) return false;
-      if (this.hasNodeRun(node, nodeRuns)) return false;
+      if (this.isManagedParticipant(workflow, node)) return false;
+      if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
-      const incoming = workflow.edges.filter((edge) => edge.target === node.id);
+      const incoming = this.getSchedulingIncomingEdges(workflow, node);
       if (node.disabled) {
         if (incoming.length === 0) return true;
-        return incoming.every((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns) !== "pending");
+        const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
+        return incoming.every((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns, requiredAfterIndex) !== "pending");
       }
       if (incoming.length === 0) return false;
 
-      const edgeStates = incoming.map((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns));
+      const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
+      const edgeStates = incoming.map((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns, requiredAfterIndex));
       return edgeStates.every((state) => state !== "pending") && edgeStates.some((state) => state === "blocked");
     });
   }
@@ -164,6 +196,10 @@ export class WorkflowWorker {
         await this.executeAgentNode(workflow, run, node, nodeRun);
       } else if (node.type === "parallel_agents") {
         await this.executeParallelAgentsNode(workflow, run, node, nodeRun);
+      } else if (node.type === "manager") {
+        await this.executeManagerNode(workflow, run, node, nodeRun);
+      } else if (node.type === "loop") {
+        await this.executeLoopNode(workflow, run, node, nodeRun);
       } else if (node.type === "condition") {
         await this.completeNode(nodeRun, { result: this.evaluateCondition(workflow, node.config as ConditionNodeConfig) });
       } else if (node.type === "summary") {
@@ -204,6 +240,18 @@ export class WorkflowWorker {
     node: WorkflowNode,
     nodeRun: WorkflowNodeRun
   ): Promise<void> {
+    await this.executeAgentNodeWithInput(workflow, run, node, nodeRun, {
+      upstream: await this.collectUpstreamOutputs(workflow, run.id, node)
+    });
+  }
+
+  private async executeAgentNodeWithInput(
+    _workflow: WorkflowDefinition,
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun,
+    input: unknown
+  ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
     const { result, openclawRef } = await this.runAgentTask({
       workflowRunId: run.id,
@@ -212,14 +260,12 @@ export class WorkflowWorker {
       agentName: config.agentName,
       prompt: config.prompt,
       modelId: config.modelId,
-      input: {
-        upstream: await this.collectUpstreamOutputs(workflow, run.id, node)
-      },
+      input,
       tools: config.tools
     });
     if (result.status !== "succeeded") {
       await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `OpenClaw agent run ${result.status}.`);
-      return;
+      return result;
     }
 
     await this.completeNode(
@@ -227,6 +273,7 @@ export class WorkflowWorker {
       result.output ?? "",
       openclawRef
     );
+    return result;
   }
 
   private async executeParallelAgentsNode(
@@ -282,6 +329,152 @@ export class WorkflowWorker {
       nodeRun,
       outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
     );
+  }
+
+  private async executeManagerNode(
+    workflow: WorkflowDefinition,
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun
+  ): Promise<void> {
+    const config = node.config as ManagerNodeConfig;
+    const portCount = normalizeInteger(config.portCount, 1, 8, 3);
+    const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
+    const managerUpstream = await this.collectUpstreamOutputs(workflow, run.id, node);
+    const trace: ManagerTraceItem[] = [];
+    let slot = this.firstConnectedManagerSlot(workflow, node, portCount);
+
+    if (!slot) {
+      await this.completeNode(nodeRun, {
+        status: "completed",
+        reason: "manager_has_no_connected_slots",
+        trace
+      });
+      return;
+    }
+
+    for (let handoff = 1; handoff <= maxHandoffs; handoff += 1) {
+      const assignment = this.findManagerSlotAssignment(workflow, node, slot);
+      if (!assignment) {
+        await this.completeNode(nodeRun, {
+          status: "completed",
+          reason: `manager_slot_${slot}_is_not_connected`,
+          trace
+        });
+        return;
+      }
+
+      if (assignment.target.disabled) {
+        trace.push({
+          handoff,
+          slot,
+          nodeId: assignment.target.id,
+          nodeLabel: assignment.target.config.label,
+          status: "cancelled",
+          error: "disabled",
+          returnEdgePresent: assignment.returnEdgePresent,
+          decision: this.resolveManagerDecision({ status: "skipped" }, slot, portCount)
+        });
+        slot += 1;
+        if (slot > portCount) {
+          await this.completeNode(nodeRun, {
+            status: "completed",
+            reason: "manager_reached_final_slot",
+            trace
+          });
+          return;
+        }
+        continue;
+      }
+
+      if (assignment.target.type !== "agent") {
+        await this.failNode(nodeRun, `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`);
+        return;
+      }
+
+      const participantRun = await this.createRunningNodeRun(workflow, run, assignment.target);
+      const result = await this.executeAgentNodeWithInput(workflow, run, assignment.target, participantRun, {
+        manager: {
+          nodeId: node.id,
+          nodeLabel: node.config.label,
+          instructions: config.instructions,
+          slot,
+          handoff,
+          maxHandoffs
+        },
+        upstream: managerUpstream,
+        previousResults: trace.map((item) => ({
+          handoff: item.handoff,
+          slot: item.slot,
+          nodeId: item.nodeId,
+          nodeLabel: item.nodeLabel,
+          status: item.status,
+          output: item.output,
+          error: item.error,
+          decision: item.decision
+        }))
+      });
+
+      const traceItem: ManagerTraceItem = {
+        handoff,
+        slot,
+        nodeId: assignment.target.id,
+        nodeLabel: assignment.target.config.label,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        returnEdgePresent: assignment.returnEdgePresent
+      };
+      trace.push(traceItem);
+
+      if (result.status !== "succeeded") {
+        await this.failNode(nodeRun, result.error ?? `Manager participant ${assignment.target.config.label} returned ${result.status}.`);
+        return;
+      }
+
+      const decision = this.resolveManagerDecision(result.output, slot, portCount);
+      traceItem.decision = decision;
+      if (decision.status === "complete" || !decision.nextSlot) {
+        await this.completeNode(nodeRun, {
+          status: "completed",
+          reason: decision.reason ?? "manager_completed",
+          trace
+        });
+        return;
+      }
+
+      slot = decision.nextSlot;
+    }
+
+    await this.failNode(nodeRun, `Manager exceeded max handoffs (${maxHandoffs}).`);
+  }
+
+  private async executeLoopNode(
+    workflow: WorkflowDefinition,
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun
+  ): Promise<void> {
+    const config = node.config as LoopNodeConfig;
+    const maxIterations = normalizeInteger(config.maxIterations, 1, 25, 3);
+    const previousLoopRuns = await this.store.listNodeRuns(run.id);
+    const previousIteration = previousLoopRuns
+      .filter((candidate) => candidate.nodeId === node.id && candidate.status === "succeeded")
+      .reduce((max, candidate) => Math.max(max, readInteger(readOutputRecord(candidate.output)?.iteration) ?? 0), 0);
+    const iteration = previousIteration + 1;
+    const rerunTargets = this.getLoopRerunTargets(workflow, node).map((target) => ({
+      nodeId: target.id,
+      nodeLabel: target.config.label
+    }));
+    const shouldRerun = iteration < maxIterations && rerunTargets.length > 0;
+
+    await this.completeNode(nodeRun, {
+      status: shouldRerun ? "rerun" : "completed",
+      iteration,
+      maxIterations,
+      rerunTargets,
+      upstream: await this.collectUpstreamOutputs(workflow, run.id, node)
+    });
   }
 
   private async executeSummaryNode(
@@ -363,24 +556,165 @@ export class WorkflowWorker {
     return workflow.variables[expression] === "true";
   }
 
+  private firstConnectedManagerSlot(workflow: WorkflowDefinition, managerNode: WorkflowNode, portCount: number): number | undefined {
+    for (let slot = 1; slot <= portCount; slot += 1) {
+      if (this.findManagerSlotAssignment(workflow, managerNode, slot)) return slot;
+    }
+    return undefined;
+  }
+
+  private findManagerSlotAssignment(
+    workflow: WorkflowDefinition,
+    managerNode: WorkflowNode,
+    slot: number
+  ): { target: WorkflowNode; returnEdgePresent: boolean } | undefined {
+    const outHandle = `${managerOutHandlePrefix}${slot}`;
+    const outEdge = workflow.edges.find((edge) => edge.source === managerNode.id && edge.sourceHandle === outHandle);
+    if (!outEdge) return undefined;
+
+    const target = workflow.nodes.find((candidate) => candidate.id === outEdge.target);
+    if (!target) return undefined;
+
+    const inHandle = `${managerInHandlePrefix}${slot}`;
+    const returnEdgePresent = workflow.edges.some(
+      (edge) => edge.source === target.id && edge.target === managerNode.id && edge.targetHandle === inHandle
+    );
+    return { target, returnEdgePresent };
+  }
+
+  private getLoopRerunTargets(workflow: WorkflowDefinition, loopNode: WorkflowNode): WorkflowNode[] {
+    const nodesById = new Map(workflow.nodes.map((candidate) => [candidate.id, candidate]));
+    const visited = new Set<string>();
+    const queue = workflow.edges.filter((edge) => edge.source === loopNode.id).map((edge) => edge.target);
+
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      if (nodeId === loopNode.id || visited.has(nodeId)) continue;
+      const node = nodesById.get(nodeId);
+      if (!node) continue;
+
+      visited.add(nodeId);
+      for (const edge of workflow.edges) {
+        if (edge.source !== nodeId || edge.target === loopNode.id) continue;
+        queue.push(edge.target);
+      }
+    }
+
+    return [...visited].flatMap((nodeId) => {
+      const node = nodesById.get(nodeId);
+      return node ? [node] : [];
+    });
+  }
+
+  private getRequiredAfterIndex(
+    workflow: WorkflowDefinition,
+    node: WorkflowNode,
+    nodeRuns: WorkflowNodeRun[]
+  ): number | undefined {
+    if (node.type === "loop") {
+      return this.findLatestTerminalNodeRunWithIndex(nodeRuns, node.id)?.index;
+    }
+
+    let latestMarker: { index: number } | undefined;
+    for (const candidate of workflow.nodes) {
+      if (candidate.type !== "loop") continue;
+      if (!this.getLoopRerunTargets(workflow, candidate).some((target) => target.id === node.id)) continue;
+
+      for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
+        const nodeRun = nodeRuns[index]!;
+        if (nodeRun.nodeId !== candidate.id || nodeRun.status !== "succeeded") continue;
+        const status = readString(readOutputRecord(nodeRun.output)?.status);
+        if (status !== "rerun") continue;
+        if (!latestMarker || index > latestMarker.index) {
+          latestMarker = { index };
+        }
+        break;
+      }
+    }
+
+    return latestMarker?.index;
+  }
+
+  private hasSatisfiedIncomingAfter(
+    workflow: WorkflowDefinition,
+    node: WorkflowNode,
+    nodeRuns: WorkflowNodeRun[],
+    requiredAfterIndex: number
+  ): boolean {
+    const incoming = this.getSchedulingIncomingEdges(workflow, node);
+    if (incoming.length === 0) return false;
+    return incoming.every((edge) => this.resolveIncomingEdgeState(workflow, edge, nodeRuns, requiredAfterIndex) === "satisfied");
+  }
+
+  private isAfterRequiredIndex(index: number, requiredAfterIndex?: number): boolean {
+    return requiredAfterIndex === undefined || index > requiredAfterIndex;
+  }
+
+  private resolveManagerDecision(output: unknown, currentSlot: number, portCount: number): ManagerDecision {
+    const record = readOutputRecord(output);
+    const explicitSlot =
+      readInteger(record?.nextSlot) ??
+      readInteger(record?.routeToSlot) ??
+      readInteger(record?.returnToSlot) ??
+      readInteger(record?.targetSlot);
+    const status = readString(record?.status)?.toLowerCase();
+    const reason = readString(record?.reason) ?? readString(record?.message);
+
+    if (status && ["complete", "completed", "done", "stop", "passed", "pass", "approved"].includes(status) && currentSlot >= portCount) {
+      return { status: "complete", reason };
+    }
+    if (status && ["complete", "completed", "done", "stop"].includes(status)) {
+      return { status: "complete", reason };
+    }
+    if (explicitSlot !== undefined) {
+      if (explicitSlot < 1 || explicitSlot > portCount) {
+        return { status: "complete", reason: reason ?? `next slot ${explicitSlot} is outside manager ports` };
+      }
+      return {
+        status: explicitSlot <= currentSlot ? "retry" : "continue",
+        nextSlot: explicitSlot,
+        reason
+      };
+    }
+
+    const failed =
+      status !== undefined &&
+      ["fail", "failed", "needs_revision", "needs-revision", "retry", "rework", "blocked", "reject", "rejected"].includes(status);
+    if (failed) {
+      return {
+        status: "retry",
+        nextSlot: Math.max(1, currentSlot - 1),
+        reason
+      };
+    }
+
+    if (currentSlot >= portCount) {
+      return { status: "complete", reason };
+    }
+    return { status: "continue", nextSlot: currentSlot + 1, reason };
+  }
+
   private async collectUpstreamOutputs(
     workflow: WorkflowDefinition,
     workflowRunId: string,
     node: WorkflowNode
   ): Promise<Array<{ nodeId: string; nodeLabel: string; output: unknown }>> {
-    const incoming = workflow.edges.filter((edge) => edge.target === node.id);
+    const incoming = this.getUpstreamIncomingEdges(workflow, node);
     if (incoming.length === 0) return [];
 
     const nodeRuns = await this.store.listNodeRuns(workflowRunId);
     const outputs: Array<{ nodeId: string; nodeLabel: string; output: unknown }> = [];
     const seen = new Set<string>();
+    const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
 
     for (const edge of incoming) {
-      if (this.resolveIncomingEdgeState(workflow, edge, nodeRuns) !== "satisfied") {
+      const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
+      const edgeRequiredAfterIndex = source?.type === "loop" ? undefined : requiredAfterIndex;
+      if (this.resolveIncomingEdgeState(workflow, edge, nodeRuns, edgeRequiredAfterIndex) !== "satisfied") {
         continue;
       }
 
-      const sourceRun = nodeRuns.find((candidate) => candidate.nodeId === edge.source && candidate.status === "succeeded");
+      const sourceRun = this.findLatestNodeRun(nodeRuns, edge.source, "succeeded", edgeRequiredAfterIndex);
       if (!sourceRun || seen.has(sourceRun.nodeId)) continue;
 
       seen.add(sourceRun.nodeId);
@@ -455,14 +789,29 @@ export class WorkflowWorker {
     };
   }
 
-  private hasNodeRun(node: WorkflowNode, nodeRuns: WorkflowNodeRun[]): boolean {
-    return nodeRuns.some((nodeRun) => nodeRun.nodeId === node.id);
+  private hasCurrentNodeRun(workflow: WorkflowDefinition, node: WorkflowNode, nodeRuns: WorkflowNodeRun[]): boolean {
+    if (node.type === "loop") {
+      const latestLoopRun = this.findLatestNodeRunWithIndex(nodeRuns, node.id);
+      if (!latestLoopRun) return false;
+      return !this.hasSatisfiedIncomingAfter(workflow, node, nodeRuns, latestLoopRun.index);
+    }
+
+    const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
+    return nodeRuns.some((nodeRun, index) => nodeRun.nodeId === node.id && this.isAfterRequiredIndex(index, requiredAfterIndex));
   }
 
-  private hasTerminalNodeRun(node: WorkflowNode, nodeRuns: WorkflowNodeRun[]): boolean {
+  private hasCurrentTerminalNodeRun(workflow: WorkflowDefinition, node: WorkflowNode, nodeRuns: WorkflowNodeRun[]): boolean {
+    if (node.type === "loop") {
+      const latestLoopRun = this.findLatestNodeRunWithIndex(nodeRuns, node.id);
+      if (!latestLoopRun) return false;
+      return this.isTerminalStatus(latestLoopRun.nodeRun.status) && !this.hasSatisfiedIncomingAfter(workflow, node, nodeRuns, latestLoopRun.index);
+    }
+
+    const requiredAfterIndex = this.getRequiredAfterIndex(workflow, node, nodeRuns);
     return nodeRuns.some(
-      (nodeRun) =>
+      (nodeRun, index) =>
         nodeRun.nodeId === node.id &&
+        this.isAfterRequiredIndex(index, requiredAfterIndex) &&
         ["succeeded", "failed", "cancelled", "skipped"].includes(nodeRun.status)
     );
   }
@@ -475,16 +824,86 @@ export class WorkflowWorker {
     return this.isWorkflowStep(node) && !node.disabled;
   }
 
+  private isManagedParticipant(workflow: WorkflowDefinition, node: WorkflowNode): boolean {
+    return workflow.edges.some((edge) => {
+      if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
+      const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
+      return source?.type === "manager";
+    });
+  }
+
+  private getSchedulingIncomingEdges(workflow: WorkflowDefinition, node: WorkflowNode): WorkflowEdge[] {
+    return workflow.edges.filter((edge) => {
+      if (edge.target !== node.id) return false;
+      if (node.type === "manager" && edge.targetHandle?.startsWith(managerInHandlePrefix)) return false;
+
+      const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
+      if (source?.type === "loop") return false;
+      return true;
+    });
+  }
+
+  private getUpstreamIncomingEdges(workflow: WorkflowDefinition, node: WorkflowNode): WorkflowEdge[] {
+    return workflow.edges.filter((edge) => {
+      if (edge.target !== node.id) return false;
+      return !(node.type === "manager" && edge.targetHandle?.startsWith(managerInHandlePrefix));
+    });
+  }
+
+  private findLatestNodeRun(
+    nodeRuns: WorkflowNodeRun[],
+    nodeId: string,
+    status?: WorkflowNodeRun["status"],
+    requiredAfterIndex?: number
+  ): WorkflowNodeRun | undefined {
+    for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
+      const nodeRun = nodeRuns[index]!;
+      if (nodeRun.nodeId !== nodeId) continue;
+      if (!this.isAfterRequiredIndex(index, requiredAfterIndex)) continue;
+      if (status && nodeRun.status !== status) continue;
+      return nodeRun;
+    }
+    return undefined;
+  }
+
+  private findLatestNodeRunWithIndex(
+    nodeRuns: WorkflowNodeRun[],
+    nodeId: string,
+    status?: WorkflowNodeRun["status"]
+  ): { nodeRun: WorkflowNodeRun; index: number } | undefined {
+    for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
+      const nodeRun = nodeRuns[index]!;
+      if (nodeRun.nodeId !== nodeId) continue;
+      if (status && nodeRun.status !== status) continue;
+      return { nodeRun, index };
+    }
+    return undefined;
+  }
+
+  private findLatestTerminalNodeRunWithIndex(
+    nodeRuns: WorkflowNodeRun[],
+    nodeId: string
+  ): { nodeRun: WorkflowNodeRun; index: number } | undefined {
+    for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
+      const nodeRun = nodeRuns[index]!;
+      if (nodeRun.nodeId !== nodeId) continue;
+      if (!this.isTerminalStatus(nodeRun.status)) continue;
+      return { nodeRun, index };
+    }
+    return undefined;
+  }
+
   private resolveIncomingEdgeState(
     workflow: WorkflowDefinition,
     edge: WorkflowEdge,
-    nodeRuns: WorkflowNodeRun[]
+    nodeRuns: WorkflowNodeRun[],
+    requiredAfterIndex?: number
   ): IncomingEdgeState {
     const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
     if (!source) return "blocked";
     if (!this.isWorkflowStep(source)) return "satisfied";
 
-    const sourceRun = nodeRuns.find((candidate) => candidate.nodeId === source.id);
+    const sourceRun = this.findLatestNodeRun(nodeRuns, source.id, undefined, requiredAfterIndex);
     if (!sourceRun) return "pending";
     if (!this.isTerminalStatus(sourceRun.status)) return "pending";
 
@@ -583,4 +1002,50 @@ export class WorkflowWorker {
       openclawRef
     });
   }
+}
+
+function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function readOutputRecord(output: unknown): Record<string, unknown> | undefined {
+  if (isRecord(output)) return output;
+  if (typeof output !== "string") return undefined;
+
+  const trimmed = output.trim();
+  if (!trimmed) return undefined;
+
+  const candidates = [trimmed];
+  const firstBrace = trimmed.indexOf("{");
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Keep trying the next candidate.
+    }
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readInteger(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.round(value);
+  if (typeof value !== "string") return undefined;
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

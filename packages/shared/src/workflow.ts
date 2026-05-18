@@ -3,6 +3,8 @@ import type { OpenClawObjectRef, OpenClawUsageFact } from "./openclaw";
 export type WorkflowNodeType =
   | "agent"
   | "parallel_agents"
+  | "manager"
+  | "loop"
   | "condition"
   | "summary"
   | "approval"
@@ -50,6 +52,16 @@ export interface ParallelAgentsNodeConfig extends WorkflowNodeBaseConfig {
   waitFor: "all" | "first_success";
 }
 
+export interface ManagerNodeConfig extends WorkflowNodeBaseConfig {
+  portCount: number;
+  maxHandoffs: number;
+  instructions?: string;
+}
+
+export interface LoopNodeConfig extends WorkflowNodeBaseConfig {
+  maxIterations: number;
+}
+
 export interface ConditionNodeConfig extends WorkflowNodeBaseConfig {
   expression: string;
 }
@@ -82,6 +94,8 @@ export interface GroupNodeConfig extends WorkflowNodeBaseConfig {
 export type WorkflowNodeConfig =
   | AgentNodeConfig
   | ParallelAgentsNodeConfig
+  | ManagerNodeConfig
+  | LoopNodeConfig
   | ConditionNodeConfig
   | SummaryNodeConfig
   | ApprovalNodeConfig
@@ -101,6 +115,8 @@ export interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
   label?: string;
   condition?: "true" | "false" | "success" | "failure";
 }

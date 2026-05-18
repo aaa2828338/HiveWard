@@ -44,6 +44,8 @@ export interface Messages {
     approvalOwner: string;
     conditionLabel: string;
     groupLabel: string;
+    loopLabel: string;
+    managerLabel: string;
     noteBody: string;
     noteLabel: string;
     parallelAgentsLabel: string;
@@ -195,6 +197,8 @@ export const messages: Record<Language, Messages> = {
       approvalOwner: "Owner",
       conditionLabel: "Condition",
       groupLabel: "Group",
+      loopLabel: "Loop",
+      managerLabel: "Manager",
       noteBody: "Capture why this run matters, what changed, or what still needs review.",
       noteLabel: "Note",
       parallelAgentsLabel: "Parallel agents",
@@ -287,6 +291,8 @@ export const messages: Record<Language, Messages> = {
       approval: "Approval",
       condition: "Condition",
       group: "Group",
+      loop: "Loop",
+      manager: "Manager",
       note: "Note",
       parallel_agents: "Parallel agents",
       send: "Send",
@@ -413,6 +419,8 @@ export const messages: Record<Language, Messages> = {
       approvalOwner: "负责人",
       conditionLabel: "条件",
       groupLabel: "分组",
+      loopLabel: "循环",
+      managerLabel: "Manager",
       noteBody: "记录这次运行为什么重要、发生了什么变化，或还需要谁复核。",
       noteLabel: "备注",
       parallelAgentsLabel: "并行代理",
@@ -504,6 +512,8 @@ export const messages: Record<Language, Messages> = {
       approval: "人工审批",
       condition: "条件",
       group: "分组",
+      loop: "循环",
+      manager: "Manager",
       note: "备注",
       parallel_agents: "并行代理",
       send: "发送",

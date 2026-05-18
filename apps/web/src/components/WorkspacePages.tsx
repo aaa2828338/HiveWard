@@ -14,6 +14,8 @@ import type {
   WorkspaceTag,
   WorkflowDefinition,
   WorkflowNode,
+  WorkflowNodeEvent,
+  WorkflowNodeRun,
   WorkflowNodeRunStatus,
   WorkflowRunStatus,
   WorkflowRunView
@@ -23,6 +25,17 @@ import type { Language, Messages } from "../lib/i18n";
 import { appSections, type AppSectionId } from "../lib/app-sections";
 
 const runStatuses: WorkflowRunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "waiting_approval"];
+
+type TraceIssue = {
+  key: string;
+  index: number;
+  label: string;
+  node?: WorkflowNode;
+  nodeRun?: WorkflowNodeRun;
+  issueStatus: "completed" | "in_progress" | "pending";
+  outputPreview: string;
+  events: WorkflowNodeEvent[];
+};
 
 export function CompanyPage({
   companies,
@@ -192,33 +205,50 @@ export function RunsPage({
     [runs, workflow]
   );
   const activeRun = workflowRuns.find((runView) => runView.run.id === selectedRunId) ?? workflowRuns[0];
-  const [activeIssueNodeId, setActiveIssueNodeId] = useState<string | undefined>();
+  const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
   const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
 
-  const issues = useMemo(() => {
-    const nodeRunsById = new Map(activeRun?.nodeRuns.map((nodeRun) => [nodeRun.nodeId, nodeRun]) ?? []);
+  const issues = useMemo<TraceIssue[]>(() => {
+    const events = activeRun?.events ?? [];
+    if (activeRun?.nodeRuns.length) {
+      return activeRun.nodeRuns.map((nodeRun, index) => {
+        const node = workflow?.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+        const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
+        return {
+          key: nodeRun.id,
+          index: index + 1,
+          label,
+          node,
+          nodeRun,
+          issueStatus: toIssueStatus(nodeRun.status),
+          outputPreview: summarizeOutput(nodeRun.output),
+          events: events.filter((event) => event.nodeRunId === nodeRun.id)
+        };
+      });
+    }
+
     return orderedNodes.map((node, index) => {
-      const nodeRun = nodeRunsById.get(node.id);
       return {
+        key: `node:${node.id}`,
         index: index + 1,
+        label: node.config.label,
         node,
-        nodeRun,
-        issueStatus: toIssueStatus(nodeRun?.status),
-        outputPreview: summarizeOutput(nodeRun?.output),
-        events: (activeRun?.events ?? []).filter((event) => event.nodeRunId === nodeRun?.id)
+        issueStatus: "pending",
+        outputPreview: summarizeOutput(undefined),
+        events: []
       };
     });
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes]);
+  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, workflow?.nodes]);
 
   const activeIssue =
-    issues.find((issue) => issue.node.id === activeIssueNodeId) ??
+    issues.find((issue) => issue.key === activeIssueKey) ??
     issues.find((issue) => issue.nodeRun) ??
     issues[0];
 
   useEffect(() => {
-    if (activeIssueNodeId && issues.some((issue) => issue.node.id === activeIssueNodeId)) return;
-    setActiveIssueNodeId((issues.find((issue) => issue.nodeRun) ?? issues[0])?.node.id);
-  }, [activeIssueNodeId, issues]);
+    if (activeIssueKey && issues.some((issue) => issue.key === activeIssueKey)) return;
+    setActiveIssueKey((issues.find((issue) => issue.nodeRun) ?? issues[0])?.key);
+  }, [activeIssueKey, issues]);
 
   return (
     <section className="page-grid trace-page-grid">
@@ -265,15 +295,15 @@ export function RunsPage({
             ) : (
               issues.map((issue) => (
                 <button
-                  key={issue.node.id}
+                  key={issue.key}
                   type="button"
-                  className={`trace-issue-card ${activeIssue?.node.id === issue.node.id ? "selected" : ""}`}
-                  onClick={() => setActiveIssueNodeId(issue.node.id)}
+                  className={`trace-issue-card ${activeIssue?.key === issue.key ? "selected" : ""}`}
+                  onClick={() => setActiveIssueKey(issue.key)}
                 >
                   <div className="trace-issue-index">{issue.index}</div>
                   <div className="trace-issue-main">
                     <div className="trace-issue-topline">
-                      <strong>{issue.node.config.label}</strong>
+                      <strong>{issue.label}</strong>
                       <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus)}</span>
                     </div>
                     <span>{issue.outputPreview}</span>
@@ -290,7 +320,7 @@ export function RunsPage({
               <div className="trace-column-header">
                 <div>
                   <h3>Model output</h3>
-                  <p>{`Current issue: ${activeIssue.node.config.label}`}</p>
+                  <p>{`Current issue: ${activeIssue.label}`}</p>
                 </div>
               </div>
               <div className="trace-output-stream">
@@ -302,7 +332,7 @@ export function RunsPage({
                   <TraceBubble key={event.id} role="system" title={t.events[event.type]} body={event.message} />
                 ))}
                 {activeIssue.nodeRun?.output !== undefined ? (
-                  <TraceBubble role="assistant" title={activeIssue.node.config.label} body={formatOutput(activeIssue.nodeRun.output)} />
+                  <TraceBubble role="assistant" title={activeIssue.label} body={formatOutput(activeIssue.nodeRun.output)} />
                 ) : activeIssue.nodeRun?.error ? (
                   <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
                 ) : (
