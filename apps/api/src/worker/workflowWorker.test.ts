@@ -249,6 +249,85 @@ describe("WorkflowWorker", () => {
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["product", "dev", "test", "dev", "test"]);
   });
 
+  it("lets a manager route work to a nested manager", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = createWorkflow(
+      [
+        {
+          id: "parent-manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Parent Manager",
+            portCount: 2,
+            maxHandoffs: 3,
+            instructions: "Delegate to the child manager, then run the parent slot."
+          }
+        },
+        {
+          id: "child-manager",
+          type: "manager",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Child Manager",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Run the implementation slot."
+          }
+        },
+        createAgentNode("implementation", "Implementation", { x: 760, y: 180 }),
+        {
+          id: "parent-slot-2",
+          type: "manager_slot",
+          position: { x: 420, y: 420 },
+          config: {
+            label: "Slot 2",
+            managerNodeId: "parent-manager",
+            slot: 2
+          }
+        },
+        {
+          ...createAgentNode("parent-followup", "Parent Followup", { x: 120, y: 100 }),
+          parentId: "parent-slot-2"
+        }
+      ],
+      [
+        { id: "parent-child", source: "parent-manager", sourceHandle: "manager-out-1", target: "child-manager", condition: "success" },
+        { id: "child-parent", source: "child-manager", target: "parent-manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "child-implementation", source: "child-manager", sourceHandle: "manager-out-1", target: "implementation", condition: "success" },
+        { id: "implementation-child", source: "implementation", target: "child-manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "parent-slot-2-out", source: "parent-manager", sourceHandle: "manager-out-2", target: "parent-slot-2", targetHandle: "manager-slot-in", condition: "success" },
+        { id: "parent-slot-2-in", source: "parent-slot-2", sourceHandle: "manager-slot-out", target: "parent-manager", targetHandle: "manager-in-2", condition: "success" },
+        { id: "parent-slot-2-start", source: "parent-slot-2", sourceHandle: "manager-slot-inner-out", target: "parent-followup", condition: "success" },
+        { id: "parent-slot-2-finish", source: "parent-followup", target: "parent-slot-2", targetHandle: "manager-slot-inner-in", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "complete", result: "implemented" })),
+      createCompletedAgentTask("task-2", "succeeded", JSON.stringify({ status: "complete", result: "parent followup complete" }))
+    ]);
+    const worker = new WorkflowWorker(store, adapter);
+
+    const run = await worker.startRun(workflow, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "parent-manager")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "child-manager")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "implementation")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "parent-slot-2")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "parent-followup")?.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["implementation", "parent-followup"]);
+    expect((adapter.calls[0]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("parent-manager");
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("parent-slot-2");
+  });
+
   it("executes a manager slot box as a nested workflow and returns its output to the manager", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
     const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
@@ -274,7 +353,7 @@ describe("WorkflowWorker", () => {
           config: {
             label: "Slot 1",
             managerNodeId: "manager",
-            slot: 1
+            slot: 99
           }
         },
         {
@@ -307,6 +386,47 @@ describe("WorkflowWorker", () => {
     });
     expect(adapter.calls[0]?.agentName).toBe("slot-agent");
     expect((adapter.calls[0]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("manager-slot-1");
+    expect(
+      (
+        (adapter.calls[0]?.input as { upstream?: Array<{ output?: { manager?: { slot?: number } } }> }).upstream?.[0]?.output
+      )?.manager?.slot
+    ).toBe(1);
+  });
+
+  it("does not treat unassigned manager slot boxes as global start nodes", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = createWorkflow(
+      [
+        createAgentNode("brief", "Brief"),
+        {
+          id: "unassigned-slot",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Slot 1",
+            managerNodeId: "",
+            slot: 1
+          }
+        }
+      ],
+      []
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "brief ready")
+    ]);
+    const worker = new WorkflowWorker(store, adapter);
+
+    const run = await worker.startRun(workflow, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "unassigned-slot")).toBe(false);
   });
 
   it("runs the manager-driven HTML delivery example through all slot boxes", async () => {

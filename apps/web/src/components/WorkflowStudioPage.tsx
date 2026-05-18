@@ -57,6 +57,7 @@ const nodeTypes = {
 const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
   { type: "manager", icon: Network },
+  { type: "manager_slot", icon: Network },
   { type: "loop", icon: Repeat2 },
   { type: "condition", icon: GitBranch },
   { type: "summary", icon: MessagesSquare },
@@ -70,6 +71,18 @@ const managerSlotInHandle = "manager-slot-in";
 const managerSlotOutHandle = "manager-slot-out";
 const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
+const maxManagerPortCount = 8;
+const workflowStepTypes = new Set<WorkflowNodeType>([
+  "agent",
+  "parallel_agents",
+  "manager",
+  "manager_slot",
+  "loop",
+  "condition",
+  "summary",
+  "approval",
+  "send"
+]);
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 
@@ -145,8 +158,6 @@ export function WorkflowStudioPage({
       onUpdateWorkflow((current) => (current.id === workflow.id ? ensureUniqueWorkflowNodeIds(current) : current));
       return;
     }
-    if (!needsManagerSlotSync(workflow)) return;
-    onUpdateWorkflow((current) => (current.id === workflow.id ? syncAllManagerSlotBoxes(current) : current));
   }, [onUpdateWorkflow, workflow]);
 
   const patchNodeConfig = useCallback(
@@ -166,8 +177,7 @@ export function WorkflowStudioPage({
               : node
           )
         };
-        const patchedNode = next.nodes.find((node) => node.id === nodeId);
-        return patchedNode?.type === "manager" ? syncManagerSlotBoxes(next, patchedNode) : next;
+        return next;
       });
     },
     [onUpdateWorkflow]
@@ -206,22 +216,7 @@ export function WorkflowStudioPage({
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
       onUpdateWorkflow((current) => {
-        if (
-          current.edges.some(
-            (edge) =>
-              edge.source === connection.source &&
-              edge.target === connection.target &&
-              edge.sourceHandle === connection.sourceHandle &&
-              edge.targetHandle === connection.targetHandle
-          )
-        ) {
-          return current;
-        }
-
-        return {
-          ...current,
-          edges: [...current.edges, createWorkflowEdge(current, connection)]
-        };
+        return connectWorkflowNodes(current, connection);
       });
     },
     [onUpdateWorkflow]
@@ -233,6 +228,9 @@ export function WorkflowStudioPage({
         const workflowWithUniqueIds = ensureUniqueWorkflowNodeIds(current);
         const selectedSlot =
           selectedNodeId ? workflowWithUniqueIds.nodes.find((node) => node.id === selectedNodeId && node.type === "manager_slot") : undefined;
+        if (type === "manager_slot") {
+          return addManagerSlotFromMenu(workflowWithUniqueIds, selectedNodeId, t);
+        }
         const shouldNest = Boolean(selectedSlot && type !== "manager");
         const id = nextWorkflowNodeId(workflowWithUniqueIds, type, shouldNest ? selectedSlot?.id : undefined);
         const node: WorkflowNode = {
@@ -248,7 +246,7 @@ export function WorkflowStudioPage({
           ...workflowWithUniqueIds,
           nodes: [...workflowWithUniqueIds.nodes, node]
         };
-        return type === "manager" ? syncManagerSlotBoxes(next, node) : next;
+        return next;
       });
       setNodeMenuOpen(false);
     },
@@ -1320,134 +1318,231 @@ function clampPositionToExtent(position: CanvasPosition, extent: CoordinateExten
   };
 }
 
-function syncManagerSlotBoxes(workflow: WorkflowDefinition, managerNode: WorkflowNode): WorkflowDefinition {
-  const config = managerNode.config as ManagerNodeConfig;
-  const portCount = clampNumber(config.portCount, 1, 8, 3);
-  const slotIds = new Set(Array.from({ length: portCount }, (_item, index) => managerSlotNodeId(managerNode.id, index + 1)));
-  const removedSlotIds = new Set(
-    workflow.nodes
-      .filter((node) => node.type === "manager_slot" && (node.config as ManagerSlotNodeConfig).managerNodeId === managerNode.id && !slotIds.has(node.id))
-      .map((node) => node.id)
-  );
-  const deleteIds = collectDeletedNodeIds(workflow, removedSlotIds);
-  const retainedNodes = workflow.nodes.filter((node) => !deleteIds.has(node.id));
-  const nodesById = new Map(retainedNodes.map((node) => [node.id, node]));
-  const nodes = [...retainedNodes];
+function addManagerSlotFromMenu(workflow: WorkflowDefinition, selectedNodeId: string | undefined, t: Messages): WorkflowDefinition {
+  const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) : undefined;
+  const selectedSlot = selectedNode?.type === "manager_slot" ? selectedNode : undefined;
+  const selectedManager =
+    selectedNode?.type === "manager"
+      ? selectedNode
+      : selectedSlot
+        ? workflow.nodes.find((node) => node.id === (selectedSlot.config as ManagerSlotNodeConfig).managerNodeId && node.type === "manager")
+        : undefined;
+  const assignableSlot = selectedManager ? nextAvailableManagerSlot(workflow, selectedManager) : undefined;
+  const slot = assignableSlot ?? nextManagerSlotNumber(workflow);
+  const position = selectedSlot
+    ? { x: selectedSlot.position.x + 44, y: selectedSlot.position.y + 44 }
+    : selectedManager
+      ? { x: selectedManager.position.x + 360, y: selectedManager.position.y + (slot - 1) * 340 }
+      : { x: 180 + workflow.nodes.length * 42, y: 188 + workflow.nodes.length * 22 };
+  const node: WorkflowNode = {
+    id: nextWorkflowNodeId(workflow, "manager_slot"),
+    type: "manager_slot",
+    position,
+    size: MANAGER_SLOT_DEFAULT_SIZE,
+    config: {
+      ...defaultConfig("manager_slot", t),
+      label: `Slot ${slot}`,
+      managerNodeId: selectedManager?.id ?? "",
+      slot
+    } as WorkflowNode["config"]
+  };
+  const workflowWithSlot = {
+    ...workflow,
+    nodes: [...workflow.nodes, node]
+  };
+  if (!selectedManager || assignableSlot === undefined) return workflowWithSlot;
+  return applyManagerSlotAssignment(workflowWithSlot, {
+    managerNode: selectedManager,
+    slotNode: node,
+    slot: assignableSlot
+  });
+}
 
-  for (let slot = 1; slot <= portCount; slot += 1) {
-    const id = managerSlotNodeId(managerNode.id, slot);
-    const existing = nodesById.get(id);
-    if (existing) {
-      const existingIndex = nodes.findIndex((node) => node.id === id);
-      nodes[existingIndex] = {
-        ...existing,
-        config: {
-          ...existing.config,
-          label: `Slot ${slot}`,
-          managerNodeId: managerNode.id,
-          slot
-        } as WorkflowNode["config"]
-      };
-      continue;
+function nextManagerSlotNumber(workflow: WorkflowDefinition): number {
+  return workflow.nodes
+    .filter((node) => node.type === "manager_slot")
+    .reduce((highest, node) => Math.max(highest, (node.config as ManagerSlotNodeConfig).slot), 0) + 1;
+}
+
+function nextAvailableManagerSlot(workflow: WorkflowDefinition, managerNode: WorkflowNode): number | undefined {
+  const occupied = new Set<number>();
+  const managerId = managerNode.id;
+
+  for (const edge of workflow.edges) {
+    if (edge.source === managerId) {
+      const slot = parseManagerPortHandle(edge.sourceHandle, managerOutHandlePrefix);
+      if (slot !== undefined) occupied.add(slot);
     }
-
-    nodes.push({
-      id,
-      type: "manager_slot",
-      position: {
-        x: managerNode.position.x + 360,
-        y: managerNode.position.y + (slot - 1) * 300
-      },
-      size: MANAGER_SLOT_DEFAULT_SIZE,
-      config: {
-        label: `Slot ${slot}`,
-        managerNodeId: managerNode.id,
-        slot
-      }
-    });
+    if (edge.target === managerId) {
+      const slot = parseManagerPortHandle(edge.targetHandle, managerInHandlePrefix);
+      if (slot !== undefined) occupied.add(slot);
+    }
   }
 
-  const edges = workflow.edges.filter((edge) => {
-    if (deleteIds.has(edge.source) || deleteIds.has(edge.target)) return false;
-    for (let slot = 1; slot <= portCount; slot += 1) {
-      if (edge.source === managerNode.id && edge.sourceHandle === `${managerOutHandlePrefix}${slot}`) return false;
-      if (edge.target === managerNode.id && edge.targetHandle === `${managerInHandlePrefix}${slot}`) return false;
+  for (const node of workflow.nodes) {
+    if (node.type !== "manager_slot") continue;
+    const config = node.config as ManagerSlotNodeConfig;
+    if (config.managerNodeId === managerId && config.slot >= 1 && config.slot <= maxManagerPortCount) {
+      occupied.add(config.slot);
     }
-    return true;
-  });
+  }
 
-  for (let slot = 1; slot <= portCount; slot += 1) {
-    const slotNodeId = managerSlotNodeId(managerNode.id, slot);
-    edges.push({
-      id: managerToSlotEdgeId(managerNode.id, slot),
-      source: managerNode.id,
-      sourceHandle: `${managerOutHandlePrefix}${slot}`,
-      target: slotNodeId,
-      targetHandle: managerSlotInHandle,
-      condition: "success"
-    });
-    edges.push({
-      id: slotToManagerEdgeId(managerNode.id, slot),
-      source: slotNodeId,
-      sourceHandle: managerSlotOutHandle,
-      target: managerNode.id,
-      targetHandle: `${managerInHandlePrefix}${slot}`,
-      condition: "success"
-    });
+  for (let slot = 1; slot <= maxManagerPortCount; slot += 1) {
+    if (!occupied.has(slot)) return slot;
+  }
+  return undefined;
+}
+
+function connectWorkflowNodes(workflow: WorkflowDefinition, connection: Connection): WorkflowDefinition {
+  const assignment = readManagerSlotConnection(workflow, connection);
+  if (assignment) {
+    return applyManagerSlotAssignment(workflow, assignment);
+  }
+  if (
+    workflow.edges.some(
+      (edge) =>
+        edge.source === connection.source &&
+        edge.target === connection.target &&
+        edge.sourceHandle === connection.sourceHandle &&
+        edge.targetHandle === connection.targetHandle
+    )
+  ) {
+    return workflow;
   }
 
   return {
     ...workflow,
-    nodes,
-    edges
+    edges: [...workflow.edges, createWorkflowEdge(workflow, connection)]
   };
 }
 
-function syncAllManagerSlotBoxes(workflow: WorkflowDefinition): WorkflowDefinition {
-  return workflow.nodes
-    .filter((node) => node.type === "manager")
-    .reduce((current, managerNode) => {
-      const latestManager = current.nodes.find((node) => node.id === managerNode.id);
-      return latestManager ? syncManagerSlotBoxes(current, latestManager) : current;
-    }, workflow);
+function readManagerSlotConnection(
+  workflow: WorkflowDefinition,
+  connection: Connection
+): { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number } | undefined {
+  if (!connection.source || !connection.target) return undefined;
+  const source = workflow.nodes.find((node) => node.id === connection.source);
+  const target = workflow.nodes.find((node) => node.id === connection.target);
+
+  if (source?.type === "manager" && target?.type === "manager_slot" && connection.targetHandle === managerSlotInHandle) {
+    const slot = parseManagerPortHandle(connection.sourceHandle, managerOutHandlePrefix);
+    return slot === undefined ? undefined : { managerNode: source, slotNode: target, slot };
+  }
+
+  if (source?.type === "manager_slot" && target?.type === "manager" && connection.sourceHandle === managerSlotOutHandle) {
+    const slot = parseManagerPortHandle(connection.targetHandle, managerInHandlePrefix);
+    return slot === undefined ? undefined : { managerNode: target, slotNode: source, slot };
+  }
+
+  return undefined;
 }
 
-function needsManagerSlotSync(workflow: WorkflowDefinition): boolean {
-  for (const managerNode of workflow.nodes.filter((node) => node.type === "manager")) {
-    const portCount = clampNumber((managerNode.config as ManagerNodeConfig).portCount, 1, 8, 3);
-    const managerSlots = workflow.nodes.filter(
-      (node) => node.type === "manager_slot" && (node.config as ManagerSlotNodeConfig).managerNodeId === managerNode.id
-    );
-    if (managerSlots.some((node) => (node.config as ManagerSlotNodeConfig).slot > portCount)) return true;
-
-    for (let slot = 1; slot <= portCount; slot += 1) {
-      const slotNodeId = managerSlotNodeId(managerNode.id, slot);
-      if (!workflow.nodes.some((node) => node.id === slotNodeId && node.type === "manager_slot")) return true;
-      if (!workflow.edges.some((edge) => edge.id === managerToSlotEdgeId(managerNode.id, slot))) return true;
-      if (!workflow.edges.some((edge) => edge.id === slotToManagerEdgeId(managerNode.id, slot))) return true;
-      if (
-        workflow.edges.some(
-          (edge) =>
-            edge.source === managerNode.id &&
-            edge.sourceHandle === `${managerOutHandlePrefix}${slot}` &&
-            (edge.target !== slotNodeId || edge.targetHandle !== managerSlotInHandle)
-        )
-      ) {
-        return true;
-      }
-      if (
-        workflow.edges.some(
-          (edge) =>
-            edge.target === managerNode.id &&
-            edge.targetHandle === `${managerInHandlePrefix}${slot}` &&
-            (edge.source !== slotNodeId || edge.sourceHandle !== managerSlotOutHandle)
-        )
-      ) {
-        return true;
-      }
+function applyManagerSlotAssignment(
+  workflow: WorkflowDefinition,
+  assignment: { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number }
+): WorkflowDefinition {
+  const { managerNode, slotNode, slot } = assignment;
+  const boundedSlot = Math.min(maxManagerPortCount, Math.max(1, Math.round(slot)));
+  const outHandle = `${managerOutHandlePrefix}${boundedSlot}`;
+  const inHandle = `${managerInHandlePrefix}${boundedSlot}`;
+  const edges = workflow.edges.filter(
+    (edge) =>
+      !isManagerSlotAssignmentEdge(edge, slotNode.id) &&
+      !(edge.source === managerNode.id && edge.sourceHandle === outHandle) &&
+      !(edge.target === managerNode.id && edge.targetHandle === inHandle)
+  );
+  const nextEdges = appendWorkflowEdge(
+    appendWorkflowEdge(edges, {
+      id: nextWorkflowEdgeId(edges, `edge-${managerNode.id}-${slotNode.id}-slot-${boundedSlot}-out`),
+      source: managerNode.id,
+      sourceHandle: outHandle,
+      target: slotNode.id,
+      targetHandle: managerSlotInHandle,
+      condition: "success"
+    }),
+    {
+      id: nextWorkflowEdgeId(edges, `edge-${slotNode.id}-${managerNode.id}-slot-${boundedSlot}-return`),
+      source: slotNode.id,
+      sourceHandle: managerSlotOutHandle,
+      target: managerNode.id,
+      targetHandle: inHandle,
+      condition: "success"
     }
+  );
+
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node) => {
+      if (node.id === managerNode.id && node.type === "manager") {
+        const config = node.config as ManagerNodeConfig;
+        const portCount = typeof config.portCount === "number" && Number.isFinite(config.portCount) ? config.portCount : 3;
+        return {
+          ...node,
+          config: {
+            ...config,
+            portCount: Math.min(maxManagerPortCount, Math.max(portCount, boundedSlot))
+          }
+        };
+      }
+      if (node.id !== slotNode.id || node.type !== "manager_slot") return node;
+      const config = node.config as ManagerSlotNodeConfig;
+      return {
+        ...node,
+        config: {
+          ...config,
+          label: shouldRenameManagerSlot(config.label) ? `Slot ${boundedSlot}` : config.label,
+          managerNodeId: managerNode.id,
+          slot: boundedSlot
+        }
+      };
+    }),
+    edges: nextEdges
+  };
+}
+
+function appendWorkflowEdge(edges: WorkflowEdge[], edge: WorkflowEdge): WorkflowEdge[] {
+  if (
+    edges.some(
+      (item) =>
+        item.source === edge.source &&
+        item.target === edge.target &&
+        item.sourceHandle === edge.sourceHandle &&
+        item.targetHandle === edge.targetHandle
+    )
+  ) {
+    return edges;
   }
-  return false;
+  return [...edges, edge];
+}
+
+function isManagerSlotAssignmentEdge(edge: WorkflowEdge, slotNodeId: string): boolean {
+  if (edge.target === slotNodeId && edge.targetHandle === managerSlotInHandle && edge.sourceHandle?.startsWith(managerOutHandlePrefix)) {
+    return true;
+  }
+  return Boolean(edge.source === slotNodeId && edge.sourceHandle === managerSlotOutHandle && edge.targetHandle?.startsWith(managerInHandlePrefix));
+}
+
+function parseManagerPortHandle(handle: string | null | undefined, prefix: string): number | undefined {
+  if (!handle?.startsWith(prefix)) return undefined;
+  const parsed = Number.parseInt(handle.slice(prefix.length), 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > maxManagerPortCount) return undefined;
+  return parsed;
+}
+
+function shouldRenameManagerSlot(label: string | undefined): boolean {
+  return !label || label === "Slot" || /^Slot \d+$/i.test(label);
+}
+
+function nextWorkflowEdgeId(edges: WorkflowEdge[], baseId: string): string {
+  const used = new Set(edges.map((edge) => edge.id));
+  if (!used.has(baseId)) return baseId;
+  let index = 2;
+  let id = `${baseId}-${index}`;
+  while (used.has(id)) {
+    index += 1;
+    id = `${baseId}-${index}`;
+  }
+  return id;
 }
 
 function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string>): Set<string> {
@@ -1473,23 +1568,6 @@ function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string
     }
   }
   return deleteIds;
-}
-
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function managerSlotNodeId(managerNodeId: string, slot: number): string {
-  return `${managerNodeId}-slot-${slot}`;
-}
-
-function managerToSlotEdgeId(managerNodeId: string, slot: number): string {
-  return `edge-${managerNodeId}-slot-${slot}-out`;
-}
-
-function slotToManagerEdgeId(managerNodeId: string, slot: number): string {
-  return `edge-${managerNodeId}-slot-${slot}-return`;
 }
 
 function buildFlowNodes(
@@ -1519,12 +1597,53 @@ function buildFlowNodes(
         status,
         statusLabel: t.status[status ?? "idle"],
         disabled: node.disabled,
+        isStartNode: isWorkflowStartNode(workflow, node, nodesById),
         managerPortCount:
           node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
         managerSlot: node.type === "manager_slot" ? (node.config as ManagerSlotNodeConfig).slot : undefined,
         managerSlotSize
       }
     };
+  });
+}
+
+function isWorkflowStartNode(
+  workflow: WorkflowDefinition | undefined,
+  node: WorkflowNode,
+  nodesById: Map<string, WorkflowNode>
+): boolean {
+  if (!workflow || !isGlobalSchedulingNode(workflow, node, nodesById)) return false;
+  return getSchedulingIncomingEdges(workflow, node, nodesById).length === 0;
+}
+
+function isGlobalSchedulingNode(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+  nodesById: Map<string, WorkflowNode>
+): boolean {
+  return workflowStepTypes.has(node.type) && node.type !== "manager_slot" && !node.parentId && !isManagedParticipantNode(workflow, node, nodesById);
+}
+
+function isManagedParticipantNode(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+  nodesById: Map<string, WorkflowNode>
+): boolean {
+  return workflow.edges.some((edge) => {
+    if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
+    return nodesById.get(edge.source)?.type === "manager";
+  });
+}
+
+function getSchedulingIncomingEdges(
+  workflow: WorkflowDefinition,
+  node: WorkflowNode,
+  nodesById: Map<string, WorkflowNode>
+): WorkflowEdge[] {
+  return workflow.edges.filter((edge) => {
+    if (edge.target !== node.id) return false;
+    if (node.type === "manager" && edge.targetHandle?.startsWith(managerInHandlePrefix)) return false;
+    return nodesById.get(edge.source)?.type !== "loop";
   });
 }
 
@@ -1602,7 +1721,7 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
   }
   if (type === "manager_slot") {
     return {
-      label: "Manager slot",
+      label: "Slot",
       managerNodeId: "",
       slot: 1
     };

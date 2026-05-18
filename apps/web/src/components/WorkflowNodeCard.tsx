@@ -22,6 +22,7 @@ export interface WorkflowNodeCardData extends Record<string, unknown> {
   status?: WorkflowNodeRunStatus;
   statusLabel: string;
   disabled?: boolean;
+  isStartNode?: boolean;
   managerPortCount?: number;
   managerSlot?: number;
   managerSlotSize?: CanvasSize;
@@ -43,6 +44,8 @@ const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
 
 const managerPortStart = 122;
 const managerPortGap = 34;
+const managerWorkflowInputTop = 38;
+const managerWorkflowOutputTop = 58;
 export const MANAGER_SLOT_DEFAULT_SIZE: CanvasSize = { width: 560, height: 300 };
 export const MANAGER_SLOT_MIN_SIZE: CanvasSize = { width: 420, height: 260 };
 export const MANAGER_SLOT_FRAME = {
@@ -125,16 +128,24 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
           />
         </>
       ) : nodeData.type === "manager" ? (
-        managerSlots.map((slot, index) => (
+        <>
           <Handle
-            key={`manager-in-${slot}`}
-            id={`manager-in-${slot}`}
-            className="node-handle input-handle manager-slot-handle manager-slot-input-handle"
+            className="node-handle input-handle manager-workflow-handle manager-workflow-input-handle"
             type="target"
-            position={Position.Right}
-            style={managerHandleStyle(index, "input")}
+            position={Position.Left}
+            style={{ top: managerWorkflowInputTop }}
           />
-        ))
+          {managerSlots.map((slot, index) => (
+            <Handle
+              key={`manager-in-${slot}`}
+              id={`manager-in-${slot}`}
+              className="node-handle input-handle manager-slot-handle manager-slot-input-handle"
+              type="target"
+              position={Position.Right}
+              style={managerHandleStyle(index, "input")}
+            />
+          ))}
+        </>
       ) : nodeData.type === "loop" ? (
         <Handle className="node-handle input-handle loop-input-handle" type="target" position={Position.Right} />
       ) : (
@@ -150,6 +161,7 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
       </div>
       <div className="node-label">{nodeData.label}</div>
       <div className="node-kind">{nodeData.kindLabel}</div>
+      {nodeData.isStartNode && <span className="node-start-badge">Start</span>}
       {nodeData.type === "manager_slot" && (
         <div className="manager-slot-box-body" aria-hidden="true">
           <span className="manager-slot-box-tag">{`Slot ${nodeData.managerSlot ?? ""}`}</span>
@@ -169,16 +181,24 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
         </div>
       )}
       {nodeData.type === "manager_slot" ? null : nodeData.type === "manager" ? (
-        managerSlots.map((slot, index) => (
+        <>
           <Handle
-            key={`manager-out-${slot}`}
-            id={`manager-out-${slot}`}
-            className="node-handle output-handle manager-slot-handle manager-slot-output-handle"
+            className="node-handle output-handle manager-workflow-handle manager-workflow-output-handle"
             type="source"
-            position={Position.Right}
-            style={managerHandleStyle(index, "output")}
+            position={Position.Left}
+            style={{ top: managerWorkflowOutputTop }}
           />
-        ))
+          {managerSlots.map((slot, index) => (
+            <Handle
+              key={`manager-out-${slot}`}
+              id={`manager-out-${slot}`}
+              className="node-handle output-handle manager-slot-handle manager-slot-output-handle"
+              type="source"
+              position={Position.Right}
+              style={managerHandleStyle(index, "output")}
+            />
+          ))}
+        </>
       ) : nodeData.type === "loop" ? (
         <Handle className="node-handle output-handle loop-output-handle" type="source" position={Position.Left} />
       ) : (

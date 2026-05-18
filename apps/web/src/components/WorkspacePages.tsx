@@ -217,12 +217,12 @@ export function RunsPage({
 
   const activeIssue =
     issues.find((issue) => issue.key === activeIssueKey) ??
-    issues.find((issue) => issue.nodeRun) ??
+    selectPreferredTraceIssue(issues) ??
     issues[0];
 
   useEffect(() => {
-    if (activeIssueKey && issues.some((issue) => issue.key === activeIssueKey)) return;
-    setActiveIssueKey((issues.find((issue) => issue.nodeRun) ?? issues[0])?.key);
+    if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
+    setActiveIssueKey(undefined);
   }, [activeIssueKey, issues]);
 
   return (
@@ -1333,8 +1333,8 @@ function buildTraceIssues(
       depth: 0,
       node,
       nodeRun,
-      issueStatus: toIssueStatus(nodeRun.status),
-      outputPreview: summarizeOutput(nodeRun.output),
+      issueStatus: toSlotOutputIssueStatus(nodeRun),
+      outputPreview: nodeRun.output === undefined ? "Waiting for nested nodes to finish." : summarizeOutput(nodeRun.output),
       events: slotEvents
     });
     issueIndex += 1;
@@ -1435,6 +1435,21 @@ function toIssueStatus(status?: WorkflowNodeRunStatus): "completed" | "in_progre
   if (status === "running" || status === "waiting_approval") return "in_progress";
   if (status === "succeeded" || status === "skipped") return "completed";
   return "pending";
+}
+
+function toSlotOutputIssueStatus(nodeRun: WorkflowNodeRun): "completed" | "pending" {
+  if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
+  return "pending";
+}
+
+function selectPreferredTraceIssue(issues: TraceIssue[]): TraceIssue | undefined {
+  return (
+    issues.find((issue) => issue.issueStatus === "in_progress" && issue.kind === "node" && issue.node?.type !== "manager") ??
+    issues.find((issue) => issue.issueStatus === "in_progress" && issue.kind === "node") ??
+    issues.find((issue) => issue.issueStatus === "in_progress") ??
+    issues.find((issue) => issue.nodeRun) ??
+    issues[0]
+  );
 }
 
 function labelForIssueStatus(status: "completed" | "in_progress" | "pending"): string {

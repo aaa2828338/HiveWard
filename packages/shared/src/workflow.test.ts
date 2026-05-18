@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDefaultWorkflows, createRealThreeAgentWorkflow, createStarterWorkflow } from "./workflow";
+import { createDefaultWorkflows, createManagerDrivenHtmlWorkflow, createRealThreeAgentWorkflow, createStarterWorkflow } from "./workflow";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
 import { defaultCompanyId } from "./company";
 
@@ -33,10 +33,21 @@ describe("workflow contracts", () => {
     expect(workflow.companyId).toBe(defaultCompanyId);
   });
 
-  it("seeds both default workflows", () => {
+  it("creates a manager-driven HTML delivery workflow", () => {
+    const workflow = createManagerDrivenHtmlWorkflow("2026-05-18T00:00:00.000Z");
+
+    expect(workflow.nodes.map((node) => node.id)).toContain("html-manager");
+    expect(workflow.nodes.filter((node) => node.type === "manager_slot")).toHaveLength(3);
+    expect(workflow.edges.some((edge) => edge.sourceHandle === "manager-slot-inner-out")).toBe(true);
+    expect(workflow.edges.some((edge) => edge.targetHandle === "manager-slot-inner-in")).toBe(true);
+    expect(workflow.companyId).toBe(defaultCompanyId);
+  });
+
+  it("seeds the default workflow set", () => {
     expect(createDefaultWorkflows("2026-05-18T00:00:00.000Z").map((workflow) => workflow.id)).toEqual([
       "starter-workflow",
-      "real-three-agent-workflow"
+      "real-three-agent-workflow",
+      "manager-driven-html-workflow"
     ]);
   });
 

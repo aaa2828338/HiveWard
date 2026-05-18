@@ -158,9 +158,7 @@ export class WorkflowWorker {
       if (readyNodes.length === 0) {
         const pending = workflow.nodes.filter(
           (node) =>
-            this.isWorkflowStep(node) &&
-            !this.isNestedNode(node) &&
-            !this.isManagedParticipant(workflow, node) &&
+            this.isGlobalSchedulingNode(workflow, node) &&
             !this.hasCurrentTerminalNodeRun(workflow, node, nodeRuns)
         );
         if (pending.length === 0) {
@@ -183,8 +181,7 @@ export class WorkflowWorker {
   private findReadyNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
       if (!this.isRunnableNode(node)) return false;
-      if (this.isNestedNode(node)) return false;
-      if (this.isManagedParticipant(workflow, node)) return false;
+      if (!this.isGlobalSchedulingNode(workflow, node)) return false;
       if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
       const incoming = this.getSchedulingIncomingEdges(workflow, node);
@@ -197,9 +194,7 @@ export class WorkflowWorker {
 
   private findSkippableNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
-      if (!this.isWorkflowStep(node)) return false;
-      if (this.isNestedNode(node)) return false;
-      if (this.isManagedParticipant(workflow, node)) return false;
+      if (!this.isGlobalSchedulingNode(workflow, node)) return false;
       if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
       const incoming = this.getSchedulingIncomingEdges(workflow, node);
@@ -378,33 +373,36 @@ export class WorkflowWorker {
     workflow: WorkflowDefinition,
     run: WorkflowRun,
     node: WorkflowNode,
-    nodeRun: WorkflowNodeRun
-  ): Promise<void> {
+    nodeRun: WorkflowNodeRun,
+    upstream?: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+  ): Promise<AgentTaskResult> {
     const config = node.config as ManagerNodeConfig;
     const portCount = normalizeInteger(config.portCount, 1, 8, 3);
     const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
-    const managerUpstream = await this.collectUpstreamOutputs(workflow, run.id, node);
+    const managerUpstream = upstream ?? await this.collectUpstreamOutputs(workflow, run.id, node);
     const trace: ManagerTraceItem[] = [];
     let slot = this.firstConnectedManagerSlot(workflow, node, portCount);
 
     if (!slot) {
-      await this.completeNode(nodeRun, {
+      const output = {
         status: "completed",
         reason: "manager_has_no_connected_slots",
         trace
-      });
-      return;
+      };
+      await this.completeNode(nodeRun, output);
+      return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
     }
 
     for (let handoff = 1; handoff <= maxHandoffs; handoff += 1) {
       const assignment = this.findManagerSlotAssignment(workflow, node, slot);
       if (!assignment) {
-        await this.completeNode(nodeRun, {
+        const output = {
           status: "completed",
           reason: `manager_slot_${slot}_is_not_connected`,
           trace
-        });
-        return;
+        };
+        await this.completeNode(nodeRun, output);
+        return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
       }
 
       if (assignment.target.disabled) {
@@ -420,12 +418,13 @@ export class WorkflowWorker {
         });
         slot += 1;
         if (slot > portCount) {
-          await this.completeNode(nodeRun, {
+          const output = {
             status: "completed",
             reason: "manager_reached_final_slot",
             trace
-          });
-          return;
+          };
+          await this.completeNode(nodeRun, output);
+          return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
         }
         continue;
       }
@@ -459,9 +458,19 @@ export class WorkflowWorker {
       } else if (assignment.target.type === "manager_slot") {
         const slotRun = await this.createRunningNodeRun(workflow, run, assignment.target);
         result = await this.executeManagerSlotNode(workflow, run, assignment.target, slotRun, managerContext);
+      } else if (assignment.target.type === "manager") {
+        const managerRun = await this.createRunningNodeRun(workflow, run, assignment.target);
+        result = await this.executeManagerNode(workflow, run, assignment.target, managerRun, [
+          {
+            nodeId: node.id,
+            nodeLabel: node.config.label,
+            output: managerContext
+          }
+        ]);
       } else {
-        await this.failNode(nodeRun, `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`);
-        return;
+        const error = `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`;
+        await this.failNode(nodeRun, error);
+        return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
       }
 
       const traceItem: ManagerTraceItem = {
@@ -477,25 +486,31 @@ export class WorkflowWorker {
       trace.push(traceItem);
 
       if (result.status !== "succeeded") {
-        await this.failNode(nodeRun, result.error ?? `Manager participant ${assignment.target.config.label} returned ${result.status}.`);
-        return;
+        const error = result.error ?? `Manager participant ${assignment.target.config.label} returned ${result.status}.`;
+        await this.failNode(nodeRun, error);
+        return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
       }
 
-      const decision = this.resolveManagerDecision(result.output, slot, portCount);
+      const decision = this.resolveManagerDecision(result.output, slot, portCount, {
+        ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
+      });
       traceItem.decision = decision;
       if (decision.status === "complete" || !decision.nextSlot) {
-        await this.completeNode(nodeRun, {
+        const output = {
           status: "completed",
           reason: decision.reason ?? "manager_completed",
           trace
-        });
-        return;
+        };
+        await this.completeNode(nodeRun, output);
+        return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
       }
 
       slot = decision.nextSlot;
     }
 
-    await this.failNode(nodeRun, `Manager exceeded max handoffs (${maxHandoffs}).`);
+    const error = `Manager exceeded max handoffs (${maxHandoffs}).`;
+    await this.failNode(nodeRun, error);
+    return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
   }
 
   private async executeManagerSlotNode(
@@ -982,7 +997,12 @@ export class WorkflowWorker {
     return requiredAfterIndex === undefined || index > requiredAfterIndex;
   }
 
-  private resolveManagerDecision(output: unknown, currentSlot: number, portCount: number): ManagerDecision {
+  private resolveManagerDecision(
+    output: unknown,
+    currentSlot: number,
+    portCount: number,
+    options: { ignoreCompletionStatus?: boolean } = {}
+  ): ManagerDecision {
     const record = readOutputRecord(output);
     const explicitSlot =
       readInteger(record?.nextSlot) ??
@@ -992,10 +1012,15 @@ export class WorkflowWorker {
     const status = readString(record?.status)?.toLowerCase();
     const reason = readString(record?.reason) ?? readString(record?.message);
 
-    if (status && ["complete", "completed", "done", "stop", "passed", "pass", "approved"].includes(status) && currentSlot >= portCount) {
+    if (
+      !options.ignoreCompletionStatus &&
+      status &&
+      ["complete", "completed", "done", "stop", "passed", "pass", "approved"].includes(status) &&
+      currentSlot >= portCount
+    ) {
       return { status: "complete", reason };
     }
-    if (status && ["complete", "completed", "done", "stop"].includes(status)) {
+    if (!options.ignoreCompletionStatus && status && ["complete", "completed", "done", "stop"].includes(status)) {
       return { status: "complete", reason };
     }
     if (explicitSlot !== undefined) {
@@ -1154,6 +1179,10 @@ export class WorkflowWorker {
 
   private isRunnableNode(node: WorkflowNode): boolean {
     return this.isWorkflowStep(node) && !node.disabled;
+  }
+
+  private isGlobalSchedulingNode(workflow: WorkflowDefinition, node: WorkflowNode): boolean {
+    return this.isWorkflowStep(node) && node.type !== "manager_slot" && !this.isNestedNode(node) && !this.isManagedParticipant(workflow, node);
   }
 
   private isNestedNode(node: WorkflowNode): boolean {
@@ -1368,6 +1397,13 @@ function readOutputRecord(output: unknown): Record<string, unknown> | undefined 
     }
   }
   return undefined;
+}
+
+function isManagerCompletionEnvelope(output: unknown): boolean {
+  const record = readOutputRecord(output);
+  if (!record) return false;
+  const status = readString(record.status)?.toLowerCase();
+  return status === "completed" && Array.isArray(record.trace);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

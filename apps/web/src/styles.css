@@ -1720,6 +1720,27 @@ dd {
   font-size: 12px;
 }
 
+.node-start-badge {
+  position: absolute;
+  top: -11px;
+  left: 14px;
+  z-index: 3;
+  display: inline-grid;
+  min-width: 48px;
+  height: 22px;
+  place-items: center;
+  border: 1px solid rgb(15 118 110 / 0.22);
+  border-radius: 999px;
+  color: #0f766e;
+  background: #e0f2f1;
+  box-shadow: 0 6px 14px rgb(15 118 110 / 0.14);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .node-handle {
   width: 10px;
   height: 10px;
@@ -1776,6 +1797,18 @@ dd {
 
 .manager-slot-handle {
   z-index: 4;
+}
+
+.manager-workflow-handle {
+  z-index: 4;
+}
+
+.manager-workflow-input-handle {
+  box-shadow: 0 0 0 1px rgb(15 118 110 / 0.24), 0 4px 10px rgb(15 118 110 / 0.16);
+}
+
+.manager-workflow-output-handle {
+  box-shadow: 0 0 0 1px rgb(209 139 69 / 0.24), 0 4px 10px rgb(209 139 69 / 0.16);
 }
 
 .manager-slot-input-handle {
