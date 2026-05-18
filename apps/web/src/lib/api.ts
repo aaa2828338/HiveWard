@@ -1,17 +1,23 @@
 import type {
   CatalogSnapshot,
   CatalogSnapshotResponse,
+  CompanyDirectoryResponse,
+  CreateOpenClawAgentRequest,
   DashboardStateResponse,
   LatestWorkflowRunResponse,
   ListPendingApprovalsResponse,
   ListWorkflowRunViewsResponse,
   ListWorkflowsResponse,
+  OpenClawConfigResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
   SaveDashboardStateRequest,
   SaveWorkflowRequest,
+  SelectCompanyRequest,
   StartWorkflowRunResponse,
+  UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
+  OpenClawConfigState,
   WorkspaceDashboard,
   WorkflowDefinition,
   WorkflowResponse,
@@ -39,6 +45,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async getOpenClawConfig(): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config");
+    return response.config;
+  },
+
+  async updateOpenClawDefaultModel(modelId: string): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/default-model", {
+      method: "PUT",
+      body: JSON.stringify({ modelId } satisfies UpdateOpenClawDefaultModelRequest)
+    });
+    return response.config;
+  },
+
+  async addOpenClawAgent(input: CreateOpenClawAgentRequest): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/agents", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateOpenClawAgentRequest)
+    });
+    return response.config;
+  },
+
+  async listCompanies(): Promise<CompanyDirectoryResponse> {
+    return request<CompanyDirectoryResponse>("/api/companies");
+  },
+
+  async selectCompany(companyId?: string): Promise<CompanyDirectoryResponse> {
+    return request<CompanyDirectoryResponse>("/api/companies/selected", {
+      method: "PUT",
+      body: JSON.stringify({ companyId } satisfies SelectCompanyRequest)
+    });
+  },
+
   async listWorkflows(): Promise<WorkflowDefinition[]> {
     const response = await request<ListWorkflowsResponse>("/api/workflows");
     return response.workflows;

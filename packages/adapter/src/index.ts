@@ -124,6 +124,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
       sessionKey: `oc-session-${input.workflowRunId}`,
       status: "succeeded",
       output: `${input.agentName} completed through OpenClaw adapter. Prompt boundary stayed outside CUI runtime.`,
+      error: undefined,
       usage: {
         id: `usage-${nanoid(8)}`,
         modelId: input.modelId ?? "gpt-5.4",

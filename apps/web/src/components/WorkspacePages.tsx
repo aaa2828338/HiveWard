@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Activity, BadgeCheck, BookOpenText, Clock3, Database, FolderKanban, MessageSquareText, PanelsTopLeft, Tag, Trash2 } from "lucide-react";
+import { Activity, BadgeCheck, BookOpenText, Bookmark, Clock3, Database, FolderKanban, Loader2, MessageSquareText, PanelsTopLeft, Tag, Trash2 } from "lucide-react";
 import type {
   CatalogSnapshot,
+  OpenClawConfigState,
+  CompanyOverview,
   DashboardWidget,
   DashboardWidgetType,
   PendingApprovalItem,
@@ -22,6 +24,150 @@ import { appSections, type AppSectionId } from "../lib/app-sections";
 
 const runStatuses: WorkflowRunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "waiting_approval"];
 
+export function CompanyPage({
+  companies,
+  selectedCompanyId,
+  language,
+  onSelectCompany
+}: {
+  companies: CompanyOverview[];
+  selectedCompanyId?: string;
+  language: Language;
+  onSelectCompany: (companyId?: string) => void;
+}) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          choose: "\u9009\u62E9\u516C\u53F8",
+          noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u4ECE\u4E0B\u65B9\u5217\u8868\u4E2D\u5207\u6362\u3002",
+          noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
+          goal: "\u4E1A\u52A1\u76EE\u6807",
+          workflows: "\u5DE5\u4F5C\u6D41",
+          runs: "\u8FD0\u884C\u6B21\u6570",
+          tokens: "Token \u6D88\u8017",
+          approvals: "\u5F85\u5BA1\u6279",
+          notes: "\u7B14\u8BB0",
+          views: "\u89C6\u56FE",
+          cost: "\u6210\u672C",
+          latest: "\u6700\u8FD1\u8FD0\u884C",
+          active: "\u5F53\u524D\u516C\u53F8",
+          switchTitle: "\u516C\u53F8\u5217\u8868",
+          switchSubtitle: "\u5728\u8FD9\u91CC\u5207\u6362\u540E\uff0c\u5176\u4ED6\u5DE5\u4F5C\u533A\u90FD\u4F1A\u5207\u5230\u8BE5\u516C\u53F8\u7684\u6570\u636E\u8303\u56F4\u3002",
+          clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
+          select: "\u5207\u6362\u5230\u8BE5\u516C\u53F8"
+        }
+      : {
+          choose: "Choose company",
+          noSelection: "No company is selected yet. Choose one from the list below.",
+          noCompanies: "No companies are available.",
+          goal: "Business goal",
+          workflows: "Workflows",
+          runs: "Runs",
+          tokens: "Tokens",
+          approvals: "Pending approvals",
+          notes: "Notes",
+          views: "Saved views",
+          cost: "Cost",
+          latest: "Latest run",
+          active: "Current company",
+          switchTitle: "Companies",
+          switchSubtitle: "Switching here updates the scope for the rest of the workspace.",
+          clear: "Clear selection",
+          select: "Switch to company"
+        };
+
+  const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
+
+  return (
+    <section className="page-grid company-page-grid">
+      <div className="content-card stack-card company-hero-card">
+        {selectedCompany ? (
+          <div className="company-hero-layout">
+            <div className="company-hero-main">
+              <div className="company-brand-block">
+                <div className="company-logo-large">
+                  {selectedCompany.logoUrl ? <img src={selectedCompany.logoUrl} alt={selectedCompany.name} /> : companyMonogram(selectedCompany)}
+                </div>
+                <div className="company-brand-copy">
+                  <span className="hero-eyebrow">{copy.active}</span>
+                  <h3>{selectedCompany.name}</h3>
+                  <p>{selectedCompany.businessGoal}</p>
+                </div>
+              </div>
+
+              <div className="company-detail-grid">
+                <CompanyDetailCard label={copy.goal} value={selectedCompany.businessGoal} />
+                <CompanyDetailCard label={copy.cost} value={`$${selectedCompany.totalCostUsd.toFixed(4)}`} />
+                <CompanyDetailCard label={copy.latest} value={selectedCompany.latestRunAt ? formatDateTime(selectedCompany.latestRunAt, language) : "-"} />
+                <CompanyDetailCard label={copy.views} value={selectedCompany.savedViewCount} />
+                <CompanyDetailCard label={copy.notes} value={selectedCompany.noteCount} />
+              </div>
+            </div>
+
+            <div className="company-stat-grid">
+              <CompanyStatCard label={copy.workflows} value={selectedCompany.workflowCount.toLocaleString(language)} />
+              <CompanyStatCard label={copy.runs} value={selectedCompany.runCount.toLocaleString(language)} />
+              <CompanyStatCard label={copy.tokens} value={selectedCompany.totalTokens.toLocaleString(language)} />
+              <CompanyStatCard label={copy.approvals} value={selectedCompany.activeApprovalCount.toLocaleString(language)} />
+            </div>
+          </div>
+        ) : (
+          <div className="empty-state company-empty-state">
+            <strong>{copy.choose}</strong>
+            <span>{companies.length === 0 ? copy.noCompanies : copy.noSelection}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.switchTitle}</h3>
+            <p>{copy.switchSubtitle}</p>
+          </div>
+        </div>
+
+        {companies.length === 0 ? (
+          <div className="empty-state page-empty">{copy.noCompanies}</div>
+        ) : (
+          <div className="company-list-grid">
+            {companies.map((company) => (
+              <button
+                key={company.id}
+                type="button"
+                className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
+                onClick={() => onSelectCompany(company.id)}
+              >
+                <div className="company-list-card-top">
+                  <div className="company-logo-small">
+                    {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : companyMonogram(company)}
+                  </div>
+                  <div className="company-list-card-copy">
+                    <strong>{company.name}</strong>
+                    <span>{company.businessGoal}</span>
+                  </div>
+                </div>
+                <div className="company-list-card-metrics">
+                  <span>{`${copy.workflows}: ${company.workflowCount}`}</span>
+                  <span>{`${copy.tokens}: ${company.totalTokens}`}</span>
+                  <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
+                </div>
+                <span className="company-list-card-action">{company.id === selectedCompanyId ? copy.active : copy.select}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="card-actions">
+          <button type="button" onClick={() => onSelectCompany(undefined)}>
+            {copy.clear}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function RunsPage({
   runs,
   workflows,
@@ -41,45 +187,6 @@ export function RunsPage({
   onSelectWorkflow: (workflowId: string) => void;
   onSelectRun: (runId: string) => void;
 }) {
-  const copy =
-    language === "zh-CN"
-      ? {
-          title: "流程追踪",
-          subtitle: "左侧按线性任务顺序查看 issue，右侧查看当前节点的模型输出。",
-          runLabel: "运行记录",
-          issueTitle: "Issue 列表",
-          outputTitle: "模型输出",
-          noRun: "当前工作流还没有运行记录。",
-          noIssue: "当前还没有可展示的 issue。",
-          noOutput: "当前节点还没有输出。",
-          completed: "已完成",
-          inProgress: "正在进行",
-          pending: "未完成",
-          flowStarted: "流程开始",
-          flowFinished: "流程结束",
-          openConfig: "打开配置",
-          selectedIssue: "当前 Issue",
-          selectRun: "选择运行记录"
-        }
-      : {
-          title: "Flow Trace",
-          subtitle: "Review issues in linear task order on the left, and read model output on the right.",
-          runLabel: "Run",
-          issueTitle: "Issue list",
-          outputTitle: "Model output",
-          noRun: "This workflow has no run history yet.",
-          noIssue: "No issues are available for this run.",
-          noOutput: "This node has no output yet.",
-          completed: "Completed",
-          inProgress: "In progress",
-          pending: "Pending",
-          flowStarted: "Flow started",
-          flowFinished: "Flow finished",
-          openConfig: "Open config",
-          selectedIssue: "Current issue",
-          selectRun: "Select a run"
-        };
-
   const workflowRuns = useMemo(
     () => (workflow ? runs.filter((runView) => runView.run.workflowId === workflow.id) : []),
     [runs, workflow]
@@ -108,14 +215,9 @@ export function RunsPage({
     issues.find((issue) => issue.nodeRun) ??
     issues[0];
 
-  const currentNodeName = activeIssue?.node.config.label ?? copy.selectRun;
-
   useEffect(() => {
-    if (activeIssueNodeId && issues.some((issue) => issue.node.id === activeIssueNodeId)) {
-      return;
-    }
-    const nextIssue = issues.find((issue) => issue.nodeRun) ?? issues[0];
-    setActiveIssueNodeId(nextIssue?.node.id);
+    if (activeIssueNodeId && issues.some((issue) => issue.node.id === activeIssueNodeId)) return;
+    setActiveIssueNodeId((issues.find((issue) => issue.nodeRun) ?? issues[0])?.node.id);
   }, [activeIssueNodeId, issues]);
 
   return (
@@ -123,8 +225,8 @@ export function RunsPage({
       <div className="content-card stack-card trace-page-header">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{copy.title}</h3>
-            <p>{copy.subtitle}</p>
+            <h3>Flow Trace</h3>
+            <p>Review issues in linear task order on the left, and read node output on the right.</p>
           </div>
           <div className="toolbar-cluster trace-toolbar">
             <select value={workflow?.id ?? ""} onChange={(event) => onSelectWorkflow(event.target.value)}>
@@ -136,11 +238,11 @@ export function RunsPage({
             </select>
             <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={workflowRuns.length === 0}>
               {workflowRuns.length === 0 ? (
-                <option value="">{copy.selectRun}</option>
+                <option value="">Select a run</option>
               ) : (
                 workflowRuns.map((runView) => (
                   <option key={runView.run.id} value={runView.run.id}>
-                    {`${copy.runLabel} ${runView.run.id.slice(-6)} · ${formatDateTime(runView.run.startedAt, language)}`}
+                    {`Run ${runView.run.id.slice(-6)} · ${formatDateTime(runView.run.startedAt, language)}`}
                   </option>
                 ))
               )}
@@ -152,14 +254,14 @@ export function RunsPage({
       <section className="trace-layout">
         <div className="content-card stack-card trace-issue-column">
           <div className="trace-column-header">
-            <h3>{copy.issueTitle}</h3>
+            <h3>Issue list</h3>
             {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
           </div>
           <div className="trace-issue-list">
             {!workflow ? (
-              <div className="empty-state page-empty">{copy.noIssue}</div>
+              <div className="empty-state page-empty">No workflow is selected.</div>
             ) : issues.length === 0 ? (
-              <div className="empty-state page-empty">{copy.noRun}</div>
+              <div className="empty-state page-empty">This workflow has no run history yet.</div>
             ) : (
               issues.map((issue) => (
                 <button
@@ -172,7 +274,7 @@ export function RunsPage({
                   <div className="trace-issue-main">
                     <div className="trace-issue-topline">
                       <strong>{issue.node.config.label}</strong>
-                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus, copy)}</span>
+                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus)}</span>
                     </div>
                     <span>{issue.outputPreview}</span>
                   </div>
@@ -187,22 +289,14 @@ export function RunsPage({
             <>
               <div className="trace-column-header">
                 <div>
-                  <h3>{copy.outputTitle}</h3>
-                  <p>{`${copy.selectedIssue}: ${currentNodeName}`}</p>
+                  <h3>Model output</h3>
+                  <p>{`Current issue: ${activeIssue.node.config.label}`}</p>
                 </div>
               </div>
               <div className="trace-output-stream">
-                <TraceBubble
-                  role="system"
-                  title={copy.flowStarted}
-                  body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"}
-                />
+                <TraceBubble role="system" title="Flow started" body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"} />
                 {activeIssue.nodeRun?.startedAt && (
-                  <TraceBubble
-                    role="system"
-                    title={t.status[activeIssue.nodeRun.status]}
-                    body={formatDateTime(activeIssue.nodeRun.startedAt, language)}
-                  />
+                  <TraceBubble role="system" title={t.status[activeIssue.nodeRun.status]} body={formatDateTime(activeIssue.nodeRun.startedAt, language)} />
                 )}
                 {activeIssue.events.map((event) => (
                   <TraceBubble key={event.id} role="system" title={t.events[event.type]} body={event.message} />
@@ -212,102 +306,18 @@ export function RunsPage({
                 ) : activeIssue.nodeRun?.error ? (
                   <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
                 ) : (
-                  <div className="empty-state compact-empty-state">{copy.noOutput}</div>
+                  <div className="empty-state compact-empty-state">This node has no output yet.</div>
                 )}
-                {activeRun?.run.endedAt && (
-                  <TraceBubble role="system" title={copy.flowFinished} body={formatDateTime(activeRun.run.endedAt, language)} />
-                )}
+                {activeRun?.run.endedAt && <TraceBubble role="system" title="Flow finished" body={formatDateTime(activeRun.run.endedAt, language)} />}
               </div>
             </>
           ) : (
-            <div className="empty-state page-empty">{copy.noRun}</div>
+            <div className="empty-state page-empty">This workflow has no run history yet.</div>
           )}
         </div>
       </section>
     </section>
   );
-}
-
-type LinearIssueStatus = "completed" | "in_progress" | "pending";
-
-function toIssueStatus(status?: WorkflowNodeRunStatus): LinearIssueStatus {
-  if (status === "running" || status === "waiting_approval") return "in_progress";
-  if (status === "succeeded" || status === "skipped") return "completed";
-  return "pending";
-}
-
-function labelForIssueStatus(
-  status: LinearIssueStatus,
-  copy: {
-    completed: string;
-    inProgress: string;
-    pending: string;
-  }
-): string {
-  if (status === "completed") return copy.completed;
-  if (status === "in_progress") return copy.inProgress;
-  return copy.pending;
-}
-
-function TraceBubble({
-  role,
-  title,
-  body
-}: {
-  role: "system" | "assistant" | "error";
-  title: string;
-  body: string;
-}) {
-  return (
-    <article className={`trace-bubble trace-bubble-${role}`}>
-      <div className="trace-bubble-title">{title}</div>
-      <pre className="trace-bubble-body">{body}</pre>
-    </article>
-  );
-}
-
-function summarizeOutput(output: unknown): string {
-  const normalized = formatOutput(output ?? "");
-  if (!normalized.trim()) return "No output yet";
-  const flattened = normalized.replace(/\s+/g, " ").trim();
-  return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
-}
-
-function getWorkflowNodeOrder(workflow?: WorkflowDefinition): WorkflowNode[] {
-  if (!workflow) return [];
-
-  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const indegree = new Map<string, number>(workflow.nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map<string, string[]>();
-
-  for (const edge of workflow.edges) {
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
-  }
-
-  const queue = workflow.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
-  const ordered: WorkflowNode[] = [];
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    const currentId = queue.shift();
-    if (!currentId || visited.has(currentId)) continue;
-    visited.add(currentId);
-    const node = nodesById.get(currentId);
-    if (node) ordered.push(node);
-
-    for (const targetId of outgoing.get(currentId) ?? []) {
-      const nextDegree = (indegree.get(targetId) ?? 1) - 1;
-      indegree.set(targetId, nextDegree);
-      if (nextDegree === 0) queue.push(targetId);
-    }
-  }
-
-  for (const node of workflow.nodes) {
-    if (!visited.has(node.id)) ordered.push(node);
-  }
-
-  return ordered;
 }
 
 export function ApprovalsPage({
@@ -321,12 +331,14 @@ export function ApprovalsPage({
   t: Messages;
   onApprove: (workflowRunId: string) => void;
 }) {
+  const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
+
   return (
     <section className="page-grid">
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{t.pages.approvals.title}</h3>
+            <h3>{approvalsPage.title}</h3>
             <p>{t.metrics.approvals(approvals.length)}</p>
           </div>
         </div>
@@ -494,7 +506,7 @@ export function ViewsPage({
             <select value={section} onChange={(event) => setSection(event.target.value as AppSectionId)}>
               {appSections.map((item) => (
                 <option key={item} value={item}>
-                  {t.navigation[item]}
+                  {t.navigation[item] ?? item}
                 </option>
               ))}
             </select>
@@ -539,40 +551,41 @@ export function ViewsPage({
               setName(t.defaults.savedViewName);
               setWorkflowId("");
               setStatus("");
+              setSection("runs");
             }}
           >
-            <PanelsTopLeft size={16} />
+            <Bookmark size={16} />
             {t.actions.addSavedView}
           </button>
         </div>
-      </div>
-
-      <div className="content-card stack-card">
-        <div className="list-shell">
+        <div className="card-grid">
           {(dashboard?.savedViews ?? []).length === 0 ? (
             <div className="empty-state page-empty">{t.empty.noSavedViews}</div>
           ) : (
-            dashboard?.savedViews.map((view) => (
-              <div key={view.id} className="feature-card">
+            (dashboard?.savedViews ?? []).map((view) => (
+              <article key={view.id} className="feature-card">
                 <div className="feature-card-header">
                   <div>
                     <strong>{view.name}</strong>
-                    <p>{view.workflowId ? workflowNameFor(workflows, view.workflowId) : t.common.allWorkflows}</p>
+                    <p>{formatDateTime(view.updatedAt, language)}</p>
                   </div>
                   <button type="button" className="icon-button" onClick={() => onRemoveView(view.id)}>
                     <Trash2 size={16} />
                   </button>
                 </div>
-                <div className="tag-row">
+                <div className="widget-list">
                   {Object.entries(view.filters).map(([key, value]) => (
-                    <span key={key} className="tag-pill neutral">
-                      {key === "section" ? `${t.fields.section}: ${t.navigation[value as AppSectionId] ?? value}` : `${key}: ${value}`}
-                    </span>
+                    <div key={key} className="mini-row">
+                      <span>{key === "section" ? t.fields.section : key}</span>
+                      <code>{key === "section" ? t.navigation[value as AppSectionId] ?? value : value}</code>
+                    </div>
                   ))}
-                  {Object.keys(view.filters).length === 0 && <span className="tag-pill neutral">{t.common.allStatuses}</span>}
+                  <div className="mini-row">
+                    <span>{t.fields.workflow}</span>
+                    <code>{view.workflowId ? workflowNameFor(workflows, view.workflowId) : t.common.allWorkflows}</code>
+                  </div>
                 </div>
-                <p className="supporting-copy">{formatDateTime(view.updatedAt, language)}</p>
-              </div>
+              </article>
             ))
           )}
         </div>
@@ -806,19 +819,167 @@ export function NotesPage({
 
 export function CatalogPage({
   catalog,
+  openClawConfig,
   runtime,
   language,
-  t
+  t,
+  busy,
+  onSaveDefaultModel,
+  onAddAgent
 }: {
   catalog?: CatalogSnapshot;
+  openClawConfig?: OpenClawConfigState;
   runtime?: RuntimeOverview;
   language: Language;
   t: Messages;
+  busy: boolean;
+  onSaveDefaultModel: (modelId: string) => void;
+  onAddAgent: (input: { name: string; workspace?: string; modelId?: string }) => void;
 }) {
   const stale = catalog ? isCatalogStale(catalog) : false;
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const [agentName, setAgentName] = useState("");
+  const [agentWorkspace, setAgentWorkspace] = useState("");
+  const [agentModelId, setAgentModelId] = useState("");
+
+  useEffect(() => {
+    setSelectedModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+  }, [catalog?.models, openClawConfig?.defaultModelId]);
+
+  useEffect(() => {
+    setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+  }, [catalog?.models, openClawConfig?.defaultModelId]);
+
+  useEffect(() => {
+    if (!agentName.trim()) {
+      setAgentWorkspace("");
+      return;
+    }
+    if (agentWorkspace.trim()) return;
+    if (openClawConfig?.defaultWorkspace) {
+      setAgentWorkspace(joinPath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
+    }
+  }, [agentName, agentWorkspace, openClawConfig?.defaultWorkspace]);
 
   return (
     <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>OpenClaw Quick Config</h3>
+            <p>{openClawConfig ? openClawConfig.configPath : "Read and write OpenClaw config from ~/.openclaw/openclaw.json."}</p>
+          </div>
+        </div>
+
+        <div className="card-grid quick-config-grid">
+          <article className="feature-card">
+            <div className="feature-card-header">
+              <div>
+                <strong>Default model</strong>
+                <p>Writes to the active OpenClaw config and refreshes the catalog.</p>
+              </div>
+            </div>
+            <div className="form-grid">
+              <label className="field-span-full">
+                <span>Primary model</span>
+                <select value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value)}>
+                  {(catalog?.models ?? []).map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {`${model.label} (${model.id})`}
+                    </option>
+                  ))}
+                  {(openClawConfig?.configuredModels ?? [])
+                    .filter((model) => !(catalog?.models ?? []).some((item) => item.id === model.id))
+                    .map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {`${model.label} (${model.id})`}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            </div>
+            <div className="metric-strip compact-metric-strip">
+              <div className="metric-chip">
+                <Database size={16} />
+                <span>{openClawConfig?.defaultModelId ?? "No default model configured"}</span>
+              </div>
+              <div className="metric-chip">
+                <Database size={16} />
+                <span>{openClawConfig?.defaultWorkspace ?? "-"}</span>
+              </div>
+            </div>
+            <div className="card-actions">
+              <button type="button" className="primary-action" disabled={!selectedModelId || busy} onClick={() => onSaveDefaultModel(selectedModelId)}>
+                {busy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
+                Save model
+              </button>
+            </div>
+          </article>
+
+          <article className="feature-card">
+            <div className="feature-card-header">
+              <div>
+                <strong>Add agent</strong>
+                <p>Creates an OpenClaw agent entry using the same config fields as `openclaw agents add`.</p>
+              </div>
+            </div>
+            <div className="form-grid">
+              <label>
+                <span>Agent name</span>
+                <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="researcher" />
+              </label>
+              <label>
+                <span>Model</span>
+                <select value={agentModelId} onChange={(event) => setAgentModelId(event.target.value)}>
+                  <option value="">Use default model</option>
+                  {(catalog?.models ?? []).map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {`${model.label} (${model.id})`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-span-full">
+                <span>Workspace</span>
+                <input
+                  value={agentWorkspace}
+                  onChange={(event) => setAgentWorkspace(event.target.value)}
+                  placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : "Leave blank to auto-generate"}
+                />
+              </label>
+            </div>
+            <div className="metric-strip compact-metric-strip">
+              {(openClawConfig?.configuredAgents ?? []).slice(0, 3).map((agent) => (
+                <div key={agent.id} className="metric-chip">
+                  <FolderKanban size={16} />
+                  <span>{`${agent.id} · ${agent.modelId ?? "default"}`}</span>
+                </div>
+              ))}
+            </div>
+            <div className="card-actions">
+              <button
+                type="button"
+                className="primary-action"
+                disabled={!agentName.trim() || busy}
+                onClick={() => {
+                  onAddAgent({
+                    name: agentName.trim(),
+                    workspace: agentWorkspace.trim() || undefined,
+                    modelId: agentModelId || undefined
+                  });
+                  setAgentName("");
+                  setAgentWorkspace("");
+                  setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+                }}
+              >
+                {busy ? <Loader2 className="spin" size={16} /> : <FolderKanban size={16} />}
+                Add agent
+              </button>
+            </div>
+          </article>
+        </div>
+      </div>
+
       <div className="content-card stack-card">
         <div className="metric-strip">
           <div className="metric-chip">
@@ -1047,78 +1208,6 @@ function WidgetCard({
   );
 }
 
-function RunDetailCard({
-  runView,
-  workflows,
-  language,
-  t
-}: {
-  runView: WorkflowRunView;
-  workflows: WorkflowDefinition[];
-  language: Language;
-  t: Messages;
-}) {
-  return (
-    <div className="stack-card">
-      <div className="feature-card-header detail-header">
-        <div>
-          <h3>{workflowNameFor(workflows, runView.run.workflowId)}</h3>
-          <p>{runView.run.id}</p>
-        </div>
-        <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-      </div>
-      <dl className="meta-grid">
-        <dt>{t.fields.updatedAt}</dt>
-        <dd>{formatDateTime(runView.run.startedAt, language)}</dd>
-        <dt>{t.fields.status}</dt>
-        <dd>{t.status[runView.run.status]}</dd>
-        <dt>{t.fields.relatedWorkflow}</dt>
-        <dd>{runView.run.workflowId}</dd>
-      </dl>
-      <div className="metric-strip">
-        <div className="metric-chip">
-          <Activity size={16} />
-          <span>{t.metrics.nodes(runView.nodeRuns.length)}</span>
-        </div>
-        <div className="metric-chip">
-          <Database size={16} />
-          <span>{t.metrics.tokens(runView.run.totalInputTokens + runView.run.totalOutputTokens)}</span>
-        </div>
-        <div className="metric-chip">
-          <Database size={16} />
-          <span>{t.metrics.cost(`$${runView.run.totalCostUsd.toFixed(6)}`)}</span>
-        </div>
-      </div>
-      <div className="subsection">
-        <h4>Events</h4>
-        <div className="event-list">
-          {runView.events.slice().reverse().map((event) => (
-            <div key={event.id} className="event-row">
-              <time>{new Date(event.createdAt).toLocaleTimeString(language)}</time>
-              <span>{event.message}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="subsection">
-        <h4>Outputs</h4>
-        <div className="node-output-list">
-          {runView.nodeRuns.map((nodeRun) => (
-            <div key={nodeRun.id} className="node-output-row">
-              <div className="node-output-heading">
-                <span>{nodeRun.nodeLabel}</span>
-                <code>{t.status[nodeRun.status]}</code>
-              </div>
-              {nodeRun.output !== undefined && <pre>{formatOutput(nodeRun.output)}</pre>}
-              {nodeRun.error && <pre className="node-output-error">{nodeRun.error}</pre>}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function TableCard({ title, rows, children }: { title: string; rows: number; children: ReactNode }) {
   return (
     <div className="content-card stack-card">
@@ -1133,6 +1222,97 @@ function TableCard({ title, rows, children }: { title: string; rows: number; chi
   );
 }
 
+function CompanyDetailCard({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="company-detail-card">
+      <span>{label}</span>
+      <strong>{String(value)}</strong>
+    </div>
+  );
+}
+
+function CompanyStatCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="company-stat-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function TraceBubble({
+  role,
+  title,
+  body
+}: {
+  role: "system" | "assistant" | "error";
+  title: string;
+  body: string;
+}) {
+  return (
+    <article className={`trace-bubble trace-bubble-${role}`}>
+      <div className="trace-bubble-title">{title}</div>
+      <pre className="trace-bubble-body">{body}</pre>
+    </article>
+  );
+}
+
+function toIssueStatus(status?: WorkflowNodeRunStatus): "completed" | "in_progress" | "pending" {
+  if (status === "running" || status === "waiting_approval") return "in_progress";
+  if (status === "succeeded" || status === "skipped") return "completed";
+  return "pending";
+}
+
+function labelForIssueStatus(status: "completed" | "in_progress" | "pending"): string {
+  if (status === "completed") return "Completed";
+  if (status === "in_progress") return "In progress";
+  return "Pending";
+}
+
+function summarizeOutput(output: unknown): string {
+  const normalized = formatOutput(output ?? "");
+  if (!normalized.trim()) return "No output yet";
+  const flattened = normalized.replace(/\s+/g, " ").trim();
+  return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
+}
+
+function getWorkflowNodeOrder(workflow?: WorkflowDefinition): WorkflowNode[] {
+  if (!workflow) return [];
+
+  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const indegree = new Map<string, number>(workflow.nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map<string, string[]>();
+
+  for (const edge of workflow.edges) {
+    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+  }
+
+  const queue = workflow.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
+  const ordered: WorkflowNode[] = [];
+  const visited = new Set<string>();
+
+  while (queue.length > 0) {
+    const currentId = queue.shift();
+    if (!currentId || visited.has(currentId)) continue;
+    visited.add(currentId);
+    const node = nodesById.get(currentId);
+    if (node) ordered.push(node);
+
+    for (const targetId of outgoing.get(currentId) ?? []) {
+      const nextDegree = (indegree.get(targetId) ?? 1) - 1;
+      indegree.set(targetId, nextDegree);
+      if (nextDegree === 0) queue.push(targetId);
+    }
+  }
+
+  for (const node of workflow.nodes) {
+    if (!visited.has(node.id)) ordered.push(node);
+  }
+
+  return ordered;
+}
+
 function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {
   if (type === "recent_runs") return t.widgetTypes.runs;
   if (type === "pending_approvals") return t.widgetTypes.approvals;
@@ -1145,6 +1325,17 @@ function workflowNameFor(workflows: WorkflowDefinition[], workflowId: string): s
   return workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId;
 }
 
+function companyMonogram(company: Pick<CompanyOverview, "logoLabel" | "name">): string {
+  if (company.logoLabel?.trim()) return company.logoLabel.trim().slice(0, 2).toUpperCase();
+  const parts = company.name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0] ?? "")
+    .join("")
+    .toUpperCase();
+}
+
 function formatOutput(output: unknown): string {
   if (typeof output === "string") return output;
   return JSON.stringify(output, null, 2);
@@ -1152,4 +1343,13 @@ function formatOutput(output: unknown): string {
 
 function formatDateTime(value: string, language: Language): string {
   return new Date(value).toLocaleString(language);
+}
+
+function normalizeAgentId(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
+}
+
+function joinPath(root: string, leaf: string): string {
+  return `${root.replace(/[\\/]+$/, "")}\\${leaf.replace(/^[\\/]+/, "")}`;
 }

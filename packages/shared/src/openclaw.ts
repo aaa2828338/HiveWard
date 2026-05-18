@@ -40,6 +40,30 @@ export interface OpenClawAgent {
   modelId?: string;
 }
 
+export interface OpenClawConfiguredModel {
+  id: string;
+  label: string;
+  provider: string;
+  alias?: string;
+}
+
+export interface OpenClawConfiguredAgent {
+  id: string;
+  name?: string;
+  workspace: string;
+  agentDir: string;
+  modelId?: string;
+  isDefault: boolean;
+}
+
+export interface OpenClawConfigState {
+  configPath: string;
+  defaultWorkspace: string;
+  defaultModelId?: string;
+  configuredModels: OpenClawConfiguredModel[];
+  configuredAgents: OpenClawConfiguredAgent[];
+}
+
 export interface OpenClawSessionSummary {
   id: string;
   title: string;
@@ -86,6 +110,7 @@ export interface StartAgentTaskResult {
   sessionKey: string;
   status: OpenClawExecutionStatus;
   output?: string;
+  error?: string;
   usage?: OpenClawUsageFact;
   updatedAt: string;
 }

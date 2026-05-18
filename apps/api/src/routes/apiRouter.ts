@@ -1,22 +1,30 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
 import type {
+  AgentNodeConfig,
   CatalogSnapshot,
+  CreateOpenClawAgentRequest,
+  ParallelAgentsNodeConfig,
+  UpdateOpenClawDefaultModelRequest,
+  SelectCompanyRequest,
   SaveDashboardStateRequest,
   SaveWorkflowRequest,
+  WorkflowDefinition,
   StartWorkflowRunRequest
 } from "@openclaw-cui/shared";
 import type { OpenClawAdapter } from "@openclaw-cui/adapter";
 import type { FileCuiStore } from "../store/fileCuiStore";
+import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { WorkflowWorker } from "../worker/workflowWorker";
 
 interface ApiRouterDeps {
   store: FileCuiStore;
+  openClawConfigStore: OpenClawConfigStore;
   adapter: OpenClawAdapter;
   worker: WorkflowWorker;
 }
 
-export function createApiRouter({ store, adapter, worker }: ApiRouterDeps): Router {
+export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
   const router = Router();
 
   router.get("/healthz", (_req, res) => {
@@ -25,6 +33,49 @@ export function createApiRouter({ store, adapter, worker }: ApiRouterDeps): Rout
 
   router.get("/readyz", (_req, res) => {
     res.json({ ok: true, runtimeDiscovery: "not_on_readiness_path" });
+  });
+
+  router.get("/api/companies", async (_req, res, next) => {
+    try {
+      res.json(await store.listCompanies());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/api/companies/selected", async (req, res, next) => {
+    try {
+      const body = req.body as SelectCompanyRequest;
+      res.json(await store.selectCompany(body.companyId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/openclaw-config", async (_req, res, next) => {
+    try {
+      res.json({ config: await openClawConfigStore.getState() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/api/openclaw-config/default-model", async (req, res, next) => {
+    try {
+      const body = req.body as UpdateOpenClawDefaultModelRequest;
+      res.json({ config: await openClawConfigStore.updateDefaultModel(body.modelId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/openclaw-config/agents", async (req, res, next) => {
+    try {
+      const body = req.body as CreateOpenClawAgentRequest;
+      res.status(201).json({ config: await openClawConfigStore.addAgent(body) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.get("/api/workflows", async (_req, res, next) => {
@@ -66,6 +117,17 @@ export function createApiRouter({ store, adapter, worker }: ApiRouterDeps): Rout
       const workflow = await store.getWorkflow(req.params.workflowId);
       if (!workflow) {
         res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+        return;
+      }
+      const configuredAgents = await openClawConfigStore.getState();
+      const invalidAgentIds = collectInvalidAgentIds(workflow, new Set(configuredAgents.configuredAgents.map((agent) => agent.id)));
+      if (invalidAgentIds.length > 0) {
+        res.status(400).json({
+          error: {
+            code: "workflow_agent_invalid",
+            message: `Workflow references agent ids that are not present in OpenClaw config: ${invalidAgentIds.join(", ")}`
+          }
+        });
         return;
       }
       const body = req.body as StartWorkflowRunRequest;
@@ -186,6 +248,26 @@ export function createApiRouter({ store, adapter, worker }: ApiRouterDeps): Rout
   });
 
   return router;
+}
+
+function collectInvalidAgentIds(workflow: WorkflowDefinition, configuredAgentIds: Set<string>): string[] {
+  const invalid = new Set<string>();
+
+  for (const node of workflow.nodes) {
+    if (node.type === "agent") {
+      const agentId = (node.config as AgentNodeConfig).agentId ?? "main";
+      if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
+      continue;
+    }
+    if (node.type === "parallel_agents") {
+      for (const agent of (node.config as ParallelAgentsNodeConfig).agents) {
+        const agentId = agent.agentId ?? "main";
+        if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
+      }
+    }
+  }
+
+  return [...invalid];
 }
 
 async function refreshCatalog(adapter: OpenClawAdapter, store: FileCuiStore): Promise<CatalogSnapshot> {
