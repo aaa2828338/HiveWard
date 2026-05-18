@@ -1,5 +1,6 @@
 import type { CatalogSnapshot } from "./catalog";
-import type { OpenClawSessionSummary, OpenClawTaskSummary } from "./openclaw";
+import type { CompanyOverview } from "./company";
+import type { OpenClawConfigState, OpenClawSessionSummary, OpenClawTaskSummary } from "./openclaw";
 import type { WorkflowDefinition, WorkflowRunView } from "./workflow";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
@@ -45,6 +46,29 @@ export interface DashboardStateResponse {
 
 export interface SaveDashboardStateRequest {
   dashboard: WorkspaceDashboard;
+}
+
+export interface CompanyDirectoryResponse {
+  companies: CompanyOverview[];
+  selectedCompanyId?: string;
+}
+
+export interface SelectCompanyRequest {
+  companyId?: string;
+}
+
+export interface OpenClawConfigResponse {
+  config: OpenClawConfigState;
+}
+
+export interface UpdateOpenClawDefaultModelRequest {
+  modelId: string;
+}
+
+export interface CreateOpenClawAgentRequest {
+  name: string;
+  workspace?: string;
+  modelId?: string;
 }
 
 export interface RuntimeOverview {

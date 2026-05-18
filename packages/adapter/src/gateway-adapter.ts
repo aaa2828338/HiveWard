@@ -16,6 +16,9 @@ import { GatewaySession } from "./gateway-client";
 import { createGatewayId } from "./gateway-device";
 
 export class GatewayOpenClawAdapter implements OpenClawAdapter {
+  private sharedSession: GatewaySession | undefined;
+  private sharedSessionPromise: Promise<GatewaySession> | undefined;
+
   constructor(private readonly config: GatewayAdapterConfig) {}
 
   async listModels(): Promise<OpenClawModel[]> {
@@ -98,15 +101,18 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
         { expectFinal: true, timeoutMs: this.config.agentTimeoutMs },
       );
       const runId = readString(result.runId) ?? idempotencyKey;
-      const sessionKey = readString(result.sessionKey) ?? "agent:main:main";
+      const sessionKey = readString(result.sessionKey) ?? buildAgentMainSessionKey(input.agentId);
       const ok = readString(result.status) !== "error";
-      const transcriptOutput = ok ? await readAgentTranscriptOutput(session, sessionKey, input.nodeRunId) : undefined;
+      const transcriptResult = ok ? await readAgentTranscriptResult(session, sessionKey, input.nodeRunId) : undefined;
+      const transcriptError = transcriptResult?.error;
+      const status = ok && !transcriptError ? "succeeded" : "failed";
       return {
         taskId: runId,
         runId,
         sessionKey,
-        status: ok ? "succeeded" : "failed",
-        output: transcriptOutput ?? summarizeAgentResult(result),
+        status,
+        output: status === "succeeded" ? transcriptResult?.output ?? summarizeAgentResult(result) : undefined,
+        error: transcriptError ?? (ok ? undefined : summarizeAgentResult(result)),
         usage: undefined,
         updatedAt: new Date().toISOString(),
       };
@@ -130,13 +136,47 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
   }
 
   private async withSession<T>(operation: (session: GatewaySession) => Promise<T>): Promise<T> {
-    const session = new GatewaySession(this.config);
-    await session.connect();
+    const session = await this.getSession();
     try {
       return await operation(session);
-    } finally {
-      session.close();
+    } catch (error) {
+      if (isRecoverableGatewaySessionError(error)) {
+        this.resetSharedSession(session);
+      }
+      throw error;
     }
+  }
+
+  private async getSession(): Promise<GatewaySession> {
+    if (this.sharedSession) {
+      return this.sharedSession;
+    }
+    if (this.sharedSessionPromise) {
+      return this.sharedSessionPromise;
+    }
+
+    const session = new GatewaySession(this.config);
+    const promise = session.connect().then(() => {
+      this.sharedSession = session;
+      return session;
+    }).catch((error) => {
+      session.close();
+      throw error;
+    }).finally(() => {
+      this.sharedSessionPromise = undefined;
+    });
+
+    this.sharedSessionPromise = promise;
+    return promise;
+  }
+
+  private resetSharedSession(session?: GatewaySession): void {
+    if (session && this.sharedSession && session !== this.sharedSession) {
+      return;
+    }
+    this.sharedSession?.close();
+    this.sharedSession = undefined;
+    this.sharedSessionPromise = undefined;
   }
 
   private async resolveModelRef(
@@ -267,11 +307,11 @@ function summarizeAgentResult(result: Record<string, unknown>): string {
   return [`OpenClaw agent run ${status}.`, runId ? `runId: ${runId}` : undefined].filter(Boolean).join("\n");
 }
 
-async function readAgentTranscriptOutput(
+async function readAgentTranscriptResult(
   session: GatewaySession,
   sessionKey: string,
   nodeRunId: string,
-): Promise<string | undefined> {
+): Promise<{ output?: string; error?: string } | undefined> {
   try {
     const history = await session.request<{ messages?: unknown[] }>("chat.history", {
       sessionKey,
@@ -288,8 +328,13 @@ async function readAgentTranscriptOutput(
 
     for (const message of messages.slice(userIndex + 1)) {
       if (!isRecord(message) || readString(message.role) !== "assistant") continue;
+      const errorMessage = readString(message.errorMessage);
+      if (errorMessage) return { error: errorMessage };
       const text = extractMessageText(message).trim();
-      if (text && text !== "completed") return text;
+      if (text && text !== "completed") return { output: text };
+      if (readString(message.stopReason) === "error") {
+        return { error: "OpenClaw assistant stopped with an error before returning visible output." };
+      }
     }
   } catch {
     return undefined;
@@ -325,6 +370,16 @@ function mapExecutionStatus(status: string | undefined): OpenClawTaskSummary["st
   return "succeeded";
 }
 
+function buildAgentMainSessionKey(agentId: string | undefined): string {
+  const normalizedAgentId = normalizeAgentId(agentId ?? "main");
+  return `agent:${normalizedAgentId}:main`;
+}
+
+function normalizeAgentId(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
+}
+
 function dateFromMs(value: unknown): string {
   const ms = readNumber(value);
   return new Date(ms ?? Date.now()).toISOString();
@@ -344,4 +399,14 @@ function readNumber(value: unknown): number | undefined {
 
 function isPresent<T>(value: T | undefined): value is T {
   return value !== undefined;
+}
+
+function isRecoverableGatewaySessionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.message.includes("Gateway is not connected") ||
+    error.message.includes("Gateway connection closed") ||
+    error.message.includes("Gateway connect timeout") ||
+    error.message.includes("Gateway request timeout")
+  );
 }

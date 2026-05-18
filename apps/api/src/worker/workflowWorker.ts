@@ -65,6 +65,13 @@ export class WorkflowWorker {
 
     while (true) {
       const nodeRuns = await this.store.listNodeRuns(run.id);
+      const failedNodeRun = nodeRuns.find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
+      if (failedNodeRun) {
+        const failed = await this.applyRunTotals(run, startedAt, "failed");
+        await this.store.updateWorkflowRun(failed);
+        await this.event(run.id, "workflow.run.failed", `Workflow ${workflow.name} failed at node ${failedNodeRun.nodeLabel}.`);
+        return;
+      }
       if (nodeRuns.some((nodeRun) => nodeRun.status === "waiting_approval")) {
         await this.store.updateWorkflowRun({ ...run, status: "waiting_approval" });
         return;
@@ -178,15 +185,18 @@ export class WorkflowWorker {
       usageRef: result.usage?.id
     };
 
-    await this.completeNode(
-      {
-        ...nodeRun,
-        usage: result.usage,
-        openclawRef
-      },
-      result.output ?? "",
+    const nextNodeRun: WorkflowNodeRun = {
+      ...nodeRun,
+      usage: result.usage,
       openclawRef
-    );
+    };
+
+    if (result.status !== "succeeded") {
+      await this.failNode(nextNodeRun, result.error ?? result.output ?? `OpenClaw agent run ${result.status}.`);
+      return;
+    }
+
+    await this.completeNode(nextNodeRun, result.output ?? "", openclawRef);
   }
 
   private async executeParallelAgentsNode(run: WorkflowRun, node: WorkflowNode, nodeRun: WorkflowNodeRun): Promise<void> {
@@ -205,6 +215,11 @@ export class WorkflowWorker {
         })
       )
     );
+    const failed = outputs.find((output) => output.status !== "succeeded");
+    if (failed) {
+      await this.failNode(nodeRun, failed.error ?? failed.output ?? `OpenClaw agent run ${failed.status}.`);
+      return;
+    }
     await this.completeNode(nodeRun, outputs.map((output) => output.output ?? ""));
   }
 
@@ -221,6 +236,10 @@ export class WorkflowWorker {
         input: await this.store.listNodeRuns(run.id),
         tools: []
       });
+      if (result.status !== "succeeded") {
+        await this.failNode(nodeRun, result.error ?? result.output ?? `OpenClaw agent run ${result.status}.`);
+        return;
+      }
       await this.completeNode(nodeRun, result.output ?? "");
       return;
     }

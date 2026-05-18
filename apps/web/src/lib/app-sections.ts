@@ -1,4 +1,5 @@
 export type AppSectionId =
+  | "company"
   | "workflow"
   | "runs"
   | "approvals"
@@ -7,7 +8,7 @@ export type AppSectionId =
   | "notes"
   | "catalog";
 
-export const appSections: AppSectionId[] = [
+export const appSections: Array<Exclude<AppSectionId, "company">> = [
   "workflow",
   "runs",
   "approvals",

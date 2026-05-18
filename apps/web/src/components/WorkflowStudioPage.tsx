@@ -22,6 +22,7 @@ import type {
   CatalogSnapshot,
   ConditionNodeConfig,
   NoteNodeConfig,
+  OpenClawConfiguredAgent,
   ParallelAgentsNodeConfig,
   SendNodeConfig,
   SummaryNodeConfig,
@@ -49,6 +50,7 @@ const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
 export function WorkflowStudioPage({
   workflow,
   catalog,
+  configuredAgents,
   runView,
   selectedNodeId,
   language,
@@ -60,6 +62,7 @@ export function WorkflowStudioPage({
 }: {
   workflow?: WorkflowDefinition;
   catalog?: CatalogSnapshot;
+  configuredAgents?: OpenClawConfiguredAgent[];
   runView?: WorkflowRunView;
   selectedNodeId?: string;
   language: Language;
@@ -434,6 +437,7 @@ export function WorkflowStudioPage({
         {inspectedNode && workflow && (
           <NodeDetailModal
             catalog={catalog}
+            configuredAgents={configuredAgents}
             node={inspectedNode}
             nodeRun={statusByNode.get(inspectedNode.id)}
             language={language}
@@ -449,6 +453,7 @@ export function WorkflowStudioPage({
 
 function NodeDetailModal({
   catalog,
+  configuredAgents,
   node,
   nodeRun,
   language,
@@ -457,6 +462,7 @@ function NodeDetailModal({
   onPatchConfig
 }: {
   catalog?: CatalogSnapshot;
+  configuredAgents?: OpenClawConfiguredAgent[];
   node: WorkflowNode;
   nodeRun?: WorkflowNodeRun;
   language: Language;
@@ -464,7 +470,6 @@ function NodeDetailModal({
   onClose: () => void;
   onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
 }) {
-  const agents = catalog?.agents ?? [];
   const models = catalog?.models ?? [];
   const channels = catalog?.channels ?? [];
 
@@ -491,7 +496,7 @@ function NodeDetailModal({
               <NodeConfigForm
                 catalog={catalog}
                 node={node}
-                agents={agents}
+                configuredAgents={configuredAgents}
                 models={models}
                 channels={channels}
                 language={language}
@@ -563,7 +568,7 @@ function NodeDetailModal({
 
 function NodeConfigForm({
   node,
-  agents,
+  configuredAgents,
   models,
   channels,
   language,
@@ -572,7 +577,7 @@ function NodeConfigForm({
 }: {
   catalog?: CatalogSnapshot;
   node: WorkflowNode;
-  agents: NonNullable<CatalogSnapshot["agents"]>;
+  configuredAgents?: OpenClawConfiguredAgent[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   language: Language;
@@ -583,6 +588,9 @@ function NodeConfigForm({
     const config = node.config as AgentNodeConfig;
     const selectedModel = config.modelId ?? "";
     const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+    const agentOptions = configuredAgents ?? [];
+    const selectedAgentId = config.agentId ?? agentOptions[0]?.id ?? "main";
+    const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
 
     return (
       <div className="config-form node-modal-form">
@@ -593,13 +601,13 @@ function NodeConfigForm({
         <label>
           <span>{t.fields.openclawAgent}</span>
           <select
-            value={config.agentId ?? agents[0]?.id ?? "main"}
+            value={selectedAgentId}
             onChange={(event) => onPatchConfig({ agentId: event.target.value })}
           >
-            {agents.length === 0 && <option value={config.agentId ?? "main"}>{config.agentId ?? "main"}</option>}
-            {agents.map((agent) => (
+            {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+            {agentOptions.map((agent) => (
               <option key={agent.id} value={agent.id}>
-                {agent.label}
+                {agent.name ? `${agent.name} (${agent.id})` : agent.id}
               </option>
             ))}
           </select>

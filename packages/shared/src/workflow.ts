@@ -107,6 +107,7 @@ export interface WorkflowEdge {
 
 export interface WorkflowDefinition {
   id: string;
+  companyId: string;
   name: string;
   description?: string;
   version: number;
@@ -126,6 +127,7 @@ export interface WorkflowDefinition {
 
 export interface WorkflowRun {
   id: string;
+  companyId: string;
   workflowId: string;
   workflowVersion: number;
   status: WorkflowRunStatus;
@@ -181,9 +183,10 @@ export interface WorkflowRunView {
   events: WorkflowNodeEvent[];
 }
 
-export function createStarterWorkflow(now: string): WorkflowDefinition {
+export function createStarterWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
   return {
     id: "starter-workflow",
+    companyId,
     name: "Multi-agent delivery review",
     description: "A minimal n8n-style OpenClaw workflow for requirements, architecture, test review, approval, and Slack delivery.",
     version: 1,
@@ -273,9 +276,10 @@ export function createStarterWorkflow(now: string): WorkflowDefinition {
   };
 }
 
-export function createRealThreeAgentWorkflow(now: string): WorkflowDefinition {
+export function createRealThreeAgentWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
   return {
     id: "real-three-agent-workflow",
+    companyId,
     name: "Real 3-node OpenClaw agent chain",
     description:
       "A minimal executable chain that calls the real OpenClaw agent configured as main. Each node receives upstream output from the previous node.",
@@ -334,6 +338,6 @@ export function createRealThreeAgentWorkflow(now: string): WorkflowDefinition {
   };
 }
 
-export function createDefaultWorkflows(now: string): WorkflowDefinition[] {
-  return [createStarterWorkflow(now), createRealThreeAgentWorkflow(now)];
+export function createDefaultWorkflows(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition[] {
+  return [createStarterWorkflow(now, companyId), createRealThreeAgentWorkflow(now, companyId)];
 }

@@ -1,5 +1,4 @@
 import type { WorkflowNodeEvent, WorkflowNodeRunStatus, WorkflowNodeType, WorkflowRunStatus } from "@openclaw-cui/shared";
-import type { AppSectionId } from "./app-sections";
 
 export type Language = "en" | "zh-CN";
 export type StatusKey = WorkflowNodeRunStatus | WorkflowRunStatus | "idle";
@@ -122,10 +121,10 @@ export interface Messages {
     widgets: (count: number) => string;
     workflows: (count: number) => string;
   };
-  navigation: Record<AppSectionId, string>;
+  navigation: Record<string, string>;
   nodeTypes: Record<WorkflowNodeType, string>;
   pages: Record<
-    AppSectionId,
+    string,
     {
       description: string;
       title: string;
@@ -274,6 +273,7 @@ export const messages: Record<Language, Messages> = {
       workflows: (count) => `${count} workflows`
     },
     navigation: {
+      company: "Company",
       workflow: "Workflow",
       runs: "Runs",
       approvals: "Approvals",
@@ -293,6 +293,10 @@ export const messages: Record<Language, Messages> = {
       summary: "Summary"
     },
     pages: {
+      company: {
+        title: "Company Context",
+        description: "Switch the active company, inspect company-level usage, and keep workflow data scoped to a single operator context."
+      },
       workflow: {
         title: "Workflow Studio",
         description: "Edit graph structure, configure node execution, and inspect the latest run."

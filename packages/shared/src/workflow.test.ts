@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createDefaultWorkflows, createRealThreeAgentWorkflow, createStarterWorkflow } from "./workflow";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
+import { defaultCompanyId } from "./company";
 
 describe("workflow contracts", () => {
   it("creates a starter workflow owned by CUI with OpenClaw execution nodes", () => {
@@ -16,6 +17,7 @@ describe("workflow contracts", () => {
     ]);
     expect(workflow.edges).toHaveLength(6);
     expect(workflow.nodes.every((node) => "position" in node)).toBe(true);
+    expect(workflow.companyId).toBe(defaultCompanyId);
   });
 
   it("creates a real three-node OpenClaw agent chain", () => {
@@ -28,6 +30,7 @@ describe("workflow contracts", () => {
       "plan->verify"
     ]);
     expect(workflow.nodes.every((node) => "agentId" in node.config && node.config.agentId === "main")).toBe(true);
+    expect(workflow.companyId).toBe(defaultCompanyId);
   });
 
   it("seeds both default workflows", () => {
