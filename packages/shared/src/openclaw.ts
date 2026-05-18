@@ -104,15 +104,26 @@ export interface StartAgentTaskInput {
   tools: string[];
 }
 
-export interface StartAgentTaskResult {
+export interface StartedAgentTaskResult {
   taskId: string;
   runId: string;
   sessionKey: string;
   status: OpenClawExecutionStatus;
-  output?: string;
   error?: string;
-  usage?: OpenClawUsageFact;
   updatedAt: string;
+}
+
+export interface WaitForAgentTaskInput {
+  nodeRunId: string;
+  taskId: string;
+  runId: string;
+  sessionKey: string;
+  agentId?: string;
+}
+
+export interface AgentTaskResult extends StartedAgentTaskResult {
+  output?: string;
+  usage?: OpenClawUsageFact;
 }
 
 export interface SendChannelInput {

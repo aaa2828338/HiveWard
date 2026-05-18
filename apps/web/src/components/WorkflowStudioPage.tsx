@@ -15,7 +15,7 @@ import {
   type OnNodeDrag,
   type OnNodesChange
 } from "@xyflow/react";
-import { Bot, Check, GitBranch, Plus, Send, ShieldCheck, X } from "lucide-react";
+import { Bot, Check, GitBranch, MessagesSquare, Plus, Send, ShieldCheck, X } from "lucide-react";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -43,6 +43,7 @@ const nodeTypes = {
 const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
   { type: "condition", icon: GitBranch },
+  { type: "summary", icon: MessagesSquare },
   { type: "approval", icon: ShieldCheck },
   { type: "send", icon: Send }
 ];
@@ -154,11 +155,16 @@ export function WorkflowStudioPage({
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
-      setLocalEdges((current) => addEdge(connection, current));
-      onUpdateWorkflow((current) => ({
-        ...current,
-        edges: addEdge(connection, current.edges.map(toFlowEdge)).map(fromFlowEdge)
-      }));
+      onUpdateWorkflow((current) => {
+        if (current.edges.some((edge) => edge.source === connection.source && edge.target === connection.target)) {
+          return current;
+        }
+
+        return {
+          ...current,
+          edges: [...current.edges, createWorkflowEdge(current, connection)]
+        };
+      });
     },
     [onUpdateWorkflow]
   );
@@ -645,7 +651,7 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label className="field-span-full">
-          <span>{t.fields.description}</span>
+          <span>Expression</span>
           <input value={config.expression} onChange={(event) => onPatchConfig({ expression: event.target.value })} />
         </label>
       </div>
@@ -739,6 +745,23 @@ function NodeConfigForm({
 
   if (node.type === "parallel_agents") {
     const config = node.config as ParallelAgentsNodeConfig;
+    const agentOptions = configuredAgents ?? [];
+    const updateAgent = (index: number, patch: Partial<AgentNodeConfig>) => {
+      onPatchConfig({
+        agents: config.agents.map((agent, agentIndex) => (agentIndex === index ? { ...agent, ...patch } : agent))
+      });
+    };
+    const addAgent = () => {
+      onPatchConfig({
+        agents: [...config.agents, createDefaultParallelAgent(t, agentOptions[0]?.id ?? "main")]
+      });
+    };
+    const removeAgent = (index: number) => {
+      onPatchConfig({
+        agents: config.agents.filter((_, agentIndex) => agentIndex !== index)
+      });
+    };
+
     return (
       <div className="config-form node-modal-form">
         <label>
@@ -756,6 +779,65 @@ function NodeConfigForm({
           <span>{t.metrics.agents(config.agents.length)}</span>
           <input value={config.agents.map((agent) => agent.agentName).join(", ")} readOnly />
         </label>
+        <div className="field-span-full parallel-agent-list">
+          {config.agents.length === 0 ? (
+            <div className="empty-state compact-empty-state">No parallel agents configured</div>
+          ) : (
+            config.agents.map((agent, index) => {
+              const selectedModel = agent.modelId ?? "";
+              const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+              const selectedAgentId = agent.agentId ?? agentOptions[0]?.id ?? "main";
+              const hasSelectedAgent = agentOptions.some((candidate) => candidate.id === selectedAgentId);
+
+              return (
+                <div key={`${agent.agentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
+                  <div className="parallel-agent-card-header">
+                    <h4>{`Parallel agent ${index + 1}`}</h4>
+                    <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="config-form parallel-agent-form">
+                    <label>
+                      <span>{t.fields.openclawAgent}</span>
+                      <select value={selectedAgentId} onChange={(event) => updateAgent(index, { agentId: event.target.value })}>
+                        {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+                        {agentOptions.map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>
+                            {candidate.name ? `${candidate.name} (${candidate.id})` : candidate.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t.fields.model}</span>
+                      <select value={selectedModel} onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}>
+                        <option value="">{t.common.defaultModel}</option>
+                        {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+                        {models.map((model) => (
+                          <option key={model.id} value={model.id}>
+                            {model.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t.fields.runLabel}</span>
+                      <input value={agent.agentName} onChange={(event) => updateAgent(index, { agentName: event.target.value })} />
+                    </label>
+                    <label className="field-span-full">
+                      <span>{t.fields.prompt}</span>
+                      <textarea rows={6} value={agent.prompt} onChange={(event) => updateAgent(index, { prompt: event.target.value })} />
+                    </label>
+                  </div>
+                </div>
+              );
+            })
+          )}
+          <button type="button" onClick={addAgent}>
+            Add parallel agent
+          </button>
+        </div>
       </div>
     );
   }
@@ -877,7 +959,8 @@ function buildFlowNodes(
         type: node.type,
         kindLabel: t.nodeTypes[node.type],
         status,
-        statusLabel: t.status[status ?? "idle"]
+        statusLabel: t.status[status ?? "idle"],
+        disabled: node.disabled
       }
     };
   });
@@ -888,7 +971,7 @@ function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: Wo
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label,
+    label: edge.label ?? defaultVisibleEdgeLabel(edge.condition),
     animated: runStatus === "running",
     className: "workflow-edge"
   }));
@@ -934,7 +1017,7 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
   if (type === "parallel_agents") {
     return {
       label: t.defaults.parallelAgentsLabel,
-      agents: [],
+      agents: [createDefaultParallelAgent(t)],
       waitFor: "all"
     };
   }
@@ -955,7 +1038,7 @@ function toFlowEdge(edge: WorkflowEdge): Edge {
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label
+    label: edge.label ?? defaultVisibleEdgeLabel(edge.condition)
   };
 }
 
@@ -965,5 +1048,50 @@ function fromFlowEdge(edge: Edge): WorkflowEdge {
     source: edge.source,
     target: edge.target,
     label: typeof edge.label === "string" ? edge.label : undefined
+  };
+}
+
+function createWorkflowEdge(workflow: WorkflowDefinition, connection: Connection): WorkflowEdge {
+  const condition = pickDefaultEdgeCondition(workflow, connection.source!);
+  return {
+    id: `edge-${connection.source}-${connection.target}-${Math.random().toString(36).slice(2, 8)}`,
+    source: connection.source!,
+    target: connection.target!,
+    condition,
+    label: defaultVisibleEdgeLabel(condition)
+  };
+}
+
+function pickDefaultEdgeCondition(
+  workflow: WorkflowDefinition,
+  sourceId: string
+): WorkflowEdge["condition"] {
+  const source = workflow.nodes.find((node) => node.id === sourceId);
+  if (source?.type !== "condition") {
+    return "success";
+  }
+
+  const outgoing = workflow.edges.filter((edge) => edge.source === sourceId);
+  const hasTrue = outgoing.some((edge) => edge.condition === "true");
+  const hasFalse = outgoing.some((edge) => edge.condition === "false");
+  if (!hasTrue) return "true";
+  if (!hasFalse) return "false";
+  return "true";
+}
+
+function defaultVisibleEdgeLabel(condition?: WorkflowEdge["condition"]): string | undefined {
+  if (condition === "true" || condition === "false" || condition === "failure") {
+    return condition;
+  }
+  return undefined;
+}
+
+function createDefaultParallelAgent(t: Messages, agentId = "main"): AgentNodeConfig {
+  return {
+    label: t.defaults.agentLabel,
+    agentId,
+    agentName: t.defaults.agentName,
+    prompt: t.defaults.agentPrompt,
+    tools: []
   };
 }

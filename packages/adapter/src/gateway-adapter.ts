@@ -7,8 +7,10 @@ import type {
   OpenClawTool,
   SendChannelInput,
   SendChannelResult,
+  AgentTaskResult,
   StartAgentTaskInput,
-  StartAgentTaskResult,
+  StartedAgentTaskResult,
+  WaitForAgentTaskInput,
 } from "@openclaw-cui/shared";
 import type { OpenClawAdapter } from "./index";
 import type { GatewayAdapterConfig } from "./gateway-config";
@@ -18,6 +20,7 @@ import { createGatewayId } from "./gateway-device";
 export class GatewayOpenClawAdapter implements OpenClawAdapter {
   private sharedSession: GatewaySession | undefined;
   private sharedSessionPromise: Promise<GatewaySession> | undefined;
+  private readonly inflightAgentTasks = new Map<string, Promise<Record<string, unknown>>>();
 
   constructor(private readonly config: GatewayAdapterConfig) {}
 
@@ -82,11 +85,12 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
     });
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartAgentTaskResult> {
-    return this.withSession(async (session) => {
+  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+    const session = await this.getSession();
+    try {
       const idempotencyKey = createGatewayId(input.nodeRunId);
       const modelRef = await this.resolveModelRef(session, input.modelId);
-      const result = await session.request<Record<string, unknown>>(
+      const lifecycle = session.requestLifecycle<Record<string, unknown>>(
         "agent",
         {
           message: formatAgentMessage(input),
@@ -98,25 +102,59 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
           label: input.agentName,
           idempotencyKey,
         },
-        { expectFinal: true, timeoutMs: this.config.agentTimeoutMs },
+        { acceptedTimeoutMs: this.config.agentStartTimeoutMs, finalTimeoutMs: null },
       );
-      const runId = readString(result.runId) ?? idempotencyKey;
-      const sessionKey = readString(result.sessionKey) ?? buildAgentMainSessionKey(input.agentId);
-      const ok = readString(result.status) !== "error";
-      const transcriptResult = ok ? await readAgentTranscriptResult(session, sessionKey, input.nodeRunId) : undefined;
-      const transcriptError = transcriptResult?.error;
-      const status = ok && !transcriptError ? "succeeded" : "failed";
+      const accepted = await lifecycle.accepted;
+      const runId = readString(accepted.runId) ?? idempotencyKey;
+      const sessionKey = readString(accepted.sessionKey) ?? buildAgentMainSessionKey(input.agentId);
+      const taskId = runId;
+      const status = mapAcceptedExecutionStatus(readString(accepted.status));
+
+      this.inflightAgentTasks.set(taskId, lifecycle.final.finally(() => {
+        this.inflightAgentTasks.delete(taskId);
+      }));
+
       return {
-        taskId: runId,
+        taskId,
         runId,
         sessionKey,
         status,
-        output: status === "succeeded" ? transcriptResult?.output ?? summarizeAgentResult(result) : undefined,
-        error: transcriptError ?? (ok ? undefined : summarizeAgentResult(result)),
-        usage: undefined,
+        error: status === "failed" ? summarizeAgentResult(accepted) : undefined,
         updatedAt: new Date().toISOString(),
       };
-    });
+    } catch (error) {
+      if (isRecoverableGatewaySessionError(error)) {
+        this.resetSharedSession(session);
+      }
+      throw error;
+    }
+  }
+
+  async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    const finalResult = this.inflightAgentTasks.get(input.taskId);
+    if (!finalResult) {
+      throw new Error(`OpenClaw agent task tracker not found for ${input.taskId}.`);
+    }
+
+    const result = await finalResult;
+    const session = await this.getSession();
+    const runId = readString(result.runId) ?? input.runId;
+    const sessionKey = readString(result.sessionKey) ?? input.sessionKey;
+    const ok = readString(result.status) !== "error";
+    const transcriptResult = ok ? await readAgentTranscriptResult(session, sessionKey, input.nodeRunId) : undefined;
+    const transcriptError = transcriptResult?.error;
+    const status = ok && !transcriptError ? "succeeded" : "failed";
+
+    return {
+      taskId: input.taskId,
+      runId,
+      sessionKey,
+      status,
+      output: status === "succeeded" ? transcriptResult?.output ?? summarizeAgentResult(result) : undefined,
+      error: transcriptError ?? (ok ? undefined : summarizeAgentResult(result)),
+      usage: undefined,
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   async sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult> {
@@ -370,6 +408,16 @@ function mapExecutionStatus(status: string | undefined): OpenClawTaskSummary["st
   return "succeeded";
 }
 
+function mapAcceptedExecutionStatus(status: string | undefined): StartedAgentTaskResult["status"] {
+  if (status === "running" || status === "queued" || status === "succeeded" || status === "failed" || status === "cancelled") {
+    return status;
+  }
+  if (status === "accepted") {
+    return "running";
+  }
+  return "running";
+}
+
 function buildAgentMainSessionKey(agentId: string | undefined): string {
   const normalizedAgentId = normalizeAgentId(agentId ?? "main");
   return `agent:${normalizedAgentId}:main`;
@@ -406,7 +454,6 @@ function isRecoverableGatewaySessionError(error: unknown): boolean {
   return (
     error.message.includes("Gateway is not connected") ||
     error.message.includes("Gateway connection closed") ||
-    error.message.includes("Gateway connect timeout") ||
-    error.message.includes("Gateway request timeout")
+    error.message.includes("Gateway connect timeout")
   );
 }

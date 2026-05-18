@@ -21,11 +21,30 @@ interface GatewayEventFrame {
   payload?: unknown;
 }
 
-interface PendingRequest {
+interface PendingSingleRequest {
+  kind: "single";
   expectFinal: boolean;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: NodeJS.Timeout | undefined;
+}
+
+interface PendingLifecycleRequest {
+  kind: "lifecycle";
+  acceptedSettled: boolean;
+  acceptedResolve: (value: unknown) => void;
+  acceptedReject: (error: Error) => void;
+  finalResolve: (value: unknown) => void;
+  finalReject: (error: Error) => void;
+  acceptedTimeout: NodeJS.Timeout | undefined;
+  finalTimeout: NodeJS.Timeout | undefined;
+}
+
+type PendingRequest = PendingSingleRequest | PendingLifecycleRequest;
+
+export interface GatewayRequestLifecycle<T> {
+  accepted: Promise<T>;
+  final: Promise<T>;
 }
 
 export class GatewayRequestError extends Error {
@@ -94,6 +113,7 @@ export class GatewaySession {
               reject(new Error(`OpenClaw Gateway request timeout for ${method}.`));
             }, timeoutMs);
       this.pending.set(id, {
+        kind: "single",
         expectFinal: opts?.expectFinal === true,
         resolve: (value) => resolve(value as T),
         reject,
@@ -103,6 +123,62 @@ export class GatewaySession {
 
     this.ws.send(JSON.stringify({ type: "req", id, method, params }));
     return promise;
+  }
+
+  requestLifecycle<T>(
+    method: string,
+    params?: unknown,
+    opts?: { acceptedTimeoutMs?: number | null; finalTimeoutMs?: number | null },
+  ): GatewayRequestLifecycle<T> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error("OpenClaw Gateway is not connected.");
+    }
+
+    const id = randomUUID();
+    let acceptedResolve!: (value: T) => void;
+    let acceptedReject!: (error: Error) => void;
+    let finalResolve!: (value: T) => void;
+    let finalReject!: (error: Error) => void;
+
+    const accepted = new Promise<T>((resolve, reject) => {
+      acceptedResolve = resolve;
+      acceptedReject = reject;
+    });
+    const final = new Promise<T>((resolve, reject) => {
+      finalResolve = resolve;
+      finalReject = reject;
+    });
+
+    const acceptedTimeout =
+      opts?.acceptedTimeoutMs === null
+        ? undefined
+        : setTimeout(() => {
+            this.pending.delete(id);
+            const error = new Error(`OpenClaw Gateway request timeout for ${method}.`);
+            acceptedReject(error);
+            finalReject(error);
+          }, opts?.acceptedTimeoutMs ?? this.config.requestTimeoutMs);
+    const finalTimeout =
+      opts?.finalTimeoutMs === null
+        ? undefined
+        : setTimeout(() => {
+            this.pending.delete(id);
+            finalReject(new Error(`OpenClaw Gateway final response timeout for ${method}.`));
+          }, opts?.finalTimeoutMs ?? this.config.requestTimeoutMs);
+
+    this.pending.set(id, {
+      kind: "lifecycle",
+      acceptedSettled: false,
+      acceptedResolve: (value) => acceptedResolve(value as T),
+      acceptedReject,
+      finalResolve: (value) => finalResolve(value as T),
+      finalReject,
+      acceptedTimeout,
+      finalTimeout,
+    });
+
+    this.ws.send(JSON.stringify({ type: "req", id, method, params }));
+    return { accepted, final };
   }
 
   close(): void {
@@ -133,25 +209,59 @@ export class GatewaySession {
     if (!pending) return;
 
     const status = readStatus(parsed.payload);
-    if (parsed.ok && pending.expectFinal && status === "accepted") {
+
+    if (pending.kind === "single") {
+      if (parsed.ok && pending.expectFinal && status === "accepted") {
+        return;
+      }
+
+      this.pending.delete(parsed.id);
+      if (pending.timeout) clearTimeout(pending.timeout);
+
+      if (parsed.ok) {
+        pending.resolve(parsed.payload);
+        return;
+      }
+
+      pending.reject(
+        new GatewayRequestError(
+          parsed.error?.message ?? "OpenClaw Gateway request failed.",
+          parsed.error?.code,
+          parsed.error?.details,
+        ),
+      );
+      return;
+    }
+
+    if (parsed.ok) {
+      if (!pending.acceptedSettled) {
+        pending.acceptedSettled = true;
+        if (pending.acceptedTimeout) clearTimeout(pending.acceptedTimeout);
+        pending.acceptedResolve(parsed.payload);
+      }
+
+      if (status === "accepted") {
+        return;
+      }
+
+      this.pending.delete(parsed.id);
+      if (pending.finalTimeout) clearTimeout(pending.finalTimeout);
+      pending.finalResolve(parsed.payload);
       return;
     }
 
     this.pending.delete(parsed.id);
-    if (pending.timeout) clearTimeout(pending.timeout);
-
-    if (parsed.ok) {
-      pending.resolve(parsed.payload);
-      return;
-    }
-
-    pending.reject(
-      new GatewayRequestError(
-        parsed.error?.message ?? "OpenClaw Gateway request failed.",
-        parsed.error?.code,
-        parsed.error?.details,
-      ),
+    if (pending.acceptedTimeout) clearTimeout(pending.acceptedTimeout);
+    if (pending.finalTimeout) clearTimeout(pending.finalTimeout);
+    const error = new GatewayRequestError(
+      parsed.error?.message ?? "OpenClaw Gateway request failed.",
+      parsed.error?.code,
+      parsed.error?.details,
     );
+    if (!pending.acceptedSettled) {
+      pending.acceptedReject(error);
+    }
+    pending.finalReject(error);
   }
 
   private async sendConnect(payload: unknown): Promise<void> {
@@ -218,8 +328,18 @@ export class GatewaySession {
 
   private rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
-      if (pending.timeout) clearTimeout(pending.timeout);
-      pending.reject(error);
+      if (pending.kind === "single") {
+        if (pending.timeout) clearTimeout(pending.timeout);
+        pending.reject(error);
+        continue;
+      }
+
+      if (pending.acceptedTimeout) clearTimeout(pending.acceptedTimeout);
+      if (pending.finalTimeout) clearTimeout(pending.finalTimeout);
+      if (!pending.acceptedSettled) {
+        pending.acceptedReject(error);
+      }
+      pending.finalReject(error);
     }
     this.pending.clear();
   }

@@ -8,8 +8,10 @@ import type {
   OpenClawTool,
   SendChannelInput,
   SendChannelResult,
+  AgentTaskResult,
   StartAgentTaskInput,
-  StartAgentTaskResult
+  StartedAgentTaskResult,
+  WaitForAgentTaskInput
 } from "@openclaw-cui/shared";
 import { GatewayOpenClawAdapter } from "./gateway-adapter";
 import { resolveGatewayAdapterConfig } from "./gateway-config";
@@ -21,11 +23,14 @@ export interface OpenClawAdapter {
   listChannels(): Promise<OpenClawChannel[]>;
   listSessions(): Promise<OpenClawSessionSummary[]>;
   listTasks(): Promise<OpenClawTaskSummary[]>;
-  startAgentTask(input: StartAgentTaskInput): Promise<StartAgentTaskResult>;
+  startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
+  waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
 }
 
 export class MockOpenClawAdapter implements OpenClawAdapter {
+  private readonly agentResults = new Map<string, AgentTaskResult>();
+
   async listModels(): Promise<OpenClawModel[]> {
     return [
       {
@@ -110,7 +115,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
     ];
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartAgentTaskResult> {
+  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
     const taskId = `oc-task-${nanoid(8)}`;
     const runId = `oc-run-${nanoid(8)}`;
@@ -118,7 +123,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
     const outputTokens = Math.max(80, Math.round((input.prompt.length + inputSize) / 3));
     const inputTokens = Math.max(60, Math.round(input.prompt.length / 2));
 
-    return {
+    this.agentResults.set(taskId, {
       taskId,
       runId,
       sessionKey: `oc-session-${input.workflowRunId}`,
@@ -134,7 +139,23 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
         recordedAt: now
       },
       updatedAt: now
+    });
+
+    return {
+      taskId,
+      runId,
+      sessionKey: `oc-session-${input.workflowRunId}`,
+      status: "running",
+      updatedAt: now
     };
+  }
+
+  async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    const result = this.agentResults.get(input.taskId);
+    if (!result) {
+      throw new Error(`Mock OpenClaw task not found: ${input.taskId}`);
+    }
+    return result;
   }
 
   async sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult> {

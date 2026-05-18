@@ -1416,6 +1416,31 @@ dd {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.parallel-agent-list,
+.parallel-agent-form {
+  display: grid;
+  gap: 12px;
+}
+
+.parallel-agent-card {
+  gap: 14px;
+}
+
+.parallel-agent-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.parallel-agent-card-header h4 {
+  margin: 0;
+}
+
+.parallel-agent-form {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .skill-picker,
 .skill-list {
   display: grid;

@@ -9,7 +9,7 @@ export interface GatewayAdapterConfig {
   password?: string;
   locale: string;
   requestTimeoutMs: number;
-  agentTimeoutMs: number;
+  agentStartTimeoutMs: number;
 }
 
 interface OpenClawConfigFile {
@@ -52,7 +52,10 @@ export function resolveGatewayAdapterConfig(): GatewayAdapterConfig | undefined 
     password,
     locale: normalizeString(process.env.OPENCLAW_GATEWAY_LOCALE) ?? "zh-CN",
     requestTimeoutMs: readIntegerEnv("OPENCLAW_GATEWAY_REQUEST_TIMEOUT_MS", 20_000),
-    agentTimeoutMs: readIntegerEnv("OPENCLAW_AGENT_TIMEOUT_MS", 120_000),
+    agentStartTimeoutMs: readIntegerEnv(
+      "OPENCLAW_AGENT_START_TIMEOUT_MS",
+      readIntegerEnv("OPENCLAW_AGENT_TIMEOUT_MS", 20_000)
+    ),
   };
 }
 
