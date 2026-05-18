@@ -1,5 +1,5 @@
-import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
+import { memo, type CSSProperties } from "react";
+import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import {
   Bot,
   CheckCircle2,
@@ -13,7 +13,7 @@ import {
   ShieldCheck,
   XCircle
 } from "lucide-react";
-import type { WorkflowNodeRunStatus, WorkflowNodeType } from "@openclaw-cui/shared";
+import type { CanvasSize, WorkflowNodeRunStatus, WorkflowNodeType } from "@openclaw-cui/shared";
 
 export interface WorkflowNodeCardData extends Record<string, unknown> {
   label: string;
@@ -23,12 +23,15 @@ export interface WorkflowNodeCardData extends Record<string, unknown> {
   statusLabel: string;
   disabled?: boolean;
   managerPortCount?: number;
+  managerSlot?: number;
+  managerSlotSize?: CanvasSize;
 }
 
 const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
   agent: Bot,
   parallel_agents: MessagesSquare,
   manager: Network,
+  manager_slot: Network,
   loop: Repeat2,
   condition: GitBranch,
   summary: MessagesSquare,
@@ -37,6 +40,16 @@ const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
   note: MessagesSquare,
   group: MessagesSquare
 };
+
+const managerPortStart = 122;
+const managerPortGap = 34;
+export const MANAGER_SLOT_DEFAULT_SIZE: CanvasSize = { width: 560, height: 300 };
+export const MANAGER_SLOT_MIN_SIZE: CanvasSize = { width: 420, height: 260 };
+export const MANAGER_SLOT_FRAME = {
+  top: 86,
+  side: 28,
+  bottom: 28
+} as const;
 
 function statusIcon(status?: WorkflowNodeRunStatus) {
   if (status === "succeeded") return CheckCircle2;
@@ -54,33 +67,78 @@ function statusClass(status?: WorkflowNodeRunStatus) {
   return "status-idle";
 }
 
-export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected }: NodeProps) {
+export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected, width, height }: NodeProps) {
   const nodeData = data as WorkflowNodeCardData;
   const TypeIcon = typeIcon[nodeData.type];
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
   const managerSlots = Array.from({ length: managerPortCount }, (_item, index) => index + 1);
+  const nodeStyle =
+    nodeData.type === "manager"
+      ? managerNodeStyle(managerPortCount)
+      : nodeData.type === "manager_slot"
+        ? managerSlotNodeStyle(nodeData.managerSlotSize, { width, height })
+        : undefined;
 
   return (
     <div
       className={`workflow-node workflow-node-${nodeData.type} ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}
-      style={nodeData.type === "manager" ? { minHeight: Math.max(138, 92 + managerPortCount * 26) } : undefined}
+      style={nodeStyle}
     >
-      {nodeData.type === "manager" ? (
+      {nodeData.type === "manager_slot" ? (
+        <>
+          <NodeResizer
+            isVisible={selected}
+            minWidth={MANAGER_SLOT_MIN_SIZE.width}
+            minHeight={MANAGER_SLOT_MIN_SIZE.height}
+            handleClassName="manager-slot-resize-handle"
+            lineClassName="manager-slot-resize-line"
+            color="var(--accent)"
+          />
+          <Handle
+            id="manager-slot-in"
+            className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-in"
+            type="target"
+            position={Position.Left}
+            style={{ top: 34 }}
+          />
+          <Handle
+            id="manager-slot-out"
+            className="node-handle input-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-out"
+            type="source"
+            position={Position.Left}
+            style={{ top: 52 }}
+          />
+          <Handle
+            id="manager-slot-inner-out"
+            className="node-handle output-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-out"
+            type="source"
+            position={Position.Right}
+            style={{ top: "var(--manager-slot-inner-handle-top)" }}
+          />
+          <Handle
+            id="manager-slot-inner-in"
+            className="node-handle input-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-in"
+            type="target"
+            position={Position.Left}
+            style={{ top: "var(--manager-slot-inner-handle-top)" }}
+          />
+        </>
+      ) : nodeData.type === "manager" ? (
         managerSlots.map((slot, index) => (
           <Handle
             key={`manager-in-${slot}`}
             id={`manager-in-${slot}`}
-            className="node-handle manager-slot-handle"
+            className="node-handle input-handle manager-slot-handle manager-slot-input-handle"
             type="target"
-            position={Position.Left}
-            style={{ top: managerHandleTop(index, managerPortCount) }}
+            position={Position.Right}
+            style={managerHandleStyle(index, "input")}
           />
         ))
       ) : nodeData.type === "loop" ? (
-        <Handle className="node-handle loop-input-handle" type="target" position={Position.Right} />
+        <Handle className="node-handle input-handle loop-input-handle" type="target" position={Position.Right} />
       ) : (
-        <Handle className="node-handle" type="target" position={Position.Left} />
+        <Handle className="node-handle input-handle" type="target" position={Position.Left} />
       )}
       <div className="node-topline">
         <span className={`node-type node-type-${nodeData.type}`}>
@@ -92,28 +150,39 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected 
       </div>
       <div className="node-label">{nodeData.label}</div>
       <div className="node-kind">{nodeData.kindLabel}</div>
+      {nodeData.type === "manager_slot" && (
+        <div className="manager-slot-box-body" aria-hidden="true">
+          <span className="manager-slot-box-tag">{`Slot ${nodeData.managerSlot ?? ""}`}</span>
+          <span className="manager-slot-box-wall manager-slot-box-wall-left" />
+          <span className="manager-slot-box-wall manager-slot-box-wall-right" />
+        </div>
+      )}
       {nodeData.type === "manager" && (
-        <div className="manager-port-stack" aria-hidden="true">
+        <div className="manager-port-list" aria-hidden="true">
           {managerSlots.map((slot) => (
-            <span key={slot}>{slot}</span>
+            <div key={slot} className="manager-port-row">
+              <span className="manager-port-index">{slot}</span>
+              <span className="manager-port-rule" />
+              <span className="manager-port-guide" />
+            </div>
           ))}
         </div>
       )}
-      {nodeData.type === "manager" ? (
+      {nodeData.type === "manager_slot" ? null : nodeData.type === "manager" ? (
         managerSlots.map((slot, index) => (
           <Handle
             key={`manager-out-${slot}`}
             id={`manager-out-${slot}`}
-            className="node-handle manager-slot-handle"
+            className="node-handle output-handle manager-slot-handle manager-slot-output-handle"
             type="source"
             position={Position.Right}
-            style={{ top: managerHandleTop(index, managerPortCount) }}
+            style={managerHandleStyle(index, "output")}
           />
         ))
       ) : nodeData.type === "loop" ? (
-        <Handle className="node-handle loop-output-handle" type="source" position={Position.Left} />
+        <Handle className="node-handle output-handle loop-output-handle" type="source" position={Position.Left} />
       ) : (
-        <Handle className="node-handle" type="source" position={Position.Right} />
+        <Handle className="node-handle output-handle" type="source" position={Position.Right} />
       )}
     </div>
   );
@@ -124,9 +193,39 @@ function clampManagerPortCount(value: unknown): number {
   return Math.min(8, Math.max(1, Math.round(value)));
 }
 
-function managerHandleTop(index: number, portCount: number): string {
-  if (portCount <= 1) return "72%";
-  const first = 58;
-  const last = 88;
-  return `${first + ((last - first) * index) / (portCount - 1)}%`;
+function managerNodeStyle(portCount: number): CSSProperties {
+  return {
+    minHeight: managerPortStart + Math.max(0, portCount - 1) * managerPortGap + 40,
+    "--manager-port-start": `${managerPortStart}px`,
+    "--manager-port-gap": `${managerPortGap}px`
+  } as CSSProperties;
+}
+
+function managerSlotNodeStyle(size?: CanvasSize, liveSize?: Partial<CanvasSize>): CSSProperties {
+  const normalizedWidth = normalizeManagerSlotSizeValue(liveSize?.width ?? size?.width, MANAGER_SLOT_DEFAULT_SIZE.width, MANAGER_SLOT_MIN_SIZE.width);
+  const normalizedHeight = normalizeManagerSlotSizeValue(liveSize?.height ?? size?.height, MANAGER_SLOT_DEFAULT_SIZE.height, MANAGER_SLOT_MIN_SIZE.height);
+  const innerHandleTop = MANAGER_SLOT_FRAME.top + (normalizedHeight - MANAGER_SLOT_FRAME.top - MANAGER_SLOT_FRAME.bottom) / 2;
+  return {
+    width: normalizedWidth,
+    height: normalizedHeight,
+    "--manager-slot-frame-top": `${MANAGER_SLOT_FRAME.top}px`,
+    "--manager-slot-frame-side": `${MANAGER_SLOT_FRAME.side}px`,
+    "--manager-slot-frame-bottom": `${MANAGER_SLOT_FRAME.bottom}px`,
+    "--manager-slot-inner-handle-top": `${innerHandleTop}px`
+  } as CSSProperties;
+}
+
+function normalizeManagerSlotSizeValue(value: unknown, fallback: number, min: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.round(value));
+}
+
+function managerHandleStyle(
+  index: number,
+  lane: "input" | "output"
+): CSSProperties {
+  return {
+    top: `calc(var(--manager-port-start) + ${index * managerPortGap}px ${lane === "input" ? "+ 7px" : "- 7px"})`,
+    right: 0
+  };
 }

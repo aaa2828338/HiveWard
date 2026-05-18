@@ -7,10 +7,13 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   type Connection,
+  type CoordinateExtent,
   type Edge,
   type EdgeMouseHandler,
   type Node,
+  type NodeChange,
   type NodeMouseHandler,
   type OnNodeDrag,
   type OnNodesChange
@@ -19,10 +22,13 @@ import { Bot, Check, GitBranch, MessagesSquare, Network, Plus, Repeat2, Send, Sh
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
+  CanvasPosition,
+  CanvasSize,
   CatalogSnapshot,
   ConditionNodeConfig,
   LoopNodeConfig,
   ManagerNodeConfig,
+  ManagerSlotNodeConfig,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
   ParallelAgentsNodeConfig,
@@ -35,7 +41,13 @@ import type {
   WorkflowNodeType,
   WorkflowRunView
 } from "@openclaw-cui/shared";
-import { WorkflowNodeCard, type WorkflowNodeCardData } from "./WorkflowNodeCard";
+import {
+  MANAGER_SLOT_DEFAULT_SIZE,
+  MANAGER_SLOT_FRAME,
+  MANAGER_SLOT_MIN_SIZE,
+  WorkflowNodeCard,
+  type WorkflowNodeCardData
+} from "./WorkflowNodeCard";
 import { type Language, type Messages } from "../lib/i18n";
 
 const nodeTypes = {
@@ -51,6 +63,15 @@ const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
   { type: "approval", icon: ShieldCheck },
   { type: "send", icon: Send }
 ];
+
+const managerInHandlePrefix = "manager-in-";
+const managerOutHandlePrefix = "manager-out-";
+const managerSlotInHandle = "manager-slot-in";
+const managerSlotOutHandle = "manager-slot-out";
+const managerSlotInnerOutHandle = "manager-slot-inner-out";
+const managerSlotInnerInHandle = "manager-slot-inner-in";
+const rightButtonDragThreshold = 4;
+const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 
 export function WorkflowStudioPage({
   workflow,
@@ -91,7 +112,7 @@ export function WorkflowStudioPage({
     y: 0,
     nodeId: undefined
   });
-  const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean } | undefined>(undefined);
+  const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean; openedMenu: boolean } | undefined>(undefined);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
     setSelectedCanvasNodeIds((current) => {
@@ -118,22 +139,36 @@ export function WorkflowStudioPage({
     setLocalEdges(buildFlowEdges(workflow, runView?.run.status));
   }, [runView?.run.status, workflow]);
 
+  useEffect(() => {
+    if (!workflow) return;
+    if (hasDuplicateNodeIds(workflow)) {
+      onUpdateWorkflow((current) => (current.id === workflow.id ? ensureUniqueWorkflowNodeIds(current) : current));
+      return;
+    }
+    if (!needsManagerSlotSync(workflow)) return;
+    onUpdateWorkflow((current) => (current.id === workflow.id ? syncAllManagerSlotBoxes(current) : current));
+  }, [onUpdateWorkflow, workflow]);
+
   const patchNodeConfig = useCallback(
     (nodeId: string, patch: Partial<WorkflowNode["config"]>) => {
-      onUpdateWorkflow((current) => ({
-        ...current,
-        nodes: current.nodes.map((node) =>
-          node.id === nodeId
-            ? {
-                ...node,
-                config: {
-                  ...node.config,
-                  ...patch
-                } as WorkflowNode["config"]
-              }
-            : node
-        )
-      }));
+      onUpdateWorkflow((current) => {
+        const next = {
+          ...current,
+          nodes: current.nodes.map((node) =>
+            node.id === nodeId
+              ? {
+                  ...node,
+                  config: {
+                    ...node.config,
+                    ...patch
+                  } as WorkflowNode["config"]
+                }
+              : node
+          )
+        };
+        const patchedNode = next.nodes.find((node) => node.id === nodeId);
+        return patchedNode?.type === "manager" ? syncManagerSlotBoxes(next, patchedNode) : next;
+      });
     },
     [onUpdateWorkflow]
   );
@@ -141,18 +176,28 @@ export function WorkflowStudioPage({
   const onNodesChange: OnNodesChange<Node<WorkflowNodeCardData>> = useCallback(
     (changes) => {
       setLocalNodes((current) => applyNodeChanges(changes, current));
+      const sizeChanges = collectManagerSlotSizeChanges(changes);
+      if (sizeChanges.size === 0) return;
+      onUpdateWorkflow((current) => resizeManagerSlotNodes(current, sizeChanges));
     },
-    []
+    [onUpdateWorkflow]
   );
 
   const onNodeDragStop: OnNodeDrag<Node<WorkflowNodeCardData>> = useCallback(
     (_event, draggedNode) => {
-      onUpdateWorkflow((current) => ({
-        ...current,
-        nodes: current.nodes.map((node) =>
-          node.id === draggedNode.id ? { ...node, position: draggedNode.position } : node
-        )
-      }));
+      onUpdateWorkflow((current) => {
+        const parentNode = draggedNode.parentId ? current.nodes.find((node) => node.id === draggedNode.parentId) : undefined;
+        const position =
+          parentNode?.type === "manager_slot"
+            ? clampPositionToManagerSlotFrame(draggedNode.position, parentNode, defaultChildNodeSize)
+            : draggedNode.position;
+        return {
+          ...current,
+          nodes: current.nodes.map((node) =>
+            node.id === draggedNode.id ? { ...node, position } : node
+          )
+        };
+      });
     },
     [onUpdateWorkflow]
   );
@@ -185,21 +230,29 @@ export function WorkflowStudioPage({
   const addNode = useCallback(
     (type: WorkflowNodeType) => {
       onUpdateWorkflow((current) => {
-        const id = `${type}-${current.nodes.length + 1}`;
+        const workflowWithUniqueIds = ensureUniqueWorkflowNodeIds(current);
+        const selectedSlot =
+          selectedNodeId ? workflowWithUniqueIds.nodes.find((node) => node.id === selectedNodeId && node.type === "manager_slot") : undefined;
+        const shouldNest = Boolean(selectedSlot && type !== "manager");
+        const id = nextWorkflowNodeId(workflowWithUniqueIds, type, shouldNest ? selectedSlot?.id : undefined);
         const node: WorkflowNode = {
           id,
           type,
-          position: { x: 180 + current.nodes.length * 42, y: 188 + current.nodes.length * 22 },
+          parentId: shouldNest ? selectedSlot?.id : undefined,
+          position: shouldNest
+            ? managerSlotChildInitialPosition(selectedSlot!, workflowWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
+            : { x: 180 + workflowWithUniqueIds.nodes.length * 42, y: 188 + workflowWithUniqueIds.nodes.length * 22 },
           config: defaultConfig(type, t)
         };
-        return {
-          ...current,
-          nodes: [...current.nodes, node]
+        const next = {
+          ...workflowWithUniqueIds,
+          nodes: [...workflowWithUniqueIds.nodes, node]
         };
+        return type === "manager" ? syncManagerSlotBoxes(next, node) : next;
       });
       setNodeMenuOpen(false);
     },
-    [onUpdateWorkflow, t]
+    [onUpdateWorkflow, selectedNodeId, t]
   );
 
   const openNodeMenuAt = useCallback((x: number, y: number) => {
@@ -218,12 +271,18 @@ export function WorkflowStudioPage({
 
   const deleteNodeById = useCallback(
     (nodeId: string) => {
-      onUpdateWorkflow((current) => ({
-        ...current,
-        nodes: current.nodes.filter((node) => node.id !== nodeId),
-        edges: current.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId)
-      }));
-      setLocalNodes((current) => current.filter((node) => node.id !== nodeId));
+      onUpdateWorkflow((current) => {
+        const deleteIds = collectDeletedNodeIds(current, new Set([nodeId]));
+        return {
+          ...current,
+          nodes: current.nodes.filter((node) => !deleteIds.has(node.id)),
+          edges: current.edges.filter((edge) => !deleteIds.has(edge.source) && !deleteIds.has(edge.target))
+        };
+      });
+      setLocalNodes((current) => {
+        const deleteIds = new Set([nodeId]);
+        return current.filter((node) => !deleteIds.has(node.id) && node.parentId !== nodeId);
+      });
       setLocalEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId));
       if (selectedNodeId === nodeId) onSelectNode(undefined);
       if (inspectedNodeId === nodeId) setInspectedNodeId(undefined);
@@ -262,11 +321,14 @@ export function WorkflowStudioPage({
       event.preventDefault();
       const selectedSet = new Set(selectedCanvasNodeIds);
 
-      onUpdateWorkflow((current) => ({
-        ...current,
-        nodes: current.nodes.filter((node) => !selectedSet.has(node.id)),
-        edges: current.edges.filter((edge) => !selectedSet.has(edge.source) && !selectedSet.has(edge.target))
-      }));
+      onUpdateWorkflow((current) => {
+        const deleteIds = collectDeletedNodeIds(current, selectedSet);
+        return {
+          ...current,
+          nodes: current.nodes.filter((node) => !deleteIds.has(node.id)),
+          edges: current.edges.filter((edge) => !deleteIds.has(edge.source) && !deleteIds.has(edge.target))
+        };
+      });
 
       if (selectedNodeId && selectedSet.has(selectedNodeId)) {
         onSelectNode(undefined);
@@ -284,9 +346,17 @@ export function WorkflowStudioPage({
   }, [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateWorkflow, selectedCanvasNodeIds, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]);
 
   const onNodeClick: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
-    (_event, node) => {
+    (event, node) => {
       closeNodeMenu();
       closeNodeContextMenu();
+      if (node.data.type === "manager_slot" && isManagerSlotInnerFrameContext(event)) {
+        if (selectedNodeId !== node.id) {
+          setSelectedCanvasNodeIdsIfChanged([node.id]);
+          onSelectNode(node.id);
+        }
+        setInspectedNodeId(undefined);
+        return;
+      }
       if (selectedNodeId === node.id) {
         setInspectedNodeId(node.id);
         return;
@@ -301,20 +371,26 @@ export function WorkflowStudioPage({
   const onNodeContextMenu: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
     (event, node) => {
       event.preventDefault();
-      const panel = (event.currentTarget as HTMLElement).closest(".workflow-canvas-panel") as HTMLDivElement | null;
-      const rect = panel?.getBoundingClientRect();
+      event.stopPropagation();
+      rightDragStateRef.current = undefined;
+      const { x, y } = getMenuPoint(event);
       setSelectedCanvasNodeIdsIfChanged([node.id]);
       onSelectNode(node.id);
       setInspectedNodeId(undefined);
+      if (node.data.type === "manager_slot" && isManagerSlotInnerFrameContext(event)) {
+        closeNodeContextMenu();
+        openNodeMenuAt(x, y);
+        return;
+      }
       closeNodeMenu();
       setNodeContextMenu({
         open: true,
-        x: rect ? event.clientX - rect.left : event.clientX,
-        y: rect ? event.clientY - rect.top : event.clientY,
+        x,
+        y,
         nodeId: node.id
       });
     },
-    [closeNodeMenu, onSelectNode, setSelectedCanvasNodeIdsIfChanged]
+    [closeNodeContextMenu, closeNodeMenu, onSelectNode, openNodeMenuAt, setSelectedCanvasNodeIdsIfChanged]
   );
 
   const onEdgeClick: EdgeMouseHandler<Edge> = useCallback(
@@ -341,31 +417,46 @@ export function WorkflowStudioPage({
             rightDragStateRef.current = {
               x: event.clientX,
               y: event.clientY,
-              moved: false
+              moved: false,
+              openedMenu: false
             };
           }}
           onPointerMoveCapture={(event) => {
             const state = rightDragStateRef.current;
             if (!state || (event.buttons & 2) !== 2) return;
-            if (Math.hypot(event.clientX - state.x, event.clientY - state.y) > 4) {
+            if (Math.hypot(event.clientX - state.x, event.clientY - state.y) > rightButtonDragThreshold) {
               state.moved = true;
             }
           }}
-          onContextMenuCapture={(event) => {
-            if (!rightDragStateRef.current?.moved) return;
-            event.preventDefault();
-            event.stopPropagation();
-            rightDragStateRef.current = undefined;
+          onPointerUpCapture={(event) => {
+            if (event.button !== 2) return;
+            const state = rightDragStateRef.current;
+            if (!state || state.moved || state.openedMenu || !isPaneAddMenuTarget(event.target)) return;
+            state.openedMenu = true;
+            const { x, y } = getMenuPoint(event);
             closeNodeContextMenu();
-            closeNodeMenu();
             setInspectedNodeId(undefined);
+            openNodeMenuAt(x, y);
+          }}
+          onContextMenuCapture={(event) => {
+            event.preventDefault();
+            if (rightDragStateRef.current?.moved) {
+              event.stopPropagation();
+              rightDragStateRef.current = undefined;
+              closeNodeContextMenu();
+              closeNodeMenu();
+              setInspectedNodeId(undefined);
+            }
           }}
         >
           <button
             type="button"
             className="node-menu-trigger"
             title={t.actions.add}
-            onClick={() => openNodeMenuAt(88, 252)}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              openNodeMenuAt(rect.right + 8, rect.top);
+            }}
             disabled={!workflow || busy}
           >
             <Plus size={18} />
@@ -412,16 +503,17 @@ export function WorkflowStudioPage({
                 setInspectedNodeId(undefined);
                 return;
               }
-              const rect = (event.currentTarget as HTMLDivElement).getBoundingClientRect();
+              const { x, y } = getMenuPoint(event);
               closeNodeContextMenu();
               setInspectedNodeId(undefined);
-              openNodeMenuAt(event.clientX - rect.left, event.clientY - rect.top);
+              openNodeMenuAt(x, y);
             }}
             onSelectionChange={({ nodes }) => setSelectedCanvasNodeIdsIfChanged(nodes.map((node) => node.id))}
             onNodesChange={onNodesChange}
             onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             selectionOnDrag
+            selectionMode={SelectionMode.Partial}
             panOnDrag={[1, 2]}
             deleteKeyCode={null}
             minZoom={0.35}
@@ -724,6 +816,26 @@ function NodeConfigForm({
             value={config.instructions ?? ""}
             onChange={(event) => onPatchConfig({ instructions: event.target.value })}
           />
+        </label>
+      </div>
+    );
+  }
+
+  if (node.type === "manager_slot") {
+    const config = node.config as ManagerSlotNodeConfig;
+    return (
+      <div className="config-form node-modal-form">
+        <label>
+          <span>{t.fields.label}</span>
+          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
+        </label>
+        <label>
+          <span>Slot</span>
+          <input value={config.slot} readOnly />
+        </label>
+        <label>
+          <span>Manager</span>
+          <input value={config.managerNodeId} readOnly />
         </label>
       </div>
     );
@@ -1058,17 +1170,348 @@ function clampNumberInput(value: string, min: number, max: number, fallback: num
   return Math.min(max, Math.max(min, parsed));
 }
 
+function nextWorkflowNodeId(workflow: WorkflowDefinition, type: WorkflowNodeType, parentId?: string): string {
+  return nextAvailableWorkflowNodeId(new Set(workflow.nodes.map((node) => node.id)), type, parentId);
+}
+
+function nextAvailableWorkflowNodeId(existingIds: Set<string>, type: WorkflowNodeType, parentId?: string): string {
+  const baseId = parentId ? `${parentId}-${type}` : type;
+  let index = 1;
+  let id = `${baseId}-${index}`;
+  while (existingIds.has(id)) {
+    index += 1;
+    id = `${baseId}-${index}`;
+  }
+  return id;
+}
+
+function hasDuplicateNodeIds(workflow: WorkflowDefinition): boolean {
+  const seen = new Set<string>();
+  for (const node of workflow.nodes) {
+    if (seen.has(node.id)) return true;
+    seen.add(node.id);
+  }
+  return false;
+}
+
+function ensureUniqueWorkflowNodeIds(workflow: WorkflowDefinition): WorkflowDefinition {
+  const usedIds = new Set<string>();
+  let changed = false;
+  const nodes = workflow.nodes.map((node) => {
+    if (!usedIds.has(node.id)) {
+      usedIds.add(node.id);
+      return node;
+    }
+    const nextId = nextAvailableWorkflowNodeId(usedIds, node.type, node.parentId);
+    usedIds.add(nextId);
+    changed = true;
+    return {
+      ...node,
+      id: nextId
+    };
+  });
+
+  return changed ? { ...workflow, nodes } : workflow;
+}
+
+function isPaneAddMenuTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (
+    target.closest(
+      ".react-flow__node, .react-flow__handle, .react-flow__controls, .react-flow__minimap, .node-menu-popover, .node-context-menu, .node-menu-trigger"
+    )
+  ) {
+    return false;
+  }
+  return Boolean(target.closest(".react-flow__pane"));
+}
+
+function isManagerSlotInnerFrameContext(event: { currentTarget: EventTarget | null; clientX: number; clientY: number }): boolean {
+  if (!(event.currentTarget instanceof Element)) return false;
+  const innerFrame = event.currentTarget.querySelector(".manager-slot-box-body");
+  if (!innerFrame) return false;
+  const rect = innerFrame.getBoundingClientRect();
+  return event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom;
+}
+
+function getMenuPoint(event: { clientX: number; clientY: number }): { x: number; y: number } {
+  return {
+    x: event.clientX + 8,
+    y: event.clientY + 8
+  };
+}
+
+function collectManagerSlotSizeChanges(changes: NodeChange<Node<WorkflowNodeCardData>>[]): Map<string, CanvasSize> {
+  const sizes = new Map<string, CanvasSize>();
+  for (const change of changes) {
+    if (change.type !== "dimensions" || !change.dimensions) continue;
+    if (change.resizing === true) continue;
+    sizes.set(change.id, normalizeManagerSlotSize(change.dimensions));
+  }
+  return sizes;
+}
+
+function resizeManagerSlotNodes(workflow: WorkflowDefinition, sizesById: Map<string, CanvasSize>): WorkflowDefinition {
+  let changed = false;
+  const resizedNodes = workflow.nodes.map((node) => {
+    const nextSize = sizesById.get(node.id);
+    if (!nextSize || node.type !== "manager_slot") return node;
+    const currentSize = normalizeManagerSlotSize(node.size);
+    if (currentSize.width === nextSize.width && currentSize.height === nextSize.height) return node;
+    changed = true;
+    return { ...node, size: nextSize };
+  });
+
+  if (!changed) return workflow;
+
+  const resizedNodesById = new Map(resizedNodes.map((node) => [node.id, node]));
+  const nodes = resizedNodes.map((node) => {
+    if (!node.parentId) return node;
+    const parentNode = resizedNodesById.get(node.parentId);
+    if (parentNode?.type !== "manager_slot") return node;
+    const position = clampPositionToManagerSlotFrame(node.position, parentNode, defaultChildNodeSize);
+    if (position.x === node.position.x && position.y === node.position.y) return node;
+    return { ...node, position };
+  });
+
+  return {
+    ...workflow,
+    nodes
+  };
+}
+
+function normalizeManagerSlotSize(size?: Partial<CanvasSize>): CanvasSize {
+  return {
+    width: normalizeDimension(size?.width, MANAGER_SLOT_DEFAULT_SIZE.width, MANAGER_SLOT_MIN_SIZE.width),
+    height: normalizeDimension(size?.height, MANAGER_SLOT_DEFAULT_SIZE.height, MANAGER_SLOT_MIN_SIZE.height)
+  };
+}
+
+function normalizeDimension(value: unknown, fallback: number, min: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.round(value));
+}
+
+function managerSlotChildExtent(slotNode: WorkflowNode): CoordinateExtent {
+  const size = normalizeManagerSlotSize(slotNode.size);
+  return [
+    [MANAGER_SLOT_FRAME.side, MANAGER_SLOT_FRAME.top],
+    [size.width - MANAGER_SLOT_FRAME.side, size.height - MANAGER_SLOT_FRAME.bottom]
+  ];
+}
+
+function managerSlotChildInitialPosition(slotNode: WorkflowNode, childIndex: number): CanvasPosition {
+  const extent = managerSlotChildExtent(slotNode);
+  const position = {
+    x: MANAGER_SLOT_FRAME.side + 48 + childIndex * 28,
+    y: MANAGER_SLOT_FRAME.top + 52
+  };
+  return clampPositionToExtent(position, extent, defaultChildNodeSize);
+}
+
+function clampPositionToManagerSlotFrame(position: CanvasPosition, slotNode: WorkflowNode, childSize: CanvasSize): CanvasPosition {
+  return clampPositionToExtent(position, managerSlotChildExtent(slotNode), childSize);
+}
+
+function clampPositionToExtent(position: CanvasPosition, extent: CoordinateExtent, childSize: CanvasSize): CanvasPosition {
+  return {
+    x: Math.min(Math.max(position.x, extent[0][0]), Math.max(extent[0][0], extent[1][0] - childSize.width)),
+    y: Math.min(Math.max(position.y, extent[0][1]), Math.max(extent[0][1], extent[1][1] - childSize.height))
+  };
+}
+
+function syncManagerSlotBoxes(workflow: WorkflowDefinition, managerNode: WorkflowNode): WorkflowDefinition {
+  const config = managerNode.config as ManagerNodeConfig;
+  const portCount = clampNumber(config.portCount, 1, 8, 3);
+  const slotIds = new Set(Array.from({ length: portCount }, (_item, index) => managerSlotNodeId(managerNode.id, index + 1)));
+  const removedSlotIds = new Set(
+    workflow.nodes
+      .filter((node) => node.type === "manager_slot" && (node.config as ManagerSlotNodeConfig).managerNodeId === managerNode.id && !slotIds.has(node.id))
+      .map((node) => node.id)
+  );
+  const deleteIds = collectDeletedNodeIds(workflow, removedSlotIds);
+  const retainedNodes = workflow.nodes.filter((node) => !deleteIds.has(node.id));
+  const nodesById = new Map(retainedNodes.map((node) => [node.id, node]));
+  const nodes = [...retainedNodes];
+
+  for (let slot = 1; slot <= portCount; slot += 1) {
+    const id = managerSlotNodeId(managerNode.id, slot);
+    const existing = nodesById.get(id);
+    if (existing) {
+      const existingIndex = nodes.findIndex((node) => node.id === id);
+      nodes[existingIndex] = {
+        ...existing,
+        config: {
+          ...existing.config,
+          label: `Slot ${slot}`,
+          managerNodeId: managerNode.id,
+          slot
+        } as WorkflowNode["config"]
+      };
+      continue;
+    }
+
+    nodes.push({
+      id,
+      type: "manager_slot",
+      position: {
+        x: managerNode.position.x + 360,
+        y: managerNode.position.y + (slot - 1) * 300
+      },
+      size: MANAGER_SLOT_DEFAULT_SIZE,
+      config: {
+        label: `Slot ${slot}`,
+        managerNodeId: managerNode.id,
+        slot
+      }
+    });
+  }
+
+  const edges = workflow.edges.filter((edge) => {
+    if (deleteIds.has(edge.source) || deleteIds.has(edge.target)) return false;
+    for (let slot = 1; slot <= portCount; slot += 1) {
+      if (edge.source === managerNode.id && edge.sourceHandle === `${managerOutHandlePrefix}${slot}`) return false;
+      if (edge.target === managerNode.id && edge.targetHandle === `${managerInHandlePrefix}${slot}`) return false;
+    }
+    return true;
+  });
+
+  for (let slot = 1; slot <= portCount; slot += 1) {
+    const slotNodeId = managerSlotNodeId(managerNode.id, slot);
+    edges.push({
+      id: managerToSlotEdgeId(managerNode.id, slot),
+      source: managerNode.id,
+      sourceHandle: `${managerOutHandlePrefix}${slot}`,
+      target: slotNodeId,
+      targetHandle: managerSlotInHandle,
+      condition: "success"
+    });
+    edges.push({
+      id: slotToManagerEdgeId(managerNode.id, slot),
+      source: slotNodeId,
+      sourceHandle: managerSlotOutHandle,
+      target: managerNode.id,
+      targetHandle: `${managerInHandlePrefix}${slot}`,
+      condition: "success"
+    });
+  }
+
+  return {
+    ...workflow,
+    nodes,
+    edges
+  };
+}
+
+function syncAllManagerSlotBoxes(workflow: WorkflowDefinition): WorkflowDefinition {
+  return workflow.nodes
+    .filter((node) => node.type === "manager")
+    .reduce((current, managerNode) => {
+      const latestManager = current.nodes.find((node) => node.id === managerNode.id);
+      return latestManager ? syncManagerSlotBoxes(current, latestManager) : current;
+    }, workflow);
+}
+
+function needsManagerSlotSync(workflow: WorkflowDefinition): boolean {
+  for (const managerNode of workflow.nodes.filter((node) => node.type === "manager")) {
+    const portCount = clampNumber((managerNode.config as ManagerNodeConfig).portCount, 1, 8, 3);
+    const managerSlots = workflow.nodes.filter(
+      (node) => node.type === "manager_slot" && (node.config as ManagerSlotNodeConfig).managerNodeId === managerNode.id
+    );
+    if (managerSlots.some((node) => (node.config as ManagerSlotNodeConfig).slot > portCount)) return true;
+
+    for (let slot = 1; slot <= portCount; slot += 1) {
+      const slotNodeId = managerSlotNodeId(managerNode.id, slot);
+      if (!workflow.nodes.some((node) => node.id === slotNodeId && node.type === "manager_slot")) return true;
+      if (!workflow.edges.some((edge) => edge.id === managerToSlotEdgeId(managerNode.id, slot))) return true;
+      if (!workflow.edges.some((edge) => edge.id === slotToManagerEdgeId(managerNode.id, slot))) return true;
+      if (
+        workflow.edges.some(
+          (edge) =>
+            edge.source === managerNode.id &&
+            edge.sourceHandle === `${managerOutHandlePrefix}${slot}` &&
+            (edge.target !== slotNodeId || edge.targetHandle !== managerSlotInHandle)
+        )
+      ) {
+        return true;
+      }
+      if (
+        workflow.edges.some(
+          (edge) =>
+            edge.target === managerNode.id &&
+            edge.targetHandle === `${managerInHandlePrefix}${slot}` &&
+            (edge.source !== slotNodeId || edge.sourceHandle !== managerSlotOutHandle)
+        )
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string>): Set<string> {
+  const deleteIds = new Set(seedIds);
+  for (const node of workflow.nodes) {
+    if (!deleteIds.has(node.id)) continue;
+    if (node.type !== "manager") continue;
+    for (const candidate of workflow.nodes) {
+      if (candidate.type === "manager_slot" && (candidate.config as ManagerSlotNodeConfig).managerNodeId === node.id) {
+        deleteIds.add(candidate.id);
+      }
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of workflow.nodes) {
+      if (node.parentId && deleteIds.has(node.parentId) && !deleteIds.has(node.id)) {
+        deleteIds.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  return deleteIds;
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function managerSlotNodeId(managerNodeId: string, slot: number): string {
+  return `${managerNodeId}-slot-${slot}`;
+}
+
+function managerToSlotEdgeId(managerNodeId: string, slot: number): string {
+  return `edge-${managerNodeId}-slot-${slot}-out`;
+}
+
+function slotToManagerEdgeId(managerNodeId: string, slot: number): string {
+  return `edge-${managerNodeId}-slot-${slot}-return`;
+}
+
 function buildFlowNodes(
   workflow: WorkflowDefinition | undefined,
   statusByNode: Map<string, WorkflowNodeRun>,
   t: Messages
 ): Node<WorkflowNodeCardData>[] {
+  const nodesById = new Map((workflow?.nodes ?? []).map((node) => [node.id, node]));
   return (workflow?.nodes ?? []).map((node) => {
     const status = statusByNode.get(node.id)?.status;
+    const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
+    const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
+    const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     return {
       id: node.id,
       type: "workflowNode",
       position: node.position,
+      style: managerSlotSize ? { width: managerSlotSize.width, height: managerSlotSize.height } : undefined,
+      initialWidth: managerSlotSize?.width,
+      initialHeight: managerSlotSize?.height,
+      parentId: node.parentId,
+      extent,
       data: {
         label: node.config.label,
         type: node.type,
@@ -1077,7 +1520,9 @@ function buildFlowNodes(
         statusLabel: t.status[status ?? "idle"],
         disabled: node.disabled,
         managerPortCount:
-          node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined
+          node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
+        managerSlot: node.type === "manager_slot" ? (node.config as ManagerSlotNodeConfig).slot : undefined,
+        managerSlotSize
       }
     };
   });
@@ -1086,6 +1531,7 @@ function buildFlowNodes(
 function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: WorkflowRunView["run"]["status"]): Edge[] {
   return (workflow?.edges ?? []).map((edge) => ({
     id: edge.id,
+    type: workflowEdgeType(edge),
     source: edge.source,
     target: edge.target,
     sourceHandle: edge.sourceHandle,
@@ -1094,6 +1540,11 @@ function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: Wo
     animated: runStatus === "running",
     className: "workflow-edge"
   }));
+}
+
+function workflowEdgeType(edge: WorkflowEdge): Edge["type"] | undefined {
+  if (edge.sourceHandle === managerSlotInnerOutHandle || edge.targetHandle === managerSlotInnerInHandle) return "straight";
+  return undefined;
 }
 
 export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode["config"] {
@@ -1147,6 +1598,13 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
       maxHandoffs: 12,
       instructions:
         "Route work through numbered slots. Agents may return JSON with status and nextSlot or returnToSlot."
+    };
+  }
+  if (type === "manager_slot") {
+    return {
+      label: "Manager slot",
+      managerNodeId: "",
+      slot: 1
     };
   }
   if (type === "loop") {

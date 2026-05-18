@@ -7,6 +7,7 @@ import type {
   ConditionNodeConfig,
   LoopNodeConfig,
   ManagerNodeConfig,
+  ManagerSlotNodeConfig,
   OpenClawObjectRef,
   ParallelAgentsNodeConfig,
   SendNodeConfig,
@@ -21,9 +22,11 @@ import type {
 } from "@openclaw-cui/shared";
 import type { FileCuiStore } from "../store/fileCuiStore";
 
-const executableTypes = new Set(["agent", "parallel_agents", "manager", "loop", "condition", "summary", "approval", "send"]);
+const executableTypes = new Set(["agent", "parallel_agents", "manager", "manager_slot", "loop", "condition", "summary", "approval", "send"]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
+const managerSlotInnerOutHandle = "manager-slot-inner-out";
+const managerSlotInnerInHandle = "manager-slot-inner-in";
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
 
 interface ManagerTraceItem {
@@ -42,6 +45,28 @@ interface ManagerDecision {
   status: "continue" | "retry" | "complete";
   nextSlot?: number;
   reason?: string;
+}
+
+interface ManagerSlotContext {
+  manager: {
+    nodeId: string;
+    nodeLabel: string;
+    instructions?: string;
+    slot: number;
+    handoff: number;
+    maxHandoffs: number;
+  };
+  upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>;
+  previousResults: Array<{
+    handoff: number;
+    slot: number;
+    nodeId: string;
+    nodeLabel: string;
+    status: AgentTaskResult["status"];
+    output?: string;
+    error?: string;
+    decision?: ManagerDecision;
+  }>;
 }
 
 export class WorkflowWorker {
@@ -134,6 +159,7 @@ export class WorkflowWorker {
         const pending = workflow.nodes.filter(
           (node) =>
             this.isWorkflowStep(node) &&
+            !this.isNestedNode(node) &&
             !this.isManagedParticipant(workflow, node) &&
             !this.hasCurrentTerminalNodeRun(workflow, node, nodeRuns)
         );
@@ -157,6 +183,7 @@ export class WorkflowWorker {
   private findReadyNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
       if (!this.isRunnableNode(node)) return false;
+      if (this.isNestedNode(node)) return false;
       if (this.isManagedParticipant(workflow, node)) return false;
       if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
@@ -171,6 +198,7 @@ export class WorkflowWorker {
   private findSkippableNodes(workflow: WorkflowDefinition, nodeRuns: WorkflowNodeRun[]): WorkflowNode[] {
     return workflow.nodes.filter((node) => {
       if (!this.isWorkflowStep(node)) return false;
+      if (this.isNestedNode(node)) return false;
       if (this.isManagedParticipant(workflow, node)) return false;
       if (this.hasCurrentNodeRun(workflow, node, nodeRuns)) return false;
 
@@ -198,6 +226,8 @@ export class WorkflowWorker {
         await this.executeParallelAgentsNode(workflow, run, node, nodeRun);
       } else if (node.type === "manager") {
         await this.executeManagerNode(workflow, run, node, nodeRun);
+      } else if (node.type === "manager_slot") {
+        await this.failNode(nodeRun, "Manager slot nodes can only run when called by their manager.");
       } else if (node.type === "loop") {
         await this.executeLoopNode(workflow, run, node, nodeRun);
       } else if (node.type === "condition") {
@@ -282,12 +312,25 @@ export class WorkflowWorker {
     node: WorkflowNode,
     nodeRun: WorkflowNodeRun
   ): Promise<void> {
+    await this.executeParallelAgentsNodeWithUpstream(
+      run,
+      node,
+      nodeRun,
+      await this.collectUpstreamOutputs(workflow, run.id, node)
+    );
+  }
+
+  private async executeParallelAgentsNodeWithUpstream(
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun,
+    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+  ): Promise<void> {
     const config = node.config as ParallelAgentsNodeConfig;
     if (config.agents.length === 0) {
       throw new Error("Parallel agents node has no agents configured.");
     }
 
-    const upstream = await this.collectUpstreamOutputs(workflow, run.id, node);
     const outputs = await Promise.all(
       config.agents.map((agent) =>
         this.runAgentTask({
@@ -387,13 +430,7 @@ export class WorkflowWorker {
         continue;
       }
 
-      if (assignment.target.type !== "agent") {
-        await this.failNode(nodeRun, `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`);
-        return;
-      }
-
-      const participantRun = await this.createRunningNodeRun(workflow, run, assignment.target);
-      const result = await this.executeAgentNodeWithInput(workflow, run, assignment.target, participantRun, {
+      const managerContext: ManagerSlotContext = {
         manager: {
           nodeId: node.id,
           nodeLabel: node.config.label,
@@ -413,7 +450,19 @@ export class WorkflowWorker {
           error: item.error,
           decision: item.decision
         }))
-      });
+      };
+      let result: AgentTaskResult;
+
+      if (assignment.target.type === "agent") {
+        const participantRun = await this.createRunningNodeRun(workflow, run, assignment.target);
+        result = await this.executeAgentNodeWithInput(workflow, run, assignment.target, participantRun, managerContext);
+      } else if (assignment.target.type === "manager_slot") {
+        const slotRun = await this.createRunningNodeRun(workflow, run, assignment.target);
+        result = await this.executeManagerSlotNode(workflow, run, assignment.target, slotRun, managerContext);
+      } else {
+        await this.failNode(nodeRun, `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`);
+        return;
+      }
 
       const traceItem: ManagerTraceItem = {
         handoff,
@@ -447,6 +496,261 @@ export class WorkflowWorker {
     }
 
     await this.failNode(nodeRun, `Manager exceeded max handoffs (${maxHandoffs}).`);
+  }
+
+  private async executeManagerSlotNode(
+    workflow: WorkflowDefinition,
+    run: WorkflowRun,
+    slotNode: WorkflowNode,
+    slotRun: WorkflowNodeRun,
+    context: ManagerSlotContext
+  ): Promise<AgentTaskResult> {
+    const childNodes = workflow.nodes.filter((node) => node.parentId === slotNode.id && this.isRunnableNode(node));
+    const scopeStartIndex = Math.max(0, (await this.store.listNodeRuns(run.id)).length - 1);
+    const boundaryOutput = {
+      status: "manager_slot_input",
+      manager: context.manager,
+      upstream: context.upstream,
+      previousResults: context.previousResults
+    };
+
+    if (childNodes.length === 0) {
+      const output = JSON.stringify({
+        status: "complete",
+        reason: "manager_slot_empty",
+        input: boundaryOutput
+      });
+      await this.completeNode(slotRun, output);
+      return this.syntheticAgentResult(slotRun.id, "succeeded", output);
+    }
+
+    const childIds = new Set(childNodes.map((node) => node.id));
+    while (true) {
+      const nodeRuns = await this.store.listNodeRuns(run.id);
+      const failed = nodeRuns.find(
+        (nodeRun, index) =>
+          index > scopeStartIndex &&
+          childIds.has(nodeRun.nodeId) &&
+          (nodeRun.status === "failed" || nodeRun.status === "cancelled")
+      );
+      if (failed) {
+        const error = failed.error ?? `${failed.nodeLabel} returned ${failed.status}.`;
+        await this.failNode(slotRun, error);
+        return this.syntheticAgentResult(slotRun.id, "failed", undefined, error);
+      }
+
+      const skippable = childNodes.filter((node) => this.isScopedSkippableNode(workflow, slotNode, node, nodeRuns, scopeStartIndex));
+      if (skippable.length > 0) {
+        await Promise.all(skippable.map((node) => this.skipNode(workflow, run, node)));
+        continue;
+      }
+
+      const ready = childNodes.filter((node) => this.isScopedReadyNode(workflow, slotNode, node, nodeRuns, scopeStartIndex));
+      if (ready.length > 0) {
+        await Promise.all(
+          ready.map((node) =>
+            this.executeScopedNode(
+              workflow,
+              run,
+              node,
+              this.collectScopedUpstreamOutputs(workflow, slotNode, node, nodeRuns, scopeStartIndex, boundaryOutput)
+            )
+          )
+        );
+        continue;
+      }
+
+      const output = this.resolveManagerSlotOutput(workflow, slotNode, childNodes, nodeRuns, scopeStartIndex);
+      if (output !== undefined) {
+        const serialized = stringifyManagerSlotOutput(output);
+        await this.completeNode(slotRun, serialized);
+        return this.syntheticAgentResult(slotRun.id, "succeeded", serialized);
+      }
+
+      const pending = childNodes
+        .filter((node) => !this.findLatestNodeRun(nodeRuns, node.id, undefined, scopeStartIndex))
+        .map((node) => node.id);
+      const error = `Manager slot ${slotNode.config.label} could not continue. Pending nodes: ${pending.join(", ") || "unknown"}.`;
+      await this.failNode(slotRun, error);
+      return this.syntheticAgentResult(slotRun.id, "failed", undefined, error);
+    }
+  }
+
+  private async executeScopedNode(
+    workflow: WorkflowDefinition,
+    run: WorkflowRun,
+    node: WorkflowNode,
+    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+  ): Promise<void> {
+    const nodeRun = await this.createRunningNodeRun(workflow, run, node);
+    if (node.type === "agent") {
+      await this.executeAgentNodeWithInput(workflow, run, node, nodeRun, { upstream });
+    } else if (node.type === "parallel_agents") {
+      await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, upstream);
+    } else if (node.type === "condition") {
+      await this.completeNode(nodeRun, { result: this.evaluateCondition(workflow, node.config as ConditionNodeConfig) });
+    } else if (node.type === "summary") {
+      await this.executeSummaryNodeWithUpstream(run, node, nodeRun, upstream);
+    } else if (node.type === "send") {
+      await this.executeSendNodeWithUpstream(run, node, nodeRun, workflow.name, upstream);
+    } else {
+      await this.failNode(nodeRun, `Node type ${node.type} is not supported inside a manager slot yet.`);
+    }
+  }
+
+  private isScopedReadyNode(
+    workflow: WorkflowDefinition,
+    slotNode: WorkflowNode,
+    node: WorkflowNode,
+    nodeRuns: WorkflowNodeRun[],
+    scopeStartIndex: number
+  ): boolean {
+    if (this.findLatestNodeRun(nodeRuns, node.id, undefined, scopeStartIndex)) return false;
+    const incoming = this.getScopedIncomingEdges(workflow, slotNode, node);
+    if (incoming.length === 0) return true;
+    return incoming.every((edge) => this.resolveScopedEdgeState(workflow, slotNode, edge, nodeRuns, scopeStartIndex) === "satisfied");
+  }
+
+  private isScopedSkippableNode(
+    workflow: WorkflowDefinition,
+    slotNode: WorkflowNode,
+    node: WorkflowNode,
+    nodeRuns: WorkflowNodeRun[],
+    scopeStartIndex: number
+  ): boolean {
+    if (this.findLatestNodeRun(nodeRuns, node.id, undefined, scopeStartIndex)) return false;
+    const incoming = this.getScopedIncomingEdges(workflow, slotNode, node);
+    if (incoming.length === 0) return false;
+    const states = incoming.map((edge) => this.resolveScopedEdgeState(workflow, slotNode, edge, nodeRuns, scopeStartIndex));
+    return states.every((state) => state !== "pending") && states.some((state) => state === "blocked");
+  }
+
+  private getScopedIncomingEdges(workflow: WorkflowDefinition, slotNode: WorkflowNode, node: WorkflowNode): WorkflowEdge[] {
+    return workflow.edges.filter((edge) => {
+      if (edge.target !== node.id) return false;
+      if (edge.source === slotNode.id) return edge.sourceHandle === managerSlotInnerOutHandle;
+      const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
+      return source?.parentId === slotNode.id;
+    });
+  }
+
+  private resolveScopedEdgeState(
+    workflow: WorkflowDefinition,
+    slotNode: WorkflowNode,
+    edge: WorkflowEdge,
+    nodeRuns: WorkflowNodeRun[],
+    scopeStartIndex: number
+  ): IncomingEdgeState {
+    if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) return "satisfied";
+    const source = workflow.nodes.find((candidate) => candidate.id === edge.source);
+    if (!source || source.parentId !== slotNode.id) return "blocked";
+    const sourceRun = this.findLatestNodeRun(nodeRuns, source.id, undefined, scopeStartIndex);
+    if (!sourceRun) return "pending";
+    if (!this.isTerminalStatus(sourceRun.status)) return "pending";
+
+    const condition = edge.condition ?? "success";
+    if (condition === "success") return sourceRun.status === "succeeded" ? "satisfied" : "blocked";
+    if (condition === "failure") return sourceRun.status === "failed" || sourceRun.status === "cancelled" ? "satisfied" : "blocked";
+    if (sourceRun.status !== "succeeded") return "blocked";
+
+    const expected = condition === "true";
+    return this.readConditionResult(sourceRun.output) === expected ? "satisfied" : "blocked";
+  }
+
+  private collectScopedUpstreamOutputs(
+    workflow: WorkflowDefinition,
+    slotNode: WorkflowNode,
+    node: WorkflowNode,
+    nodeRuns: WorkflowNodeRun[],
+    scopeStartIndex: number,
+    boundaryOutput: unknown
+  ): Array<{ nodeId: string; nodeLabel: string; output: unknown }> {
+    const incoming = this.getScopedIncomingEdges(workflow, slotNode, node);
+    if (incoming.length === 0) {
+      return [{ nodeId: slotNode.id, nodeLabel: slotNode.config.label, output: boundaryOutput }];
+    }
+
+    const outputs: Array<{ nodeId: string; nodeLabel: string; output: unknown }> = [];
+    for (const edge of incoming) {
+      if (this.resolveScopedEdgeState(workflow, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
+      if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) {
+        outputs.push({ nodeId: slotNode.id, nodeLabel: slotNode.config.label, output: boundaryOutput });
+        continue;
+      }
+
+      const sourceRun = this.findLatestNodeRun(nodeRuns, edge.source, "succeeded", scopeStartIndex);
+      if (!sourceRun) continue;
+      outputs.push({
+        nodeId: sourceRun.nodeId,
+        nodeLabel: sourceRun.nodeLabel,
+        output: sourceRun.output
+      });
+    }
+    return outputs;
+  }
+
+  private resolveManagerSlotOutput(
+    workflow: WorkflowDefinition,
+    slotNode: WorkflowNode,
+    childNodes: WorkflowNode[],
+    nodeRuns: WorkflowNodeRun[],
+    scopeStartIndex: number
+  ): unknown {
+    const explicitOutputs = workflow.edges
+      .filter((edge) => edge.target === slotNode.id && edge.targetHandle === managerSlotInnerInHandle)
+      .flatMap((edge) => {
+        const source = childNodes.find((node) => node.id === edge.source);
+        if (!source) return [];
+        if (this.resolveScopedEdgeState(workflow, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") return [];
+        const sourceRun = this.findLatestNodeRun(nodeRuns, source.id, "succeeded", scopeStartIndex);
+        return sourceRun
+          ? [
+              {
+                nodeId: sourceRun.nodeId,
+                nodeLabel: sourceRun.nodeLabel,
+                output: sourceRun.output
+              }
+            ]
+          : [];
+      });
+    if (explicitOutputs.length === 1) return explicitOutputs[0]!.output;
+    if (explicitOutputs.length > 1) return { outputs: explicitOutputs };
+
+    const leafNodes = childNodes.filter((node) => {
+      return !workflow.edges.some((edge) => edge.source === node.id && childNodes.some((candidate) => candidate.id === edge.target));
+    });
+    const leafRuns = leafNodes.flatMap((node) => {
+      const nodeRun = this.findLatestNodeRun(nodeRuns, node.id, "succeeded", scopeStartIndex);
+      return nodeRun ? [nodeRun] : [];
+    });
+    if (leafRuns.length === 1) return leafRuns[0]!.output;
+    if (leafRuns.length > 1) {
+      return {
+        outputs: leafRuns.map((nodeRun) => ({
+          nodeId: nodeRun.nodeId,
+          nodeLabel: nodeRun.nodeLabel,
+          output: nodeRun.output
+        }))
+      };
+    }
+    return undefined;
+  }
+
+  private syntheticAgentResult(
+    nodeRunId: string,
+    status: AgentTaskResult["status"],
+    output?: string,
+    error?: string
+  ): AgentTaskResult {
+    return {
+      taskId: nodeRunId,
+      runId: nodeRunId,
+      sessionKey: `manager-slot:${nodeRunId}`,
+      status,
+      output,
+      error,
+      updatedAt: new Date().toISOString()
+    };
   }
 
   private async executeLoopNode(
@@ -483,8 +787,21 @@ export class WorkflowWorker {
     node: WorkflowNode,
     nodeRun: WorkflowNodeRun
   ): Promise<void> {
+    await this.executeSummaryNodeWithUpstream(
+      run,
+      node,
+      nodeRun,
+      await this.collectUpstreamOutputs(workflow, run.id, node)
+    );
+  }
+
+  private async executeSummaryNodeWithUpstream(
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun,
+    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+  ): Promise<void> {
     const config = node.config as SummaryNodeConfig;
-    const upstream = await this.collectUpstreamOutputs(workflow, run.id, node);
     if (config.mode === "openclaw_agent") {
       const { result } = await this.runAgentTask({
         workflowRunId: run.id,
@@ -532,11 +849,26 @@ export class WorkflowWorker {
   }
 
   private async executeSendNode(workflow: WorkflowDefinition, run: WorkflowRun, node: WorkflowNode, nodeRun: WorkflowNodeRun): Promise<void> {
+    await this.executeSendNodeWithUpstream(
+      run,
+      node,
+      nodeRun,
+      workflow.name,
+      await this.collectUpstreamOutputs(workflow, run.id, node)
+    );
+  }
+
+  private async executeSendNodeWithUpstream(
+    run: WorkflowRun,
+    node: WorkflowNode,
+    nodeRun: WorkflowNodeRun,
+    workflowName: string,
+    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+  ): Promise<void> {
     const config = node.config as SendNodeConfig;
-    const upstream = await this.collectUpstreamOutputs(workflow, run.id, node);
     const summaryPayload = upstream.length <= 1 ? (upstream[0]?.output ?? {}) : upstream;
     const body = config.bodyTemplate
-      .replaceAll("{{workflow.name}}", workflow.name)
+      .replaceAll("{{workflow.name}}", workflowName)
       .replaceAll("{{summary}}", JSON.stringify(summaryPayload))
       .replaceAll("{{upstream}}", JSON.stringify(upstream));
     const result = await this.adapter.sendChannelMessage({
@@ -824,6 +1156,10 @@ export class WorkflowWorker {
     return this.isWorkflowStep(node) && !node.disabled;
   }
 
+  private isNestedNode(node: WorkflowNode): boolean {
+    return Boolean(node.parentId);
+  }
+
   private isManagedParticipant(workflow: WorkflowDefinition, node: WorkflowNode): boolean {
     return workflow.edges.some((edge) => {
       if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
@@ -1048,4 +1384,8 @@ function readInteger(value: unknown): number | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringifyManagerSlotOutput(output: unknown): string {
+  return typeof output === "string" ? output : JSON.stringify(output);
 }

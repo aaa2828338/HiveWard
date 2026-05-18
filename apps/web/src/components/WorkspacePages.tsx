@@ -30,10 +30,13 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
+  kind: "node" | "slot_input" | "slot_output";
+  depth: number;
   node?: WorkflowNode;
   nodeRun?: WorkflowNodeRun;
   issueStatus: "completed" | "in_progress" | "pending";
   outputPreview: string;
+  outputBody?: string;
   events: WorkflowNodeEvent[];
 };
 
@@ -209,35 +212,7 @@ export function RunsPage({
   const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
 
   const issues = useMemo<TraceIssue[]>(() => {
-    const events = activeRun?.events ?? [];
-    if (activeRun?.nodeRuns.length) {
-      return activeRun.nodeRuns.map((nodeRun, index) => {
-        const node = workflow?.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
-        const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
-        return {
-          key: nodeRun.id,
-          index: index + 1,
-          label,
-          node,
-          nodeRun,
-          issueStatus: toIssueStatus(nodeRun.status),
-          outputPreview: summarizeOutput(nodeRun.output),
-          events: events.filter((event) => event.nodeRunId === nodeRun.id)
-        };
-      });
-    }
-
-    return orderedNodes.map((node, index) => {
-      return {
-        key: `node:${node.id}`,
-        index: index + 1,
-        label: node.config.label,
-        node,
-        issueStatus: "pending",
-        outputPreview: summarizeOutput(undefined),
-        events: []
-      };
-    });
+    return buildTraceIssues(activeRun, workflow, orderedNodes);
   }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, workflow?.nodes]);
 
   const activeIssue =
@@ -297,7 +272,7 @@ export function RunsPage({
                 <button
                   key={issue.key}
                   type="button"
-                  className={`trace-issue-card ${activeIssue?.key === issue.key ? "selected" : ""}`}
+                  className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
                   onClick={() => setActiveIssueKey(issue.key)}
                 >
                   <div className="trace-issue-index">{issue.index}</div>
@@ -331,7 +306,13 @@ export function RunsPage({
                 {activeIssue.events.map((event) => (
                   <TraceBubble key={event.id} role="system" title={t.events[event.type]} body={event.message} />
                 ))}
-                {activeIssue.nodeRun?.output !== undefined ? (
+                {activeIssue.outputBody !== undefined ? (
+                  <TraceBubble
+                    role={activeIssue.kind === "slot_input" ? "system" : "assistant"}
+                    title={activeIssue.label}
+                    body={activeIssue.outputBody}
+                  />
+                ) : activeIssue.nodeRun?.output !== undefined ? (
                   <TraceBubble role="assistant" title={activeIssue.label} body={formatOutput(activeIssue.nodeRun.output)} />
                 ) : activeIssue.nodeRun?.error ? (
                   <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
@@ -1285,6 +1266,169 @@ function TraceBubble({
       <pre className="trace-bubble-body">{body}</pre>
     </article>
   );
+}
+
+function buildTraceIssues(
+  activeRun: WorkflowRunView | undefined,
+  workflow: WorkflowDefinition | undefined,
+  orderedNodes: WorkflowNode[]
+): TraceIssue[] {
+  if (!activeRun?.nodeRuns.length) {
+    return buildPendingTraceIssues(workflow, orderedNodes);
+  }
+
+  const nodesById = new Map((workflow?.nodes ?? []).map((node) => [node.id, node]));
+  const childrenBySlotId = new Map<string, Set<string>>();
+  for (const node of workflow?.nodes ?? []) {
+    if (!node.parentId) continue;
+    const parent = nodesById.get(node.parentId);
+    if (parent?.type !== "manager_slot") continue;
+    childrenBySlotId.set(node.parentId, new Set([...(childrenBySlotId.get(node.parentId) ?? []), node.id]));
+  }
+
+  const issues: TraceIssue[] = [];
+  let issueIndex = 1;
+  for (let runIndex = 0; runIndex < activeRun.nodeRuns.length; runIndex += 1) {
+    const nodeRun = activeRun.nodeRuns[runIndex]!;
+    const node = nodesById.get(nodeRun.nodeId);
+    if (node?.type !== "manager_slot") {
+      issues.push(createNodeTraceIssue(activeRun, nodeRun, node, issueIndex, node?.parentId ? 1 : 0));
+      issueIndex += 1;
+      continue;
+    }
+
+    const slotLabel = nodeRun.nodeLabel || node.config.label || nodeRun.nodeId;
+    const slotEvents = activeRun.events.filter((event) => event.nodeRunId === nodeRun.id);
+    issues.push({
+      key: `${nodeRun.id}:input`,
+      index: issueIndex,
+      label: `${slotLabel} input`,
+      kind: "slot_input",
+      depth: 0,
+      node,
+      nodeRun,
+      issueStatus: nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status),
+      outputPreview: "Manager input entered this slot.",
+      outputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
+      events: slotEvents.filter((event) => event.type !== "node.run.completed")
+    });
+    issueIndex += 1;
+
+    const childIds = childrenBySlotId.get(node.id) ?? new Set<string>();
+    let childRunIndex = runIndex + 1;
+    while (childRunIndex < activeRun.nodeRuns.length) {
+      const childRun = activeRun.nodeRuns[childRunIndex]!;
+      if (!childIds.has(childRun.nodeId)) break;
+      const childNode = nodesById.get(childRun.nodeId);
+      issues.push(createNodeTraceIssue(activeRun, childRun, childNode, issueIndex, 1));
+      issueIndex += 1;
+      childRunIndex += 1;
+    }
+
+    issues.push({
+      key: `${nodeRun.id}:output`,
+      index: issueIndex,
+      label: `${slotLabel} output`,
+      kind: "slot_output",
+      depth: 0,
+      node,
+      nodeRun,
+      issueStatus: toIssueStatus(nodeRun.status),
+      outputPreview: summarizeOutput(nodeRun.output),
+      events: slotEvents
+    });
+    issueIndex += 1;
+    runIndex = childRunIndex - 1;
+  }
+
+  return issues;
+}
+
+function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, orderedNodes: WorkflowNode[]): TraceIssue[] {
+  if (!workflow) return [];
+
+  const childrenBySlotId = new Map<string, WorkflowNode[]>();
+  for (const node of workflow.nodes) {
+    if (!node.parentId) continue;
+    const parent = workflow.nodes.find((candidate) => candidate.id === node.parentId);
+    if (parent?.type !== "manager_slot") continue;
+    childrenBySlotId.set(node.parentId, [...(childrenBySlotId.get(node.parentId) ?? []), node]);
+  }
+
+  const visited = new Set<string>();
+  const issues: TraceIssue[] = [];
+  let issueIndex = 1;
+  for (const node of orderedNodes) {
+    if (visited.has(node.id) || node.parentId) continue;
+    visited.add(node.id);
+    if (node.type !== "manager_slot") {
+      issues.push(createPendingTraceIssue(node, issueIndex, 0));
+      issueIndex += 1;
+      continue;
+    }
+
+    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_input"));
+    issueIndex += 1;
+    for (const child of childrenBySlotId.get(node.id) ?? []) {
+      visited.add(child.id);
+      issues.push(createPendingTraceIssue(child, issueIndex, 1));
+      issueIndex += 1;
+    }
+    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_output"));
+    issueIndex += 1;
+  }
+  return issues;
+}
+
+function createNodeTraceIssue(
+  activeRun: WorkflowRunView,
+  nodeRun: WorkflowNodeRun,
+  node: WorkflowNode | undefined,
+  index: number,
+  depth: number
+): TraceIssue {
+  const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
+  return {
+    key: nodeRun.id,
+    index,
+    label,
+    kind: "node",
+    depth,
+    node,
+    nodeRun,
+    issueStatus: toIssueStatus(nodeRun.status),
+    outputPreview: summarizeOutput(nodeRun.output),
+    events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
+  };
+}
+
+function createPendingTraceIssue(node: WorkflowNode, index: number, depth: number): TraceIssue {
+  return {
+    key: `node:${node.id}`,
+    index,
+    label: node.config.label,
+    kind: "node",
+    depth,
+    node,
+    issueStatus: "pending",
+    outputPreview: summarizeOutput(undefined),
+    events: []
+  };
+}
+
+function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind: "slot_input" | "slot_output"): TraceIssue {
+  const isInput = kind === "slot_input";
+  return {
+    key: `node:${node.id}:${kind}`,
+    index,
+    label: `${node.config.label} ${isInput ? "input" : "output"}`,
+    kind,
+    depth: 0,
+    node,
+    issueStatus: "pending",
+    outputPreview: isInput ? "Waiting for manager input." : "Waiting for nested nodes to finish.",
+    events: []
+  };
 }
 
 function toIssueStatus(status?: WorkflowNodeRunStatus): "completed" | "in_progress" | "pending" {

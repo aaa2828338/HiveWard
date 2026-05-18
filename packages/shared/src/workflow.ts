@@ -4,6 +4,7 @@ export type WorkflowNodeType =
   | "agent"
   | "parallel_agents"
   | "manager"
+  | "manager_slot"
   | "loop"
   | "condition"
   | "summary"
@@ -34,6 +35,11 @@ export interface CanvasPosition {
   y: number;
 }
 
+export interface CanvasSize {
+  width: number;
+  height: number;
+}
+
 export interface WorkflowNodeBaseConfig {
   label: string;
   description?: string;
@@ -56,6 +62,11 @@ export interface ManagerNodeConfig extends WorkflowNodeBaseConfig {
   portCount: number;
   maxHandoffs: number;
   instructions?: string;
+}
+
+export interface ManagerSlotNodeConfig extends WorkflowNodeBaseConfig {
+  managerNodeId: string;
+  slot: number;
 }
 
 export interface LoopNodeConfig extends WorkflowNodeBaseConfig {
@@ -95,6 +106,7 @@ export type WorkflowNodeConfig =
   | AgentNodeConfig
   | ParallelAgentsNodeConfig
   | ManagerNodeConfig
+  | ManagerSlotNodeConfig
   | LoopNodeConfig
   | ConditionNodeConfig
   | SummaryNodeConfig
@@ -107,7 +119,9 @@ export interface WorkflowNode {
   id: string;
   type: WorkflowNodeType;
   position: CanvasPosition;
+  size?: CanvasSize;
   config: WorkflowNodeConfig;
+  parentId?: string;
   disabled?: boolean;
 }
 
@@ -354,6 +368,228 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
   };
 }
 
+export function createManagerDrivenHtmlWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
+  return {
+    id: "manager-driven-html-workflow",
+    companyId,
+    name: "Manager-driven HTML delivery",
+    description:
+      "A manager orchestrates three slot boxes: inspiration and execution document, HTML implementation, and QA verification.",
+    version: 1,
+    nodes: [
+      {
+        id: "html-manager",
+        type: "manager",
+        position: { x: 80, y: 420 },
+        config: {
+          label: "HTML Delivery Manager",
+          portCount: 3,
+          maxHandoffs: 8,
+          instructions:
+            "Run Slot 1 first to collect inspiration and write an HTML execution document. Send Slot 1 output to Slot 2 to build a runnable HTML page. Send Slot 2 output to Slot 3 for QA. If Slot 3 returns needs_revision or returnToSlot 2, route back to Slot 2. Complete only after Slot 3 returns pass or complete."
+        }
+      },
+      {
+        id: "html-manager-slot-1",
+        type: "manager_slot",
+        position: { x: 480, y: 40 },
+        size: { width: 760, height: 380 },
+        config: {
+          label: "Slot 1",
+          managerNodeId: "html-manager",
+          slot: 1
+        }
+      },
+      {
+        id: "html-manager-slot-1-agent-1",
+        type: "agent",
+        parentId: "html-manager-slot-1",
+        position: { x: 76, y: 154 },
+        config: {
+          label: "1. Inspiration",
+          agentId: "main",
+          agentName: "inspiration-collector",
+          prompt:
+            "Use the manager input and project goal to collect practical inspiration for an HTML deliverable. Return strict JSON only with keys: status, audience, inspiration, pageSections, interactionIdeas, constraints. Keep the ideas concrete enough for a writer to turn into an execution document.",
+          tools: []
+        }
+      },
+      {
+        id: "html-manager-slot-1-agent-2",
+        type: "agent",
+        parentId: "html-manager-slot-1",
+        position: { x: 424, y: 154 },
+        config: {
+          label: "2. Execution Doc",
+          agentId: "main",
+          agentName: "execution-doc-writer",
+          prompt:
+            "Use the upstream inspiration to write an HTML-formatted execution document for the builder. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":2,\"executionDocumentHtml\":\"<section>...</section>\",\"requirements\":[...],\"acceptanceCriteria\":[...]}. The executionDocumentHtml must describe layout, content, interactions, data, and visual constraints.",
+          tools: []
+        }
+      },
+      {
+        id: "html-manager-slot-2",
+        type: "manager_slot",
+        position: { x: 480, y: 460 },
+        size: { width: 760, height: 320 },
+        config: {
+          label: "Slot 2",
+          managerNodeId: "html-manager",
+          slot: 2
+        }
+      },
+      {
+        id: "html-manager-slot-2-agent-1",
+        type: "agent",
+        parentId: "html-manager-slot-2",
+        position: { x: 264, y: 132 },
+        config: {
+          label: "3. HTML Builder",
+          agentId: "main",
+          agentName: "html-code-builder",
+          prompt:
+            "Use the manager previousResults to find Slot 1 executionDocumentHtml. Build a complete standalone HTML document with inline CSS and any needed inline JavaScript. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":3,\"html\":\"<!doctype html>...\",\"buildNotes\":[...]}. The html value must be directly runnable in a browser.",
+          tools: []
+        }
+      },
+      {
+        id: "html-manager-slot-3",
+        type: "manager_slot",
+        position: { x: 480, y: 820 },
+        size: { width: 760, height: 320 },
+        config: {
+          label: "Slot 3",
+          managerNodeId: "html-manager",
+          slot: 3
+        }
+      },
+      {
+        id: "html-manager-slot-3-agent-1",
+        type: "agent",
+        parentId: "html-manager-slot-3",
+        position: { x: 264, y: 132 },
+        config: {
+          label: "4. HTML QA",
+          agentId: "main",
+          agentName: "html-qa-tester",
+          prompt:
+            "Use the manager previousResults to find Slot 2 html. Verify it is a complete standalone HTML document, has visible body content, can open without external files, and has no obvious display or runtime errors. If it passes, return strict JSON only: {\"status\":\"complete\",\"verified\":true,\"result\":\"passed\",\"checks\":[...]}. If it fails, return strict JSON only: {\"status\":\"needs_revision\",\"returnToSlot\":2,\"verified\":false,\"issues\":[...]}.",
+          tools: []
+        }
+      }
+    ],
+    edges: [
+      {
+        id: "html-manager-to-slot-1",
+        source: "html-manager",
+        sourceHandle: "manager-out-1",
+        target: "html-manager-slot-1",
+        targetHandle: "manager-slot-in",
+        condition: "success"
+      },
+      {
+        id: "html-slot-1-to-manager",
+        source: "html-manager-slot-1",
+        sourceHandle: "manager-slot-out",
+        target: "html-manager",
+        targetHandle: "manager-in-1",
+        condition: "success"
+      },
+      {
+        id: "html-manager-to-slot-2",
+        source: "html-manager",
+        sourceHandle: "manager-out-2",
+        target: "html-manager-slot-2",
+        targetHandle: "manager-slot-in",
+        condition: "success"
+      },
+      {
+        id: "html-slot-2-to-manager",
+        source: "html-manager-slot-2",
+        sourceHandle: "manager-slot-out",
+        target: "html-manager",
+        targetHandle: "manager-in-2",
+        condition: "success"
+      },
+      {
+        id: "html-manager-to-slot-3",
+        source: "html-manager",
+        sourceHandle: "manager-out-3",
+        target: "html-manager-slot-3",
+        targetHandle: "manager-slot-in",
+        condition: "success"
+      },
+      {
+        id: "html-slot-3-to-manager",
+        source: "html-manager-slot-3",
+        sourceHandle: "manager-slot-out",
+        target: "html-manager",
+        targetHandle: "manager-in-3",
+        condition: "success"
+      },
+      {
+        id: "html-slot-1-start",
+        source: "html-manager-slot-1",
+        sourceHandle: "manager-slot-inner-out",
+        target: "html-manager-slot-1-agent-1",
+        condition: "success"
+      },
+      {
+        id: "html-slot-1-write-doc",
+        source: "html-manager-slot-1-agent-1",
+        target: "html-manager-slot-1-agent-2",
+        condition: "success"
+      },
+      {
+        id: "html-slot-1-finish",
+        source: "html-manager-slot-1-agent-2",
+        target: "html-manager-slot-1",
+        targetHandle: "manager-slot-inner-in",
+        condition: "success"
+      },
+      {
+        id: "html-slot-2-start",
+        source: "html-manager-slot-2",
+        sourceHandle: "manager-slot-inner-out",
+        target: "html-manager-slot-2-agent-1",
+        condition: "success"
+      },
+      {
+        id: "html-slot-2-finish",
+        source: "html-manager-slot-2-agent-1",
+        target: "html-manager-slot-2",
+        targetHandle: "manager-slot-inner-in",
+        condition: "success"
+      },
+      {
+        id: "html-slot-3-start",
+        source: "html-manager-slot-3",
+        sourceHandle: "manager-slot-inner-out",
+        target: "html-manager-slot-3-agent-1",
+        condition: "success"
+      },
+      {
+        id: "html-slot-3-finish",
+        source: "html-manager-slot-3-agent-1",
+        target: "html-manager-slot-3",
+        targetHandle: "manager-slot-inner-in",
+        condition: "success"
+      }
+    ],
+    variables: {},
+    display: {
+      viewport: { x: 18, y: 22, zoom: 0.74 }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export function createDefaultWorkflows(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition[] {
-  return [createStarterWorkflow(now, companyId), createRealThreeAgentWorkflow(now, companyId)];
+  return [
+    createStarterWorkflow(now, companyId),
+    createRealThreeAgentWorkflow(now, companyId),
+    createManagerDrivenHtmlWorkflow(now, companyId)
+  ];
 }
