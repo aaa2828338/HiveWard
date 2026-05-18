@@ -4,13 +4,19 @@ import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
   CatalogSnapshot,
+  PendingApprovalItem,
+  WorkspaceDashboard,
   WorkflowDefinition,
   WorkflowNodeEvent,
   WorkflowNodeRun,
   WorkflowRun,
   WorkflowRunView
 } from "@openclaw-cui/shared";
-import { createDefaultWorkflows } from "@openclaw-cui/shared";
+import {
+  createDefaultWorkflows,
+  createDefaultWorkspaceDashboard,
+  normalizeWorkspaceDashboard
+} from "@openclaw-cui/shared";
 
 interface CUIStoreState {
   workflows: WorkflowDefinition[];
@@ -18,6 +24,7 @@ interface CUIStoreState {
   nodeRuns: WorkflowNodeRun[];
   events: WorkflowNodeEvent[];
   catalogSnapshot?: CatalogSnapshot;
+  workspaceDashboard: WorkspaceDashboard;
 }
 
 export class FileCuiStore {
@@ -32,14 +39,16 @@ export class FileCuiStore {
     await this.enqueue(async () => {
       await mkdir(dirname(this.filePath), { recursive: true });
       try {
-        await this.readStateUnlocked();
+        const state = await this.readStateUnlocked();
+        await this.writeStateUnlocked(state);
       } catch {
         const now = new Date().toISOString();
         await this.writeStateUnlocked({
           workflows: createDefaultWorkflows(now),
           workflowRuns: [],
           nodeRuns: [],
-          events: []
+          events: [],
+          workspaceDashboard: createDefaultWorkspaceDashboard(now)
         });
       }
     });
@@ -151,13 +160,7 @@ export class FileCuiStore {
   async getRunView(workflowRunId: string): Promise<WorkflowRunView | undefined> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
-      const run = state.workflowRuns.find((item) => item.id === workflowRunId);
-      if (!run) return undefined;
-      return {
-        run,
-        nodeRuns: state.nodeRuns.filter((item) => item.workflowRunId === workflowRunId),
-        events: state.events.filter((item) => item.workflowRunId === workflowRunId)
-      };
+      return this.getRunViewFromState(state, workflowRunId);
     });
   }
 
@@ -168,11 +171,62 @@ export class FileCuiStore {
         .filter((item) => item.workflowId === workflowId)
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
       if (!run) return undefined;
-      return {
-        run,
-        nodeRuns: state.nodeRuns.filter((item) => item.workflowRunId === run.id),
-        events: state.events.filter((item) => item.workflowRunId === run.id)
-      };
+      return this.getRunViewFromState(state, run.id);
+    });
+  }
+
+  async listRunViews(): Promise<WorkflowRunView[]> {
+    return this.enqueue(async () => {
+      const state = await this.readStateUnlocked();
+      return state.workflowRuns
+        .slice()
+        .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
+        .map((run) => this.getRunViewFromState(state, run.id))
+        .filter((view): view is WorkflowRunView => Boolean(view));
+    });
+  }
+
+  async listPendingApprovals(): Promise<PendingApprovalItem[]> {
+    return this.enqueue(async () => {
+      const state = await this.readStateUnlocked();
+      return state.nodeRuns
+        .filter((nodeRun) => nodeRun.status === "waiting_approval")
+        .flatMap((nodeRun) => {
+          const run = state.workflowRuns.find((candidate) => candidate.id === nodeRun.workflowRunId);
+          const workflow = state.workflows.find((candidate) => candidate.id === nodeRun.workflowId);
+          if (!run || !workflow) return [];
+
+          const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+          const item: PendingApprovalItem = {
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            workflowRunId: run.id,
+            nodeRunId: nodeRun.id,
+            nodeId: nodeRun.nodeId,
+            nodeLabel: nodeRun.nodeLabel,
+            startedBy: run.startedBy,
+            startedAt: run.startedAt,
+            requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
+            approverHint: readString(output?.approverHint),
+            instructions: readString(output?.instructions)
+          };
+          return [item];
+        })
+        .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
+    });
+  }
+
+  async getDashboardState(): Promise<WorkspaceDashboard> {
+    return this.enqueue(async () => (await this.readStateUnlocked()).workspaceDashboard);
+  }
+
+  async saveDashboardState(dashboard: WorkspaceDashboard): Promise<WorkspaceDashboard> {
+    return this.enqueue(async () => {
+      const state = await this.readStateUnlocked();
+      state.workspaceDashboard = normalizeWorkspaceDashboard(dashboard, new Date().toISOString());
+      state.workspaceDashboard.updatedAt = new Date().toISOString();
+      await this.writeStateUnlocked(state);
+      return state.workspaceDashboard;
     });
   }
 
@@ -194,7 +248,7 @@ export class FileCuiStore {
 
   private async readStateUnlocked(): Promise<CUIStoreState> {
     const raw = await readFile(this.filePath, "utf8");
-    return JSON.parse(raw) as CUIStoreState;
+    return this.normalizeState(JSON.parse(raw) as Partial<CUIStoreState>);
   }
 
   private async writeStateUnlocked(state: CUIStoreState): Promise<void> {
@@ -209,4 +263,34 @@ export class FileCuiStore {
     );
     return next;
   }
+
+  private normalizeState(state: Partial<CUIStoreState>): CUIStoreState {
+    const now = new Date().toISOString();
+    return {
+      workflows: Array.isArray(state.workflows) ? state.workflows : createDefaultWorkflows(now),
+      workflowRuns: Array.isArray(state.workflowRuns) ? state.workflowRuns : [],
+      nodeRuns: Array.isArray(state.nodeRuns) ? state.nodeRuns : [],
+      events: Array.isArray(state.events) ? state.events : [],
+      catalogSnapshot: state.catalogSnapshot,
+      workspaceDashboard: normalizeWorkspaceDashboard(state.workspaceDashboard, now)
+    };
+  }
+
+  private getRunViewFromState(state: CUIStoreState, workflowRunId: string): WorkflowRunView | undefined {
+    const run = state.workflowRuns.find((item) => item.id === workflowRunId);
+    if (!run) return undefined;
+    return {
+      run,
+      nodeRuns: state.nodeRuns.filter((item) => item.workflowRunId === workflowRunId),
+      events: state.events.filter((item) => item.workflowRunId === workflowRunId)
+    };
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
 }

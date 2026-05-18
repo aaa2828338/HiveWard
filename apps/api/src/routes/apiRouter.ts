@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
-import type { CatalogSnapshot, SaveWorkflowRequest, StartWorkflowRunRequest } from "@openclaw-cui/shared";
+import type {
+  CatalogSnapshot,
+  SaveDashboardStateRequest,
+  SaveWorkflowRequest,
+  StartWorkflowRunRequest
+} from "@openclaw-cui/shared";
 import type { OpenClawAdapter } from "@openclaw-cui/adapter";
 import type { FileCuiStore } from "../store/fileCuiStore";
 import type { WorkflowWorker } from "../worker/workflowWorker";
@@ -93,6 +98,48 @@ export function createApiRouter({ store, adapter, worker }: ApiRouterDeps): Rout
         return;
       }
       res.json({ run: view });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/workflow-runs", async (_req, res, next) => {
+    try {
+      res.json({ runs: await store.listRunViews() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approvals/pending", async (_req, res, next) => {
+    try {
+      res.json({ approvals: await store.listPendingApprovals() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/dashboard-state", async (_req, res, next) => {
+    try {
+      res.json({ dashboard: await store.getDashboardState() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/api/dashboard-state", async (req, res, next) => {
+    try {
+      const body = req.body as SaveDashboardStateRequest;
+      res.json({ dashboard: await store.saveDashboardState(body.dashboard) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/runtime-overview", async (_req, res, next) => {
+    try {
+      const [sessions, tasks] = await Promise.all([adapter.listSessions(), adapter.listTasks()]);
+      res.json({ runtime: { sessions, tasks } });
     } catch (error) {
       next(error);
     }

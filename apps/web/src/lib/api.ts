@@ -1,10 +1,18 @@
 import type {
   CatalogSnapshot,
   CatalogSnapshotResponse,
+  DashboardStateResponse,
   LatestWorkflowRunResponse,
+  ListPendingApprovalsResponse,
+  ListWorkflowRunViewsResponse,
   ListWorkflowsResponse,
+  RuntimeOverview,
+  RuntimeOverviewResponse,
+  SaveDashboardStateRequest,
   SaveWorkflowRequest,
   StartWorkflowRunResponse,
+  PendingApprovalItem,
+  WorkspaceDashboard,
   WorkflowDefinition,
   WorkflowResponse,
   WorkflowRunResponse
@@ -39,6 +47,16 @@ export const api = {
   async getWorkflow(id: string): Promise<WorkflowDefinition> {
     const response = await request<WorkflowResponse>(`/api/workflows/${id}`);
     return response.workflow;
+  },
+
+  async listWorkflowRuns(): Promise<ListWorkflowRunViewsResponse["runs"]> {
+    const response = await request<ListWorkflowRunViewsResponse>("/api/workflow-runs");
+    return response.runs;
+  },
+
+  async listPendingApprovals(): Promise<PendingApprovalItem[]> {
+    const response = await request<ListPendingApprovalsResponse>("/api/approvals/pending");
+    return response.approvals;
   },
 
   async saveWorkflow(workflow: WorkflowDefinition): Promise<WorkflowDefinition> {
@@ -81,5 +99,23 @@ export const api = {
       body: JSON.stringify({})
     });
     return response.snapshot;
+  },
+
+  async getDashboardState(): Promise<WorkspaceDashboard> {
+    const response = await request<DashboardStateResponse>("/api/dashboard-state");
+    return response.dashboard;
+  },
+
+  async saveDashboardState(dashboard: WorkspaceDashboard): Promise<WorkspaceDashboard> {
+    const response = await request<DashboardStateResponse>("/api/dashboard-state", {
+      method: "PUT",
+      body: JSON.stringify({ dashboard } satisfies SaveDashboardStateRequest)
+    });
+    return response.dashboard;
+  },
+
+  async getRuntimeOverview(): Promise<RuntimeOverview> {
+    const response = await request<RuntimeOverviewResponse>("/api/runtime-overview");
+    return response.runtime;
   }
 };
