@@ -15,6 +15,7 @@ import type {
   WorkflowRunView
 } from "@openclaw-cui/shared";
 import {
+  createBlankWorkflow,
   createDefaultCompanies,
   createDefaultWorkflows,
   createDefaultWorkspaceDashboard,
@@ -142,6 +143,25 @@ export class FileCuiStore {
 
       await this.writeStateUnlocked(state);
       return nextWorkflow;
+    });
+  }
+
+  async createWorkflow(input: { name?: string; description?: string } = {}): Promise<WorkflowDefinition> {
+    return this.enqueue(async () => {
+      const state = await this.readStateUnlocked();
+      const companyId = this.requireSelectedCompanyId(state);
+      const now = new Date().toISOString();
+      const workflow = createBlankWorkflow({
+        id: nextWorkflowId(state.workflows),
+        companyId,
+        now,
+        name: input.name,
+        description: input.description
+      });
+
+      state.workflows.push(workflow);
+      await this.writeStateUnlocked(state);
+      return workflow;
     });
   }
 
@@ -469,4 +489,13 @@ function maxTimestamp(values: Array<string | undefined>): string | undefined {
   const normalized = values.filter((value): value is string => typeof value === "string" && value.length > 0);
   if (normalized.length === 0) return undefined;
   return normalized.sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
+}
+
+function nextWorkflowId(workflows: WorkflowDefinition[]): string {
+  const used = new Set(workflows.map((workflow) => workflow.id));
+  let id = `workflow-${nanoid(8)}`;
+  while (used.has(id)) {
+    id = `workflow-${nanoid(8)}`;
+  }
+  return id;
 }

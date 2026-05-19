@@ -1,8 +1,31 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Activity, BadgeCheck, BookOpenText, Bookmark, Clock3, Database, FolderKanban, Loader2, MessageSquareText, PanelsTopLeft, Tag, Trash2 } from "lucide-react";
+import {
+  Activity,
+  ArrowLeft,
+  BadgeCheck,
+  BookOpenText,
+  Bookmark,
+  ChevronRight,
+  Clock3,
+  Database,
+  FolderKanban,
+  KeyRound,
+  Loader2,
+  MessageSquareText,
+  PanelsTopLeft,
+  Search,
+  Tag,
+  Trash2
+} from "lucide-react";
 import type {
   CatalogSnapshot,
+  ConfigureOpenClawChannelRequest,
+  ConfigureOpenClawModelAuthRequest,
+  OpenClawChannelSetupOption,
+  OpenClawConfigWizardMetadata,
   OpenClawConfigState,
+  OpenClawWizardField,
+  OpenClawWizardValue,
   CompanyOverview,
   DashboardWidget,
   DashboardWidgetType,
@@ -62,8 +85,7 @@ export function CompanyPage({
           runs: "\u8FD0\u884C\u6B21\u6570",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
-          notes: "\u7B14\u8BB0",
-          views: "\u89C6\u56FE",
+          widgets: "\u603B\u89C8\u5361\u7247",
           cost: "\u6210\u672C",
           latest: "\u6700\u8FD1\u8FD0\u884C",
           active: "\u5F53\u524D\u516C\u53F8",
@@ -81,8 +103,7 @@ export function CompanyPage({
           runs: "Runs",
           tokens: "Tokens",
           approvals: "Pending approvals",
-          notes: "Notes",
-          views: "Saved views",
+          widgets: "Overview widgets",
           cost: "Cost",
           latest: "Latest run",
           active: "Current company",
@@ -115,8 +136,7 @@ export function CompanyPage({
                 <CompanyDetailCard label={copy.goal} value={selectedCompany.businessGoal} />
                 <CompanyDetailCard label={copy.cost} value={`$${selectedCompany.totalCostUsd.toFixed(4)}`} />
                 <CompanyDetailCard label={copy.latest} value={selectedCompany.latestRunAt ? formatDateTime(selectedCompany.latestRunAt, language) : "-"} />
-                <CompanyDetailCard label={copy.views} value={selectedCompany.savedViewCount} />
-                <CompanyDetailCard label={copy.notes} value={selectedCompany.noteCount} />
+                <CompanyDetailCard label={copy.widgets} value={selectedCompany.dashboardWidgetCount} />
               </div>
             </div>
 
@@ -212,8 +232,8 @@ export function RunsPage({
   const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, workflow, orderedNodes);
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, workflow?.nodes]);
+    return buildTraceIssues(activeRun, workflow, orderedNodes, t);
+  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, workflow?.nodes]);
 
   const activeIssue =
     issues.find((issue) => issue.key === activeIssueKey) ??
@@ -230,8 +250,8 @@ export function RunsPage({
       <div className="content-card stack-card trace-page-header">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>Flow Trace</h3>
-            <p>Review issues in linear task order on the left, and read node output on the right.</p>
+            <h3>{t.trace.title}</h3>
+            <p>{t.trace.description}</p>
           </div>
           <div className="toolbar-cluster trace-toolbar">
             <select value={workflow?.id ?? ""} onChange={(event) => onSelectWorkflow(event.target.value)}>
@@ -243,11 +263,11 @@ export function RunsPage({
             </select>
             <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={workflowRuns.length === 0}>
               {workflowRuns.length === 0 ? (
-                <option value="">Select a run</option>
+                <option value="">{t.empty.selectRun}</option>
               ) : (
                 workflowRuns.map((runView) => (
                   <option key={runView.run.id} value={runView.run.id}>
-                    {`Run ${runView.run.id.slice(-6)} · ${formatDateTime(runView.run.startedAt, language)}`}
+                    {t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}
                   </option>
                 ))
               )}
@@ -259,14 +279,14 @@ export function RunsPage({
       <section className="trace-layout">
         <div className="content-card stack-card trace-issue-column">
           <div className="trace-column-header">
-            <h3>Issue list</h3>
+            <h3>{t.trace.issueList}</h3>
             {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
           </div>
           <div className="trace-issue-list">
             {!workflow ? (
-              <div className="empty-state page-empty">No workflow is selected.</div>
+              <div className="empty-state page-empty">{t.empty.selectWorkflow}</div>
             ) : issues.length === 0 ? (
-              <div className="empty-state page-empty">This workflow has no run history yet.</div>
+              <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
             ) : (
               issues.map((issue) => (
                 <button
@@ -279,7 +299,7 @@ export function RunsPage({
                   <div className="trace-issue-main">
                     <div className="trace-issue-topline">
                       <strong>{issue.label}</strong>
-                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus)}</span>
+                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus, t)}</span>
                     </div>
                     <span>{issue.outputPreview}</span>
                   </div>
@@ -294,12 +314,12 @@ export function RunsPage({
             <>
               <div className="trace-column-header">
                 <div>
-                  <h3>Model output</h3>
-                  <p>{`Current issue: ${activeIssue.label}`}</p>
+                  <h3>{t.trace.modelOutput}</h3>
+                  <p>{t.trace.currentIssue(activeIssue.label)}</p>
                 </div>
               </div>
               <div className="trace-output-stream">
-                <TraceBubble role="system" title="Flow started" body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"} />
+                <TraceBubble role="system" title={t.trace.flowStarted} body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"} />
                 {activeIssue.nodeRun?.startedAt && (
                   <TraceBubble role="system" title={t.status[activeIssue.nodeRun.status]} body={formatDateTime(activeIssue.nodeRun.startedAt, language)} />
                 )}
@@ -317,13 +337,13 @@ export function RunsPage({
                 ) : activeIssue.nodeRun?.error ? (
                   <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
                 ) : (
-                  <div className="empty-state compact-empty-state">This node has no output yet.</div>
+                  <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
                 )}
-                {activeRun?.run.endedAt && <TraceBubble role="system" title="Flow finished" body={formatDateTime(activeRun.run.endedAt, language)} />}
+                {activeRun?.run.endedAt && <TraceBubble role="system" title={t.trace.flowFinished} body={formatDateTime(activeRun.run.endedAt, language)} />}
               </div>
             </>
           ) : (
-            <div className="empty-state page-empty">This workflow has no run history yet.</div>
+            <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
           )}
         </div>
       </section>
@@ -414,12 +434,12 @@ export function DashboardPage({
   onAddWidget: (type: DashboardWidgetType) => void;
   onRemoveWidget: (widgetId: string) => void;
 }) {
-  const widgets = dashboard?.dashboardWidgets ?? [];
+  const widgets = (dashboard?.dashboardWidgets ?? []).filter((widget) => widget.type !== "notes");
   const summary = [
     { icon: FolderKanban, label: t.metrics.workflows(workflows.length) },
     { icon: Activity, label: t.metrics.runs(runs.length) },
     { icon: Clock3, label: t.metrics.approvals(approvals.length) },
-    { icon: BookOpenText, label: t.metrics.notes(dashboard?.notes.length ?? 0) }
+    { icon: Database, label: t.metrics.models(catalog?.models.length ?? 0) }
   ];
 
   return (
@@ -445,7 +465,7 @@ export function DashboardPage({
             <p>{t.metrics.widgets(widgets.length)}</p>
           </div>
           <div className="toolbar-cluster wrap">
-            {(["recent_runs", "pending_approvals", "runtime_overview", "catalog_status", "notes"] as DashboardWidgetType[]).map((type) => (
+            {(["recent_runs", "pending_approvals", "runtime_overview", "catalog_status"] as DashboardWidgetType[]).map((type) => (
               <button key={type} type="button" onClick={() => onAddWidget(type)}>
                 <PanelsTopLeft size={16} />
                 {widgetTypeLabel(type, t)}
@@ -828,6 +848,857 @@ export function NotesPage({
   );
 }
 
+export function ModelsPage({
+  catalog,
+  openClawConfig,
+  wizard,
+  language,
+  t,
+  busy,
+  onSaveDefaultModel,
+  onConfigureModelAuth
+}: {
+  catalog?: CatalogSnapshot;
+  openClawConfig?: OpenClawConfigState;
+  wizard?: OpenClawConfigWizardMetadata;
+  language: Language;
+  t: Messages;
+  busy: boolean;
+  onSaveDefaultModel: (modelId: string) => void;
+  onConfigureModelAuth: (input: ConfigureOpenClawModelAuthRequest) => void;
+}) {
+  const stale = catalog ? isCatalogStale(catalog) : false;
+  const [selectedModelId, setSelectedModelId] = useState("");
+  const [modelStep, setModelStep] = useState<"provider" | "method" | "details">("provider");
+  const [providerSearch, setProviderSearch] = useState("");
+  const [selectedProviderId, setSelectedProviderId] = useState("");
+  const [selectedMethodId, setSelectedMethodId] = useState("");
+  const [modelValues, setModelValues] = useState<Record<string, OpenClawWizardValue>>({});
+  const copy =
+    language === "zh-CN"
+      ? {
+          configuredModels: "已配置模型",
+          contextWindow: "上下文窗口",
+          catalogHealth: "配置状态"
+        }
+      : {
+          configuredModels: "Configured models",
+          contextWindow: "Context window",
+          catalogHealth: "Catalog health"
+        };
+  const configCopy =
+    language === "zh-CN"
+      ? {
+          addModel: "添加模型配置",
+          modelId: "模型 ID",
+          alias: "别名",
+          apiAdapter: "API 适配器",
+          baseUrl: "Base URL",
+          credentialSource: "凭据来源",
+          envSecret: "环境变量 SecretRef",
+          directSecret: "直接写入",
+          noSecret: "不写入凭据",
+          apiKeyEnv: "API Key 环境变量",
+          apiKey: "API Key",
+          maxTokens: "最大输出",
+          setDefault: "设为默认模型",
+          addDescription: "通过 openclaw config set 写入 models.providers，并按需调用 openclaw models aliases/set。"
+        }
+      : {
+          addModel: "Add model config",
+          modelId: "Model ID",
+          alias: "Alias",
+          apiAdapter: "API adapter",
+          baseUrl: "Base URL",
+          credentialSource: "Credential source",
+          envSecret: "Env SecretRef",
+          directSecret: "Direct value",
+          noSecret: "No credential",
+          apiKeyEnv: "API key env var",
+          apiKey: "API key",
+          maxTokens: "Max output",
+          setDefault: "Set as default model",
+          addDescription: "Writes models.providers through openclaw config set, then optionally calls openclaw models aliases/set."
+        };
+
+  const modelCopy =
+    language === "zh-CN"
+      ? {
+          configuredModels: "\u5df2\u914d\u7f6e\u6a21\u578b",
+          contextWindow: "\u4e0a\u4e0b\u6587\u7a97\u53e3",
+          catalogHealth: "\u914d\u7f6e\u72b6\u6001"
+        }
+      : copy;
+
+  useEffect(() => {
+    setSelectedModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+  }, [catalog?.models, openClawConfig?.defaultModelId]);
+
+  const configuredModels = openClawConfig?.configuredModels ?? [];
+  const wizardCopy =
+    language === "zh-CN"
+      ? {
+          title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0\u6a21\u578b\u8ba4\u8bc1",
+          description:
+            "\u5148\u9009 Model/auth provider\uff0c\u518d\u8fdb\u5165\u8be5 provider \u7684 auth method\uff0c\u6700\u540e\u6309 OpenClaw \u914d\u7f6e\u5f62\u72b6\u5199\u5165 models.providers \u548c\u9ed8\u8ba4\u6a21\u578b\u3002",
+          providerStep: "Model/auth provider",
+          methodStep: "auth method",
+          detailsStep: "\u586b\u5199\u914d\u7f6e",
+          search: "\u641c\u7d22",
+          chooseMethod: "\u9009\u62e9\u8ba4\u8bc1\u65b9\u5f0f",
+          configure: "\u5199\u5165\u914d\u7f6e",
+          back: "\u8fd4\u56de",
+          empty: "\u672a\u52a0\u8f7d OpenClaw \u5411\u5bfc\u5143\u6570\u636e",
+          interactiveHint:
+            "OAuth / Device Pairing \u65b9\u5f0f\u4f1a\u7ed1\u5b9a\u4e3b\u673a\u4e0a\u5df2\u5b58\u5728\u7684 OpenClaw \u767b\u5f55\u8bb0\u5f55\uff1b\u771f\u6b63\u767b\u5f55\u4ecd\u7531 openclaw models auth login \u5728\u4ea4\u4e92\u7ec8\u7aef\u4e2d\u5b8c\u6210\u3002"
+        }
+      : {
+          title: "Add model auth through the CLI path",
+          description:
+            "Choose Model/auth provider first, enter that provider's auth method screen, then write the matching OpenClaw models.providers/default-model config.",
+          providerStep: "Model/auth provider",
+          methodStep: "auth method",
+          detailsStep: "Configuration",
+          search: "Search",
+          chooseMethod: "Choose auth method",
+          configure: "Write config",
+          back: "Back",
+          empty: "OpenClaw wizard metadata is not loaded.",
+          interactiveHint:
+            "OAuth / Device Pairing methods bind to an existing OpenClaw login on this host; the actual sign-in still runs through openclaw models auth login in an interactive terminal."
+        };
+  const modelProviders = wizard?.modelProviders ?? [];
+  const selectedProvider = modelProviders.find((provider) => provider.id === selectedProviderId) ?? modelProviders[0];
+  const selectedMethod = selectedProvider?.methods.find((method) => method.id === selectedMethodId);
+  const selectedModelFields = useMemo(
+    () => mergeModelCatalogOptions(selectedMethod?.fields ?? [], selectedProvider?.id, catalog),
+    [catalog, selectedMethod?.fields, selectedProvider?.id]
+  );
+  const filteredProviders = useMemo(
+    () => filterWizardOptions(modelProviders, providerSearch),
+    [modelProviders, providerSearch]
+  );
+
+  useEffect(() => {
+    if (selectedProviderId || !modelProviders[0]) return;
+    setSelectedProviderId(modelProviders[0].id);
+  }, [modelProviders, selectedProviderId]);
+
+  useEffect(() => {
+    if (!selectedMethod) {
+      setModelValues({});
+      return;
+    }
+    setModelValues(defaultWizardValues(selectedModelFields));
+  }, [selectedMethod?.id, selectedProvider?.id, selectedModelFields]);
+
+  const submitModelConfig = () => {
+    if (!selectedProvider || !selectedMethod) return;
+    onConfigureModelAuth({
+      providerId: selectedProvider.id,
+      methodId: selectedMethod.id,
+      values: modelValues
+    });
+  };
+
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{t.common.defaultModel}</h3>
+            <p>{openClawConfig ? openClawConfig.configPath : t.catalogConfig.configFallback}</p>
+          </div>
+        </div>
+        <div className="form-grid form-grid-wide">
+          <label className="field-span-full">
+            <span>{t.fields.primaryModel}</span>
+            <select value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value)}>
+              {(catalog?.models ?? []).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {`${model.label} (${model.id})`}
+                </option>
+              ))}
+              {configuredModels
+                .filter((model) => !(catalog?.models ?? []).some((item) => item.id === model.id))
+                .map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {`${model.label} (${model.id})`}
+                  </option>
+                ))}
+            </select>
+          </label>
+        </div>
+        <div className="metric-strip compact-metric-strip">
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{openClawConfig?.defaultModelId ?? t.common.noDefaultModel}</span>
+          </div>
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{modelCopy.catalogHealth}: {stale ? t.common.stale : t.common.fresh}</span>
+          </div>
+          {catalog && (
+            <div className="metric-chip">
+              <Database size={16} />
+              <span>{`${t.fields.updatedAt}: ${formatDateTime(catalog.refreshedAt, language)}`}</span>
+            </div>
+          )}
+        </div>
+        <div className="card-actions">
+          <button type="button" className="primary-action" disabled={!selectedModelId || busy} onClick={() => onSaveDefaultModel(selectedModelId)}>
+            {busy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
+            {t.actions.saveModel}
+          </button>
+        </div>
+      </div>
+
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{wizardCopy.title}</h3>
+            <p>{wizardCopy.description}</p>
+          </div>
+        </div>
+
+        <div className="wizard-shell">
+          <WizardPath
+            items={[
+              wizardCopy.providerStep,
+              selectedProvider?.label,
+              selectedMethod ? `${selectedProvider?.label} ${wizardCopy.methodStep}` : undefined,
+              selectedMethod?.label
+            ]}
+          />
+
+          {modelProviders.length === 0 ? (
+            <div className="empty-state page-empty">{wizardCopy.empty}</div>
+          ) : modelStep === "provider" ? (
+            <>
+              <label className="wizard-search">
+                <Search size={16} />
+                <input value={providerSearch} onChange={(event) => setProviderSearch(event.target.value)} placeholder={wizardCopy.search} />
+              </label>
+              <WizardChoiceList
+                options={filteredProviders}
+                selectedId={selectedProvider?.id}
+                emptyText={wizardCopy.empty}
+                onSelect={(provider) => {
+                  setSelectedProviderId(provider.id);
+                  setSelectedMethodId("");
+                  setModelStep("method");
+                }}
+              />
+            </>
+          ) : modelStep === "method" && selectedProvider ? (
+            <>
+              <div className="wizard-stage-toolbar">
+                <button type="button" onClick={() => setModelStep("provider")}>
+                  <ArrowLeft size={16} />
+                  {wizardCopy.back}
+                </button>
+                <div>
+                  <strong>{selectedProvider.label}</strong>
+                  <span>{wizardCopy.chooseMethod}</span>
+                </div>
+              </div>
+              <WizardChoiceList
+                options={selectedProvider.methods}
+                selectedId={selectedMethodId}
+                emptyText={wizardCopy.empty}
+                onSelect={(method) => {
+                  setSelectedMethodId(method.id);
+                  setModelStep("details");
+                }}
+              />
+            </>
+          ) : selectedProvider && selectedMethod ? (
+            <>
+              <div className="wizard-stage-toolbar">
+                <button type="button" onClick={() => setModelStep("method")}>
+                  <ArrowLeft size={16} />
+                  {wizardCopy.back}
+                </button>
+                <div>
+                  <strong>{selectedMethod.label}</strong>
+                  <span>{selectedMethod.hint ?? wizardCopy.detailsStep}</span>
+                </div>
+              </div>
+              {["oauth", "device_code", "custom", "local"].includes(selectedMethod.kind) && <p className="wizard-note">{wizardCopy.interactiveHint}</p>}
+              <WizardFieldList fields={selectedModelFields} values={modelValues} onChange={setModelValues} />
+              <div className="card-actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={busy || !wizardFieldsReady(selectedModelFields, modelValues)}
+                  onClick={submitModelConfig}
+                >
+                  {busy ? <Loader2 className="spin" size={16} /> : <KeyRound size={16} />}
+                  {selectedMethod.submitLabel ?? wizardCopy.configure}
+                </button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      <section className="card-grid data-card-grid">
+        <TableCard title={t.tables.models} rows={catalog?.models.length ?? 0}>
+          {catalog?.models.length ? (
+            catalog.models.map((model) => (
+              <div key={model.id} className="table-row">
+                <div>
+                  <strong>{model.label}</strong>
+                  <p>{model.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{model.provider}</span>
+                  <span>{`${t.fields.supportsTools}: ${model.supportsTools ? t.common.yes : t.common.no}`}</span>
+                  <span>{`${modelCopy.contextWindow}: ${model.contextWindow?.toLocaleString(language) ?? t.common.unknown}`}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={modelCopy.configuredModels} rows={configuredModels.length}>
+          {configuredModels.length ? (
+            configuredModels.map((model) => (
+              <div key={model.id} className="table-row">
+                <div>
+                  <strong>{model.label}</strong>
+                  <p>{model.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{model.provider}</span>
+                  <span>{model.alias ?? t.common.defaultOption}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+      </section>
+    </section>
+  );
+}
+
+export function AgentsPage({
+  catalog,
+  openClawConfig,
+  language,
+  t,
+  busy,
+  onAddAgent
+}: {
+  catalog?: CatalogSnapshot;
+  openClawConfig?: OpenClawConfigState;
+  language: Language;
+  t: Messages;
+  busy: boolean;
+  onAddAgent: (input: { name: string; workspace?: string; modelId?: string }) => void;
+}) {
+  const [agentName, setAgentName] = useState("");
+  const [agentWorkspace, setAgentWorkspace] = useState("");
+  const [agentModelId, setAgentModelId] = useState("");
+  const copy =
+    language === "zh-CN"
+      ? {
+          configuredAgents: "已配置 Agent",
+          catalogAgents: "可用 Agent",
+          defaultAgent: "默认 Agent"
+        }
+      : {
+          configuredAgents: "Configured agents",
+          catalogAgents: "Available agents",
+          defaultAgent: "Default agent"
+        };
+
+  useEffect(() => {
+    setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+  }, [catalog?.models, openClawConfig?.defaultModelId]);
+
+  useEffect(() => {
+    if (!agentName.trim()) {
+      setAgentWorkspace("");
+      return;
+    }
+    if (agentWorkspace.trim()) return;
+    if (openClawConfig?.defaultWorkspace) {
+      setAgentWorkspace(joinPath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
+    }
+  }, [agentName, agentWorkspace, openClawConfig?.defaultWorkspace]);
+
+  const configuredAgents = openClawConfig?.configuredAgents ?? [];
+
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{t.actions.addAgent}</h3>
+            <p>{t.catalogConfig.addAgentDescription}</p>
+          </div>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>{t.fields.agentName}</span>
+            <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="researcher" />
+          </label>
+          <label>
+            <span>{t.fields.model}</span>
+            <select value={agentModelId} onChange={(event) => setAgentModelId(event.target.value)}>
+              <option value="">{t.common.defaultModel}</option>
+              {(catalog?.models ?? []).map((model) => (
+                <option key={model.id} value={model.id}>
+                  {`${model.label} (${model.id})`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-span-full">
+            <span>{t.fields.workspace}</span>
+            <input
+              value={agentWorkspace}
+              onChange={(event) => setAgentWorkspace(event.target.value)}
+              placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : t.catalogConfig.workspacePlaceholder}
+            />
+          </label>
+        </div>
+        <div className="metric-strip compact-metric-strip">
+          <div className="metric-chip">
+            <FolderKanban size={16} />
+            <span>{t.metrics.agents(configuredAgents.length)}</span>
+          </div>
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{openClawConfig?.defaultWorkspace ?? "-"}</span>
+          </div>
+          {configuredAgents.find((agent) => agent.isDefault) && (
+            <div className="metric-chip">
+              <FolderKanban size={16} />
+              <span>{`${copy.defaultAgent}: ${configuredAgents.find((agent) => agent.isDefault)?.id}`}</span>
+            </div>
+          )}
+        </div>
+        <div className="card-actions">
+          <button
+            type="button"
+            className="primary-action"
+            disabled={!agentName.trim() || busy}
+            onClick={() => {
+              onAddAgent({
+                name: agentName.trim(),
+                workspace: agentWorkspace.trim() || undefined,
+                modelId: agentModelId || undefined
+              });
+              setAgentName("");
+              setAgentWorkspace("");
+              setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
+            }}
+          >
+            {busy ? <Loader2 className="spin" size={16} /> : <FolderKanban size={16} />}
+            {t.actions.addAgent}
+          </button>
+        </div>
+      </div>
+
+      <section className="card-grid data-card-grid">
+        <TableCard title={copy.configuredAgents} rows={configuredAgents.length}>
+          {configuredAgents.length ? (
+            configuredAgents.map((agent) => (
+              <div key={agent.id} className="table-row">
+                <div>
+                  <strong>{agent.name ?? agent.id}</strong>
+                  <p>{agent.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{agent.modelId ?? t.common.defaultModel}</span>
+                  <span>{agent.workspace}</span>
+                  <span>{agent.isDefault ? t.common.defaultOption : agent.agentDir}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={copy.catalogAgents} rows={catalog?.agents.length ?? 0}>
+          {catalog?.agents.length ? (
+            catalog.agents.map((agent) => (
+              <div key={agent.id} className="table-row">
+                <div>
+                  <strong>{agent.label}</strong>
+                  <p>{agent.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{agent.runtimeId ?? t.common.unknown}</span>
+                  <span>{agent.modelId ?? t.common.defaultModel}</span>
+                  <span>{agent.workspace ?? t.common.notLinked}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+      </section>
+    </section>
+  );
+}
+
+export function SchedulePage({ runtime, language, t }: { runtime?: RuntimeOverview; language: Language; t: Messages }) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          runtimeSummary: "运行时排期",
+          queuedOrRunning: "排队/运行中"
+        }
+      : {
+          runtimeSummary: "Runtime schedule",
+          queuedOrRunning: "Queued/running"
+        };
+  const activeTasks = runtime?.tasks.filter((task) => task.status === "queued" || task.status === "running").length ?? 0;
+
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.runtimeSummary}</h3>
+            <p>{t.metrics.runs((runtime?.sessions.length ?? 0) + (runtime?.tasks.length ?? 0))}</p>
+          </div>
+        </div>
+        <div className="metric-strip">
+          <div className="metric-chip">
+            <Clock3 size={16} />
+            <span>{`${t.tables.sessions}: ${runtime?.sessions.length ?? 0}`}</span>
+          </div>
+          <div className="metric-chip">
+            <Clock3 size={16} />
+            <span>{`${t.tables.tasks}: ${runtime?.tasks.length ?? 0}`}</span>
+          </div>
+          <div className="metric-chip">
+            <Activity size={16} />
+            <span>{`${copy.queuedOrRunning}: ${activeTasks}`}</span>
+          </div>
+        </div>
+      </div>
+
+      <section className="card-grid data-card-grid">
+        <TableCard title={t.tables.sessions} rows={runtime?.sessions.length ?? 0}>
+          {runtime?.sessions.length ? (
+            runtime.sessions.map((session) => (
+              <div key={session.id} className="table-row">
+                <div>
+                  <strong>{session.title}</strong>
+                  <p>{session.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{formatDateTime(session.updatedAt, language)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noSessions}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={t.tables.tasks} rows={runtime?.tasks.length ?? 0}>
+          {runtime?.tasks.length ? (
+            runtime.tasks.map((task) => (
+              <div key={task.id} className="table-row">
+                <div>
+                  <strong>{task.title}</strong>
+                  <p>{task.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span className={`status-pill status-${task.status}`}>{t.status[task.status]}</span>
+                  <span>{formatDateTime(task.updatedAt, language)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noTasks}</div>
+          )}
+        </TableCard>
+      </section>
+    </section>
+  );
+}
+
+export function ChannelsPage({
+  catalog,
+  openClawConfig,
+  wizard,
+  language,
+  t,
+  busy,
+  onConfigureChannel
+}: {
+  catalog?: CatalogSnapshot;
+  openClawConfig?: OpenClawConfigState;
+  wizard?: OpenClawConfigWizardMetadata;
+  language: Language;
+  t: Messages;
+  busy: boolean;
+  onConfigureChannel: (input: ConfigureOpenClawChannelRequest) => void;
+}) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          deliverySurface: "交付通道",
+          available: "可用",
+          notConfigured: "未配置",
+          disabled: "已停用"
+        }
+      : {
+          deliverySurface: "Delivery channels",
+          available: "available",
+          notConfigured: "not configured",
+          disabled: "disabled"
+        };
+  const configCopy =
+    language === "zh-CN"
+      ? {
+          addChannel: "添加频道配置",
+          configuredChannels: "已配置频道",
+          channel: "频道",
+          account: "账号 ID",
+          accountName: "显示名称",
+          credentialKind: "凭据字段",
+          credentialValue: "凭据值",
+          useEnv: "使用环境变量",
+          noCredential: "不写入凭据",
+          defaultAccount: "默认账号",
+          credentialKeys: "凭据字段",
+          addDescription: "调用 openclaw channels add，让 OpenClaw 执行插件安装、账号配置迁移和配置校验。"
+        }
+      : {
+          addChannel: "Add channel config",
+          configuredChannels: "Configured channels",
+          channel: "Channel",
+          account: "Account ID",
+          accountName: "Display name",
+          credentialKind: "Credential field",
+          credentialValue: "Credential value",
+          useEnv: "Use environment",
+          noCredential: "No credential",
+          defaultAccount: "Default account",
+          credentialKeys: "Credential keys",
+          addDescription: "Calls openclaw channels add so OpenClaw handles plugin installation, account migration, and validation."
+        };
+  const wizardCopy =
+    language === "zh-CN"
+      ? {
+          title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0 Channel",
+          description:
+            "\u5148\u9009 Channel\uff0c\u518d\u8fdb\u5165\u8be5 Channel \u7684\u914d\u7f6e\u754c\u9762\uff1b\u63d0\u4ea4\u65f6\u4ecd\u8c03\u7528 openclaw channels add\uff0c\u8ba9 OpenClaw \u6267\u884c\u63d2\u4ef6\u5b89\u88c5\u3001\u8d26\u53f7\u8fc1\u79fb\u548c\u6821\u9a8c\u3002",
+          channelStep: "Channel",
+          detailsStep: "\u914d\u7f6e\u9009\u9879",
+          search: "\u641c\u7d22",
+          configure: "\u5199\u5165\u914d\u7f6e",
+          back: "\u8fd4\u56de",
+          empty: "\u672a\u52a0\u8f7d OpenClaw Channel \u5411\u5bfc\u5143\u6570\u636e"
+        }
+      : {
+          title: "Add channel through the CLI path",
+          description:
+            "Choose the channel first, then enter its channel-specific setup screen. Submit still calls openclaw channels add so OpenClaw handles plugins, account migration, and validation.",
+          channelStep: "Channel",
+          detailsStep: "Setup options",
+          search: "Search",
+          configure: "Write config",
+          back: "Back",
+          empty: "OpenClaw channel wizard metadata is not loaded."
+        };
+  const channelOptions = useMemo(() => {
+    const byId = new Map<string, OpenClawChannelSetupOption>();
+    for (const option of wizard?.channels ?? []) byId.set(option.id, option);
+    for (const channel of catalog?.channels ?? []) {
+      if (!byId.has(channel.id)) byId.set(channel.id, { id: channel.id, label: channel.label, fields: [] });
+    }
+    return [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
+  }, [catalog?.channels, wizard?.channels]);
+  const [channelStep, setChannelStep] = useState<"channel" | "details">("channel");
+  const [channelSearch, setChannelSearch] = useState("");
+  const [selectedChannelId, setSelectedChannelId] = useState("");
+  const [channelValues, setChannelValues] = useState<Record<string, OpenClawWizardValue>>({});
+  const selectedChannel = channelOptions.find((channel) => channel.id === selectedChannelId) ?? channelOptions[0];
+  const filteredChannels = useMemo(() => filterWizardOptions(channelOptions, channelSearch), [channelOptions, channelSearch]);
+  const configuredChannels = openClawConfig?.configuredChannels ?? [];
+
+  useEffect(() => {
+    if (selectedChannelId || !channelOptions[0]) return;
+    setSelectedChannelId(channelOptions[0].id);
+  }, [channelOptions, selectedChannelId]);
+
+  useEffect(() => {
+    if (!selectedChannel) {
+      setChannelValues({});
+      return;
+    }
+    setChannelValues(defaultWizardValues(selectedChannel.fields));
+  }, [selectedChannel?.id]);
+
+  const submitChannelConfig = () => {
+    if (!selectedChannel) return;
+    onConfigureChannel({
+      channelId: selectedChannel.id,
+      values: channelValues
+    });
+  };
+
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.deliverySurface}</h3>
+            <p>{catalog ? `${t.fields.updatedAt}: ${formatDateTime(catalog.refreshedAt, language)}` : t.empty.noCatalog}</p>
+          </div>
+        </div>
+        <div className="metric-strip">
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{t.metrics.channels(catalog?.channels.length ?? 0)}</span>
+          </div>
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{t.metrics.tools(catalog?.tools.length ?? 0)}</span>
+          </div>
+          <div className="metric-chip">
+            <Database size={16} />
+            <span>{`${configCopy.configuredChannels}: ${configuredChannels.length}`}</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{wizardCopy.title}</h3>
+            <p>{wizardCopy.description}</p>
+          </div>
+        </div>
+
+        <div className="wizard-shell">
+          <WizardPath items={[wizardCopy.channelStep, selectedChannel?.label, selectedChannel ? wizardCopy.detailsStep : undefined]} />
+
+          {channelOptions.length === 0 ? (
+            <div className="empty-state page-empty">{wizardCopy.empty}</div>
+          ) : channelStep === "channel" ? (
+            <>
+              <label className="wizard-search">
+                <Search size={16} />
+                <input value={channelSearch} onChange={(event) => setChannelSearch(event.target.value)} placeholder={wizardCopy.search} />
+              </label>
+              <WizardChoiceList
+                options={filteredChannels}
+                selectedId={selectedChannel?.id}
+                emptyText={wizardCopy.empty}
+                onSelect={(channel) => {
+                  setSelectedChannelId(channel.id);
+                  setChannelStep("details");
+                }}
+              />
+            </>
+          ) : selectedChannel ? (
+            <>
+              <div className="wizard-stage-toolbar">
+                <button type="button" onClick={() => setChannelStep("channel")}>
+                  <ArrowLeft size={16} />
+                  {wizardCopy.back}
+                </button>
+                <div>
+                  <strong>{selectedChannel.label}</strong>
+                  <span>{selectedChannel.hint ?? wizardCopy.detailsStep}</span>
+                </div>
+              </div>
+              <WizardFieldList fields={selectedChannel.fields} values={channelValues} onChange={setChannelValues} />
+              <div className="card-actions">
+                <button
+                  type="button"
+                  className="primary-action"
+                  disabled={busy || !wizardFieldsReady(selectedChannel.fields, channelValues)}
+                  onClick={submitChannelConfig}
+                >
+                  {busy ? <Loader2 className="spin" size={16} /> : <MessageSquareText size={16} />}
+                  {wizardCopy.configure}
+                </button>
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      <section className="card-grid data-card-grid">
+        <TableCard title={configCopy.configuredChannels} rows={configuredChannels.length}>
+          {configuredChannels.length ? (
+            configuredChannels.flatMap((channel) =>
+              channel.accounts.map((account) => (
+                <div key={`${channel.id}:${account.id}`} className="table-row">
+                  <div>
+                    <strong>{account.name ?? `${channel.label} / ${account.id}`}</strong>
+                    <p>{`${channel.id}:${account.id}`}</p>
+                  </div>
+                  <div className="table-meta">
+                    <span>{account.enabled && channel.enabled ? copy.available : copy.disabled}</span>
+                    <span>{account.isDefault ? configCopy.defaultAccount : account.id}</span>
+                    <span>{`${configCopy.credentialKeys}: ${account.credentialKeys.length ? account.credentialKeys.join(", ") : "-"}`}</span>
+                  </div>
+                </div>
+              ))
+            )
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={t.tables.channels} rows={catalog?.channels.length ?? 0}>
+          {catalog?.channels.length ? (
+            catalog.channels.map((channel) => (
+              <div key={channel.id} className="table-row">
+                <div>
+                  <strong>{channel.label}</strong>
+                  <p>{channel.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{channelStatusLabel(channel.status, copy)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={t.tables.tools} rows={catalog?.tools.length ?? 0}>
+          {catalog?.tools.length ? (
+            catalog.tools.map((tool) => (
+              <div key={tool.id} className="table-row">
+                <div>
+                  <strong>{tool.label}</strong>
+                  <p>{tool.description}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{tool.category}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </TableCard>
+      </section>
+    </section>
+  );
+}
+
 export function CatalogPage({
   catalog,
   openClawConfig,
@@ -877,8 +1748,8 @@ export function CatalogPage({
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>OpenClaw Quick Config</h3>
-            <p>{openClawConfig ? openClawConfig.configPath : "Read and write OpenClaw config from ~/.openclaw/openclaw.json."}</p>
+            <h3>{t.catalogConfig.quickConfig}</h3>
+            <p>{openClawConfig ? openClawConfig.configPath : t.catalogConfig.configFallback}</p>
           </div>
         </div>
 
@@ -886,13 +1757,13 @@ export function CatalogPage({
           <article className="feature-card">
             <div className="feature-card-header">
               <div>
-                <strong>Default model</strong>
-                <p>Writes to the active OpenClaw config and refreshes the catalog.</p>
+                <strong>{t.common.defaultModel}</strong>
+                <p>{t.catalogConfig.defaultModelDescription}</p>
               </div>
             </div>
             <div className="form-grid">
               <label className="field-span-full">
-                <span>Primary model</span>
+                <span>{t.fields.primaryModel}</span>
                 <select value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value)}>
                   {(catalog?.models ?? []).map((model) => (
                     <option key={model.id} value={model.id}>
@@ -912,7 +1783,7 @@ export function CatalogPage({
             <div className="metric-strip compact-metric-strip">
               <div className="metric-chip">
                 <Database size={16} />
-                <span>{openClawConfig?.defaultModelId ?? "No default model configured"}</span>
+                <span>{openClawConfig?.defaultModelId ?? t.common.noDefaultModel}</span>
               </div>
               <div className="metric-chip">
                 <Database size={16} />
@@ -922,7 +1793,7 @@ export function CatalogPage({
             <div className="card-actions">
               <button type="button" className="primary-action" disabled={!selectedModelId || busy} onClick={() => onSaveDefaultModel(selectedModelId)}>
                 {busy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-                Save model
+                {t.actions.saveModel}
               </button>
             </div>
           </article>
@@ -930,19 +1801,19 @@ export function CatalogPage({
           <article className="feature-card">
             <div className="feature-card-header">
               <div>
-                <strong>Add agent</strong>
-                <p>Creates an OpenClaw agent entry using the same config fields as `openclaw agents add`.</p>
+                <strong>{t.actions.addAgent}</strong>
+                <p>{t.catalogConfig.addAgentDescription}</p>
               </div>
             </div>
             <div className="form-grid">
               <label>
-                <span>Agent name</span>
+                <span>{t.fields.agentName}</span>
                 <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="researcher" />
               </label>
               <label>
-                <span>Model</span>
+                <span>{t.fields.model}</span>
                 <select value={agentModelId} onChange={(event) => setAgentModelId(event.target.value)}>
-                  <option value="">Use default model</option>
+                  <option value="">{t.common.defaultModel}</option>
                   {(catalog?.models ?? []).map((model) => (
                     <option key={model.id} value={model.id}>
                       {`${model.label} (${model.id})`}
@@ -951,11 +1822,11 @@ export function CatalogPage({
                 </select>
               </label>
               <label className="field-span-full">
-                <span>Workspace</span>
+                <span>{t.fields.workspace}</span>
                 <input
                   value={agentWorkspace}
                   onChange={(event) => setAgentWorkspace(event.target.value)}
-                  placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : "Leave blank to auto-generate"}
+                  placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : t.catalogConfig.workspacePlaceholder}
                 />
               </label>
             </div>
@@ -963,7 +1834,7 @@ export function CatalogPage({
               {(openClawConfig?.configuredAgents ?? []).slice(0, 3).map((agent) => (
                 <div key={agent.id} className="metric-chip">
                   <FolderKanban size={16} />
-                  <span>{`${agent.id} · ${agent.modelId ?? "default"}`}</span>
+                  <span>{`${agent.id} · ${agent.modelId ?? t.common.defaultOption}`}</span>
                 </div>
               ))}
             </div>
@@ -984,7 +1855,7 @@ export function CatalogPage({
                 }}
               >
                 {busy ? <Loader2 className="spin" size={16} /> : <FolderKanban size={16} />}
-                Add agent
+                {t.actions.addAgent}
               </button>
             </div>
           </article>
@@ -1219,6 +2090,164 @@ function WidgetCard({
   );
 }
 
+function channelStatusLabel(
+  status: "available" | "not_configured" | "disabled",
+  copy: { available: string; notConfigured: string; disabled: string }
+): string {
+  if (status === "available") return copy.available;
+  if (status === "not_configured") return copy.notConfigured;
+  return copy.disabled;
+}
+
+function mergeModelCatalogOptions(fields: OpenClawWizardField[], providerId: string | undefined, catalog: CatalogSnapshot | undefined): OpenClawWizardField[] {
+  if (!providerId) return fields;
+  const catalogOptions =
+    catalog?.models
+      .filter((model) => model.provider === providerId || model.id.startsWith(`${providerId}/`))
+      .map((model) => {
+        const value = model.id.startsWith(`${providerId}/`) ? model.id.slice(providerId.length + 1) : model.id;
+        return { value, label: model.label === model.id ? value : `${model.label} (${value})` };
+      }) ?? [];
+
+  return fields.map((field) => {
+    if (field.id !== "modelId") return field;
+    const optionsByValue = new Map<string, { value: string; label: string; hint?: string }>();
+    for (const option of field.options ?? []) optionsByValue.set(option.value, option);
+    for (const option of catalogOptions) optionsByValue.set(option.value, option);
+    const options = [...optionsByValue.values()];
+    return {
+      ...field,
+      options,
+      defaultValue: options.some((option) => option.value === field.defaultValue) ? field.defaultValue : options[0]?.value ?? field.defaultValue
+    };
+  });
+}
+
+function WizardPath({ items }: { items: Array<string | undefined> }) {
+  const visibleItems = items.filter((item): item is string => Boolean(item?.trim()));
+  return (
+    <div className="wizard-path">
+      {visibleItems.map((item, index) => (
+        <span key={`${item}:${index}`} className="wizard-path-item">
+          {index > 0 && <ChevronRight size={14} />}
+          <span>{item}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WizardChoiceList<T extends { id: string; label: string; hint?: string }>({
+  options,
+  selectedId,
+  emptyText,
+  onSelect
+}: {
+  options: T[];
+  selectedId?: string;
+  emptyText: string;
+  onSelect: (option: T) => void;
+}) {
+  if (options.length === 0) return <div className="empty-state page-empty">{emptyText}</div>;
+
+  return (
+    <div className="wizard-option-list">
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          className={`wizard-option ${option.id === selectedId ? "selected" : ""}`}
+          onClick={() => onSelect(option)}
+        >
+          <span className="wizard-option-main">
+            <strong>{option.label}</strong>
+            <span>{option.hint ?? option.id}</span>
+          </span>
+          <ChevronRight size={16} />
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function WizardFieldList({
+  fields,
+  values,
+  onChange
+}: {
+  fields: OpenClawWizardField[];
+  values: Record<string, OpenClawWizardValue>;
+  onChange: (values: Record<string, OpenClawWizardValue>) => void;
+}) {
+  const visibleFields = fields.filter((field) => isWizardFieldVisible(field, values));
+  if (visibleFields.length === 0) return <div className="empty-state compact-empty-state">No additional options.</div>;
+
+  return (
+    <div className="form-grid form-grid-wide wizard-field-grid">
+      {visibleFields.map((field) => {
+        const value = values[field.id] ?? field.defaultValue ?? (field.type === "checkbox" ? false : "");
+        return (
+          <label key={field.id} className={field.type === "checkbox" ? "checkbox-field" : undefined}>
+            {field.type !== "checkbox" && <span>{field.label}</span>}
+            {field.type === "select" ? (
+              <select value={String(value ?? "")} onChange={(event) => onChange({ ...values, [field.id]: event.target.value })}>
+                {(field.options ?? []).map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            ) : field.type === "checkbox" ? (
+              <>
+                <input type="checkbox" checked={value === true} onChange={(event) => onChange({ ...values, [field.id]: event.target.checked })} />
+                <span>{field.label}</span>
+              </>
+            ) : (
+              <input
+                type={field.type === "password" ? "password" : field.type === "number" ? "number" : "text"}
+                inputMode={field.type === "number" ? "numeric" : undefined}
+                value={String(value ?? "")}
+                onChange={(event) => onChange({ ...values, [field.id]: event.target.value })}
+                placeholder={field.placeholder}
+              />
+            )}
+            {field.hint && <small className="field-hint">{field.hint}</small>}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function filterWizardOptions<T extends { label: string; id: string; hint?: string }>(options: T[], search: string): T[] {
+  const normalized = search.trim().toLowerCase();
+  if (!normalized) return options;
+  return options.filter((option) => [option.label, option.id, option.hint].some((value) => value?.toLowerCase().includes(normalized)));
+}
+
+function defaultWizardValues(fields: OpenClawWizardField[]): Record<string, OpenClawWizardValue> {
+  return Object.fromEntries(
+    fields.map((field) => [field.id, field.defaultValue ?? (field.type === "checkbox" ? false : "")])
+  );
+}
+
+function wizardFieldsReady(fields: OpenClawWizardField[], values: Record<string, OpenClawWizardValue>): boolean {
+  return fields.every((field) => {
+    if (!isWizardFieldVisible(field, values) || !field.required) return true;
+    const value = values[field.id] ?? field.defaultValue;
+    if (field.type === "checkbox") return value === true;
+    if (typeof value === "string") return value.trim().length > 0;
+    if (typeof value === "number") return Number.isFinite(value);
+    return value !== undefined;
+  });
+}
+
+function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string, OpenClawWizardValue>): boolean {
+  if (!field.visibleWhen) return true;
+  const actual = values[field.visibleWhen.fieldId];
+  return actual === field.visibleWhen.equals;
+}
+
 function TableCard({ title, rows, children }: { title: string; rows: number; children: ReactNode }) {
   return (
     <div className="content-card stack-card">
@@ -1271,10 +2300,11 @@ function TraceBubble({
 function buildTraceIssues(
   activeRun: WorkflowRunView | undefined,
   workflow: WorkflowDefinition | undefined,
-  orderedNodes: WorkflowNode[]
+  orderedNodes: WorkflowNode[],
+  t: Messages
 ): TraceIssue[] {
   if (!activeRun?.nodeRuns.length) {
-    return buildPendingTraceIssues(workflow, orderedNodes);
+    return buildPendingTraceIssues(workflow, orderedNodes, t);
   }
 
   const nodesById = new Map((workflow?.nodes ?? []).map((node) => [node.id, node]));
@@ -1292,7 +2322,7 @@ function buildTraceIssues(
     const nodeRun = activeRun.nodeRuns[runIndex]!;
     const node = nodesById.get(nodeRun.nodeId);
     if (node?.type !== "manager_slot") {
-      issues.push(createNodeTraceIssue(activeRun, nodeRun, node, issueIndex, node?.parentId ? 1 : 0));
+      issues.push(createNodeTraceIssue(activeRun, nodeRun, node, issueIndex, node?.parentId ? 1 : 0, t));
       issueIndex += 1;
       continue;
     }
@@ -1302,14 +2332,14 @@ function buildTraceIssues(
     issues.push({
       key: `${nodeRun.id}:input`,
       index: issueIndex,
-      label: `${slotLabel} input`,
+      label: `${slotLabel} ${t.trace.slotInputSuffix}`,
       kind: "slot_input",
       depth: 0,
       node,
       nodeRun,
       issueStatus: nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status),
-      outputPreview: "Manager input entered this slot.",
-      outputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
+      outputPreview: t.trace.managerInputPreview,
+      outputBody: t.trace.managerInputBody,
       events: slotEvents.filter((event) => event.type !== "node.run.completed")
     });
     issueIndex += 1;
@@ -1320,7 +2350,7 @@ function buildTraceIssues(
       const childRun = activeRun.nodeRuns[childRunIndex]!;
       if (!childIds.has(childRun.nodeId)) break;
       const childNode = nodesById.get(childRun.nodeId);
-      issues.push(createNodeTraceIssue(activeRun, childRun, childNode, issueIndex, 1));
+      issues.push(createNodeTraceIssue(activeRun, childRun, childNode, issueIndex, 1, t));
       issueIndex += 1;
       childRunIndex += 1;
     }
@@ -1328,13 +2358,13 @@ function buildTraceIssues(
     issues.push({
       key: `${nodeRun.id}:output`,
       index: issueIndex,
-      label: `${slotLabel} output`,
+      label: `${slotLabel} ${t.trace.slotOutputSuffix}`,
       kind: "slot_output",
       depth: 0,
       node,
       nodeRun,
       issueStatus: toSlotOutputIssueStatus(nodeRun),
-      outputPreview: nodeRun.output === undefined ? "Waiting for nested nodes to finish." : summarizeOutput(nodeRun.output),
+      outputPreview: nodeRun.output === undefined ? t.trace.waitingNestedNodes : summarizeOutput(nodeRun.output, t),
       events: slotEvents
     });
     issueIndex += 1;
@@ -1344,7 +2374,7 @@ function buildTraceIssues(
   return issues;
 }
 
-function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, orderedNodes: WorkflowNode[]): TraceIssue[] {
+function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, orderedNodes: WorkflowNode[], t: Messages): TraceIssue[] {
   if (!workflow) return [];
 
   const childrenBySlotId = new Map<string, WorkflowNode[]>();
@@ -1362,19 +2392,19 @@ function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, order
     if (visited.has(node.id) || node.parentId) continue;
     visited.add(node.id);
     if (node.type !== "manager_slot") {
-      issues.push(createPendingTraceIssue(node, issueIndex, 0));
+      issues.push(createPendingTraceIssue(node, issueIndex, 0, t));
       issueIndex += 1;
       continue;
     }
 
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_input"));
+    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_input", t));
     issueIndex += 1;
     for (const child of childrenBySlotId.get(node.id) ?? []) {
       visited.add(child.id);
-      issues.push(createPendingTraceIssue(child, issueIndex, 1));
+      issues.push(createPendingTraceIssue(child, issueIndex, 1, t));
       issueIndex += 1;
     }
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_output"));
+    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_output", t));
     issueIndex += 1;
   }
   return issues;
@@ -1385,7 +2415,8 @@ function createNodeTraceIssue(
   nodeRun: WorkflowNodeRun,
   node: WorkflowNode | undefined,
   index: number,
-  depth: number
+  depth: number,
+  t: Messages
 ): TraceIssue {
   const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
   return {
@@ -1397,12 +2428,12 @@ function createNodeTraceIssue(
     node,
     nodeRun,
     issueStatus: toIssueStatus(nodeRun.status),
-    outputPreview: summarizeOutput(nodeRun.output),
+    outputPreview: summarizeOutput(nodeRun.output, t),
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
 }
 
-function createPendingTraceIssue(node: WorkflowNode, index: number, depth: number): TraceIssue {
+function createPendingTraceIssue(node: WorkflowNode, index: number, depth: number, t: Messages): TraceIssue {
   return {
     key: `node:${node.id}`,
     index,
@@ -1411,22 +2442,22 @@ function createPendingTraceIssue(node: WorkflowNode, index: number, depth: numbe
     depth,
     node,
     issueStatus: "pending",
-    outputPreview: summarizeOutput(undefined),
+    outputPreview: summarizeOutput(undefined, t),
     events: []
   };
 }
 
-function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind: "slot_input" | "slot_output"): TraceIssue {
+function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
   const isInput = kind === "slot_input";
   return {
     key: `node:${node.id}:${kind}`,
     index,
-    label: `${node.config.label} ${isInput ? "input" : "output"}`,
+    label: `${node.config.label} ${isInput ? t.trace.slotInputSuffix : t.trace.slotOutputSuffix}`,
     kind,
     depth: 0,
     node,
     issueStatus: "pending",
-    outputPreview: isInput ? "Waiting for manager input." : "Waiting for nested nodes to finish.",
+    outputPreview: isInput ? t.trace.managerInputWaiting : t.trace.waitingNestedNodes,
     events: []
   };
 }
@@ -1452,15 +2483,15 @@ function selectPreferredTraceIssue(issues: TraceIssue[]): TraceIssue | undefined
   );
 }
 
-function labelForIssueStatus(status: "completed" | "in_progress" | "pending"): string {
-  if (status === "completed") return "Completed";
-  if (status === "in_progress") return "In progress";
-  return "Pending";
+function labelForIssueStatus(status: "completed" | "in_progress" | "pending", t: Messages): string {
+  if (status === "completed") return t.trace.completed;
+  if (status === "in_progress") return t.trace.inProgress;
+  return t.trace.pending;
 }
 
-function summarizeOutput(output: unknown): string {
+function summarizeOutput(output: unknown, t: Messages): string {
   const normalized = formatOutput(output ?? "");
-  if (!normalized.trim()) return "No output yet";
+  if (!normalized.trim()) return t.trace.noOutput;
   const flattened = normalized.replace(/\s+/g, " ").trim();
   return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
 }

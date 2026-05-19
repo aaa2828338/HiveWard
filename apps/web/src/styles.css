@@ -1098,6 +1098,135 @@ dd {
   grid-column: 1 / -1;
 }
 
+.form-grid label.checkbox-field {
+  display: flex;
+  align-items: center;
+  align-self: end;
+  min-height: 38px;
+  gap: 8px;
+}
+
+.checkbox-field input {
+  width: 16px;
+  height: 16px;
+}
+
+.wizard-shell {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.wizard-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+}
+
+.wizard-path-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.wizard-path-item:last-child span:last-child {
+  color: var(--accent-strong);
+}
+
+.wizard-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 520px;
+  color: var(--muted);
+}
+
+.wizard-search input {
+  padding-left: 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.wizard-option-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.wizard-option {
+  width: 100%;
+  min-height: 74px;
+  padding: 12px 14px;
+  justify-content: space-between;
+  text-align: left;
+  border-radius: 12px;
+}
+
+.wizard-option.selected {
+  border-color: rgb(15 118 110 / 0.35);
+  background: rgb(218 242 238 / 0.52);
+}
+
+.wizard-option-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.wizard-option-main strong {
+  font-size: 14px;
+}
+
+.wizard-option-main span,
+.wizard-stage-toolbar span,
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wizard-stage-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgb(19 38 47 / 0.08);
+  border-radius: 12px;
+  background: rgb(255 255 255 / 0.58);
+}
+
+.wizard-stage-toolbar > div {
+  display: grid;
+  gap: 4px;
+}
+
+.wizard-note {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid rgb(31 111 235 / 0.18);
+  border-radius: 12px;
+  color: #24538d;
+  background: rgb(219 234 254 / 0.52);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.wizard-field-grid {
+  margin-top: 2px;
+}
+
+.field-hint {
+  display: block;
+}
+
 .card-actions {
   display: flex;
   justify-content: flex-end;

@@ -216,10 +216,10 @@ export function WorkflowStudioPage({
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
       onUpdateWorkflow((current) => {
-        return connectWorkflowNodes(current, connection);
+        return connectWorkflowNodes(current, connection, t);
       });
     },
-    [onUpdateWorkflow]
+    [onUpdateWorkflow, t]
   );
 
   const addNode = useCallback(
@@ -562,16 +562,10 @@ export function WorkflowStudioPage({
               }}
             >
               <button type="button" className="node-context-item" onClick={() => toggleNodeDisabled(nodeContextMenu.nodeId!)}>
-                {workflow?.nodes.find((node) => node.id === nodeContextMenu.nodeId)?.disabled
-                  ? language === "zh-CN"
-                    ? "启用节点"
-                    : "Enable node"
-                  : language === "zh-CN"
-                    ? "禁用节点"
-                    : "Disable node"}
+                {workflow?.nodes.find((node) => node.id === nodeContextMenu.nodeId)?.disabled ? t.actions.enableNode : t.actions.disableNode}
               </button>
               <button type="button" className="node-context-item danger" onClick={() => deleteNodeById(nodeContextMenu.nodeId!)}>
-                {language === "zh-CN" ? "删除节点" : "Delete node"}
+                {t.actions.deleteNode}
               </button>
             </div>
           )}
@@ -688,16 +682,16 @@ function NodeDetailModal({
 
             {node.type === "agent" && (
               <AgentSkillPanel
-                language={language}
                 node={node}
                 skills={catalog?.tools ?? []}
+                t={t}
                 onPatchConfig={onPatchConfig}
               />
             )}
 
             {(nodeRun?.output !== undefined || nodeRun?.error) && (
               <div className="node-modal-section">
-                <h4>Output</h4>
+                <h4>{t.fields.output}</h4>
                 {nodeRun?.output !== undefined && <pre className="output-block">{formatOutput(nodeRun.output)}</pre>}
                 {nodeRun?.error && <pre className="node-output-error output-block">{nodeRun.error}</pre>}
               </div>
@@ -738,7 +732,7 @@ function NodeConfigForm({
     return (
       <div className="config-form node-modal-form">
         <label>
-          <span>{language === "zh-CN" ? "职称" : "Title"}</span>
+          <span>{t.fields.title}</span>
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
@@ -788,7 +782,7 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
-          <span>Ports</span>
+          <span>{t.fields.ports}</span>
           <input
             min={1}
             max={8}
@@ -798,7 +792,7 @@ function NodeConfigForm({
           />
         </label>
         <label>
-          <span>Max handoffs</span>
+          <span>{t.fields.maxHandoffs}</span>
           <input
             min={1}
             max={50}
@@ -808,7 +802,7 @@ function NodeConfigForm({
           />
         </label>
         <label className="field-span-full">
-          <span>Instructions</span>
+          <span>{t.fields.instructions}</span>
           <textarea
             rows={8}
             value={config.instructions ?? ""}
@@ -828,11 +822,11 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
-          <span>Slot</span>
+          <span>{t.fields.slot}</span>
           <input value={config.slot} readOnly />
         </label>
         <label>
-          <span>Manager</span>
+          <span>{t.fields.manager}</span>
           <input value={config.managerNodeId} readOnly />
         </label>
       </div>
@@ -848,7 +842,7 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
-          <span>Max iterations</span>
+          <span>{t.fields.maxIterations}</span>
           <input
             min={1}
             max={25}
@@ -870,7 +864,7 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label className="field-span-full">
-          <span>Expression</span>
+          <span>{t.fields.expression}</span>
           <input value={config.expression} onChange={(event) => onPatchConfig({ expression: event.target.value })} />
         </label>
       </div>
@@ -886,11 +880,11 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
-          <span>{t.defaults.approvalOwner}</span>
+          <span>{t.fields.approver}</span>
           <input value={config.approverHint ?? ""} onChange={(event) => onPatchConfig({ approverHint: event.target.value })} />
         </label>
         <label className="field-span-full">
-          <span>{t.defaults.approvalInstructions}</span>
+          <span>{t.fields.instructions}</span>
           <textarea rows={8} value={config.instructions ?? ""} onChange={(event) => onPatchConfig({ instructions: event.target.value })} />
         </label>
       </div>
@@ -948,10 +942,10 @@ function NodeConfigForm({
           </select>
         </label>
         <label>
-          <span>Mode</span>
+          <span>{t.fields.mode}</span>
           <select value={config.mode} onChange={(event) => onPatchConfig({ mode: event.target.value as SummaryNodeConfig["mode"] })}>
-            <option value="structured_merge">structured_merge</option>
-            <option value="openclaw_agent">openclaw_agent</option>
+            <option value="structured_merge">{t.options.structuredMerge}</option>
+            <option value="openclaw_agent">{t.options.openClawAgent}</option>
           </select>
         </label>
         <label className="field-span-full">
@@ -988,10 +982,10 @@ function NodeConfigForm({
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
-          <span>Wait for</span>
+          <span>{t.fields.waitFor}</span>
           <select value={config.waitFor} onChange={(event) => onPatchConfig({ waitFor: event.target.value as ParallelAgentsNodeConfig["waitFor"] })}>
-            <option value="all">all</option>
-            <option value="first_success">first_success</option>
+            <option value="all">{t.options.waitForAll}</option>
+            <option value="first_success">{t.options.firstSuccess}</option>
           </select>
         </label>
         <label>
@@ -1000,7 +994,7 @@ function NodeConfigForm({
         </label>
         <div className="field-span-full parallel-agent-list">
           {config.agents.length === 0 ? (
-            <div className="empty-state compact-empty-state">No parallel agents configured</div>
+            <div className="empty-state compact-empty-state">{t.empty.noParallelAgents}</div>
           ) : (
             config.agents.map((agent, index) => {
               const selectedModel = agent.modelId ?? "";
@@ -1011,7 +1005,7 @@ function NodeConfigForm({
               return (
                 <div key={`${agent.agentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
                   <div className="parallel-agent-card-header">
-                    <h4>{`Parallel agent ${index + 1}`}</h4>
+                    <h4>{`${t.nodeTypes.agent} ${index + 1}`}</h4>
                     <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
                       <X size={14} />
                     </button>
@@ -1054,7 +1048,7 @@ function NodeConfigForm({
             })
           )}
           <button type="button" onClick={addAgent}>
-            Add parallel agent
+            {t.actions.addParallelAgent}
           </button>
         </div>
       </div>
@@ -1088,14 +1082,14 @@ function NodeConfigForm({
 }
 
 function AgentSkillPanel({
-  language,
   node,
   skills,
+  t,
   onPatchConfig
 }: {
-  language: Language;
   node: WorkflowNode;
   skills: NonNullable<CatalogSnapshot["tools"]>;
+  t: Messages;
   onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
 }) {
   const config = node.config as AgentNodeConfig;
@@ -1119,10 +1113,10 @@ function AgentSkillPanel({
 
   return (
     <div className="node-modal-section">
-      <h4>{language === "zh-CN" ? "Skill" : "Skills"}</h4>
+      <h4>{t.fields.skills}</h4>
       <div className="skill-picker">
         <select value={selectedSkillId} onChange={(event) => setSelectedSkillId(event.target.value)}>
-          <option value="">{language === "zh-CN" ? "选择一个 skill" : "Select a skill"}</option>
+          <option value="">{t.empty.selectSkill}</option>
           {availableSkills.map((skill) => (
             <option key={skill.id} value={skill.id}>
               {skill.label} ({skill.category})
@@ -1130,12 +1124,12 @@ function AgentSkillPanel({
           ))}
         </select>
         <button type="button" onClick={addSkill} disabled={!selectedSkillId}>
-          {language === "zh-CN" ? "添加 Skill" : "Add skill"}
+          {t.actions.addSkill}
         </button>
       </div>
       <div className="skill-list">
         {selectedSkills.length === 0 ? (
-          <div className="empty-state compact-empty-state">{language === "zh-CN" ? "还没有添加 skill" : "No skills added"}</div>
+          <div className="empty-state compact-empty-state">{t.empty.noSkills}</div>
         ) : (
           selectedSkills.map((skillId) => {
             const match = skills.find((skill) => skill.id === skillId);
@@ -1341,7 +1335,7 @@ function addManagerSlotFromMenu(workflow: WorkflowDefinition, selectedNodeId: st
     size: MANAGER_SLOT_DEFAULT_SIZE,
     config: {
       ...defaultConfig("manager_slot", t),
-      label: `Slot ${slot}`,
+      label: `${t.defaults.managerSlotLabel} ${slot}`,
       managerNodeId: selectedManager?.id ?? "",
       slot
     } as WorkflowNode["config"]
@@ -1355,7 +1349,7 @@ function addManagerSlotFromMenu(workflow: WorkflowDefinition, selectedNodeId: st
     managerNode: selectedManager,
     slotNode: node,
     slot: assignableSlot
-  });
+  }, t);
 }
 
 function nextManagerSlotNumber(workflow: WorkflowDefinition): number {
@@ -1393,10 +1387,10 @@ function nextAvailableManagerSlot(workflow: WorkflowDefinition, managerNode: Wor
   return undefined;
 }
 
-function connectWorkflowNodes(workflow: WorkflowDefinition, connection: Connection): WorkflowDefinition {
+function connectWorkflowNodes(workflow: WorkflowDefinition, connection: Connection, t: Messages): WorkflowDefinition {
   const assignment = readManagerSlotConnection(workflow, connection);
   if (assignment) {
-    return applyManagerSlotAssignment(workflow, assignment);
+    return applyManagerSlotAssignment(workflow, assignment, t);
   }
   if (
     workflow.edges.some(
@@ -1439,7 +1433,8 @@ function readManagerSlotConnection(
 
 function applyManagerSlotAssignment(
   workflow: WorkflowDefinition,
-  assignment: { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number }
+  assignment: { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number },
+  t?: Messages
 ): WorkflowDefinition {
   const { managerNode, slotNode, slot } = assignment;
   const boundedSlot = Math.min(maxManagerPortCount, Math.max(1, Math.round(slot)));
@@ -1490,7 +1485,7 @@ function applyManagerSlotAssignment(
         ...node,
         config: {
           ...config,
-          label: shouldRenameManagerSlot(config.label) ? `Slot ${boundedSlot}` : config.label,
+          label: shouldRenameManagerSlot(config.label) ? `${t?.defaults.managerSlotLabel ?? "Slot"} ${boundedSlot}` : config.label,
           managerNodeId: managerNode.id,
           slot: boundedSlot
         }
@@ -1530,7 +1525,7 @@ function parseManagerPortHandle(handle: string | null | undefined, prefix: strin
 }
 
 function shouldRenameManagerSlot(label: string | undefined): boolean {
-  return !label || label === "Slot" || /^Slot \d+$/i.test(label);
+  return !label || label === "Slot" || label === "槽位" || /^Slot \d+$/i.test(label) || /^槽位 \d+$/i.test(label);
 }
 
 function nextWorkflowEdgeId(edges: WorkflowEdge[], baseId: string): string {
@@ -1715,13 +1710,12 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
       label: t.defaults.managerLabel,
       portCount: 3,
       maxHandoffs: 12,
-      instructions:
-        "Route work through numbered slots. Agents may return JSON with status and nextSlot or returnToSlot."
+      instructions: t.defaults.managerInstructions
     };
   }
   if (type === "manager_slot") {
     return {
-      label: "Slot",
+      label: t.defaults.managerSlotLabel,
       managerNodeId: "",
       slot: 1
     };

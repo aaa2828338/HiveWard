@@ -79,6 +79,21 @@ class ScriptedAdapter implements OpenClawAdapter {
 }
 
 describe("WorkflowWorker", () => {
+  it("persists a newly-created blank workflow for the selected company", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-store-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = await store.createWorkflow({ name: "Launch review" });
+    const workflows = await store.listWorkflows();
+
+    expect(workflow.id).toMatch(/^workflow-/);
+    expect(workflow.companyId).toBe("company-openclaw-studio");
+    expect(workflow.name).toBe("Launch review");
+    expect(workflow.nodes).toEqual([]);
+    expect(workflows.some((item) => item.id === workflow.id)).toBe(true);
+  });
+
   it("marks the run failed and stops downstream execution when an agent result fails", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
     const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
