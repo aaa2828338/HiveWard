@@ -3,17 +3,17 @@ export type AppSectionId =
   | "workflow"
   | "runs"
   | "approvals"
-  | "dashboard"
-  | "views"
-  | "notes"
-  | "catalog";
+  | "models"
+  | "agents"
+  | "schedule"
+  | "channels";
 
 export const appSections: Array<Exclude<AppSectionId, "company">> = [
   "workflow",
   "runs",
   "approvals",
-  "dashboard",
-  "views",
-  "notes",
-  "catalog"
+  "models",
+  "agents",
+  "schedule",
+  "channels"
 ];

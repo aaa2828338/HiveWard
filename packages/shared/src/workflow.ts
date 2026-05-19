@@ -593,3 +593,38 @@ export function createDefaultWorkflows(now: string, companyId = "company-opencla
     createManagerDrivenHtmlWorkflow(now, companyId)
   ];
 }
+
+export function createBlankWorkflow({
+  id,
+  now,
+  companyId = "company-openclaw-studio",
+  name,
+  description
+}: {
+  id: string;
+  now: string;
+  companyId?: string;
+  name?: string;
+  description?: string;
+}): WorkflowDefinition {
+  return {
+    id,
+    companyId,
+    name: normalizeWorkflowText(name, "Untitled workflow"),
+    description: normalizeWorkflowText(description, "Start with an empty canvas and add CUI-owned workflow nodes."),
+    version: 1,
+    nodes: [],
+    edges: [],
+    variables: {},
+    display: {
+      viewport: { x: 0, y: 0, zoom: 1 }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function normalizeWorkflowText(value: string | undefined, fallback: string): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : fallback;
+}

@@ -56,12 +56,28 @@ export interface OpenClawConfiguredAgent {
   isDefault: boolean;
 }
 
+export interface OpenClawConfiguredChannelAccount {
+  id: string;
+  name?: string;
+  enabled: boolean;
+  credentialKeys: string[];
+  isDefault: boolean;
+}
+
+export interface OpenClawConfiguredChannel {
+  id: string;
+  label: string;
+  enabled: boolean;
+  accounts: OpenClawConfiguredChannelAccount[];
+}
+
 export interface OpenClawConfigState {
   configPath: string;
   defaultWorkspace: string;
   defaultModelId?: string;
   configuredModels: OpenClawConfiguredModel[];
   configuredAgents: OpenClawConfiguredAgent[];
+  configuredChannels: OpenClawConfiguredChannel[];
 }
 
 export interface OpenClawSessionSummary {

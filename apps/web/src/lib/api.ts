@@ -2,13 +2,20 @@ import type {
   CatalogSnapshot,
   CatalogSnapshotResponse,
   CompanyDirectoryResponse,
+  ConfigureOpenClawChannelRequest,
+  ConfigureOpenClawModelAuthRequest,
   CreateOpenClawAgentRequest,
+  CreateOpenClawChannelRequest,
+  CreateOpenClawModelRequest,
+  CreateWorkflowRequest,
   DashboardStateResponse,
   LatestWorkflowRunResponse,
   ListPendingApprovalsResponse,
   ListWorkflowRunViewsResponse,
   ListWorkflowsResponse,
   OpenClawConfigResponse,
+  OpenClawConfigWizardMetadata,
+  OpenClawConfigWizardResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
   SaveDashboardStateRequest,
@@ -50,6 +57,11 @@ export const api = {
     return response.config;
   },
 
+  async getOpenClawConfigWizard(): Promise<OpenClawConfigWizardMetadata> {
+    const response = await request<OpenClawConfigWizardResponse>("/api/openclaw-config/wizard");
+    return response.wizard;
+  },
+
   async updateOpenClawDefaultModel(modelId: string): Promise<OpenClawConfigState> {
     const response = await request<OpenClawConfigResponse>("/api/openclaw-config/default-model", {
       method: "PUT",
@@ -58,10 +70,42 @@ export const api = {
     return response.config;
   },
 
+  async addOpenClawModel(input: CreateOpenClawModelRequest): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/models", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateOpenClawModelRequest)
+    });
+    return response.config;
+  },
+
+  async configureOpenClawModelAuth(input: ConfigureOpenClawModelAuthRequest): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/model-auth", {
+      method: "POST",
+      body: JSON.stringify(input satisfies ConfigureOpenClawModelAuthRequest)
+    });
+    return response.config;
+  },
+
   async addOpenClawAgent(input: CreateOpenClawAgentRequest): Promise<OpenClawConfigState> {
     const response = await request<OpenClawConfigResponse>("/api/openclaw-config/agents", {
       method: "POST",
       body: JSON.stringify(input satisfies CreateOpenClawAgentRequest)
+    });
+    return response.config;
+  },
+
+  async addOpenClawChannel(input: CreateOpenClawChannelRequest): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/channels", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateOpenClawChannelRequest)
+    });
+    return response.config;
+  },
+
+  async configureOpenClawChannel(input: ConfigureOpenClawChannelRequest): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/channel-setup", {
+      method: "POST",
+      body: JSON.stringify(input satisfies ConfigureOpenClawChannelRequest)
     });
     return response.config;
   },
@@ -80,6 +124,14 @@ export const api = {
   async listWorkflows(): Promise<WorkflowDefinition[]> {
     const response = await request<ListWorkflowsResponse>("/api/workflows");
     return response.workflows;
+  },
+
+  async createWorkflow(input: CreateWorkflowRequest): Promise<WorkflowDefinition> {
+    const response = await request<WorkflowResponse>("/api/workflows", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateWorkflowRequest)
+    });
+    return response.workflow;
   },
 
   async getWorkflow(id: string): Promise<WorkflowDefinition> {

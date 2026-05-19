@@ -3,7 +3,12 @@ import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
   CatalogSnapshot,
+  ConfigureOpenClawChannelRequest,
+  ConfigureOpenClawModelAuthRequest,
+  CreateOpenClawChannelRequest,
+  CreateWorkflowRequest,
   CreateOpenClawAgentRequest,
+  CreateOpenClawModelRequest,
   ParallelAgentsNodeConfig,
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
@@ -69,6 +74,32 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.get("/api/openclaw-config/wizard", (_req, res, next) => {
+    try {
+      res.json({ wizard: openClawConfigStore.getWizardMetadata() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/openclaw-config/models", async (req, res, next) => {
+    try {
+      const body = req.body as CreateOpenClawModelRequest;
+      res.status(201).json({ config: await openClawConfigStore.addModel(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/openclaw-config/model-auth", async (req, res, next) => {
+    try {
+      const body = req.body as ConfigureOpenClawModelAuthRequest;
+      res.status(201).json({ config: await openClawConfigStore.configureModelAuth(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/api/openclaw-config/agents", async (req, res, next) => {
     try {
       const body = req.body as CreateOpenClawAgentRequest;
@@ -78,9 +109,40 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.post("/api/openclaw-config/channels", async (req, res, next) => {
+    try {
+      const body = req.body as CreateOpenClawChannelRequest;
+      res.status(201).json({ config: await openClawConfigStore.addChannel(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/openclaw-config/channel-setup", async (req, res, next) => {
+    try {
+      const body = req.body as ConfigureOpenClawChannelRequest;
+      res.status(201).json({ config: await openClawConfigStore.configureChannel(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/workflows", async (_req, res, next) => {
     try {
       res.json({ workflows: await store.listWorkflows() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/workflows", async (req, res, next) => {
+    try {
+      const body = req.body as CreateWorkflowRequest;
+      const workflow = await store.createWorkflow({
+        name: body.name,
+        description: body.description
+      });
+      res.status(201).json({ workflow });
     } catch (error) {
       next(error);
     }

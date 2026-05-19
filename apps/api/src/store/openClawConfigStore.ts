@@ -4,13 +4,29 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  ConfigureOpenClawChannelRequest,
+  ConfigureOpenClawModelAuthRequest,
   CreateOpenClawAgentRequest,
+  CreateOpenClawChannelRequest,
+  CreateOpenClawModelRequest,
+  OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   OpenClawConfiguredAgent,
+  OpenClawConfiguredChannel,
   OpenClawConfiguredModel
 } from "@openclaw-cui/shared";
+import {
+  buildChannelRequest,
+  buildModelAuthRequest,
+  getOpenClawConfigWizardMetadata
+} from "./openClawConfigWizard";
 
 const execFileAsync = promisify(execFile);
+
+type ConfigObject = Record<string, unknown>;
+type OpenClawProviderConfig = ConfigObject & {
+  models?: Array<ConfigObject & { id?: string; name?: string }>;
+};
 
 interface OpenClawConfigFile {
   agent?: {
@@ -32,8 +48,9 @@ interface OpenClawConfigFile {
     }>;
   };
   models?: {
-    providers?: Record<string, { models?: Array<{ id?: string; name?: string }> }>;
+    providers?: Record<string, OpenClawProviderConfig>;
   };
+  channels?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -49,8 +66,76 @@ export class OpenClawConfigStore {
     return this.toState(config);
   }
 
+  getWizardMetadata(): OpenClawConfigWizardMetadata {
+    return getOpenClawConfigWizardMetadata();
+  }
+
   async updateDefaultModel(modelId: string): Promise<OpenClawConfigState> {
-    await runOpenClawCli(["models", "set", modelId.trim()], { timeoutMs: 120_000 });
+    await writeDefaultModel(modelId);
+    return this.getState();
+  }
+
+  async configureModelAuth(input: ConfigureOpenClawModelAuthRequest): Promise<OpenClawConfigState> {
+    return this.addModel(buildModelAuthRequest(input));
+  }
+
+  async addModel(input: CreateOpenClawModelRequest): Promise<OpenClawConfigState> {
+    const provider = normalizeProviderId(input.provider);
+    const modelId = normalizeModelId(provider, input.modelId);
+    if (!provider) {
+      throw new Error("Model provider is required.");
+    }
+    if (!modelId) {
+      throw new Error("Model id is required.");
+    }
+
+    const config = await this.readConfig();
+    const existingProvider = getProviderConfig(config, provider);
+    const existingModels = (existingProvider.models ?? []).filter(isConfigObject);
+    const existingModel = existingModels.find((model) => readString(model.id) === modelId);
+    const nextModel: ConfigObject = {
+      ...(existingModel ?? {}),
+      id: modelId
+    };
+    const label = readString(input.label);
+    if (label) nextModel.name = label;
+    else if (!readString(nextModel.name)) nextModel.name = modelId;
+    if (isPositiveNumber(input.contextWindow)) nextModel.contextWindow = input.contextWindow;
+    if (isPositiveNumber(input.maxTokens)) nextModel.maxTokens = input.maxTokens;
+
+    const nextProvider: OpenClawProviderConfig = {
+      ...existingProvider,
+      models: [...existingModels.filter((model) => readString(model.id) !== modelId), nextModel]
+    };
+    const api = readString(input.api);
+    if (api) nextProvider.api = api;
+    const baseUrl = readString(input.baseUrl);
+    if (baseUrl) nextProvider.baseUrl = baseUrl;
+    const apiKeyEnv = readString(input.apiKeyEnv);
+    const apiKey = readString(input.apiKey);
+    if (apiKeyEnv) {
+      nextProvider.apiKey = { source: "env", provider: "default", id: apiKeyEnv };
+    } else if (apiKey) {
+      nextProvider.apiKey = apiKey;
+    }
+
+    await runOpenClawCli(
+      ["config", "set", `models.providers.${provider}`, JSON.stringify(nextProvider), "--strict-json"],
+      { timeoutMs: 300_000 }
+    );
+
+    const fullModelId = `${provider}/${modelId}`;
+    const alias = readString(input.alias);
+    if (alias) {
+      await runOpenClawCli(
+        ["config", "set", `agents.defaults.models["${escapeConfigPathKey(fullModelId)}"].alias`, JSON.stringify(alias), "--strict-json"],
+        { timeoutMs: 120_000 }
+      );
+    }
+    if (input.setDefault) {
+      await writeDefaultModel(fullModelId);
+    }
+
     return this.getState();
   }
 
@@ -78,6 +163,43 @@ export class OpenClawConfigStore {
     return this.getState();
   }
 
+  async addChannel(input: CreateOpenClawChannelRequest): Promise<OpenClawConfigState> {
+    const channel = normalizeChannelId(input.channel);
+    if (!channel) {
+      throw new Error("Channel is required.");
+    }
+
+    const args = ["channels", "add", "--channel", channel];
+    pushOptionalArg(args, "--account", input.account);
+    pushOptionalArg(args, "--name", input.name);
+    if (input.useEnv) args.push("--use-env");
+    pushOptionalArg(args, "--token", input.token);
+    pushOptionalArg(args, "--bot-token", input.botToken);
+    pushOptionalArg(args, "--app-token", input.appToken);
+    pushOptionalArg(args, "--password", input.password);
+    pushOptionalArg(args, "--secret", input.secret);
+    pushOptionalArg(args, "--url", input.url);
+    pushOptionalArg(args, "--base-url", input.baseUrl);
+    pushOptionalArg(args, "--db-path", input.dbPath);
+    pushOptionalArg(args, "--http-host", input.httpHost);
+    pushOptionalArg(args, "--http-port", input.httpPort);
+    pushOptionalArg(args, "--http-url", input.httpUrl);
+    pushOptionalArg(args, "--cli-path", input.cliPath);
+    pushOptionalArg(args, "--auth-dir", input.authDir);
+    pushOptionalArg(args, "--region", input.region);
+    pushOptionalArg(args, "--service", input.service);
+    pushOptionalArg(args, "--signal-number", input.signalNumber);
+    pushOptionalArg(args, "--token-file", input.tokenFile);
+    pushOptionalArg(args, "--secret-file", input.secretFile);
+
+    await runOpenClawCli(args, { timeoutMs: 300_000 });
+    return this.getState();
+  }
+
+  async configureChannel(input: ConfigureOpenClawChannelRequest): Promise<OpenClawConfigState> {
+    return this.addChannel(buildChannelRequest(input));
+  }
+
   private async readConfig(): Promise<OpenClawConfigFile> {
     try {
       const raw = await readFile(this.configPath, "utf8");
@@ -96,7 +218,8 @@ export class OpenClawConfigStore {
       defaultWorkspace,
       defaultModelId,
       configuredModels: collectConfiguredModels(config, defaultModelId),
-      configuredAgents: buildConfiguredAgents(config, defaultWorkspace, defaultModelId)
+      configuredAgents: buildConfiguredAgents(config, defaultWorkspace, defaultModelId),
+      configuredChannels: collectConfiguredChannels(config)
     };
   }
 }
@@ -200,6 +323,55 @@ function collectConfiguredModels(config: OpenClawConfigFile, defaultModelId?: st
   return models.sort((left, right) => left.label.localeCompare(right.label));
 }
 
+function collectConfiguredChannels(config: OpenClawConfigFile): OpenClawConfiguredChannel[] {
+  const channels = isConfigObject(config.channels) ? config.channels : {};
+  const configuredChannels: OpenClawConfiguredChannel[] = [];
+
+  for (const [channelId, rawChannel] of Object.entries(channels)) {
+    if (!isConfigObject(rawChannel)) continue;
+
+    const enabled = readBoolean(rawChannel.enabled, true);
+    const accounts: OpenClawConfiguredChannel["accounts"] = [];
+    const accountsConfig = isConfigObject(rawChannel.accounts) ? rawChannel.accounts : {};
+    const defaultCredentials = collectCredentialKeys(rawChannel);
+    const hasDefaultAccount =
+      defaultCredentials.length > 0 ||
+      readString(rawChannel.name) !== undefined ||
+      Object.keys(accountsConfig).length === 0 ||
+      Object.prototype.hasOwnProperty.call(rawChannel, "enabled");
+
+    if (hasDefaultAccount) {
+      accounts.push({
+        id: "default",
+        name: readString(rawChannel.name),
+        enabled,
+        credentialKeys: defaultCredentials,
+        isDefault: true
+      });
+    }
+
+    for (const [accountId, rawAccount] of Object.entries(accountsConfig)) {
+      if (!isConfigObject(rawAccount)) continue;
+      accounts.push({
+        id: accountId,
+        name: readString(rawAccount.name),
+        enabled: readBoolean(rawAccount.enabled, enabled),
+        credentialKeys: collectCredentialKeys(rawAccount),
+        isDefault: false
+      });
+    }
+
+    configuredChannels.push({
+      id: channelId,
+      label: readString(rawChannel.label) ?? readString(rawChannel.name) ?? channelId,
+      enabled,
+      accounts: accounts.sort((left, right) => Number(right.isDefault) - Number(left.isDefault) || left.id.localeCompare(right.id))
+    });
+  }
+
+  return configuredChannels.sort((left, right) => left.label.localeCompare(right.label));
+}
+
 function listAgentEntries(config: OpenClawConfigFile): Array<NonNullable<NonNullable<OpenClawConfigFile["agents"]>["list"]>[number]> {
   return Array.isArray(config.agents?.list) ? config.agents!.list!.filter((entry) => Boolean(entry && typeof entry === "object")) : [];
 }
@@ -221,6 +393,84 @@ function normalizeAgentId(value: unknown): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function isPositiveNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isConfigObject(value: unknown): value is ConfigObject {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function getProviderConfig(config: OpenClawConfigFile, provider: string): OpenClawProviderConfig {
+  const rawProvider = config.models?.providers?.[provider];
+  return isConfigObject(rawProvider) ? { ...rawProvider } : {};
+}
+
+function normalizeProviderId(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(normalized)) return "";
+  return normalized;
+}
+
+function normalizeModelId(provider: string, value: string): string {
+  const trimmed = value.trim();
+  const fullProviderPrefix = `${provider}/`;
+  if (trimmed.toLowerCase().startsWith(fullProviderPrefix)) return trimmed.slice(fullProviderPrefix.length).trim();
+  return trimmed;
+}
+
+function normalizeChannelId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function pushOptionalArg(args: string[], flag: string, value: unknown): void {
+  const stringValue = readString(value);
+  if (stringValue) args.push(flag, stringValue);
+}
+
+function collectCredentialKeys(config: ConfigObject): string[] {
+  const credentialKeys = [
+    "token",
+    "botToken",
+    "appToken",
+    "password",
+    "secret",
+    "url",
+    "baseUrl",
+    "dbPath",
+    "httpHost",
+    "httpPort",
+    "httpUrl",
+    "cliPath",
+    "authDir",
+    "region",
+    "service",
+    "signalNumber",
+    "tokenFile",
+    "secretFile",
+    "webhookSecret"
+  ];
+  return credentialKeys.filter((key) => Object.prototype.hasOwnProperty.call(config, key));
+}
+
+async function writeDefaultModel(modelId: string): Promise<void> {
+  const normalized = modelId.trim();
+  if (!normalized) {
+    throw new Error("Model id is required.");
+  }
+  await runOpenClawCli(["config", "set", "agents.defaults.model", JSON.stringify({ primary: normalized }), "--strict-json"], {
+    timeoutMs: 120_000
+  });
+}
+
+function escapeConfigPathKey(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 function expandHome(value: string): string {

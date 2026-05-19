@@ -7,17 +7,27 @@ export interface Messages {
   actions: {
     add: string;
     addNote: string;
+    addAgent: string;
+    addChannel: string;
+    addModel: string;
+    addParallelAgent: string;
     addSavedView: string;
+    addSkill: string;
     addTag: string;
     addWidget: string;
     approve: string;
     catalog: string;
+    createWorkflow: string;
+    deleteNode: string;
+    disableNode: string;
+    enableNode: string;
     refreshCatalog: string;
     refreshWorkspace: string;
     remove: string;
     run: string;
     runWorkflow: string;
     save: string;
+    saveModel: string;
     saveWorkflow: string;
     saveWorkspace: string;
     switchLanguage: string;
@@ -25,10 +35,13 @@ export interface Messages {
   common: {
     allStatuses: string;
     allWorkflows: string;
+    brandTagline: string;
     defaultModel: string;
+    defaultOption: string;
     dirtyWorkspace: string;
     fresh: string;
     no: string;
+    noDefaultModel: string;
     notLinked: string;
     realTime: string;
     stale: string;
@@ -46,6 +59,8 @@ export interface Messages {
     groupLabel: string;
     loopLabel: string;
     managerLabel: string;
+    managerInstructions: string;
+    managerSlotLabel: string;
     noteBody: string;
     noteLabel: string;
     parallelAgentsLabel: string;
@@ -60,16 +75,22 @@ export interface Messages {
   empty: {
     noApprovals: string;
     noCatalog: string;
+    noNodeOutput: string;
+    noParallelAgents: string;
     noNotes: string;
     noRun: string;
+    noRunHistory: string;
     noRuns: string;
     noSavedViews: string;
     noSessions: string;
+    noSkills: string;
     noTags: string;
     noTasks: string;
     noWidgets: string;
     selectNode: string;
     selectRun: string;
+    selectSkill: string;
+    selectWorkflow: string;
   };
   errors: {
     approve: string;
@@ -84,20 +105,33 @@ export interface Messages {
     category: string;
     channels: string;
     description: string;
+    agentName: string;
+    approver: string;
+    expression: string;
+    instructions: string;
     label: string;
+    manager: string;
+    maxHandoffs: string;
+    maxIterations: string;
     model: string;
+    mode: string;
     nodeId: string;
     openclawAgent: string;
     openclawRun: string;
     openclawSession: string;
     openclawTask: string;
+    output: string;
     position: string;
+    ports: string;
+    primaryModel: string;
     prompt: string;
     provider: string;
     relatedRun: string;
     relatedWorkflow: string;
     runLabel: string;
     section: string;
+    skills: string;
+    slot: string;
     status: string;
     supportsTools: string;
     target: string;
@@ -105,7 +139,9 @@ export interface Messages {
     tagLabel: string;
     title: string;
     updatedAt: string;
+    waitFor: string;
     workflow: string;
+    workspace: string;
   };
   metrics: {
     agents: (count: number) => string;
@@ -138,6 +174,39 @@ export interface Messages {
     nodes: string;
     run: string;
   };
+  catalogConfig: {
+    addAgentDescription: string;
+    configFallback: string;
+    defaultModelDescription: string;
+    quickConfig: string;
+    workspacePlaceholder: string;
+  };
+  options: {
+    firstSuccess: string;
+    openClawAgent: string;
+    structuredMerge: string;
+    waitForAll: string;
+  };
+  trace: {
+    completed: string;
+    currentIssue: (label: string) => string;
+    description: string;
+    flowFinished: string;
+    flowStarted: string;
+    inProgress: string;
+    issueList: string;
+    managerInputBody: string;
+    managerInputPreview: string;
+    managerInputWaiting: string;
+    modelOutput: string;
+    noOutput: string;
+    pending: string;
+    runOption: (runId: string, startedAt: string) => string;
+    slotInputSuffix: string;
+    slotOutputSuffix: string;
+    title: string;
+    waitingNestedNodes: string;
+  };
   status: Record<StatusKey, string>;
   tables: {
     agents: string;
@@ -160,17 +229,27 @@ export const messages: Record<Language, Messages> = {
     actions: {
       add: "Add",
       addNote: "Add note",
+      addAgent: "Add agent",
+      addChannel: "Add channel",
+      addModel: "Add model",
+      addParallelAgent: "Add parallel agent",
       addSavedView: "Add saved view",
+      addSkill: "Add skill",
       addTag: "Add tag",
       addWidget: "Add widget",
       approve: "Approve",
       catalog: "Catalog",
-      refreshCatalog: "Refresh catalog",
+      createWorkflow: "New workflow",
+      deleteNode: "Delete node",
+      disableNode: "Disable node",
+      enableNode: "Enable node",
+      refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
       run: "Run",
       runWorkflow: "Run workflow",
       save: "Save",
+      saveModel: "Save model",
       saveWorkflow: "Save workflow",
       saveWorkspace: "Save workspace",
       switchLanguage: "Switch language"
@@ -178,12 +257,15 @@ export const messages: Record<Language, Messages> = {
     common: {
       allStatuses: "All statuses",
       allWorkflows: "All workflows",
+      brandTagline: "CUI-owned orchestration surface",
       defaultModel: "OpenClaw default",
+      defaultOption: "default",
       dirtyWorkspace: "Unsaved workspace state",
       fresh: "fresh",
       no: "No",
+      noDefaultModel: "No default model configured",
       notLinked: "Not linked",
-      realTime: "Live runtime view",
+      realTime: "Runtime overview",
       stale: "stale",
       unknown: "Unknown",
       yes: "Yes"
@@ -199,6 +281,9 @@ export const messages: Record<Language, Messages> = {
       groupLabel: "Group",
       loopLabel: "Loop",
       managerLabel: "Manager",
+      managerInstructions:
+        "Route work through numbered slots. Agents may return JSON with status and nextSlot or returnToSlot.",
+      managerSlotLabel: "Slot",
       noteBody: "Capture why this run matters, what changed, or what still needs review.",
       noteLabel: "Note",
       parallelAgentsLabel: "Parallel agents",
@@ -212,21 +297,27 @@ export const messages: Record<Language, Messages> = {
     },
     empty: {
       noApprovals: "No pending approvals",
-      noCatalog: "Catalog has not been loaded yet",
+      noCatalog: "Config data has not been loaded yet",
+      noNodeOutput: "This node has no output yet.",
+      noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
       noRun: "No run yet",
+      noRunHistory: "This workflow has no run history yet.",
       noRuns: "No workflow runs yet",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
+      noSkills: "No skills added",
       noTags: "No tags yet",
       noTasks: "No runtime tasks yet",
-      noWidgets: "No dashboard widgets yet",
+      noWidgets: "No overview widgets yet",
       selectNode: "Select a node",
-      selectRun: "Select a run"
+      selectRun: "Select a run",
+      selectSkill: "Select a skill",
+      selectWorkflow: "No workflow is selected."
     },
     errors: {
       approve: "Failed to approve run.",
-      catalog: "Failed to refresh catalog.",
+      catalog: "Failed to refresh config data.",
       load: "Failed to load workspace.",
       run: "Failed to run workflow.",
       save: "Failed to save workflow.",
@@ -237,20 +328,33 @@ export const messages: Record<Language, Messages> = {
       category: "Category",
       channels: "Channels",
       description: "Description",
+      agentName: "Agent name",
+      approver: "Approver",
+      expression: "Expression",
+      instructions: "Instructions",
       label: "Label",
+      manager: "Manager",
+      maxHandoffs: "Max handoffs",
+      maxIterations: "Max iterations",
       model: "Model",
+      mode: "Mode",
       nodeId: "Node ID",
-      openclawAgent: "OpenClaw agent",
-      openclawRun: "OpenClaw run",
-      openclawSession: "OpenClaw session",
-      openclawTask: "OpenClaw task",
+      openclawAgent: "OpenClaw Agent",
+      openclawRun: "OpenClaw 运行",
+      openclawSession: "OpenClaw 会话",
+      openclawTask: "OpenClaw 任务",
+      output: "Output",
       position: "Position",
-      prompt: "Prompt",
+      ports: "Ports",
+      primaryModel: "Primary model",
+      prompt: "提示词",
       provider: "Provider",
       relatedRun: "Related run",
       relatedWorkflow: "Related workflow",
       runLabel: "Run label",
       section: "Section",
+      skills: "Skills",
+      slot: "Slot",
       status: "Status",
       supportsTools: "Supports tools",
       target: "Target",
@@ -258,7 +362,9 @@ export const messages: Record<Language, Messages> = {
       tagLabel: "Tag label",
       title: "Title",
       updatedAt: "Updated",
-      workflow: "Workflow"
+      waitFor: "Wait for",
+      workflow: "Workflow",
+      workspace: "Workspace"
     },
     metrics: {
       agents: (count) => `${count} agents`,
@@ -273,7 +379,7 @@ export const messages: Record<Language, Messages> = {
       tags: (count) => `${count} tags`,
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} tools`,
-      widgets: (count) => `${count} widgets`,
+      widgets: (count) => `${count} overview widgets`,
       workflows: (count) => `${count} workflows`
     },
     navigation: {
@@ -281,10 +387,10 @@ export const messages: Record<Language, Messages> = {
       workflow: "Workflow",
       runs: "Runs",
       approvals: "Approvals",
-      dashboard: "Dashboard",
-      views: "Saved views",
-      notes: "Notes",
-      catalog: "Catalog"
+      models: "Models",
+      agents: "Agents",
+      schedule: "Schedule",
+      channels: "Channels"
     },
     nodeTypes: {
       agent: "OpenClaw call",
@@ -292,8 +398,8 @@ export const messages: Record<Language, Messages> = {
       condition: "Condition",
       group: "Group",
       loop: "Loop",
-      manager: "Manager",
-      manager_slot: "Slot",
+      manager: "管理器",
+      manager_slot: "槽位",
       note: "Note",
       parallel_agents: "Parallel agents",
       send: "Send",
@@ -316,21 +422,21 @@ export const messages: Record<Language, Messages> = {
         title: "Approval Queue",
         description: "Handle workflow pauses that are waiting on a human decision."
       },
-      dashboard: {
-        title: "Dashboard Widgets",
-        description: "Curate the overview surface that CUI owns for runs, catalog health, and notes."
+      models: {
+        title: "Models",
+        description: "Choose the OpenClaw default model and inspect available model capability."
       },
-      views: {
-        title: "Saved Views",
-        description: "Persist reusable run or workflow filters so operators can jump to common slices."
+      agents: {
+        title: "Agents",
+        description: "Create configured OpenClaw agents and inspect available agents separately from workflows."
       },
-      notes: {
-        title: "Notes and Tags",
-        description: "Keep CUI-owned annotations, tags, and review context separate from OpenClaw execution facts."
+      schedule: {
+        title: "Schedule",
+        description: "Monitor runtime sessions and task queue state for follow-up configuration."
       },
-      catalog: {
-        title: "Catalog and Runtime",
-        description: "Inspect the latest OpenClaw catalog snapshot and visible runtime sessions."
+      channels: {
+        title: "Channels",
+        description: "Inspect delivery channels and tool availability for fast channel configuration."
       }
     },
     panels: {
@@ -338,6 +444,39 @@ export const messages: Record<Language, Messages> = {
       inspector: "Inspector",
       nodes: "Nodes",
       run: "Run"
+    },
+    catalogConfig: {
+      addAgentDescription: "Creates an OpenClaw agent entry using the same config fields as `openclaw agents add`.",
+      configFallback: "Read and write OpenClaw config from ~/.openclaw/openclaw.json.",
+      defaultModelDescription: "Writes to the active OpenClaw config and refreshes the catalog.",
+      quickConfig: "OpenClaw Quick Config",
+      workspacePlaceholder: "Leave blank to auto-generate"
+    },
+    options: {
+      firstSuccess: "first success",
+      openClawAgent: "OpenClaw agent",
+      structuredMerge: "structured merge",
+      waitForAll: "all"
+    },
+    trace: {
+      completed: "Completed",
+      currentIssue: (label) => `Current issue: ${label}`,
+      description: "Review issues in linear task order on the left, and read node output on the right.",
+      flowFinished: "Flow finished",
+      flowStarted: "Flow started",
+      inProgress: "In progress",
+      issueList: "Issue list",
+      managerInputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
+      managerInputPreview: "Manager input entered this slot.",
+      managerInputWaiting: "Waiting for manager input.",
+      modelOutput: "Model output",
+      noOutput: "No output yet",
+      pending: "Pending",
+      runOption: (runId, startedAt) => `Run ${runId.slice(-6)} · ${startedAt}`,
+      slotInputSuffix: "input",
+      slotOutputSuffix: "output",
+      title: "Flow Trace",
+      waitingNestedNodes: "Waiting for nested nodes to finish."
     },
     status: {
       cancelled: "cancelled",
@@ -359,11 +498,11 @@ export const messages: Record<Language, Messages> = {
       tags: "Tags",
       tasks: "Tasks",
       tools: "Tools",
-      widgets: "Widgets"
+      widgets: "Overview widgets"
     },
     widgetTypes: {
       approvals: "Approval queue",
-      catalog: "Catalog health",
+      catalog: "Config health",
       notes: "Notes feed",
       runs: "Recent runs"
     },
@@ -383,17 +522,27 @@ export const messages: Record<Language, Messages> = {
     actions: {
       add: "添加",
       addNote: "添加笔记",
+      addAgent: "添加 Agent",
+      addChannel: "添加频道",
+      addModel: "添加模型",
+      addParallelAgent: "添加并行 Agent",
       addSavedView: "添加视图",
+      addSkill: "添加 Skill",
       addTag: "添加标签",
       addWidget: "添加卡片",
       approve: "批准",
       catalog: "目录",
-      refreshCatalog: "刷新目录",
+      createWorkflow: "新建工作流",
+      deleteNode: "删除节点",
+      disableNode: "禁用节点",
+      enableNode: "启用节点",
+      refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
       run: "运行",
       runWorkflow: "运行工作流",
       save: "保存",
+      saveModel: "保存模型",
       saveWorkflow: "保存工作流",
       saveWorkspace: "保存工作区",
       switchLanguage: "切换语言"
@@ -401,12 +550,15 @@ export const messages: Record<Language, Messages> = {
     common: {
       allStatuses: "全部状态",
       allWorkflows: "全部工作流",
+      brandTagline: "CUI 持有的编排工作台",
       defaultModel: "OpenClaw 默认",
+      defaultOption: "默认",
       dirtyWorkspace: "工作区状态未保存",
       fresh: "新鲜",
       no: "否",
+      noDefaultModel: "尚未配置默认模型",
       notLinked: "未关联",
-      realTime: "运行时视图",
+      realTime: "运行时总览",
       stale: "过期",
       unknown: "未知",
       yes: "是"
@@ -421,7 +573,9 @@ export const messages: Record<Language, Messages> = {
       conditionLabel: "条件",
       groupLabel: "分组",
       loopLabel: "循环",
-      managerLabel: "Manager",
+      managerLabel: "管理器",
+      managerInstructions: "通过编号槽位路由任务。Agent 可以返回包含 status、nextSlot 或 returnToSlot 的 JSON。",
+      managerSlotLabel: "槽位",
       noteBody: "记录这次运行为什么重要、发生了什么变化，或还需要谁复核。",
       noteLabel: "备注",
       parallelAgentsLabel: "并行代理",
@@ -435,21 +589,27 @@ export const messages: Record<Language, Messages> = {
     },
     empty: {
       noApprovals: "当前没有待审批项",
-      noCatalog: "目录尚未加载",
+      noCatalog: "配置数据尚未加载",
+      noNodeOutput: "这个节点还没有输出。",
+      noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
       noRun: "还没有运行记录",
+      noRunHistory: "这个工作流还没有运行历史。",
       noRuns: "还没有工作流运行记录",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
+      noSkills: "还没有添加 Skill",
       noTags: "还没有标签",
       noTasks: "当前没有运行任务",
-      noWidgets: "还没有仪表板卡片",
+      noWidgets: "还没有总览卡片",
       selectNode: "请选择一个节点",
-      selectRun: "请选择一条运行记录"
+      selectRun: "请选择一条运行记录",
+      selectSkill: "选择一个 Skill",
+      selectWorkflow: "当前未选中工作流。"
     },
     errors: {
       approve: "批准运行失败。",
-      catalog: "刷新目录失败。",
+      catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
       run: "运行工作流失败。",
       save: "保存工作流失败。",
@@ -460,20 +620,33 @@ export const messages: Record<Language, Messages> = {
       category: "分类",
       channels: "通道",
       description: "说明",
+      agentName: "Agent 名称",
+      approver: "审批人",
+      expression: "表达式",
+      instructions: "说明",
       label: "标签",
+      manager: "管理器",
+      maxHandoffs: "最大交接次数",
+      maxIterations: "最大迭代次数",
       model: "模型",
+      mode: "模式",
       nodeId: "节点 ID",
       openclawAgent: "OpenClaw agent",
       openclawRun: "OpenClaw run",
       openclawSession: "OpenClaw session",
       openclawTask: "OpenClaw task",
+      output: "输出",
       position: "位置",
+      ports: "端口",
+      primaryModel: "主模型",
       prompt: "Prompt",
       provider: "提供方",
       relatedRun: "关联运行",
       relatedWorkflow: "关联工作流",
       runLabel: "运行标签",
       section: "页面",
+      skills: "技能",
+      slot: "槽位",
       status: "状态",
       supportsTools: "支持工具",
       target: "目标",
@@ -481,10 +654,12 @@ export const messages: Record<Language, Messages> = {
       tagLabel: "标签名称",
       title: "标题",
       updatedAt: "更新时间",
-      workflow: "工作流"
+      waitFor: "等待条件",
+      workflow: "工作流",
+      workspace: "工作区"
     },
     metrics: {
-      agents: (count) => `${count} 个 agents`,
+      agents: (count) => `${count} 个 Agent`,
       approvals: (count) => `${count} 个审批`,
       channels: (count) => `${count} 个通道`,
       cost: (cost) => cost,
@@ -496,17 +671,18 @@ export const messages: Record<Language, Messages> = {
       tags: (count) => `${count} 个标签`,
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} 个工具`,
-      widgets: (count) => `${count} 张卡片`,
+      widgets: (count) => `${count} 张总览卡片`,
       workflows: (count) => `${count} 个工作流`
     },
     navigation: {
+      company: "公司",
       workflow: "工作流",
       runs: "运行",
       approvals: "审批",
-      dashboard: "仪表板",
-      views: "视图",
-      notes: "笔记",
-      catalog: "目录"
+      models: "模型",
+      agents: "Agent",
+      schedule: "Schedule",
+      channels: "Channel"
     },
     nodeTypes: {
       agent: "OpenClaw 调用",
@@ -517,11 +693,15 @@ export const messages: Record<Language, Messages> = {
       manager: "Manager",
       manager_slot: "Slot",
       note: "备注",
-      parallel_agents: "并行代理",
+      parallel_agents: "并行 Agent",
       send: "发送",
       summary: "汇总"
     },
     pages: {
+      company: {
+        title: "公司上下文",
+        description: "切换当前公司、查看公司级用量，并在同一页面维护总览卡片。"
+      },
       workflow: {
         title: "工作流工作台",
         description: "编辑图结构、配置节点执行方式，并查看该工作流最近一次运行。"
@@ -534,21 +714,21 @@ export const messages: Record<Language, Messages> = {
         title: "审批队列",
         description: "处理因为人工决策而暂停的工作流。"
       },
-      dashboard: {
-        title: "仪表板卡片",
-        description: "维护由 CUI 持有的总览界面，包括运行概览、目录健康度和笔记卡片。"
+      models: {
+        title: "模型",
+        description: "选择 OpenClaw 默认模型，并查看可用模型能力。"
       },
-      views: {
-        title: "保存视图",
-        description: "保存可复用的工作流或运行筛选条件，方便快速回到常用观察切片。"
+      agents: {
+        title: "Agent",
+        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与工作流配置分开查看。"
       },
-      notes: {
-        title: "笔记与标签",
-        description: "把 CUI 自有的标注、标签和复核上下文与 OpenClaw 的执行事实分离。"
+      schedule: {
+        title: "Schedule",
+        description: "查看运行时会话和任务队列，为后续快速排期配置留出独立入口。"
       },
-      catalog: {
-        title: "目录与运行时",
-        description: "查看最新 OpenClaw 目录快照，以及当前可见的运行会话和任务。"
+      channels: {
+        title: "Channel",
+        description: "查看交付通道和工具可用性，为后续快速通道配置留出独立入口。"
       }
     },
     panels: {
@@ -556,6 +736,39 @@ export const messages: Record<Language, Messages> = {
       inspector: "检查器",
       nodes: "节点",
       run: "运行"
+    },
+    catalogConfig: {
+      addAgentDescription: "使用与 `openclaw agents add` 相同的配置字段创建 OpenClaw agent 条目。",
+      configFallback: "读取并写入 ~/.openclaw/openclaw.json 中的 OpenClaw 配置。",
+      defaultModelDescription: "写入当前 OpenClaw 配置，并刷新目录。",
+      quickConfig: "OpenClaw 快速配置",
+      workspacePlaceholder: "留空则自动生成"
+    },
+    options: {
+      firstSuccess: "首个成功",
+      openClawAgent: "OpenClaw Agent",
+      structuredMerge: "结构化合并",
+      waitForAll: "全部完成"
+    },
+    trace: {
+      completed: "已完成",
+      currentIssue: (label) => `当前事项：${label}`,
+      description: "左侧按任务顺序查看事项，右侧查看节点输出。",
+      flowFinished: "流程结束",
+      flowStarted: "流程开始",
+      inProgress: "进行中",
+      issueList: "事项列表",
+      managerInputBody: "管理器已将工作交给该槽位。嵌套节点输出会显示在槽位输入和槽位输出之间。",
+      managerInputPreview: "管理器输入已进入该槽位。",
+      managerInputWaiting: "等待管理器输入。",
+      modelOutput: "模型输出",
+      noOutput: "暂无输出",
+      pending: "待处理",
+      runOption: (runId, startedAt) => `运行 ${runId.slice(-6)} · ${startedAt}`,
+      slotInputSuffix: "输入",
+      slotOutputSuffix: "输出",
+      title: "流程追踪",
+      waitingNestedNodes: "等待嵌套节点完成。"
     },
     status: {
       cancelled: "已取消",
@@ -568,7 +781,7 @@ export const messages: Record<Language, Messages> = {
       waiting_approval: "等待审批"
     },
     tables: {
-      agents: "Agents",
+      agents: "Agent",
       channels: "通道",
       models: "模型",
       notes: "笔记",
@@ -577,11 +790,11 @@ export const messages: Record<Language, Messages> = {
       tags: "标签",
       tasks: "任务",
       tools: "工具",
-      widgets: "卡片"
+      widgets: "总览卡片"
     },
     widgetTypes: {
       approvals: "审批队列",
-      catalog: "目录健康度",
+      catalog: "配置状态",
       notes: "笔记流",
       runs: "最近运行"
     },

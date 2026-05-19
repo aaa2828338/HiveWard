@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Bookmark,
+  Bot,
+  CalendarClock,
   Check,
   ChevronDown,
   Database,
@@ -8,24 +9,26 @@ import {
   Languages,
   LayoutTemplate,
   Loader2,
-  NotebookText,
-  PanelsTopLeft,
   Play,
+  Plus,
   RefreshCw,
+  Radio,
   Save,
   ShieldAlert
 } from "lucide-react";
 import type {
   CatalogSnapshot,
   CompanyOverview,
+  ConfigureOpenClawChannelRequest,
+  ConfigureOpenClawModelAuthRequest,
+  CreateOpenClawChannelRequest,
+  CreateOpenClawModelRequest,
   DashboardWidgetType,
+  OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   PendingApprovalItem,
   RuntimeOverview,
-  SavedView,
   WorkspaceDashboard,
-  WorkspaceNote,
-  WorkspaceTag,
   WorkflowDefinition,
   WorkflowRunView
 } from "@openclaw-cui/shared";
@@ -33,16 +36,16 @@ import { api } from "./lib/api";
 import { appSections, type AppSectionId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { WorkflowStudioPage } from "./components/WorkflowStudioPage";
-import { ApprovalsPage, CatalogPage, CompanyPage, DashboardPage, NotesPage, RunsPage, ViewsPage } from "./components/WorkspacePages";
+import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
 
 const sidebarIcons = {
   workflow: LayoutTemplate,
   runs: FolderKanban,
   approvals: ShieldAlert,
-  dashboard: PanelsTopLeft,
-  views: Bookmark,
-  notes: NotebookText,
-  catalog: Database
+  models: Database,
+  agents: Bot,
+  schedule: CalendarClock,
+  channels: Radio
 };
 
 export function App() {
@@ -54,6 +57,7 @@ export function App() {
   const [workflow, setWorkflow] = useState<WorkflowDefinition | undefined>();
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
+  const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runs, setRuns] = useState<WorkflowRunView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
@@ -117,11 +121,22 @@ export function App() {
 
   const hydrateWorkspace = useCallback(
     async (options?: { workflowId?: string; runId?: string }) => {
-      const [companyDirectory, nextWorkflows, nextCatalog, nextOpenClawConfig, nextRuns, nextApprovals, nextDashboard, nextRuntime] = await Promise.all([
+      const [
+        companyDirectory,
+        nextWorkflows,
+        nextCatalog,
+        nextOpenClawConfig,
+        nextOpenClawWizard,
+        nextRuns,
+        nextApprovals,
+        nextDashboard,
+        nextRuntime
+      ] = await Promise.all([
         api.listCompanies(),
         api.listWorkflows(),
         api.getCatalogSnapshot(),
         api.getOpenClawConfig(),
+        api.getOpenClawConfigWizard(),
         api.listWorkflowRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
@@ -133,6 +148,7 @@ export function App() {
       setWorkflows(nextWorkflows);
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
+      setOpenClawWizard(nextOpenClawWizard);
       setRuns(nextRuns);
       setApprovals(nextApprovals);
       setDashboard(nextDashboard);
@@ -215,12 +231,22 @@ export function App() {
       workflow: workflows.length,
       runs: runs.length,
       approvals: approvals.length,
-      dashboard: dashboard?.dashboardWidgets.length ?? 0,
-      views: dashboard?.savedViews.length ?? 0,
-      notes: dashboard?.notes.length ?? 0,
-      catalog: catalog?.models.length ?? 0
+      models: catalog?.models.length ?? 0,
+      agents: openClawConfig?.configuredAgents.length ?? catalog?.agents.length ?? 0,
+      schedule: runtime?.tasks.length ?? 0,
+      channels: openClawConfig?.configuredChannels.length ?? catalog?.channels.length ?? 0
     }),
-    [approvals.length, catalog?.models.length, dashboard?.dashboardWidgets.length, dashboard?.notes.length, dashboard?.savedViews.length, runs.length, workflows.length]
+    [
+      approvals.length,
+      catalog?.agents.length,
+      catalog?.channels.length,
+      catalog?.models.length,
+      openClawConfig?.configuredAgents.length,
+      openClawConfig?.configuredChannels.length,
+      runtime?.tasks.length,
+      runs.length,
+      workflows.length
+    ]
   );
 
   const withBusy = useCallback(async (action: string, work: () => Promise<void>) => {
@@ -303,6 +329,54 @@ export function App() {
     [withBusy]
   );
 
+  const addOpenClawModel = useCallback(
+    (input: CreateOpenClawModelRequest) => {
+      void withBusy("addOpenClawModel", async () => {
+        const nextOpenClawConfig = await api.addOpenClawModel(input);
+        const nextCatalog = await api.refreshCatalog();
+        setOpenClawConfig(nextOpenClawConfig);
+        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
+  const configureOpenClawModelAuth = useCallback(
+    (input: ConfigureOpenClawModelAuthRequest) => {
+      void withBusy("configureOpenClawModelAuth", async () => {
+        const nextOpenClawConfig = await api.configureOpenClawModelAuth(input);
+        const nextCatalog = await api.refreshCatalog();
+        setOpenClawConfig(nextOpenClawConfig);
+        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
+  const addOpenClawChannel = useCallback(
+    (input: CreateOpenClawChannelRequest) => {
+      void withBusy("addOpenClawChannel", async () => {
+        const nextOpenClawConfig = await api.addOpenClawChannel(input);
+        const nextCatalog = await api.refreshCatalog();
+        setOpenClawConfig(nextOpenClawConfig);
+        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
+  const configureOpenClawChannel = useCallback(
+    (input: ConfigureOpenClawChannelRequest) => {
+      void withBusy("configureOpenClawChannel", async () => {
+        const nextOpenClawConfig = await api.configureOpenClawChannel(input);
+        const nextCatalog = await api.refreshCatalog();
+        setOpenClawConfig(nextOpenClawConfig);
+        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
   const saveWorkflow = useCallback(() => {
     if (!workflow) return;
     void withBusy("saveWorkflow", async () => {
@@ -310,6 +384,16 @@ export function App() {
       await hydrateWorkspace({ workflowId: saved.id });
     });
   }, [hydrateWorkspace, withBusy, workflow]);
+
+  const createWorkflow = useCallback(() => {
+    void withBusy("createWorkflow", async () => {
+      const created = await api.createWorkflow({
+        name: defaultNewWorkflowName(workflows.length + 1, language)
+      });
+      await hydrateWorkspace({ workflowId: created.id });
+      setSection("workflow");
+    });
+  }, [hydrateWorkspace, language, withBusy, workflows.length]);
 
   const runWorkflow = useCallback(() => {
     if (!workflow) return;
@@ -373,105 +457,6 @@ export function App() {
     [mutateDashboard]
   );
 
-  const addSavedView = useCallback(
-    (view: Omit<SavedView, "id" | "createdAt" | "updatedAt">) => {
-      const now = new Date().toISOString();
-      mutateDashboard((current) => ({
-        ...current,
-        savedViews: [
-          ...current.savedViews,
-          {
-            id: makeClientId("view"),
-            createdAt: now,
-            updatedAt: now,
-            ...view
-          }
-        ],
-        updatedAt: now
-      }));
-    },
-    [mutateDashboard]
-  );
-
-  const removeSavedView = useCallback(
-    (viewId: string) => {
-      mutateDashboard((current) => ({
-        ...current,
-        savedViews: current.savedViews.filter((view) => view.id !== viewId),
-        updatedAt: new Date().toISOString()
-      }));
-    },
-    [mutateDashboard]
-  );
-
-  const addTag = useCallback(
-    (tag: Omit<WorkspaceTag, "id" | "createdAt" | "updatedAt">) => {
-      const now = new Date().toISOString();
-      mutateDashboard((current) => ({
-        ...current,
-        tags: [
-          ...current.tags,
-          {
-            id: makeClientId("tag"),
-            createdAt: now,
-            updatedAt: now,
-            ...tag
-          }
-        ],
-        updatedAt: now
-      }));
-    },
-    [mutateDashboard]
-  );
-
-  const removeTag = useCallback(
-    (tagId: string) => {
-      const now = new Date().toISOString();
-      mutateDashboard((current) => ({
-        ...current,
-        tags: current.tags.filter((tag) => tag.id !== tagId),
-        notes: current.notes.map((note) => ({
-          ...note,
-          tagIds: note.tagIds.filter((item) => item !== tagId),
-          updatedAt: now
-        })),
-        updatedAt: now
-      }));
-    },
-    [mutateDashboard]
-  );
-
-  const addNote = useCallback(
-    (note: Omit<WorkspaceNote, "id" | "createdAt" | "updatedAt">) => {
-      const now = new Date().toISOString();
-      mutateDashboard((current) => ({
-        ...current,
-        notes: [
-          ...current.notes,
-          {
-            id: makeClientId("note"),
-            createdAt: now,
-            updatedAt: now,
-            ...note
-          }
-        ],
-        updatedAt: now
-      }));
-    },
-    [mutateDashboard]
-  );
-
-  const removeNote = useCallback(
-    (noteId: string) => {
-      mutateDashboard((current) => ({
-        ...current,
-        notes: current.notes.filter((note) => note.id !== noteId),
-        updatedAt: new Date().toISOString()
-      }));
-    },
-    [mutateDashboard]
-  );
-
   const toggleLanguage = useCallback(() => {
     setLanguage((current) => (current === "zh-CN" ? "en" : "zh-CN"));
   }, []);
@@ -511,12 +496,26 @@ export function App() {
   const renderSection = () => {
     if (section === "company") {
       return (
-        <CompanyPage
-          companies={companies}
-          selectedCompanyId={selectedCompanyId}
-          language={language}
-          onSelectCompany={selectCompany}
-        />
+        <>
+          <CompanyPage
+            companies={companies}
+            selectedCompanyId={selectedCompanyId}
+            language={language}
+            onSelectCompany={selectCompany}
+          />
+          <DashboardPage
+            dashboard={dashboard}
+            workflows={workflows}
+            runs={runs}
+            approvals={approvals}
+            catalog={catalog}
+            runtime={runtime}
+            language={language}
+            t={t}
+            onAddWidget={addWidget}
+            onRemoveWidget={removeWidget}
+          />
+        </>
       );
     }
     if (section === "workflow") {
@@ -553,59 +552,44 @@ export function App() {
     if (section === "approvals") {
       return <ApprovalsPage approvals={approvals} language={language} t={t} onApprove={approveRun} />;
     }
-    if (section === "dashboard") {
+    if (section === "models") {
       return (
-        <DashboardPage
-          dashboard={dashboard}
-          workflows={workflows}
-          runs={runs}
-          approvals={approvals}
+        <ModelsPage
           catalog={catalog}
-          runtime={runtime}
+          openClawConfig={openClawConfig}
+          wizard={openClawWizard}
           language={language}
           t={t}
-          onAddWidget={addWidget}
-          onRemoveWidget={removeWidget}
+          busy={Boolean(busyAction)}
+          onSaveDefaultModel={saveOpenClawDefaultModel}
+          onConfigureModelAuth={configureOpenClawModelAuth}
         />
       );
     }
-    if (section === "views") {
+    if (section === "agents") {
       return (
-        <ViewsPage
-          dashboard={dashboard}
-          workflows={workflows}
+        <AgentsPage
+          catalog={catalog}
+          openClawConfig={openClawConfig}
           language={language}
           t={t}
-          onAddView={addSavedView}
-          onRemoveView={removeSavedView}
+          busy={Boolean(busyAction)}
+          onAddAgent={addOpenClawAgent}
         />
       );
     }
-    if (section === "notes") {
-      return (
-        <NotesPage
-          dashboard={dashboard}
-          workflows={workflows}
-          runs={runs}
-          language={language}
-          t={t}
-          onAddTag={addTag}
-          onRemoveTag={removeTag}
-          onAddNote={addNote}
-          onRemoveNote={removeNote}
-        />
-      );
+    if (section === "schedule") {
+      return <SchedulePage runtime={runtime} language={language} t={t} />;
     }
     return (
-      <CatalogPage
+      <ChannelsPage
         catalog={catalog}
         openClawConfig={openClawConfig}
-        runtime={runtime}
+        wizard={openClawWizard}
         language={language}
         t={t}
         busy={Boolean(busyAction)}
-        onSaveDefaultModel={saveOpenClawDefaultModel}
-        onAddAgent={addOpenClawAgent}
+        onConfigureChannel={configureOpenClawChannel}
       />
     );
   };
@@ -617,7 +601,7 @@ export function App() {
           <div className="brand-mark">OC</div>
           <div>
             <h1>openclaw-cui</h1>
-            <p>CUI-owned orchestration surface</p>
+            <p>{t.common.brandTagline}</p>
           </div>
         </div>
         <div className="sidebar-company" ref={companySwitcherRef}>
@@ -719,17 +703,23 @@ export function App() {
                 ))}
               </select>
             )}
+            {section === "workflow" && (
+              <button type="button" title={t.actions.createWorkflow} onClick={createWorkflow} disabled={!selectedCompanyId || Boolean(busyAction)}>
+                {busyAction === "createWorkflow" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+                {t.actions.createWorkflow}
+              </button>
+            )}
             <button type="button" title={t.actions.refreshWorkspace} onClick={refreshWorkspace} disabled={Boolean(busyAction)}>
               {busyAction === "refreshWorkspace" || busyAction === "load" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
               {t.actions.refreshWorkspace}
             </button>
-            {section === "catalog" && (
+            {(["models", "agents", "schedule", "channels"] as AppSectionId[]).includes(section) && (
               <button type="button" title={t.actions.refreshCatalog} onClick={refreshCatalog} disabled={Boolean(busyAction)}>
                 {busyAction === "refreshCatalog" ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-                {t.actions.catalog}
+                {t.actions.refreshCatalog}
               </button>
             )}
-            {(section === "dashboard" || section === "views" || section === "notes") && (
+            {section === "company" && (
               <button type="button" title={t.actions.saveWorkspace} onClick={saveWorkspace} disabled={!dashboardDirty || !dashboard || Boolean(busyAction)}>
                 {busyAction === "saveWorkspace" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
                 {t.actions.saveWorkspace}
@@ -800,6 +790,10 @@ function defaultWidgetLayout(index: number) {
   };
 }
 
+function defaultNewWorkflowName(index: number, language: Language): string {
+  return language === "zh-CN" ? `新建工作流 ${index}` : `New workflow ${index}`;
+}
+
 function makeClientId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -808,12 +802,17 @@ function makeClientId(prefix: string): string {
 }
 
 function errorMessageForAction(action: string, t: Messages): string {
+  if (action === "createWorkflow") return t.errors.save;
   if (action === "saveWorkflow") return t.errors.save;
   if (action === "runWorkflow") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "saveWorkspace") return t.errors.workspace;
   if (action === "saveOpenClawDefaultModel") return t.errors.catalog;
+  if (action === "addOpenClawModel") return t.errors.catalog;
+  if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;
+  if (action === "addOpenClawChannel") return t.errors.catalog;
+  if (action === "configureOpenClawChannel") return t.errors.catalog;
   if (action === "refreshCatalog") return t.errors.catalog;
   return t.errors.load;
 }
