@@ -1046,10 +1046,3 @@ function readWizardString(value: unknown): string | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return undefined;
 }
-
-function readWizardPositiveNumber(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-  if (typeof value !== "string") return undefined;
-  const parsed = Number.parseInt(value.trim(), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-}

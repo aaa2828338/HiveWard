@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  addEdge,
   applyNodeChanges,
   Background,
   Controls,
@@ -15,7 +14,6 @@ import {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
-  type OnNodeDrag,
   type OnNodesChange
 } from "@xyflow/react";
 import { Bot, Check, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Upload, X } from "lucide-react";
@@ -131,7 +129,6 @@ export function WorkflowStudioPage({
   onApproveRun: () => void;
   t: Messages;
 }) {
-  const selectedNode = workflow?.nodes.find((node) => node.id === selectedNodeId);
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
   const inspectedNode = workflow?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
@@ -206,27 +203,12 @@ export function WorkflowStudioPage({
   const onNodesChange: OnNodesChange<Node<WorkflowNodeCardData>> = useCallback(
     (changes) => {
       setLocalNodes((current) => applyNodeChanges(changes, current));
+      const positionChanges = collectWorkflowNodePositionChanges(changes);
       const sizeChanges = collectManagerSlotSizeChanges(changes);
-      if (sizeChanges.size === 0) return;
-      onUpdateWorkflow((current) => resizeManagerSlotNodes(current, sizeChanges));
-    },
-    [onUpdateWorkflow]
-  );
-
-  const onNodeDragStop: OnNodeDrag<Node<WorkflowNodeCardData>> = useCallback(
-    (_event, draggedNode) => {
+      if (positionChanges.size === 0 && sizeChanges.size === 0) return;
       onUpdateWorkflow((current) => {
-        const parentNode = draggedNode.parentId ? current.nodes.find((node) => node.id === draggedNode.parentId) : undefined;
-        const position =
-          parentNode?.type === "manager_slot"
-            ? clampPositionToManagerSlotFrame(draggedNode.position, parentNode, defaultChildNodeSize)
-            : draggedNode.position;
-        return {
-          ...current,
-          nodes: current.nodes.map((node) =>
-            node.id === draggedNode.id ? { ...node, position } : node
-          )
-        };
+        const workflowWithPositions = updateWorkflowNodePositions(current, positionChanges);
+        return resizeManagerSlotNodes(workflowWithPositions, sizeChanges);
       });
     },
     [onUpdateWorkflow]
@@ -528,7 +510,6 @@ export function WorkflowStudioPage({
             }}
             onSelectionChange={({ nodes }) => setSelectedCanvasNodeIdsIfChanged(nodes.map((node) => node.id))}
             onNodesChange={onNodesChange}
-            onNodeDragStop={onNodeDragStop}
             onConnect={onConnect}
             selectionOnDrag
             selectionMode={SelectionMode.Partial}
@@ -700,7 +681,6 @@ function NodeDetailModal({
                 configuredAgents={configuredAgents}
                 models={models}
                 channels={channels}
-                language={language}
                 onPatchConfig={onPatchConfig}
                 t={t}
               />
@@ -772,7 +752,6 @@ function NodeConfigForm({
   configuredAgents,
   models,
   channels,
-  language,
   onPatchConfig,
   t
 }: {
@@ -781,7 +760,6 @@ function NodeConfigForm({
   configuredAgents?: OpenClawConfiguredAgent[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
-  language: Language;
   onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
   t: Messages;
 }) {
@@ -1297,6 +1275,16 @@ function getMenuPoint(event: { clientX: number; clientY: number }): { x: number;
   };
 }
 
+function collectWorkflowNodePositionChanges(changes: NodeChange<Node<WorkflowNodeCardData>>[]): Map<string, CanvasPosition> {
+  const positions = new Map<string, CanvasPosition>();
+  for (const change of changes) {
+    if (change.type !== "position" || !change.position) continue;
+    if (change.dragging === true) continue;
+    positions.set(change.id, change.position);
+  }
+  return positions;
+}
+
 function collectManagerSlotSizeChanges(changes: NodeChange<Node<WorkflowNodeCardData>>[]): Map<string, CanvasSize> {
   const sizes = new Map<string, CanvasSize>();
   for (const change of changes) {
@@ -1307,7 +1295,28 @@ function collectManagerSlotSizeChanges(changes: NodeChange<Node<WorkflowNodeCard
   return sizes;
 }
 
+function updateWorkflowNodePositions(workflow: WorkflowDefinition, positionsById: Map<string, CanvasPosition>): WorkflowDefinition {
+  if (positionsById.size === 0) return workflow;
+
+  let changed = false;
+  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const nodes = workflow.nodes.map((node) => {
+    const nextPosition = positionsById.get(node.id);
+    if (!nextPosition) return node;
+    const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
+    const position =
+      parentNode?.type === "manager_slot" ? clampPositionToManagerSlotFrame(nextPosition, parentNode, defaultChildNodeSize) : nextPosition;
+    if (position.x === node.position.x && position.y === node.position.y) return node;
+    changed = true;
+    return { ...node, position };
+  });
+
+  return changed ? { ...workflow, nodes } : workflow;
+}
+
 function resizeManagerSlotNodes(workflow: WorkflowDefinition, sizesById: Map<string, CanvasSize>): WorkflowDefinition {
+  if (sizesById.size === 0) return workflow;
+
   let changed = false;
   const resizedNodes = workflow.nodes.map((node) => {
     const nextSize = sizesById.get(node.id);
@@ -1799,28 +1808,6 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
   return {
     label: t.defaults.groupLabel,
     color: "#64748b"
-  };
-}
-
-function toFlowEdge(edge: WorkflowEdge): Edge {
-  return {
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    sourceHandle: edge.sourceHandle,
-    targetHandle: edge.targetHandle,
-    label: edge.label ?? defaultVisibleEdgeLabel(edge.condition)
-  };
-}
-
-function fromFlowEdge(edge: Edge): WorkflowEdge {
-  return {
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    sourceHandle: edge.sourceHandle ?? undefined,
-    targetHandle: edge.targetHandle ?? undefined,
-    label: typeof edge.label === "string" ? edge.label : undefined
   };
 }
 

@@ -823,25 +823,3 @@ export function getInitialLanguage(): Language {
   if (stored === "en" || stored === "zh-CN") return stored;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }
-
-export function translateEventMessage(message: string, language: Language): string {
-  if (language !== "zh-CN") return message;
-
-  const patterns: Array<[RegExp, (match: RegExpMatchArray) => string]> = [
-    [/^Workflow (.+) started\.$/, (match) => `工作流 ${match[1]} 已启动。`],
-    [/^Workflow (.+) completed\.$/, (match) => `工作流 ${match[1]} 已完成。`],
-    [/^Workflow (.+) could not continue\. Pending nodes: (.+)\.$/, (match) => `工作流 ${match[1]} 无法继续。待处理节点：${match[2]}。`],
-    [/^(.+) queued\.$/, (match) => `${match[1]} 已排队。`],
-    [/^(.+) started\.$/, (match) => `${match[1]} 已启动。`],
-    [/^(.+) completed\.$/, (match) => `${match[1]} 已完成。`],
-    [/^(.+) approved\.$/, (match) => `${match[1]} 已批准。`],
-    [/^(.+) is waiting for approval\.$/, (match) => `${match[1]} 正在等待收件箱处理。`],
-    [/^(.+) failed: (.+)$/, (match) => `${match[1]} 失败：${match[2]}`]
-  ];
-
-  for (const [pattern, format] of patterns) {
-    const match = message.match(pattern);
-    if (match) return format(match);
-  }
-  return message;
-}

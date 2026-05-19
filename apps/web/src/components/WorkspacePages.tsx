@@ -3,8 +3,6 @@ import {
   Activity,
   ArrowLeft,
   BadgeCheck,
-  BookOpenText,
-  Bookmark,
   ChevronRight,
   Clock3,
   Database,
@@ -15,7 +13,6 @@ import {
   PanelsTopLeft,
   RefreshCw,
   Search,
-  Tag,
   Trash2
 } from "lucide-react";
 import type {
@@ -33,10 +30,7 @@ import type {
   DashboardWidgetType,
   PendingApprovalItem,
   RuntimeOverview,
-  SavedView,
   WorkspaceDashboard,
-  WorkspaceNote,
-  WorkspaceTag,
   WorkflowDefinition,
   WorkflowNode,
   WorkflowNodeEvent,
@@ -45,11 +39,7 @@ import type {
   WorkflowRunStatus,
   WorkflowRunView
 } from "@openclaw-cui/shared";
-import { isCatalogStale } from "@openclaw-cui/shared";
 import type { Language, Messages } from "../lib/i18n";
-import { appSections, type AppSectionId } from "../lib/app-sections";
-
-const runStatuses: WorkflowRunStatus[] = ["queued", "running", "succeeded", "failed", "cancelled", "waiting_approval"];
 
 type TraceIssue = {
   key: string;
@@ -502,356 +492,6 @@ export function DashboardPage({
   );
 }
 
-export function ViewsPage({
-  dashboard,
-  workflows,
-  language,
-  t,
-  onAddView,
-  onRemoveView
-}: {
-  dashboard?: WorkspaceDashboard;
-  workflows: WorkflowDefinition[];
-  language: Language;
-  t: Messages;
-  onAddView: (view: Omit<SavedView, "id" | "createdAt" | "updatedAt">) => void;
-  onRemoveView: (viewId: string) => void;
-}) {
-  const [name, setName] = useState(t.defaults.savedViewName);
-  const [section, setSection] = useState<AppSectionId>("runs");
-  const [workflowId, setWorkflowId] = useState("");
-  const [status, setStatus] = useState("");
-
-  return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.tables.savedViews}</h3>
-            <p>{t.metrics.savedViews(dashboard?.savedViews.length ?? 0)}</p>
-          </div>
-        </div>
-        <div className="form-grid form-grid-wide">
-          <label>
-            <span>{t.fields.title}</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} />
-          </label>
-          <label>
-            <span>{t.fields.section}</span>
-            <select value={section} onChange={(event) => setSection(event.target.value as AppSectionId)}>
-              {appSections.map((item) => (
-                <option key={item} value={item}>
-                  {t.navigation[item] ?? item}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>{t.fields.workflow}</span>
-            <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
-              <option value="">{t.common.allWorkflows}</option>
-              {workflows.map((workflow) => (
-                <option key={workflow.id} value={workflow.id}>
-                  {workflow.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>{t.fields.status}</span>
-            <select value={status} onChange={(event) => setStatus(event.target.value)}>
-              <option value="">{t.common.allStatuses}</option>
-              {runStatuses.map((item) => (
-                <option key={item} value={item}>
-                  {t.status[item]}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="card-actions">
-          <button
-            type="button"
-            className="primary-action"
-            onClick={() => {
-              if (!name.trim()) return;
-              onAddView({
-                name: name.trim(),
-                workflowId: workflowId || undefined,
-                filters: {
-                  section,
-                  ...(status ? { status } : {})
-                }
-              });
-              setName(t.defaults.savedViewName);
-              setWorkflowId("");
-              setStatus("");
-              setSection("runs");
-            }}
-          >
-            <Bookmark size={16} />
-            {t.actions.addSavedView}
-          </button>
-        </div>
-        <div className="card-grid">
-          {(dashboard?.savedViews ?? []).length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noSavedViews}</div>
-          ) : (
-            (dashboard?.savedViews ?? []).map((view) => (
-              <article key={view.id} className="feature-card">
-                <div className="feature-card-header">
-                  <div>
-                    <strong>{view.name}</strong>
-                    <p>{formatDateTime(view.updatedAt, language)}</p>
-                  </div>
-                  <button type="button" className="icon-button" onClick={() => onRemoveView(view.id)}>
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <div className="widget-list">
-                  {Object.entries(view.filters).map(([key, value]) => (
-                    <div key={key} className="mini-row">
-                      <span>{key === "section" ? t.fields.section : key}</span>
-                      <code>{key === "section" ? t.navigation[value as AppSectionId] ?? value : value}</code>
-                    </div>
-                  ))}
-                  <div className="mini-row">
-                    <span>{t.fields.workflow}</span>
-                    <code>{view.workflowId ? workflowNameFor(workflows, view.workflowId) : t.common.allWorkflows}</code>
-                  </div>
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-export function NotesPage({
-  dashboard,
-  workflows,
-  runs,
-  language,
-  t,
-  onAddTag,
-  onRemoveTag,
-  onAddNote,
-  onRemoveNote
-}: {
-  dashboard?: WorkspaceDashboard;
-  workflows: WorkflowDefinition[];
-  runs: WorkflowRunView[];
-  language: Language;
-  t: Messages;
-  onAddTag: (tag: Omit<WorkspaceTag, "id" | "createdAt" | "updatedAt">) => void;
-  onRemoveTag: (tagId: string) => void;
-  onAddNote: (note: Omit<WorkspaceNote, "id" | "createdAt" | "updatedAt">) => void;
-  onRemoveNote: (noteId: string) => void;
-}) {
-  const [tagLabel, setTagLabel] = useState(t.defaults.tagLabel);
-  const [tagColor, setTagColor] = useState(t.defaults.tagColor);
-  const [title, setTitle] = useState(t.defaults.noteLabel);
-  const [body, setBody] = useState(t.defaults.noteBody);
-  const [relatedWorkflowId, setRelatedWorkflowId] = useState("");
-  const [relatedRunId, setRelatedRunId] = useState("");
-  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
-
-  const tags = dashboard?.tags ?? [];
-  const notes = dashboard?.notes ?? [];
-
-  return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.tables.tags}</h3>
-            <p>{t.metrics.tags(tags.length)}</p>
-          </div>
-        </div>
-        <div className="form-grid form-grid-wide">
-          <label>
-            <span>{t.fields.tagLabel}</span>
-            <input value={tagLabel} onChange={(event) => setTagLabel(event.target.value)} />
-          </label>
-          <label>
-            <span>{t.fields.tagColor}</span>
-            <input value={tagColor} onChange={(event) => setTagColor(event.target.value)} />
-          </label>
-        </div>
-        <div className="card-actions">
-          <button
-            type="button"
-            onClick={() => {
-              if (!tagLabel.trim()) return;
-              onAddTag({ label: tagLabel.trim(), color: tagColor.trim() || undefined });
-              setTagLabel(t.defaults.tagLabel);
-              setTagColor(t.defaults.tagColor);
-            }}
-          >
-            <Tag size={16} />
-            {t.actions.addTag}
-          </button>
-        </div>
-        <div className="tag-row spacious">
-          {tags.length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noTags}</div>
-          ) : (
-            tags.map((tag) => (
-              <span key={tag.id} className="tag-pill" style={{ ["--tag-accent" as string]: tag.color ?? "#0f766e" }}>
-                {tag.label}
-                <button type="button" className="pill-action" onClick={() => onRemoveTag(tag.id)}>
-                  <Trash2 size={12} />
-                </button>
-              </span>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.tables.notes}</h3>
-            <p>{t.metrics.notes(notes.length)}</p>
-          </div>
-        </div>
-        <div className="form-grid">
-          <label>
-            <span>{t.fields.title}</span>
-            <input value={title} onChange={(event) => setTitle(event.target.value)} />
-          </label>
-          <label>
-            <span>{t.fields.relatedWorkflow}</span>
-            <select
-              value={relatedWorkflowId}
-              onChange={(event) => {
-                setRelatedWorkflowId(event.target.value);
-                setRelatedRunId("");
-              }}
-            >
-              <option value="">{t.common.notLinked}</option>
-              {workflows.map((workflow) => (
-                <option key={workflow.id} value={workflow.id}>
-                  {workflow.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>{t.fields.relatedRun}</span>
-            <select value={relatedRunId} onChange={(event) => setRelatedRunId(event.target.value)}>
-              <option value="">{t.common.notLinked}</option>
-              {runs
-                .filter((runView) => !relatedWorkflowId || runView.run.workflowId === relatedWorkflowId)
-                .map((runView) => (
-                  <option key={runView.run.id} value={runView.run.id}>
-                    {runView.run.id}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label className="field-span-full">
-            <span>{t.fields.body}</span>
-            <textarea rows={5} value={body} onChange={(event) => setBody(event.target.value)} />
-          </label>
-        </div>
-        <div className="tag-row spacious">
-          {tags.map((tag) => {
-            const active = selectedTagIds.includes(tag.id);
-            return (
-              <button
-                key={tag.id}
-                type="button"
-                className={`tag-pill toggle-pill ${active ? "active" : ""}`}
-                style={{ ["--tag-accent" as string]: tag.color ?? "#0f766e" }}
-                onClick={() =>
-                  setSelectedTagIds((current) =>
-                    current.includes(tag.id) ? current.filter((item) => item !== tag.id) : [...current, tag.id]
-                  )
-                }
-              >
-                {tag.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="card-actions">
-          <button
-            type="button"
-            className="primary-action"
-            onClick={() => {
-              if (!title.trim() || !body.trim()) return;
-              onAddNote({
-                title: title.trim(),
-                body: body.trim(),
-                relatedWorkflowId: relatedWorkflowId || undefined,
-                relatedRunId: relatedRunId || undefined,
-                tagIds: selectedTagIds
-              });
-              setTitle(t.defaults.noteLabel);
-              setBody(t.defaults.noteBody);
-              setRelatedWorkflowId("");
-              setRelatedRunId("");
-              setSelectedTagIds([]);
-            }}
-          >
-            <MessageSquareText size={16} />
-            {t.actions.addNote}
-          </button>
-        </div>
-        <div className="card-grid note-grid">
-          {notes.length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noNotes}</div>
-          ) : (
-            notes.map((note) => (
-              <article key={note.id} className="feature-card">
-                <div className="feature-card-header">
-                  <div>
-                    <strong>{note.title}</strong>
-                    <p>{formatDateTime(note.updatedAt, language)}</p>
-                  </div>
-                  <button type="button" className="icon-button" onClick={() => onRemoveNote(note.id)}>
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <p className="supporting-copy">{note.body}</p>
-                <div className="tag-row">
-                  {note.tagIds.map((tagId) => {
-                    const match = tags.find((item) => item.id === tagId);
-                    return match ? (
-                      <span key={tagId} className="tag-pill" style={{ ["--tag-accent" as string]: match.color ?? "#0f766e" }}>
-                        {match.label}
-                      </span>
-                    ) : null;
-                  })}
-                </div>
-                {(note.relatedWorkflowId || note.relatedRunId) && (
-                  <dl className="meta-grid">
-                    {note.relatedWorkflowId && (
-                      <>
-                        <dt>{t.fields.relatedWorkflow}</dt>
-                        <dd>{workflowNameFor(workflows, note.relatedWorkflowId)}</dd>
-                      </>
-                    )}
-                    {note.relatedRunId && (
-                      <>
-                        <dt>{t.fields.relatedRun}</dt>
-                        <dd>{note.relatedRunId}</dd>
-                      </>
-                    )}
-                  </dl>
-                )}
-              </article>
-            ))
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
 export function ModelsPage({
   catalog,
   openClawConfig,
@@ -887,9 +527,7 @@ export function ModelsPage({
   const modelCopy =
     language === "zh-CN"
       ? {
-          availableModels: "可用模型",
           configuredModels: "\u5df2\u914d\u7f6e\u6a21\u578b",
-          contextWindow: "\u4e0a\u4e0b\u6587\u7a97\u53e3",
           usage: "\u7528\u91cf",
           calls: "\u8c03\u7528",
           tokens: "Token",
@@ -898,9 +536,7 @@ export function ModelsPage({
           setDefault: "\u8bbe\u4e3a\u9ed8\u8ba4"
         }
       : {
-          availableModels: "Available models",
           configuredModels: "Configured models",
-          contextWindow: "Context window",
           usage: "Usage",
           calls: "Calls",
           tokens: "Tokens",
@@ -1146,35 +782,6 @@ export function ModelsPage({
         </div>
       </div>
 
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{modelCopy.availableModels}</h3>
-            <p>{catalog?.models.length ?? 0}</p>
-          </div>
-        </div>
-        <div className="model-card-grid">
-          {catalog?.models.length ? (
-            catalog.models.map((model) => (
-              <article key={model.id} className="model-card">
-                <div className="model-card-head">
-                  <span className="model-provider-badge">{model.provider}</span>
-                  {model.supportsTools && <span className="status-pill status-succeeded">{t.fields.supportsTools}</span>}
-                </div>
-                <div className="model-card-main">
-                  <strong>{model.label}</strong>
-                  <code>{model.id}</code>
-                </div>
-                <div className="model-card-meta">
-                  <span>{`${modelCopy.contextWindow}: ${model.contextWindow?.toLocaleString(language) ?? t.common.unknown}`}</span>
-                </div>
-              </article>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </div>
-      </div>
     </section>
   );
 }
@@ -1200,14 +807,10 @@ export function AgentsPage({
   const copy =
     language === "zh-CN"
       ? {
-          configuredAgents: "已配置 Agent",
-          catalogAgents: "可用 Agent",
-          defaultAgent: "默认 Agent"
+          configuredAgents: "已配置 Agent"
         }
       : {
-          configuredAgents: "Configured agents",
-          catalogAgents: "Available agents",
-          defaultAgent: "Default agent"
+          configuredAgents: "Configured agents"
         };
 
   useEffect(() => {
@@ -1232,8 +835,37 @@ export function AgentsPage({
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
+            <h3>{copy.configuredAgents}</h3>
+          </div>
+        </div>
+        <div className="model-card-grid">
+          {configuredAgents.length ? (
+            configuredAgents.map((agent) => (
+              <article key={agent.id} className={`model-card ${agent.isDefault ? "default" : ""}`}>
+                <div className="model-card-head">
+                  <span className="model-provider-badge">{agent.id}</span>
+                  {agent.isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
+                </div>
+                <div className="model-card-main">
+                  <strong>{agent.name ?? agent.id}</strong>
+                  <code>{agent.agentDir}</code>
+                </div>
+                <div className="model-card-meta">
+                  <span>{`${t.fields.model}: ${agent.modelId ?? t.common.defaultModel}`}</span>
+                  <span>{`${t.fields.workspace}: ${agent.workspace}`}</span>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
+        </div>
+      </div>
+
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
             <h3>{t.actions.addAgent}</h3>
-            <p>{t.catalogConfig.addAgentDescription}</p>
           </div>
         </div>
         <div className="form-grid">
@@ -1261,22 +893,6 @@ export function AgentsPage({
             />
           </label>
         </div>
-        <div className="metric-strip compact-metric-strip">
-          <div className="metric-chip">
-            <FolderKanban size={16} />
-            <span>{t.metrics.agents(configuredAgents.length)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{openClawConfig?.defaultWorkspace ?? "-"}</span>
-          </div>
-          {configuredAgents.find((agent) => agent.isDefault) && (
-            <div className="metric-chip">
-              <FolderKanban size={16} />
-              <span>{`${copy.defaultAgent}: ${configuredAgents.find((agent) => agent.isDefault)?.id}`}</span>
-            </div>
-          )}
-        </div>
         <div className="card-actions">
           <button
             type="button"
@@ -1298,48 +914,6 @@ export function AgentsPage({
           </button>
         </div>
       </div>
-
-      <section className="card-grid data-card-grid">
-        <TableCard title={copy.configuredAgents} rows={configuredAgents.length}>
-          {configuredAgents.length ? (
-            configuredAgents.map((agent) => (
-              <div key={agent.id} className="table-row">
-                <div>
-                  <strong>{agent.name ?? agent.id}</strong>
-                  <p>{agent.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{agent.modelId ?? t.common.defaultModel}</span>
-                  <span>{agent.workspace}</span>
-                  <span>{agent.isDefault ? t.common.defaultOption : agent.agentDir}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={copy.catalogAgents} rows={catalog?.agents.length ?? 0}>
-          {catalog?.agents.length ? (
-            catalog.agents.map((agent) => (
-              <div key={agent.id} className="table-row">
-                <div>
-                  <strong>{agent.label}</strong>
-                  <p>{agent.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{agent.runtimeId ?? t.common.unknown}</span>
-                  <span>{agent.modelId ?? t.common.defaultModel}</span>
-                  <span>{agent.workspace ?? t.common.notLinked}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-      </section>
     </section>
   );
 }
@@ -1537,15 +1111,11 @@ export function ChannelsPage({
   const copy =
     language === "zh-CN"
       ? {
-          deliverySurface: "交付通道",
-          available: "可用",
-          notConfigured: "未配置",
+          enabled: "已启用",
           disabled: "已停用"
         }
       : {
-          deliverySurface: "Delivery channels",
-          available: "available",
-          notConfigured: "not configured",
+          enabled: "Enabled",
           disabled: "disabled"
         };
   const configCopy =
@@ -1561,8 +1131,7 @@ export function ChannelsPage({
           useEnv: "使用环境变量",
           noCredential: "不写入凭据",
           defaultAccount: "默认账号",
-          credentialKeys: "凭据字段",
-          addDescription: "调用 openclaw channels add，让 OpenClaw 执行插件安装、账号配置迁移和配置校验。"
+          credentialKeys: "凭据字段"
         }
       : {
           addChannel: "Add channel config",
@@ -1575,15 +1144,12 @@ export function ChannelsPage({
           useEnv: "Use environment",
           noCredential: "No credential",
           defaultAccount: "Default account",
-          credentialKeys: "Credential keys",
-          addDescription: "Calls openclaw channels add so OpenClaw handles plugin installation, account migration, and validation."
+          credentialKeys: "Credential keys"
         };
   const wizardCopy =
     language === "zh-CN"
       ? {
           title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0 Channel",
-          description:
-            "\u5148\u9009 Channel\uff0c\u518d\u8fdb\u5165\u8be5 Channel \u7684\u914d\u7f6e\u754c\u9762\uff1b\u63d0\u4ea4\u65f6\u4ecd\u8c03\u7528 openclaw channels add\uff0c\u8ba9 OpenClaw \u6267\u884c\u63d2\u4ef6\u5b89\u88c5\u3001\u8d26\u53f7\u8fc1\u79fb\u548c\u6821\u9a8c\u3002",
           channelStep: "Channel",
           detailsStep: "\u914d\u7f6e\u9009\u9879",
           search: "\u641c\u7d22",
@@ -1593,8 +1159,6 @@ export function ChannelsPage({
         }
       : {
           title: "Add channel through the CLI path",
-          description:
-            "Choose the channel first, then enter its channel-specific setup screen. Submit still calls openclaw channels add so OpenClaw handles plugins, account migration, and validation.",
           channelStep: "Channel",
           detailsStep: "Setup options",
           search: "Search",
@@ -1644,23 +1208,34 @@ export function ChannelsPage({
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{copy.deliverySurface}</h3>
-            <p>{catalog ? `${t.fields.updatedAt}: ${formatDateTime(catalog.refreshedAt, language)}` : t.empty.noCatalog}</p>
+            <h3>{configCopy.configuredChannels}</h3>
           </div>
         </div>
-        <div className="metric-strip">
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{t.metrics.channels(catalog?.channels.length ?? 0)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{t.metrics.tools(catalog?.tools.length ?? 0)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{`${configCopy.configuredChannels}: ${configuredChannels.length}`}</span>
-          </div>
+        <div className="model-card-grid">
+          {configuredChannels.length ? (
+            configuredChannels.flatMap((channel) =>
+              channel.accounts.map((account) => (
+                <article key={`${channel.id}:${account.id}`} className={`model-card ${account.isDefault ? "default" : ""}`}>
+                  <div className="model-card-head">
+                    <span className="model-provider-badge">{channel.id}</span>
+                    <span className={`status-pill ${account.enabled && channel.enabled ? "status-succeeded" : "status-cancelled"}`}>
+                      {account.enabled && channel.enabled ? copy.enabled : copy.disabled}
+                    </span>
+                  </div>
+                  <div className="model-card-main">
+                    <strong>{account.name ?? `${channel.label} / ${account.id}`}</strong>
+                    <code>{`${channel.id}:${account.id}`}</code>
+                  </div>
+                  <div className="model-card-meta">
+                    <span>{account.isDefault ? configCopy.defaultAccount : `${configCopy.account}: ${account.id}`}</span>
+                    <span>{`${configCopy.credentialKeys}: ${account.credentialKeys.length ? account.credentialKeys.join(", ") : "-"}`}</span>
+                  </div>
+                </article>
+              ))
+            )
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
         </div>
       </div>
 
@@ -1668,7 +1243,6 @@ export function ChannelsPage({
         <div className="card-toolbar">
           <div className="card-title-block">
             <h3>{wizardCopy.title}</h3>
-            <p>{wizardCopy.description}</p>
           </div>
         </div>
 
@@ -1721,358 +1295,6 @@ export function ChannelsPage({
           ) : null}
         </div>
       </div>
-
-      <section className="card-grid data-card-grid">
-        <TableCard title={configCopy.configuredChannels} rows={configuredChannels.length}>
-          {configuredChannels.length ? (
-            configuredChannels.flatMap((channel) =>
-              channel.accounts.map((account) => (
-                <div key={`${channel.id}:${account.id}`} className="table-row">
-                  <div>
-                    <strong>{account.name ?? `${channel.label} / ${account.id}`}</strong>
-                    <p>{`${channel.id}:${account.id}`}</p>
-                  </div>
-                  <div className="table-meta">
-                    <span>{account.enabled && channel.enabled ? copy.available : copy.disabled}</span>
-                    <span>{account.isDefault ? configCopy.defaultAccount : account.id}</span>
-                    <span>{`${configCopy.credentialKeys}: ${account.credentialKeys.length ? account.credentialKeys.join(", ") : "-"}`}</span>
-                  </div>
-                </div>
-              ))
-            )
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={t.tables.channels} rows={catalog?.channels.length ?? 0}>
-          {catalog?.channels.length ? (
-            catalog.channels.map((channel) => (
-              <div key={channel.id} className="table-row">
-                <div>
-                  <strong>{channel.label}</strong>
-                  <p>{channel.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{channelStatusLabel(channel.status, copy)}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={t.tables.tools} rows={catalog?.tools.length ?? 0}>
-          {catalog?.tools.length ? (
-            catalog.tools.map((tool) => (
-              <div key={tool.id} className="table-row">
-                <div>
-                  <strong>{tool.label}</strong>
-                  <p>{tool.description}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{tool.category}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-      </section>
-    </section>
-  );
-}
-
-export function CatalogPage({
-  catalog,
-  openClawConfig,
-  runtime,
-  language,
-  t,
-  busy,
-  onSaveDefaultModel,
-  onAddAgent
-}: {
-  catalog?: CatalogSnapshot;
-  openClawConfig?: OpenClawConfigState;
-  runtime?: RuntimeOverview;
-  language: Language;
-  t: Messages;
-  busy: boolean;
-  onSaveDefaultModel: (modelId: string) => void;
-  onAddAgent: (input: { name: string; workspace?: string; modelId?: string }) => void;
-}) {
-  const stale = catalog ? isCatalogStale(catalog) : false;
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [agentName, setAgentName] = useState("");
-  const [agentWorkspace, setAgentWorkspace] = useState("");
-  const [agentModelId, setAgentModelId] = useState("");
-
-  useEffect(() => {
-    setSelectedModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
-  }, [catalog?.models, openClawConfig?.defaultModelId]);
-
-  useEffect(() => {
-    setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
-  }, [catalog?.models, openClawConfig?.defaultModelId]);
-
-  useEffect(() => {
-    if (!agentName.trim()) {
-      setAgentWorkspace("");
-      return;
-    }
-    if (agentWorkspace.trim()) return;
-    if (openClawConfig?.defaultWorkspace) {
-      setAgentWorkspace(joinPath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
-    }
-  }, [agentName, agentWorkspace, openClawConfig?.defaultWorkspace]);
-
-  return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.catalogConfig.quickConfig}</h3>
-          </div>
-        </div>
-
-        <div className="card-grid quick-config-grid">
-          <article className="feature-card">
-            <div className="feature-card-header">
-              <div>
-                <strong>{t.common.defaultModel}</strong>
-                <p>{t.catalogConfig.defaultModelDescription}</p>
-              </div>
-            </div>
-            <div className="form-grid">
-              <label className="field-span-full">
-                <span>{t.fields.primaryModel}</span>
-                <select value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value)}>
-                  {(catalog?.models ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {`${model.label} (${model.id})`}
-                    </option>
-                  ))}
-                  {(openClawConfig?.configuredModels ?? [])
-                    .filter((model) => !(catalog?.models ?? []).some((item) => item.id === model.id))
-                    .map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {`${model.label} (${model.id})`}
-                      </option>
-                    ))}
-                </select>
-              </label>
-            </div>
-            <div className="metric-strip compact-metric-strip">
-              <div className="metric-chip">
-                <Database size={16} />
-                <span>{openClawConfig?.defaultModelId ?? t.common.noDefaultModel}</span>
-              </div>
-              <div className="metric-chip">
-                <Database size={16} />
-                <span>{openClawConfig?.defaultWorkspace ?? "-"}</span>
-              </div>
-            </div>
-            <div className="card-actions">
-              <button type="button" className="primary-action" disabled={!selectedModelId || busy} onClick={() => onSaveDefaultModel(selectedModelId)}>
-                {busy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-                {t.actions.saveModel}
-              </button>
-            </div>
-          </article>
-
-          <article className="feature-card">
-            <div className="feature-card-header">
-              <div>
-                <strong>{t.actions.addAgent}</strong>
-                <p>{t.catalogConfig.addAgentDescription}</p>
-              </div>
-            </div>
-            <div className="form-grid">
-              <label>
-                <span>{t.fields.agentName}</span>
-                <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="researcher" />
-              </label>
-              <label>
-                <span>{t.fields.model}</span>
-                <select value={agentModelId} onChange={(event) => setAgentModelId(event.target.value)}>
-                  <option value="">{t.common.defaultModel}</option>
-                  {(catalog?.models ?? []).map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {`${model.label} (${model.id})`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="field-span-full">
-                <span>{t.fields.workspace}</span>
-                <input
-                  value={agentWorkspace}
-                  onChange={(event) => setAgentWorkspace(event.target.value)}
-                  placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : t.catalogConfig.workspacePlaceholder}
-                />
-              </label>
-            </div>
-            <div className="metric-strip compact-metric-strip">
-              {(openClawConfig?.configuredAgents ?? []).slice(0, 3).map((agent) => (
-                <div key={agent.id} className="metric-chip">
-                  <FolderKanban size={16} />
-                  <span>{`${agent.id} · ${agent.modelId ?? t.common.defaultOption}`}</span>
-                </div>
-              ))}
-            </div>
-            <div className="card-actions">
-              <button
-                type="button"
-                className="primary-action"
-                disabled={!agentName.trim() || busy}
-                onClick={() => {
-                  onAddAgent({
-                    name: agentName.trim(),
-                    workspace: agentWorkspace.trim() || undefined,
-                    modelId: agentModelId || undefined
-                  });
-                  setAgentName("");
-                  setAgentWorkspace("");
-                  setAgentModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
-                }}
-              >
-                {busy ? <Loader2 className="spin" size={16} /> : <FolderKanban size={16} />}
-                {t.actions.addAgent}
-              </button>
-            </div>
-          </article>
-        </div>
-      </div>
-
-      <div className="content-card stack-card">
-        <div className="metric-strip">
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{t.metrics.models(catalog?.models.length ?? 0)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{t.metrics.agents(catalog?.agents.length ?? 0)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{t.metrics.tools(catalog?.tools.length ?? 0)}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{stale ? t.common.stale : t.common.fresh}</span>
-          </div>
-        </div>
-        {catalog && (
-          <p className="supporting-copy">
-            {t.fields.updatedAt}: {formatDateTime(catalog.refreshedAt, language)}
-          </p>
-        )}
-      </div>
-
-      <section className="card-grid data-card-grid">
-        <TableCard title={t.tables.models} rows={catalog?.models.length ?? 0}>
-          {catalog?.models.length ? (
-            catalog.models.map((model) => (
-              <div key={model.id} className="table-row">
-                <div>
-                  <strong>{model.label}</strong>
-                  <p>{model.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{model.provider}</span>
-                  <span>{model.supportsTools ? t.common.yes : t.common.no}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={t.tables.agents} rows={catalog?.agents.length ?? 0}>
-          {catalog?.agents.map((agent) => (
-            <div key={agent.id} className="table-row">
-              <div>
-                <strong>{agent.label}</strong>
-                <p>{agent.id}</p>
-              </div>
-              <div className="table-meta">
-                <span>{agent.runtimeId ?? t.common.unknown}</span>
-                <span>{agent.modelId ?? t.common.defaultModel}</span>
-              </div>
-            </div>
-          ))}
-        </TableCard>
-
-        <TableCard title={t.tables.tools} rows={catalog?.tools.length ?? 0}>
-          {catalog?.tools.map((tool) => (
-            <div key={tool.id} className="table-row">
-              <div>
-                <strong>{tool.label}</strong>
-                <p>{tool.description}</p>
-              </div>
-              <div className="table-meta">
-                <span>{tool.category}</span>
-              </div>
-            </div>
-          ))}
-        </TableCard>
-
-        <TableCard title={t.tables.channels} rows={catalog?.channels.length ?? 0}>
-          {catalog?.channels.map((channel) => (
-            <div key={channel.id} className="table-row">
-              <div>
-                <strong>{channel.label}</strong>
-                <p>{channel.id}</p>
-              </div>
-              <div className="table-meta">
-                <span>{channel.status}</span>
-              </div>
-            </div>
-          ))}
-        </TableCard>
-
-        <TableCard title={t.tables.sessions} rows={runtime?.sessions.length ?? 0}>
-          {runtime?.sessions.length ? (
-            runtime.sessions.map((session) => (
-              <div key={session.id} className="table-row">
-                <div>
-                  <strong>{session.title}</strong>
-                  <p>{session.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{formatDateTime(session.updatedAt, language)}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noSessions}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={t.tables.tasks} rows={runtime?.tasks.length ?? 0}>
-          {runtime?.tasks.length ? (
-            runtime.tasks.map((task) => (
-              <div key={task.id} className="table-row">
-                <div>
-                  <strong>{task.title}</strong>
-                  <p>{task.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span className={`status-pill status-${task.status}`}>{t.status[task.status]}</span>
-                  <span>{formatDateTime(task.updatedAt, language)}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noTasks}</div>
-          )}
-        </TableCard>
-      </section>
     </section>
   );
 }
@@ -2173,15 +1395,6 @@ function WidgetCard({
       )}
     </article>
   );
-}
-
-function channelStatusLabel(
-  status: "available" | "not_configured" | "disabled",
-  copy: { available: string; notConfigured: string; disabled: string }
-): string {
-  if (status === "available") return copy.available;
-  if (status === "not_configured") return copy.notConfigured;
-  return copy.disabled;
 }
 
 function mergeModelCatalogOptions(fields: OpenClawWizardField[], providerId: string | undefined, catalog: CatalogSnapshot | undefined): OpenClawWizardField[] {

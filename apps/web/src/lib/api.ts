@@ -5,8 +5,6 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawAgentRequest,
-  CreateOpenClawChannelRequest,
-  CreateOpenClawModelRequest,
   CreateWorkflowRequest,
   DashboardStateResponse,
   ExportWorkflowResponse,
@@ -25,7 +23,6 @@ import type {
   OpenClawVersionResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
-  SaveDashboardStateRequest,
   SaveWorkflowRequest,
   SelectCompanyRequest,
   StartWorkflowRunResponse,
@@ -88,14 +85,6 @@ export const api = {
     return response.config;
   },
 
-  async addOpenClawModel(input: CreateOpenClawModelRequest): Promise<OpenClawConfigState> {
-    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/models", {
-      method: "POST",
-      body: JSON.stringify(input satisfies CreateOpenClawModelRequest)
-    });
-    return response.config;
-  },
-
   async configureOpenClawModelAuth(input: ConfigureOpenClawModelAuthRequest): Promise<OpenClawConfigState> {
     const response = await request<OpenClawConfigResponse>("/api/openclaw-config/model-auth", {
       method: "POST",
@@ -108,14 +97,6 @@ export const api = {
     const response = await request<OpenClawConfigResponse>("/api/openclaw-config/agents", {
       method: "POST",
       body: JSON.stringify(input satisfies CreateOpenClawAgentRequest)
-    });
-    return response.config;
-  },
-
-  async addOpenClawChannel(input: CreateOpenClawChannelRequest): Promise<OpenClawConfigState> {
-    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/channels", {
-      method: "POST",
-      body: JSON.stringify(input satisfies CreateOpenClawChannelRequest)
     });
     return response.config;
   },
@@ -224,14 +205,6 @@ export const api = {
 
   async getDashboardState(): Promise<WorkspaceDashboard> {
     const response = await request<DashboardStateResponse>("/api/dashboard-state");
-    return response.dashboard;
-  },
-
-  async saveDashboardState(dashboard: WorkspaceDashboard): Promise<WorkspaceDashboard> {
-    const response = await request<DashboardStateResponse>("/api/dashboard-state", {
-      method: "PUT",
-      body: JSON.stringify({ dashboard } satisfies SaveDashboardStateRequest)
-    });
     return response.dashboard;
   },
 

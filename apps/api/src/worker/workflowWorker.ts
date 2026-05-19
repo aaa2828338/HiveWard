@@ -7,7 +7,6 @@ import type {
   ConditionNodeConfig,
   LoopNodeConfig,
   ManagerNodeConfig,
-  ManagerSlotNodeConfig,
   OpenClawObjectRef,
   ParallelAgentsNodeConfig,
   SendNodeConfig,

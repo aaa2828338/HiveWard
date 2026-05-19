@@ -20,8 +20,6 @@ import type {
   CompanyOverview,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
-  CreateOpenClawChannelRequest,
-  CreateOpenClawModelRequest,
   DashboardWidgetType,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
@@ -403,17 +401,14 @@ export function App() {
       workflow: workflows.length,
       runs: activeTaskCount,
       approvals: approvals.length,
-      models: openClawConfig?.configuredModels.length ?? catalog?.models.length ?? 0,
-      agents: openClawConfig?.configuredAgents.length ?? catalog?.agents.length ?? 0,
+      models: openClawConfig?.configuredModels.length ?? 0,
+      agents: openClawConfig?.configuredAgents.length ?? 0,
       schedule: runtime?.tasks.length ?? 0,
-      channels: openClawConfig?.configuredChannels.length ?? catalog?.channels.length ?? 0
+      channels: openClawConfig?.configuredChannels.length ?? 0
     }),
     [
       approvals.length,
       activeTaskCount,
-      catalog?.agents.length,
-      catalog?.channels.length,
-      catalog?.models.length,
       openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
@@ -521,16 +516,6 @@ export function App() {
     [withBusy]
   );
 
-  const addOpenClawModel = useCallback(
-    (input: CreateOpenClawModelRequest) => {
-      void withBusy("addOpenClawModel", async () => {
-        const nextOpenClawConfig = await api.addOpenClawModel(input);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
   const configureOpenClawModelAuth = useCallback(
     (input: ConfigureOpenClawModelAuthRequest) => {
       void withBusy("configureOpenClawModelAuth", async () => {
@@ -545,16 +530,6 @@ export function App() {
     (modelId: string) => {
       void withBusy(`setOpenClawDefaultModel:${modelId}`, async () => {
         const nextOpenClawConfig = await api.updateOpenClawDefaultModel(modelId);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const addOpenClawChannel = useCallback(
-    (input: CreateOpenClawChannelRequest) => {
-      void withBusy("addOpenClawChannel", async () => {
-        const nextOpenClawConfig = await api.addOpenClawChannel(input);
         setOpenClawConfig(nextOpenClawConfig);
       });
     },
@@ -635,15 +610,6 @@ export function App() {
     },
     [hydrateWorkspace, latestRunForWorkflow?.run.id, withBusy]
   );
-
-  const saveWorkspace = useCallback(() => {
-    if (!dashboard) return;
-    void withBusy("saveWorkspace", async () => {
-      const saved = await api.saveDashboardState(dashboard);
-      setDashboard(saved);
-      setDashboardDirty(false);
-    });
-  }, [dashboard, withBusy]);
 
   const addWidget = useCallback(
     (type: DashboardWidgetType) => {
@@ -1230,12 +1196,9 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "importWorkflow") return t.errors.save;
   if (action === "runWorkflow") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
-  if (action === "saveWorkspace") return t.errors.workspace;
-  if (action === "addOpenClawModel") return t.errors.catalog;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;
-  if (action === "addOpenClawChannel") return t.errors.catalog;
   if (action === "configureOpenClawChannel") return t.errors.catalog;
   if (action === "refreshCatalog") return t.errors.catalog;
   return t.errors.load;
