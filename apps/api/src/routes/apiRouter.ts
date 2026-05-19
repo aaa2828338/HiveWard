@@ -363,7 +363,7 @@ function collectInvalidAgentIds(workflow: WorkflowDefinition, configuredAgentIds
   const invalid = new Set<string>();
 
   for (const node of workflow.nodes) {
-    if (node.type === "agent") {
+    if (node.type === "openclaw_agent") {
       const agentId = (node.config as AgentNodeConfig).agentId ?? "main";
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
       continue;
@@ -385,7 +385,7 @@ function withRunDefaults(workflow: WorkflowDefinition, defaultModelId?: string):
   return {
     ...workflow,
     nodes: workflow.nodes.map((node) => {
-      if (node.type === "agent") {
+      if (node.type === "openclaw_agent") {
         const config = node.config as AgentNodeConfig;
         return config.modelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
       }

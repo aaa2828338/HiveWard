@@ -1,4 +1,6 @@
-export type OpenClawObjectSource = "openclaw";
+export type AgentSdkProvider = "claude" | "codex";
+export type AgentPermissionProfile = "read_only" | "workspace_write";
+export type OpenClawObjectSource = "openclaw" | AgentSdkProvider;
 
 export interface OpenClawObjectRef {
   source: OpenClawObjectSource;
@@ -155,10 +157,15 @@ export interface OpenClawModelUsageSummary {
 export interface StartAgentTaskInput {
   workflowRunId: string;
   nodeRunId: string;
+  source: OpenClawObjectSource;
   agentId?: string;
   agentName: string;
   prompt: string;
   modelId?: string;
+  permissionProfile?: AgentPermissionProfile;
+  workingDirectory?: string;
+  timeoutMs?: number;
+  outputSchema?: Record<string, unknown>;
   input: unknown;
   tools: string[];
 }
@@ -167,6 +174,7 @@ export interface StartedAgentTaskResult {
   taskId: string;
   runId: string;
   sessionKey: string;
+  source: OpenClawObjectSource;
   status: OpenClawExecutionStatus;
   error?: string;
   updatedAt: string;
@@ -177,6 +185,7 @@ export interface WaitForAgentTaskInput {
   taskId: string;
   runId: string;
   sessionKey: string;
+  source: OpenClawObjectSource;
   agentId?: string;
   modelId?: string;
 }

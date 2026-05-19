@@ -9,7 +9,7 @@
 | Workflow canvas, graph, layout, versions | CUI |
 | Workflow runs, node runs, approval state | CUI |
 | Dashboard widgets, saved views, tags, notes | CUI |
-| Agents, tasks, tools, model fallback, channel SDKs | OpenClaw |
+| Agents, tasks, tools, model routing, channel delivery | OpenClaw |
 | Provider usage facts and execution transcripts | OpenClaw |
 
 ## Runtime Shape
@@ -36,7 +36,7 @@ graph LR
 
 - Web canvas for workflow editing and run observation.
 - Companion API for CUI-owned state.
-- In-process workflow worker for orchestration.
+- Embedded workflow worker for orchestration.
 - Adapter interface with both mock and OpenClaw Gateway implementations.
 - Boundary check script for CI.
 

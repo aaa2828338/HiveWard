@@ -1,36 +1,7 @@
-import cors from "cors";
-import express, { type ErrorRequestHandler } from "express";
-import { createOpenClawAdapter } from "@openclaw-cui/adapter";
-import { createApiRouter } from "./routes/apiRouter";
-import { FileCuiStore } from "./store/fileCuiStore";
-import { OpenClawConfigStore } from "./store/openClawConfigStore";
-import { WorkflowWorker } from "./worker/workflowWorker";
+import { createCuiApiApp } from "./app";
 
 const port = Number(process.env.PORT ?? 8787);
-
-const store = new FileCuiStore();
-await store.init();
-
-const openClawConfigStore = new OpenClawConfigStore();
-const adapter = createOpenClawAdapter();
-const worker = new WorkflowWorker(store, adapter);
-
-const app = express();
-app.use(cors({ origin: true }));
-app.use(express.json({ limit: "2mb" }));
-app.use(createApiRouter({ store, openClawConfigStore, adapter, worker }));
-
-const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
-  const message = error instanceof Error ? error.message : "Unexpected API failure.";
-  res.status(500).json({
-    error: {
-      code: "internal_error",
-      message
-    }
-  });
-};
-
-app.use(errorHandler);
+const app = await createCuiApiApp();
 
 app.listen(port, () => {
   console.log(`CUI Companion API listening on http://localhost:${port}`);

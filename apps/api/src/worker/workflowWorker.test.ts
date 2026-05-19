@@ -215,6 +215,69 @@ describe("WorkflowWorker", () => {
     expect((adapter.calls[2]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
   });
 
+  it("passes SDK node configuration to the adapter and persists provider refs", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
+    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    await store.init();
+
+    const workflow = createWorkflow(
+      [
+        {
+          ...createAgentNode("sdk-node", "SDK Node"),
+          type: "codex_agent",
+          config: {
+            label: "SDK Node",
+            agentName: "codex-runner",
+            prompt: "Return JSON.",
+            modelId: "gpt-5.4",
+            permissionProfile: "read_only",
+            workingDirectory: tempDir,
+            timeoutMs: 120000,
+            outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } },
+            tools: []
+          }
+        }
+      ],
+      []
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("codex-task-1"),
+        source: "codex",
+        sessionKey: "codex-session-start"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("codex-task-1", "succeeded", "{\"ok\":true}"),
+        source: "codex",
+        sessionKey: "codex-session-final"
+      }
+    ]);
+    const worker = new WorkflowWorker(store, adapter);
+
+    const run = await worker.startRun(workflow, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(adapter.calls[0]).toMatchObject({
+      source: "codex",
+      agentName: "codex-runner",
+      modelId: "gpt-5.4",
+      permissionProfile: "read_only",
+      workingDirectory: tempDir,
+      timeoutMs: 120000
+    });
+    expect(adapter.waitCalls[0]).toMatchObject({
+      source: "codex",
+      sessionKey: "codex-session-start"
+    });
+    expect(view?.nodeRuns[0]?.openclawRef).toMatchObject({
+      source: "codex",
+      sourceId: "codex-task-1",
+      sessionKey: "codex-session-final"
+    });
+    expect(view?.run.openclawRefs[0]?.source).toBe("codex");
+  });
+
   it("lets a manager node route numbered slots and return to an earlier agent slot", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
     const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
@@ -562,6 +625,7 @@ function createStartedAgentTask(taskId: string): StartedAgentTaskResult {
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    source: "openclaw",
     status: "running",
     updatedAt: new Date().toISOString()
   };
@@ -577,6 +641,7 @@ function createCompletedAgentTask(
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    source: "openclaw",
     status,
     output,
     error,
@@ -619,7 +684,7 @@ function createWorkflow(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowD
 function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): WorkflowNode {
   return {
     id,
-    type: "agent",
+    type: "openclaw_agent",
     position,
     config: {
       label,

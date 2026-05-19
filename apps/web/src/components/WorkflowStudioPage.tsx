@@ -16,7 +16,8 @@ import {
   type NodeMouseHandler,
   type OnNodesChange
 } from "@xyflow/react";
-import { Bot, Check, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Upload, X } from "lucide-react";
+import { Bot, Check, Code2, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Terminal, Upload, X } from "lucide-react";
+import { isAgentWorkflowNodeType, resolveAgentNodeSource } from "@openclaw-cui/shared";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -53,7 +54,9 @@ const nodeTypes = {
 };
 
 const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
-  { type: "agent", icon: Bot },
+  { type: "openclaw_agent", icon: Bot },
+  { type: "codex_agent", icon: Code2 },
+  { type: "claude_code_agent", icon: Terminal },
   { type: "manager", icon: Network },
   { type: "manager_slot", icon: Network },
   { type: "loop", icon: Repeat2 },
@@ -71,7 +74,9 @@ const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
 const workflowStepTypes = new Set<WorkflowNodeType>([
-  "agent",
+  "openclaw_agent",
+  "codex_agent",
+  "claude_code_agent",
   "parallel_agents",
   "manager",
   "manager_slot",
@@ -724,7 +729,7 @@ function NodeDetailModal({
               </dl>
             </div>
 
-            {node.type === "agent" && (
+            {node.type === "openclaw_agent" && (
               <AgentSkillPanel
                 node={node}
                 skills={catalog?.tools ?? []}
@@ -763,8 +768,17 @@ function NodeConfigForm({
   onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
   t: Messages;
 }) {
-  if (node.type === "agent") {
+  const agentOutputSchema = isAgentWorkflowNodeType(node.type) ? (node.config as AgentNodeConfig).outputSchema : undefined;
+  const [schemaText, setSchemaText] = useState("");
+
+  useEffect(() => {
+    setSchemaText(formatOutputSchema(agentOutputSchema));
+  }, [agentOutputSchema, node.id, node.type]);
+
+  if (isAgentWorkflowNodeType(node.type)) {
     const config = node.config as AgentNodeConfig;
+    const source = resolveAgentNodeSource(node.type);
+    const isSdkProvider = source === "claude" || source === "codex";
     const selectedModel = config.modelId ?? "";
     const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
@@ -777,36 +791,78 @@ function NodeConfigForm({
           <span>{t.fields.title}</span>
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
-        <label>
-          <span>{t.fields.openclawAgent}</span>
-          <select
-            value={selectedAgentId}
-            onChange={(event) => onPatchConfig({ agentId: event.target.value })}
-          >
-            {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-            {agentOptions.map((agent) => (
-              <option key={agent.id} value={agent.id}>
-                {agent.name ? `${agent.name} (${agent.id})` : agent.id}
-              </option>
-            ))}
-          </select>
-        </label>
+        {!isSdkProvider && (
+          <label>
+            <span>{t.fields.openclawAgent}</span>
+            <select
+              value={selectedAgentId}
+              onChange={(event) => onPatchConfig({ agentId: event.target.value })}
+            >
+              {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+              {agentOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name ? `${agent.name} (${agent.id})` : agent.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           <span>{t.fields.model}</span>
-          <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-            <option value="">{t.common.defaultModel}</option>
-            {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
+          {isSdkProvider ? (
+            <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
+          ) : (
+            <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
+              <option value="">{t.common.defaultModel}</option>
+              {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          )}
         </label>
         <label>
           <span>{t.fields.runLabel}</span>
           <input value={config.agentName} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
         </label>
+        {isSdkProvider && (
+          <>
+            <label>
+              <span>Permission</span>
+              <select
+                value={config.permissionProfile ?? "read_only"}
+                onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
+              >
+                <option value="read_only">Read only</option>
+                <option value="workspace_write">Workspace write</option>
+              </select>
+            </label>
+            <label>
+              <span>Working directory</span>
+              <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
+            </label>
+            <label>
+              <span>Timeout ms</span>
+              <input
+                min={1}
+                type="number"
+                value={config.timeoutMs ?? 600000}
+                onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+              />
+            </label>
+            <label className="field-span-full">
+              <span>Output schema</span>
+              <textarea
+                rows={6}
+                value={schemaText}
+                onChange={(event) => setSchemaText(event.target.value)}
+                onBlur={() => onPatchConfig({ outputSchema: readOutputSchema(schemaText) })}
+              />
+            </label>
+          </>
+        )}
         <label className="field-span-full">
           <span>{t.fields.prompt}</span>
           <textarea rows={10} value={config.prompt} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
@@ -1047,7 +1103,7 @@ function NodeConfigForm({
               return (
                 <div key={`${agent.agentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
                   <div className="parallel-agent-card-header">
-                    <h4>{`${t.nodeTypes.agent} ${index + 1}`}</h4>
+                    <h4>{`${t.nodeTypes.openclaw_agent} ${index + 1}`}</h4>
                     <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
                       <X size={14} />
                     </button>
@@ -1735,12 +1791,32 @@ function workflowEdgeType(edge: WorkflowEdge): Edge["type"] | undefined {
 }
 
 export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode["config"] {
-  if (type === "agent") {
+  if (type === "openclaw_agent") {
     return {
-      label: t.defaults.agentLabel,
+      label: t.defaults.openClawAgentLabel,
       agentId: "main",
       agentName: t.defaults.agentName,
-      prompt: t.defaults.agentPrompt,
+      prompt: t.defaults.openClawAgentPrompt,
+      tools: []
+    };
+  }
+  if (type === "codex_agent") {
+    return {
+      label: t.defaults.codexAgentLabel,
+      agentName: "codex",
+      prompt: t.defaults.codexAgentPrompt,
+      permissionProfile: "read_only",
+      timeoutMs: 600000,
+      tools: []
+    };
+  }
+  if (type === "claude_code_agent") {
+    return {
+      label: t.defaults.claudeCodeAgentLabel,
+      agentName: "claude-code",
+      prompt: t.defaults.claudeCodeAgentPrompt,
+      permissionProfile: "read_only",
+      timeoutMs: 600000,
       tools: []
     };
   }
@@ -1848,12 +1924,28 @@ function defaultVisibleEdgeLabel(condition?: WorkflowEdge["condition"]): string 
   return undefined;
 }
 
+function formatOutputSchema(schema: Record<string, unknown> | undefined): string {
+  return schema ? JSON.stringify(schema, null, 2) : "";
+}
+
+function readOutputSchema(value: string): Record<string, unknown> | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function createDefaultParallelAgent(t: Messages, agentId = "main"): AgentNodeConfig {
   return {
-    label: t.defaults.agentLabel,
+    label: t.defaults.openClawAgentLabel,
     agentId,
     agentName: t.defaults.agentName,
-    prompt: t.defaults.agentPrompt,
+    prompt: t.defaults.openClawAgentPrompt,
     tools: []
   };
 }
