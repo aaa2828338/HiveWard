@@ -80,6 +80,13 @@ export interface OpenClawConfigState {
   configuredChannels: OpenClawConfiguredChannel[];
 }
 
+export interface OpenClawVersionInfo {
+  version?: string;
+  raw?: string;
+  resolvedAt: string;
+  error?: string;
+}
+
 export interface OpenClawSessionSummary {
   id: string;
   title: string;

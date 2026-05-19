@@ -82,7 +82,7 @@ export function CompanyPage({
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
           workflows: "\u5DE5\u4F5C\u6D41",
-          runs: "\u8FD0\u884C\u6B21\u6570",
+          runs: "\u4EFB\u52A1",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
           widgets: "\u603B\u89C8\u5361\u7247",
@@ -100,7 +100,7 @@ export function CompanyPage({
           noCompanies: "No companies are available.",
           goal: "Business goal",
           workflows: "Workflows",
-          runs: "Runs",
+          runs: "Tasks",
           tokens: "Tokens",
           approvals: "Pending approvals",
           widgets: "Overview widgets",
@@ -227,7 +227,9 @@ export function RunsPage({
     () => (workflow ? runs.filter((runView) => runView.run.workflowId === workflow.id) : []),
     [runs, workflow]
   );
-  const activeRun = workflowRuns.find((runView) => runView.run.id === selectedRunId) ?? workflowRuns[0];
+  const currentTasks = useMemo(() => workflowRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [workflowRuns]);
+  const taskOptions = currentTasks.length > 0 ? currentTasks : workflowRuns;
+  const activeRun = taskOptions.find((runView) => runView.run.id === selectedRunId) ?? taskOptions[0];
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
   const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
 
@@ -251,7 +253,7 @@ export function RunsPage({
         <div className="card-toolbar">
           <div className="card-title-block">
             <h3>{t.trace.title}</h3>
-            <p>{t.trace.description}</p>
+            <p>{currentTasks.length > 0 ? t.metrics.runs(currentTasks.length) : t.trace.description}</p>
           </div>
           <div className="toolbar-cluster trace-toolbar">
             <select value={workflow?.id ?? ""} onChange={(event) => onSelectWorkflow(event.target.value)}>
@@ -261,11 +263,11 @@ export function RunsPage({
                 </option>
               ))}
             </select>
-            <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={workflowRuns.length === 0}>
-              {workflowRuns.length === 0 ? (
+            <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={taskOptions.length === 0}>
+              {taskOptions.length === 0 ? (
                 <option value="">{t.empty.selectRun}</option>
               ) : (
-                workflowRuns.map((runView) => (
+                taskOptions.map((runView) => (
                   <option key={runView.run.id} value={runView.run.id}>
                     {t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}
                   </option>
@@ -1351,66 +1353,122 @@ export function AgentsPage({
   );
 }
 
-export function SchedulePage({ runtime, language, t }: { runtime?: RuntimeOverview; language: Language; t: Messages }) {
+export function SchedulePage({
+  runtime,
+  runs,
+  approvals,
+  workflows,
+  language,
+  t
+}: {
+  runtime?: RuntimeOverview;
+  runs: WorkflowRunView[];
+  approvals: PendingApprovalItem[];
+  workflows: WorkflowDefinition[];
+  language: Language;
+  t: Messages;
+}) {
   const copy =
     language === "zh-CN"
       ? {
-          runtimeSummary: "运行时排期",
-          queuedOrRunning: "排队/运行中"
+          calendar: "\u65e5\u5386",
+          records: "\u5f53\u5929\u8bb0\u5f55",
+          active: "\u8fdb\u884c\u4e2d",
+          workflowTasks: "\u5de5\u4f5c\u6d41\u4efb\u52a1",
+          inbox: "\u6536\u4ef6\u7bb1",
+          selectedDate: "\u9009\u62e9\u65e5\u671f",
+          noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
+          startedAt: "\u542f\u52a8\u65f6\u95f4"
         }
       : {
-          runtimeSummary: "Runtime schedule",
-          queuedOrRunning: "Queued/running"
+          calendar: "Calendar",
+          records: "Records for the day",
+          active: "In progress",
+          workflowTasks: "Workflow tasks",
+          inbox: "Inbox",
+          selectedDate: "Selected date",
+          noRecords: "No records for this date.",
+          startedAt: "Started"
         };
-  const activeTasks = runtime?.tasks.filter((task) => task.status === "queued" || task.status === "running").length ?? 0;
+  const [selectedDate, setSelectedDate] = useState(() => toDateInputValue(new Date()));
+  const runtimeTasksForDay = useMemo(
+    () => (runtime?.tasks ?? []).filter((task) => isSameLocalDate(task.updatedAt, selectedDate)),
+    [runtime?.tasks, selectedDate]
+  );
+  const sessionsForDay = useMemo(
+    () => (runtime?.sessions ?? []).filter((session) => isSameLocalDate(session.updatedAt, selectedDate)),
+    [runtime?.sessions, selectedDate]
+  );
+  const workflowTasksForDay = useMemo(
+    () =>
+      runs.filter(
+        (runView) =>
+          isSameLocalDate(runView.run.startedAt, selectedDate) ||
+          (runView.run.endedAt ? isSameLocalDate(runView.run.endedAt, selectedDate) : false)
+      ),
+    [runs, selectedDate]
+  );
+  const inboxForDay = useMemo(
+    () => approvals.filter((approval) => isSameLocalDate(approval.requestedAt, selectedDate)),
+    [approvals, selectedDate]
+  );
+  const activeTasks =
+    runtimeTasksForDay.filter((task) => task.status === "queued" || task.status === "running").length +
+    workflowTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
+  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + workflowTasksForDay.length + inboxForDay.length;
 
   return (
     <section className="page-grid">
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{copy.runtimeSummary}</h3>
-            <p>{t.metrics.runs((runtime?.sessions.length ?? 0) + (runtime?.tasks.length ?? 0))}</p>
+            <h3>{copy.calendar}</h3>
+            <p>{copy.records}</p>
           </div>
+          <label className="date-picker-field">
+            <span>{copy.selectedDate}</span>
+            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value || toDateInputValue(new Date()))} />
+          </label>
         </div>
         <div className="metric-strip">
           <div className="metric-chip">
             <Clock3 size={16} />
-            <span>{`${t.tables.sessions}: ${runtime?.sessions.length ?? 0}`}</span>
+            <span>{formatDateLabel(selectedDate, language)}</span>
           </div>
           <div className="metric-chip">
             <Clock3 size={16} />
-            <span>{`${t.tables.tasks}: ${runtime?.tasks.length ?? 0}`}</span>
+            <span>{`${copy.records}: ${totalRecords}`}</span>
           </div>
           <div className="metric-chip">
             <Activity size={16} />
-            <span>{`${copy.queuedOrRunning}: ${activeTasks}`}</span>
+            <span>{`${copy.active}: ${activeTasks}`}</span>
           </div>
         </div>
       </div>
 
       <section className="card-grid data-card-grid">
-        <TableCard title={t.tables.sessions} rows={runtime?.sessions.length ?? 0}>
-          {runtime?.sessions.length ? (
-            runtime.sessions.map((session) => (
-              <div key={session.id} className="table-row">
+        <TableCard title={copy.workflowTasks} rows={workflowTasksForDay.length}>
+          {workflowTasksForDay.length ? (
+            workflowTasksForDay.map((runView) => (
+              <div key={runView.run.id} className="table-row">
                 <div>
-                  <strong>{session.title}</strong>
-                  <p>{session.id}</p>
+                  <strong>{workflowNameFor(workflows, runView.run.workflowId)}</strong>
+                  <p>{runView.run.id}</p>
                 </div>
                 <div className="table-meta">
-                  <span>{formatDateTime(session.updatedAt, language)}</span>
+                  <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
+                  <span>{`${copy.startedAt}: ${formatDateTime(runView.run.startedAt, language)}`}</span>
                 </div>
               </div>
             ))
           ) : (
-            <div className="empty-state page-empty">{t.empty.noSessions}</div>
+            <div className="empty-state page-empty">{copy.noRecords}</div>
           )}
         </TableCard>
 
-        <TableCard title={t.tables.tasks} rows={runtime?.tasks.length ?? 0}>
-          {runtime?.tasks.length ? (
-            runtime.tasks.map((task) => (
+        <TableCard title={t.tables.tasks} rows={runtimeTasksForDay.length}>
+          {runtimeTasksForDay.length ? (
+            runtimeTasksForDay.map((task) => (
               <div key={task.id} className="table-row">
                 <div>
                   <strong>{task.title}</strong>
@@ -1423,7 +1481,44 @@ export function SchedulePage({ runtime, language, t }: { runtime?: RuntimeOvervi
               </div>
             ))
           ) : (
-            <div className="empty-state page-empty">{t.empty.noTasks}</div>
+            <div className="empty-state page-empty">{copy.noRecords}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={copy.inbox} rows={inboxForDay.length}>
+          {inboxForDay.length ? (
+            inboxForDay.map((approval) => (
+              <div key={approval.nodeRunId} className="table-row">
+                <div>
+                  <strong>{approval.nodeLabel}</strong>
+                  <p>{approval.workflowName}</p>
+                </div>
+                <div className="table-meta">
+                  <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
+                  <span>{formatDateTime(approval.requestedAt, language)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noApprovals}</div>
+          )}
+        </TableCard>
+
+        <TableCard title={t.tables.sessions} rows={sessionsForDay.length}>
+          {sessionsForDay.length ? (
+            sessionsForDay.map((session) => (
+              <div key={session.id} className="table-row">
+                <div>
+                  <strong>{session.title}</strong>
+                  <p>{session.id}</p>
+                </div>
+                <div className="table-meta">
+                  <span>{formatDateTime(session.updatedAt, language)}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{copy.noRecords}</div>
           )}
         </TableCard>
       </section>
@@ -2545,6 +2640,10 @@ function workflowNameFor(workflows: WorkflowDefinition[], workflowId: string): s
   return workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId;
 }
 
+function isActiveRunStatus(status: WorkflowRunStatus): boolean {
+  return status === "queued" || status === "running" || status === "waiting_approval";
+}
+
 function companyMonogram(company: Pick<CompanyOverview, "logoLabel" | "name">): string {
   if (company.logoLabel?.trim()) return company.logoLabel.trim().slice(0, 2).toUpperCase();
   const parts = company.name.trim().split(/\s+/);
@@ -2559,6 +2658,24 @@ function companyMonogram(company: Pick<CompanyOverview, "logoLabel" | "name">): 
 function formatOutput(output: unknown): string {
   if (typeof output === "string") return output;
   return JSON.stringify(output, null, 2);
+}
+
+function isSameLocalDate(value: string, selectedDate: string): boolean {
+  return toDateInputValue(value) === selectedDate;
+}
+
+function toDateInputValue(value: string | Date): string {
+  const date = typeof value === "string" ? new Date(value) : value;
+  if (Number.isNaN(date.getTime())) return "";
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 10);
+}
+
+function formatDateLabel(value: string, language: Language): string {
+  if (!value) return "-";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(language, { year: "numeric", month: "short", day: "numeric" });
 }
 
 function formatDateTime(value: string, language: Language): string {

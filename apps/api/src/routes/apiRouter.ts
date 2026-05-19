@@ -10,6 +10,7 @@ import type {
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
   ImportWorkflowPackageRequest,
+  RuntimeOverview,
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
   ParallelAgentsNodeConfig,
@@ -64,6 +65,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.get("/api/openclaw-config", async (_req, res, next) => {
     try {
       res.json({ config: await openClawConfigStore.getState() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/openclaw-version", async (_req, res, next) => {
+    try {
+      res.json({ version: await openClawConfigStore.getVersion() });
     } catch (error) {
       next(error);
     }
@@ -293,12 +302,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/runtime-overview", async (_req, res, next) => {
+  router.get("/api/runtime-overview", async (_req, res) => {
     try {
-      const [sessions, tasks] = await Promise.all([adapter.listSessions(), adapter.listTasks()]);
-      res.json({ runtime: { sessions, tasks } });
+      res.json({ runtime: await adapter.getRuntimeOverview() });
     } catch (error) {
-      next(error);
+      res.json({ runtime: emptyRuntimeOverview() });
     }
   });
 
@@ -387,4 +395,11 @@ function selectDefaultAgentId(agents: OpenClawConfiguredAgent[]): string {
 
 function selectDefaultChannelId(channels: OpenClawConfiguredChannel[]): string | undefined {
   return channels.find((channel) => channel.enabled)?.id ?? channels[0]?.id;
+}
+
+function emptyRuntimeOverview(): RuntimeOverview {
+  return {
+    sessions: [],
+    tasks: []
+  };
 }

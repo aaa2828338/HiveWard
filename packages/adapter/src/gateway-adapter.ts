@@ -5,6 +5,7 @@ import type {
   OpenClawSessionSummary,
   OpenClawTaskSummary,
   OpenClawTool,
+  RuntimeOverview,
   SendChannelInput,
   SendChannelResult,
   AgentTaskResult,
@@ -64,24 +65,31 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
   }
 
   async listSessions(): Promise<OpenClawSessionSummary[]> {
-    return this.withSession(async (session) => {
-      const result = await session.request<{ sessions?: unknown[] }>("sessions.list", {
-        limit: 20,
-        includeGlobal: true,
-        includeUnknown: true,
-      });
-      return (Array.isArray(result.sessions) ? result.sessions : []).map(mapSession).filter(isPresent);
-    });
+    const sessions = await this.listSessionRecords();
+    return sessions.map(mapSession).filter(isPresent);
   }
 
   async listTasks(): Promise<OpenClawTaskSummary[]> {
+    const sessions = await this.listSessionRecords();
+    return sessions.map(mapSessionTask).filter(isPresent);
+  }
+
+  async getRuntimeOverview(): Promise<RuntimeOverview> {
+    const sessions = await this.listSessionRecords();
+    return {
+      sessions: sessions.map(mapSession).filter(isPresent),
+      tasks: sessions.map(mapSessionTask).filter(isPresent),
+    };
+  }
+
+  private async listSessionRecords(): Promise<unknown[]> {
     return this.withSession(async (session) => {
       const result = await session.request<{ sessions?: unknown[] }>("sessions.list", {
         limit: 20,
         includeGlobal: true,
         includeUnknown: true,
       });
-      return (Array.isArray(result.sessions) ? result.sessions : []).map(mapSessionTask).filter(isPresent);
+      return Array.isArray(result.sessions) ? result.sessions : [];
     });
   }
 

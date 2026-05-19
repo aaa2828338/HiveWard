@@ -250,8 +250,8 @@ export const messages: Record<Language, Messages> = {
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
-      run: "Run",
-      runWorkflow: "Run workflow",
+      run: "Start task",
+      runWorkflow: "Start workflow task",
       save: "Save",
       saveModel: "Save model",
       saveWorkflow: "Save workflow",
@@ -300,14 +300,14 @@ export const messages: Record<Language, Messages> = {
       widgetTitle: "New widget"
     },
     empty: {
-      noApprovals: "No pending approvals",
+      noApprovals: "Inbox is empty",
       noCatalog: "Config data has not been loaded yet",
       noNodeOutput: "This node has no output yet.",
       noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
-      noRun: "No run yet",
-      noRunHistory: "This workflow has no run history yet.",
-      noRuns: "No workflow runs yet",
+      noRun: "No task yet",
+      noRunHistory: "This workflow has no task activity yet.",
+      noRuns: "No workflow tasks yet",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
       noSkills: "No skills added",
@@ -315,7 +315,7 @@ export const messages: Record<Language, Messages> = {
       noTasks: "No runtime tasks yet",
       noWidgets: "No overview widgets yet",
       selectNode: "Select a node",
-      selectRun: "Select a run",
+      selectRun: "Select a task",
       selectSkill: "Select a skill",
       selectWorkflow: "No workflow is selected."
     },
@@ -323,7 +323,7 @@ export const messages: Record<Language, Messages> = {
       approve: "Failed to approve run.",
       catalog: "Failed to refresh config data.",
       load: "Failed to load workspace.",
-      run: "Failed to run workflow.",
+      run: "Failed to start task.",
       save: "Failed to save workflow.",
       workspace: "Failed to save workspace state."
     },
@@ -353,9 +353,9 @@ export const messages: Record<Language, Messages> = {
       primaryModel: "Primary model",
       prompt: "提示词",
       provider: "Provider",
-      relatedRun: "Related run",
+      relatedRun: "Related task",
       relatedWorkflow: "Related workflow",
-      runLabel: "Run label",
+      runLabel: "Task label",
       section: "Section",
       skills: "Skills",
       slot: "Slot",
@@ -372,13 +372,13 @@ export const messages: Record<Language, Messages> = {
     },
     metrics: {
       agents: (count) => `${count} agents`,
-      approvals: (count) => `${count} approvals`,
+      approvals: (count) => `${count} inbox items`,
       channels: (count) => `${count} channels`,
       cost: (cost) => cost,
       models: (count) => `${count} models`,
       nodes: (count) => `${count} nodes`,
       notes: (count) => `${count} notes`,
-      runs: (count) => `${count} runs`,
+      runs: (count) => `${count} tasks`,
       savedViews: (count) => `${count} saved views`,
       tags: (count) => `${count} tags`,
       tokens: (count) => `${count} tokens`,
@@ -389,8 +389,8 @@ export const messages: Record<Language, Messages> = {
     navigation: {
       company: "Company",
       workflow: "Workflow",
-      runs: "Runs",
-      approvals: "Approvals",
+      runs: "Tasks",
+      approvals: "Inbox",
       models: "Models",
       agents: "Agents",
       schedule: "Schedule",
@@ -419,11 +419,11 @@ export const messages: Record<Language, Messages> = {
         description: "Edit graph structure, configure node execution, and inspect the latest run."
       },
       runs: {
-        title: "Run Center",
-        description: "Browse workflow run history, node outputs, and execution evidence."
+        title: "Tasks",
+        description: "Track current workflow tasks, node outputs, and execution evidence."
       },
       approvals: {
-        title: "Approval Queue",
+        title: "Inbox",
         description: "Handle workflow pauses that are waiting on a human decision."
       },
       models: {
@@ -436,7 +436,7 @@ export const messages: Record<Language, Messages> = {
       },
       schedule: {
         title: "Schedule",
-        description: "Monitor runtime sessions and task queue state for follow-up configuration."
+        description: "Pick a calendar date and review records from that day."
       },
       channels: {
         title: "Channels",
@@ -447,7 +447,7 @@ export const messages: Record<Language, Messages> = {
       catalog: "Catalog",
       inspector: "Inspector",
       nodes: "Nodes",
-      run: "Run"
+      run: "Task"
     },
     catalogConfig: {
       addAgentDescription: "Creates an OpenClaw agent entry using the same config fields as `openclaw agents add`.",
@@ -464,22 +464,22 @@ export const messages: Record<Language, Messages> = {
     },
     trace: {
       completed: "Completed",
-      currentIssue: (label) => `Current issue: ${label}`,
-      description: "Review issues in linear task order on the left, and read node output on the right.",
+      currentIssue: (label) => `Current step: ${label}`,
+      description: "Review current task progress on the left, and read node output on the right.",
       flowFinished: "Flow finished",
       flowStarted: "Flow started",
       inProgress: "In progress",
-      issueList: "Issue list",
+      issueList: "Task steps",
       managerInputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
       managerInputPreview: "Manager input entered this slot.",
       managerInputWaiting: "Waiting for manager input.",
-      modelOutput: "Model output",
+      modelOutput: "Current output",
       noOutput: "No output yet",
       pending: "Pending",
-      runOption: (runId, startedAt) => `Run ${runId.slice(-6)} · ${startedAt}`,
+      runOption: (runId, startedAt) => `Task ${runId.slice(-6)} · ${startedAt}`,
       slotInputSuffix: "input",
       slotOutputSuffix: "output",
-      title: "Flow Trace",
+      title: "Task Progress",
       waitingNestedNodes: "Waiting for nested nodes to finish."
     },
     status: {
@@ -490,7 +490,7 @@ export const messages: Record<Language, Messages> = {
       running: "running",
       skipped: "skipped",
       succeeded: "succeeded",
-      waiting_approval: "waiting approval"
+      waiting_approval: "waiting for inbox"
     },
     tables: {
       agents: "Agents",
@@ -505,10 +505,10 @@ export const messages: Record<Language, Messages> = {
       widgets: "Overview widgets"
     },
     widgetTypes: {
-      approvals: "Approval queue",
+      approvals: "Inbox",
       catalog: "Config health",
       notes: "Notes feed",
-      runs: "Recent runs"
+      runs: "Recent tasks"
     },
     events: {
       "node.run.cancelled": "Node cancelled",
@@ -516,7 +516,7 @@ export const messages: Record<Language, Messages> = {
       "node.run.failed": "Node failed",
       "node.run.queued": "Node queued",
       "node.run.started": "Node started",
-      "node.run.waiting_approval": "Waiting for approval",
+      "node.run.waiting_approval": "Waiting for inbox",
       "workflow.run.completed": "Workflow completed",
       "workflow.run.failed": "Workflow failed",
       "workflow.run.started": "Workflow started"
@@ -545,8 +545,8 @@ export const messages: Record<Language, Messages> = {
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
-      run: "运行",
-      runWorkflow: "运行工作流",
+      run: "启动任务",
+      runWorkflow: "启动工作流任务",
       save: "保存",
       saveModel: "保存模型",
       saveWorkflow: "保存工作流",
@@ -594,14 +594,14 @@ export const messages: Record<Language, Messages> = {
       widgetTitle: "新建卡片"
     },
     empty: {
-      noApprovals: "当前没有待审批项",
+      noApprovals: "收件箱为空",
       noCatalog: "配置数据尚未加载",
       noNodeOutput: "这个节点还没有输出。",
       noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
-      noRun: "还没有运行记录",
-      noRunHistory: "这个工作流还没有运行历史。",
-      noRuns: "还没有工作流运行记录",
+      noRun: "还没有任务",
+      noRunHistory: "这个工作流还没有任务记录。",
+      noRuns: "还没有工作流任务",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
       noSkills: "还没有添加 Skill",
@@ -609,7 +609,7 @@ export const messages: Record<Language, Messages> = {
       noTasks: "当前没有运行任务",
       noWidgets: "还没有总览卡片",
       selectNode: "请选择一个节点",
-      selectRun: "请选择一条运行记录",
+      selectRun: "请选择一个任务",
       selectSkill: "选择一个 Skill",
       selectWorkflow: "当前未选中工作流。"
     },
@@ -617,7 +617,7 @@ export const messages: Record<Language, Messages> = {
       approve: "批准运行失败。",
       catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
-      run: "运行工作流失败。",
+      run: "启动任务失败。",
       save: "保存工作流失败。",
       workspace: "保存工作区状态失败。"
     },
@@ -647,9 +647,9 @@ export const messages: Record<Language, Messages> = {
       primaryModel: "主模型",
       prompt: "Prompt",
       provider: "提供方",
-      relatedRun: "关联运行",
+      relatedRun: "关联任务",
       relatedWorkflow: "关联工作流",
-      runLabel: "运行标签",
+      runLabel: "任务标签",
       section: "页面",
       skills: "技能",
       slot: "槽位",
@@ -666,13 +666,13 @@ export const messages: Record<Language, Messages> = {
     },
     metrics: {
       agents: (count) => `${count} 个 Agent`,
-      approvals: (count) => `${count} 个审批`,
+      approvals: (count) => `${count} 个收件箱项`,
       channels: (count) => `${count} 个通道`,
       cost: (cost) => cost,
       models: (count) => `${count} 个模型`,
       nodes: (count) => `${count} 个节点`,
       notes: (count) => `${count} 条笔记`,
-      runs: (count) => `${count} 次运行`,
+      runs: (count) => `${count} 个任务`,
       savedViews: (count) => `${count} 个视图`,
       tags: (count) => `${count} 个标签`,
       tokens: (count) => `${count} tokens`,
@@ -683,11 +683,11 @@ export const messages: Record<Language, Messages> = {
     navigation: {
       company: "公司",
       workflow: "工作流",
-      runs: "运行",
-      approvals: "审批",
+      runs: "任务",
+      approvals: "收件箱",
       models: "模型",
       agents: "Agent",
-      schedule: "Schedule",
+      schedule: "日程",
       channels: "Channel"
     },
     nodeTypes: {
@@ -713,11 +713,11 @@ export const messages: Record<Language, Messages> = {
         description: "编辑图结构、配置节点执行方式，并查看该工作流最近一次运行。"
       },
       runs: {
-        title: "运行中心",
-        description: "查看工作流运行历史、节点输出和执行证据。"
+        title: "任务",
+        description: "查看当前任务进展、节点输出和执行证据。"
       },
       approvals: {
-        title: "审批队列",
+        title: "收件箱",
         description: "处理因为人工决策而暂停的工作流。"
       },
       models: {
@@ -729,8 +729,8 @@ export const messages: Record<Language, Messages> = {
         description: "创建已配置 OpenClaw Agent，并把可用 Agent 与工作流配置分开查看。"
       },
       schedule: {
-        title: "Schedule",
-        description: "查看运行时会话和任务队列，为后续快速排期配置留出独立入口。"
+        title: "日程",
+        description: "按日历选择日期，查看当天相关记录。"
       },
       channels: {
         title: "Channel",
@@ -741,7 +741,7 @@ export const messages: Record<Language, Messages> = {
       catalog: "目录",
       inspector: "检查器",
       nodes: "节点",
-      run: "运行"
+      run: "任务"
     },
     catalogConfig: {
       addAgentDescription: "使用与 `openclaw agents add` 相同的配置字段创建 OpenClaw agent 条目。",
@@ -758,22 +758,22 @@ export const messages: Record<Language, Messages> = {
     },
     trace: {
       completed: "已完成",
-      currentIssue: (label) => `当前事项：${label}`,
-      description: "左侧按任务顺序查看事项，右侧查看节点输出。",
+      currentIssue: (label) => `当前步骤：${label}`,
+      description: "左侧按任务步骤查看进度，右侧查看当前输出。",
       flowFinished: "流程结束",
       flowStarted: "流程开始",
       inProgress: "进行中",
-      issueList: "事项列表",
+      issueList: "任务步骤",
       managerInputBody: "管理器已将工作交给该槽位。嵌套节点输出会显示在槽位输入和槽位输出之间。",
       managerInputPreview: "管理器输入已进入该槽位。",
       managerInputWaiting: "等待管理器输入。",
-      modelOutput: "模型输出",
+      modelOutput: "当前输出",
       noOutput: "暂无输出",
       pending: "待处理",
-      runOption: (runId, startedAt) => `运行 ${runId.slice(-6)} · ${startedAt}`,
+      runOption: (runId, startedAt) => `任务 ${runId.slice(-6)} · ${startedAt}`,
       slotInputSuffix: "输入",
       slotOutputSuffix: "输出",
-      title: "流程追踪",
+      title: "任务进展",
       waitingNestedNodes: "等待嵌套节点完成。"
     },
     status: {
@@ -784,7 +784,7 @@ export const messages: Record<Language, Messages> = {
       running: "运行中",
       skipped: "已跳过",
       succeeded: "成功",
-      waiting_approval: "等待审批"
+      waiting_approval: "等待收件箱处理"
     },
     tables: {
       agents: "Agent",
@@ -799,10 +799,10 @@ export const messages: Record<Language, Messages> = {
       widgets: "总览卡片"
     },
     widgetTypes: {
-      approvals: "审批队列",
+      approvals: "收件箱",
       catalog: "配置状态",
       notes: "笔记流",
-      runs: "最近运行"
+      runs: "最近任务"
     },
     events: {
       "node.run.cancelled": "节点已取消",
@@ -810,7 +810,7 @@ export const messages: Record<Language, Messages> = {
       "node.run.failed": "节点失败",
       "node.run.queued": "节点已排队",
       "node.run.started": "节点已启动",
-      "node.run.waiting_approval": "等待人工审批",
+      "node.run.waiting_approval": "等待收件箱处理",
       "workflow.run.completed": "工作流已完成",
       "workflow.run.failed": "工作流失败",
       "workflow.run.started": "工作流已启动"
@@ -835,7 +835,7 @@ export function translateEventMessage(message: string, language: Language): stri
     [/^(.+) started\.$/, (match) => `${match[1]} 已启动。`],
     [/^(.+) completed\.$/, (match) => `${match[1]} 已完成。`],
     [/^(.+) approved\.$/, (match) => `${match[1]} 已批准。`],
-    [/^(.+) is waiting for approval\.$/, (match) => `${match[1]} 正在等待审批。`],
+    [/^(.+) is waiting for approval\.$/, (match) => `${match[1]} 正在等待收件箱处理。`],
     [/^(.+) failed: (.+)$/, (match) => `${match[1]} 失败：${match[2]}`]
   ];
 

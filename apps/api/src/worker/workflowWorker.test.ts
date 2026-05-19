@@ -51,6 +51,13 @@ class ScriptedAdapter implements OpenClawAdapter {
     return [];
   }
 
+  async getRuntimeOverview() {
+    return {
+      sessions: [],
+      tasks: []
+    };
+  }
+
   async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
     this.calls.push(input);
     const result = this.startResults.shift();
