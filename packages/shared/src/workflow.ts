@@ -155,6 +155,25 @@ export interface WorkflowDefinition {
   updatedAt: string;
 }
 
+export const portableWorkflowPackageSchema = "openclaw-cui.workflow-package/v1";
+
+export type PortableWorkflowDefinition = Pick<
+  WorkflowDefinition,
+  "id" | "name" | "description" | "version" | "nodes" | "edges" | "variables" | "display"
+>;
+
+export interface PortableWorkflowPackage {
+  schema: typeof portableWorkflowPackageSchema;
+  exportedAt: string;
+  workflows: PortableWorkflowDefinition[];
+}
+
+export interface WorkflowImportDefaults {
+  agentId?: string;
+  modelId?: string;
+  channelId?: string;
+}
+
 export interface WorkflowRun {
   id: string;
   companyId: string;
@@ -624,7 +643,235 @@ export function createBlankWorkflow({
   };
 }
 
+export function createPortableWorkflowPackage(
+  workflows: WorkflowDefinition[],
+  exportedAt: string
+): PortableWorkflowPackage {
+  return {
+    schema: portableWorkflowPackageSchema,
+    exportedAt,
+    workflows: workflows.map(toPortableWorkflowDefinition)
+  };
+}
+
+export function toPortableWorkflowDefinition(workflow: WorkflowDefinition): PortableWorkflowDefinition {
+  return {
+    id: workflow.id,
+    name: workflow.name,
+    description: workflow.description,
+    version: workflow.version,
+    nodes: workflow.nodes.map(toPortableWorkflowNode),
+    edges: workflow.edges.map((edge) => ({ ...edge })),
+    variables: { ...workflow.variables },
+    display: {
+      viewport: workflow.display.viewport ? { ...workflow.display.viewport } : undefined
+    }
+  };
+}
+
+export function readPortableWorkflowPackage(value: unknown): PortableWorkflowPackage {
+  if (!isRecord(value)) {
+    throw new Error("Workflow package must be a JSON object.");
+  }
+  if (value.schema !== portableWorkflowPackageSchema) {
+    throw new Error(`Unsupported workflow package schema: ${String(value.schema ?? "missing")}`);
+  }
+  if (!Array.isArray(value.workflows) || value.workflows.length === 0) {
+    throw new Error("Workflow package does not contain any workflows.");
+  }
+
+  return {
+    schema: portableWorkflowPackageSchema,
+    exportedAt: readRequiredString(value.exportedAt, "exportedAt"),
+    workflows: value.workflows.map(readPortableWorkflowDefinition)
+  };
+}
+
+export function hydrateImportedWorkflow(
+  portableWorkflow: PortableWorkflowDefinition,
+  options: {
+    id: string;
+    companyId: string;
+    now: string;
+    defaults?: WorkflowImportDefaults;
+    name?: string;
+  }
+): WorkflowDefinition {
+  return {
+    id: options.id,
+    companyId: options.companyId,
+    name: normalizeWorkflowText(options.name ?? portableWorkflow.name, "Imported workflow"),
+    description: portableWorkflow.description,
+    version: 1,
+    nodes: portableWorkflow.nodes.map((node) => applyImportDefaultsToNode(toPortableWorkflowNode(node), options.defaults)),
+    edges: portableWorkflow.edges.map((edge) => ({ ...edge })),
+    variables: { ...portableWorkflow.variables },
+    display: {
+      viewport: portableWorkflow.display.viewport ? { ...portableWorkflow.display.viewport } : { x: 0, y: 0, zoom: 1 }
+    },
+    createdAt: options.now,
+    updatedAt: options.now
+  };
+}
+
 function normalizeWorkflowText(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
   return trimmed ? trimmed : fallback;
+}
+
+function toPortableWorkflowNode(node: WorkflowNode): WorkflowNode {
+  return {
+    ...node,
+    position: { ...node.position },
+    size: node.size ? { ...node.size } : undefined,
+    config: toPortableWorkflowNodeConfig(node.type, node.config)
+  };
+}
+
+function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNodeConfig): WorkflowNodeConfig {
+  if (type === "agent") {
+    const agentConfig = config as AgentNodeConfig;
+    return {
+      label: agentConfig.label,
+      description: agentConfig.description,
+      agentName: agentConfig.agentName,
+      prompt: agentConfig.prompt,
+      tools: []
+    };
+  }
+  if (type === "parallel_agents") {
+    const parallelConfig = config as ParallelAgentsNodeConfig;
+    return {
+      label: parallelConfig.label,
+      description: parallelConfig.description,
+      agents: parallelConfig.agents.map((agent) => toPortableWorkflowNodeConfig("agent", agent) as AgentNodeConfig),
+      waitFor: parallelConfig.waitFor
+    };
+  }
+  if (type === "summary") {
+    const summaryConfig = config as SummaryNodeConfig;
+    return {
+      label: summaryConfig.label,
+      description: summaryConfig.description,
+      mode: summaryConfig.mode,
+      prompt: summaryConfig.prompt
+    };
+  }
+  if (type === "send") {
+    const sendConfig = config as SendNodeConfig;
+    return {
+      label: sendConfig.label,
+      description: sendConfig.description,
+      channelId: "",
+      target: "",
+      bodyTemplate: sendConfig.bodyTemplate
+    };
+  }
+  return { ...config };
+}
+
+function applyImportDefaultsToNode(node: WorkflowNode, defaults: WorkflowImportDefaults = {}): WorkflowNode {
+  return {
+    ...node,
+    disabled: node.type === "send" ? true : node.disabled,
+    config: applyImportDefaultsToConfig(node.type, node.config, defaults)
+  };
+}
+
+function applyImportDefaultsToConfig(
+  type: WorkflowNodeType,
+  config: WorkflowNodeConfig,
+  defaults: WorkflowImportDefaults
+): WorkflowNodeConfig {
+  if (type === "agent") {
+    const agentConfig = config as AgentNodeConfig;
+    return {
+      ...agentConfig,
+      agentId: defaults.agentId ?? "main",
+      modelId: defaults.modelId,
+      tools: []
+    };
+  }
+  if (type === "parallel_agents") {
+    const parallelConfig = config as ParallelAgentsNodeConfig;
+    return {
+      ...parallelConfig,
+      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults) as AgentNodeConfig)
+    };
+  }
+  if (type === "summary") {
+    const summaryConfig = config as SummaryNodeConfig;
+    return {
+      ...summaryConfig,
+      modelId: summaryConfig.mode === "openclaw_agent" ? defaults.modelId : undefined
+    };
+  }
+  if (type === "send") {
+    const sendConfig = config as SendNodeConfig;
+    return {
+      ...sendConfig,
+      channelId: defaults.channelId ?? "",
+      target: ""
+    };
+  }
+  return config;
+}
+
+function readPortableWorkflowDefinition(value: unknown): PortableWorkflowDefinition {
+  if (!isRecord(value)) {
+    throw new Error("Workflow entry must be an object.");
+  }
+  const display = isRecord(value.display) ? value.display : {};
+  const viewport = isRecord(display.viewport)
+    ? {
+        x: readNumber(display.viewport.x, 0),
+        y: readNumber(display.viewport.y, 0),
+        zoom: readNumber(display.viewport.zoom, 1)
+      }
+    : undefined;
+
+  return {
+    id: readRequiredString(value.id, "workflow.id"),
+    name: readRequiredString(value.name, "workflow.name"),
+    description: readOptionalString(value.description),
+    version: readNumber(value.version, 1),
+    nodes: readArray(value.nodes, "workflow.nodes") as WorkflowNode[],
+    edges: readArray(value.edges, "workflow.edges") as WorkflowEdge[],
+    variables: isRecord(value.variables) ? readStringRecord(value.variables) : {},
+    display: {
+      viewport
+    }
+  };
+}
+
+function readArray(value: unknown, fieldName: string): unknown[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array.`);
+  }
+  return value;
+}
+
+function readRequiredString(value: unknown, fieldName: string): string {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`${fieldName} must be a non-empty string.`);
+  }
+  return value.trim();
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readStringRecord(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, item]) => (typeof item === "string" ? [[key, item]] : []))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

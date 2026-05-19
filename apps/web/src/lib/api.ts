@@ -9,6 +9,9 @@ import type {
   CreateOpenClawModelRequest,
   CreateWorkflowRequest,
   DashboardStateResponse,
+  ExportWorkflowResponse,
+  ImportWorkflowPackageRequest,
+  ImportWorkflowPackageResponse,
   LatestWorkflowRunResponse,
   ListPendingApprovalsResponse,
   ListWorkflowRunViewsResponse,
@@ -25,6 +28,7 @@ import type {
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
   OpenClawConfigState,
+  PortableWorkflowPackage,
   WorkspaceDashboard,
   WorkflowDefinition,
   WorkflowResponse,
@@ -155,6 +159,19 @@ export const api = {
       body: JSON.stringify({ workflow } satisfies SaveWorkflowRequest)
     });
     return response.workflow;
+  },
+
+  async exportWorkflow(workflowId: string): Promise<PortableWorkflowPackage> {
+    const response = await request<ExportWorkflowResponse>(`/api/workflows/${workflowId}/export`);
+    return response.workflowPackage;
+  },
+
+  async importWorkflowPackage(workflowPackage: PortableWorkflowPackage): Promise<WorkflowDefinition[]> {
+    const response = await request<ImportWorkflowPackageResponse>("/api/workflows/import", {
+      method: "POST",
+      body: JSON.stringify({ workflowPackage } satisfies ImportWorkflowPackageRequest)
+    });
+    return response.workflows;
   },
 
   async startWorkflowRun(workflowId: string): Promise<StartWorkflowRunResponse["run"]> {

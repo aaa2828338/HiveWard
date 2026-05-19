@@ -9,6 +9,9 @@ import type {
   CreateWorkflowRequest,
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
+  ImportWorkflowPackageRequest,
+  OpenClawConfiguredAgent,
+  OpenClawConfiguredChannel,
   ParallelAgentsNodeConfig,
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
@@ -17,6 +20,7 @@ import type {
   WorkflowDefinition,
   StartWorkflowRunRequest
 } from "@openclaw-cui/shared";
+import { createPortableWorkflowPackage, readPortableWorkflowPackage } from "@openclaw-cui/shared";
 import type { OpenClawAdapter } from "@openclaw-cui/adapter";
 import type { FileCuiStore } from "../store/fileCuiStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
@@ -148,6 +152,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.post("/api/workflows/import", async (req, res, next) => {
+    try {
+      const body = req.body as ImportWorkflowPackageRequest;
+      const workflowPackage = readPortableWorkflowPackage(body.workflowPackage);
+      const config = await openClawConfigStore.getState();
+      const workflows = await store.importWorkflowPackage(workflowPackage, {
+        agentId: selectDefaultAgentId(config.configuredAgents),
+        modelId: config.defaultModelId,
+        channelId: selectDefaultChannelId(config.configuredChannels)
+      });
+      res.status(201).json({ workflows });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/workflows/:workflowId", async (req, res, next) => {
     try {
       const workflow = await store.getWorkflow(req.params.workflowId);
@@ -156,6 +176,19 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       res.json({ workflow });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/workflows/:workflowId/export", async (req, res, next) => {
+    try {
+      const workflow = await store.getWorkflow(req.params.workflowId);
+      if (!workflow) {
+        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+        return;
+      }
+      res.json({ workflowPackage: createPortableWorkflowPackage([workflow], new Date().toISOString()) });
     } catch (error) {
       next(error);
     }
@@ -346,4 +379,12 @@ async function refreshCatalog(adapter: OpenClawAdapter, store: FileCuiStore): Pr
     channels: await adapter.listChannels()
   };
   return store.saveCatalogSnapshot(snapshot);
+}
+
+function selectDefaultAgentId(agents: OpenClawConfiguredAgent[]): string {
+  return agents.find((agent) => agent.isDefault)?.id ?? agents[0]?.id ?? "main";
+}
+
+function selectDefaultChannelId(channels: OpenClawConfiguredChannel[]): string | undefined {
+  return channels.find((channel) => channel.enabled)?.id ?? channels[0]?.id;
 }

@@ -21,6 +21,8 @@ export interface Messages {
     deleteNode: string;
     disableNode: string;
     enableNode: string;
+    exportWorkflow: string;
+    importWorkflow: string;
     refreshCatalog: string;
     refreshWorkspace: string;
     remove: string;
@@ -243,6 +245,8 @@ export const messages: Record<Language, Messages> = {
       deleteNode: "Delete node",
       disableNode: "Disable node",
       enableNode: "Enable node",
+      exportWorkflow: "Export",
+      importWorkflow: "Import",
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
@@ -536,6 +540,8 @@ export const messages: Record<Language, Messages> = {
       deleteNode: "删除节点",
       disableNode: "禁用节点",
       enableNode: "启用节点",
+      exportWorkflow: "导出",
+      importWorkflow: "导入",
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",

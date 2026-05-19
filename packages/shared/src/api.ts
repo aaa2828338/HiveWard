@@ -1,7 +1,7 @@
 import type { CatalogSnapshot } from "./catalog";
 import type { CompanyOverview } from "./company";
 import type { OpenClawConfigState, OpenClawSessionSummary, OpenClawTaskSummary } from "./openclaw";
-import type { WorkflowDefinition, WorkflowRunView } from "./workflow";
+import type { PortableWorkflowPackage, WorkflowDefinition, WorkflowRunView } from "./workflow";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
 export interface ListWorkflowsResponse {
@@ -19,6 +19,18 @@ export interface WorkflowResponse {
 
 export interface SaveWorkflowRequest {
   workflow: WorkflowDefinition;
+}
+
+export interface ExportWorkflowResponse {
+  workflowPackage: PortableWorkflowPackage;
+}
+
+export interface ImportWorkflowPackageRequest {
+  workflowPackage: PortableWorkflowPackage;
+}
+
+export interface ImportWorkflowPackageResponse {
+  workflows: WorkflowDefinition[];
 }
 
 export interface StartWorkflowRunRequest {

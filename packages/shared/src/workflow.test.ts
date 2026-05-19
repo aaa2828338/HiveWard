@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPortableWorkflowPackage,
   createBlankWorkflow,
   createDefaultWorkflows,
   createManagerDrivenHtmlWorkflow,
   createRealThreeAgentWorkflow,
-  createStarterWorkflow
+  createStarterWorkflow,
+  hydrateImportedWorkflow,
+  readPortableWorkflowPackage,
+  type AgentNodeConfig,
+  type SendNodeConfig
 } from "./workflow";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
 import { defaultCompanyId } from "./company";
@@ -72,6 +77,52 @@ describe("workflow contracts", () => {
     expect(workflow.nodes).toEqual([]);
     expect(workflow.edges).toEqual([]);
     expect(workflow.display.viewport).toEqual({ x: 0, y: 0, zoom: 1 });
+  });
+
+  it("exports portable workflow packages without OpenClaw environment bindings", () => {
+    const workflow = createStarterWorkflow("2026-05-18T00:00:00.000Z");
+    const workflowPackage = createPortableWorkflowPackage([workflow], "2026-05-19T00:00:00.000Z");
+    const exportedWorkflow = workflowPackage.workflows[0]!;
+    const exportedAgent = exportedWorkflow.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
+    const exportedSend = exportedWorkflow.nodes.find((node) => node.id === "send")!.config as SendNodeConfig;
+
+    expect(workflowPackage.schema).toBe("openclaw-cui.workflow-package/v1");
+    expect(exportedAgent.agentId).toBeUndefined();
+    expect(exportedAgent.modelId).toBeUndefined();
+    expect(exportedAgent.tools).toEqual([]);
+    expect(exportedSend.channelId).toBe("");
+    expect(exportedSend.target).toBe("");
+    expect(JSON.stringify(workflowPackage)).not.toContain(workflow.companyId);
+  });
+
+  it("imports portable workflows with local default bindings and disabled delivery nodes", () => {
+    const workflow = createStarterWorkflow("2026-05-18T00:00:00.000Z");
+    const workflowPackage = readPortableWorkflowPackage(
+      createPortableWorkflowPackage([workflow], "2026-05-19T00:00:00.000Z")
+    );
+    const imported = hydrateImportedWorkflow(workflowPackage.workflows[0]!, {
+      id: "workflow-imported",
+      companyId: "company-local",
+      now: "2026-05-19T00:00:00.000Z",
+      defaults: {
+        agentId: "local-main",
+        modelId: "local/model",
+        channelId: "local-channel"
+      }
+    });
+    const importedAgent = imported.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
+    const importedSend = imported.nodes.find((node) => node.id === "send")!;
+    const importedSendConfig = importedSend.config as SendNodeConfig;
+
+    expect(imported.id).toBe("workflow-imported");
+    expect(imported.companyId).toBe("company-local");
+    expect(imported.version).toBe(1);
+    expect(importedAgent.agentId).toBe("local-main");
+    expect(importedAgent.modelId).toBe("local/model");
+    expect(importedAgent.tools).toEqual([]);
+    expect(importedSend.disabled).toBe(true);
+    expect(importedSendConfig.channelId).toBe("local-channel");
+    expect(importedSendConfig.target).toBe("");
   });
 
   it("marks catalog snapshots stale only after staleAfter", () => {

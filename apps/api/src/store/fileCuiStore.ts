@@ -7,8 +7,10 @@ import type {
   CompanyOverview,
   CompanyProfile,
   PendingApprovalItem,
+  PortableWorkflowPackage,
   WorkspaceDashboard,
   WorkflowDefinition,
+  WorkflowImportDefaults,
   WorkflowNodeEvent,
   WorkflowNodeRun,
   WorkflowRun,
@@ -20,6 +22,7 @@ import {
   createDefaultWorkflows,
   createDefaultWorkspaceDashboard,
   defaultCompanyId,
+  hydrateImportedWorkflow,
   normalizeWorkspaceDashboard
 } from "@openclaw-cui/shared";
 
@@ -162,6 +165,33 @@ export class FileCuiStore {
       state.workflows.push(workflow);
       await this.writeStateUnlocked(state);
       return workflow;
+    });
+  }
+
+  async importWorkflowPackage(
+    workflowPackage: PortableWorkflowPackage,
+    defaults: WorkflowImportDefaults = {}
+  ): Promise<WorkflowDefinition[]> {
+    return this.enqueue(async () => {
+      const state = await this.readStateUnlocked();
+      const companyId = this.requireSelectedCompanyId(state);
+      const now = new Date().toISOString();
+      const imported: WorkflowDefinition[] = [];
+
+      for (const portableWorkflow of workflowPackage.workflows) {
+        const workflow = hydrateImportedWorkflow(portableWorkflow, {
+          id: nextWorkflowId(state.workflows),
+          companyId,
+          now,
+          defaults,
+          name: nextImportedWorkflowName(state.workflows, portableWorkflow.name)
+        });
+        state.workflows.push(workflow);
+        imported.push(workflow);
+      }
+
+      await this.writeStateUnlocked(state);
+      return imported;
     });
   }
 
@@ -498,4 +528,18 @@ function nextWorkflowId(workflows: WorkflowDefinition[]): string {
     id = `workflow-${nanoid(8)}`;
   }
   return id;
+}
+
+function nextImportedWorkflowName(workflows: WorkflowDefinition[], baseName: string): string {
+  const normalizedBase = baseName.trim() || "Imported workflow";
+  const used = new Set(workflows.map((workflow) => workflow.name));
+  if (!used.has(normalizedBase)) return normalizedBase;
+
+  let index = 2;
+  let candidate = `${normalizedBase} (${index})`;
+  while (used.has(candidate)) {
+    index += 1;
+    candidate = `${normalizedBase} (${index})`;
+  }
+  return candidate;
 }

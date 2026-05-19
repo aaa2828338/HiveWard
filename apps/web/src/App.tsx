@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   Database,
+  Download,
   FolderKanban,
   Languages,
   LayoutTemplate,
@@ -14,7 +15,8 @@ import {
   RefreshCw,
   Radio,
   Save,
-  ShieldAlert
+  ShieldAlert,
+  Upload
 } from "lucide-react";
 import type {
   CatalogSnapshot,
@@ -27,6 +29,7 @@ import type {
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   PendingApprovalItem,
+  PortableWorkflowPackage,
   RuntimeOverview,
   WorkspaceDashboard,
   WorkflowDefinition,
@@ -73,6 +76,7 @@ export function App() {
   const selectedWorkflowIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const companySwitcherRef = useRef<HTMLDivElement | null>(null);
+  const workflowImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     messageRef.current = t;
@@ -384,6 +388,31 @@ export function App() {
       await hydrateWorkspace({ workflowId: saved.id });
     });
   }, [hydrateWorkspace, withBusy, workflow]);
+
+  const exportWorkflow = useCallback(() => {
+    if (!workflow) return;
+    void withBusy("exportWorkflow", async () => {
+      const workflowPackage = await api.exportWorkflow(workflow.id);
+      downloadWorkflowPackage(workflowPackage, workflow.name);
+    });
+  }, [withBusy, workflow]);
+
+  const openWorkflowImport = useCallback(() => {
+    workflowImportInputRef.current?.click();
+  }, []);
+
+  const importWorkflowFile = useCallback(
+    (file?: File) => {
+      if (!file) return;
+      void withBusy("importWorkflow", async () => {
+        const workflowPackage = JSON.parse(await file.text());
+        const imported = await api.importWorkflowPackage(workflowPackage);
+        await hydrateWorkspace({ workflowId: imported[0]?.id });
+        setSection("workflow");
+      });
+    },
+    [hydrateWorkspace, withBusy]
+  );
 
   const createWorkflow = useCallback(() => {
     void withBusy("createWorkflow", async () => {
@@ -727,6 +756,24 @@ export function App() {
             )}
             {section === "workflow" && (
               <>
+                <input
+                  ref={workflowImportInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  hidden
+                  onChange={(event) => {
+                    importWorkflowFile(event.target.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
+                />
+                <button type="button" title={t.actions.importWorkflow} onClick={openWorkflowImport} disabled={!selectedCompanyId || Boolean(busyAction)}>
+                  {busyAction === "importWorkflow" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
+                  {t.actions.importWorkflow}
+                </button>
+                <button type="button" title={t.actions.exportWorkflow} onClick={exportWorkflow} disabled={!workflow || Boolean(busyAction)}>
+                  {busyAction === "exportWorkflow" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
+                  {t.actions.exportWorkflow}
+                </button>
                 {latestRunForWorkflow?.run.status === "waiting_approval" && (
                   <button type="button" title={t.actions.approve} onClick={() => approveRun()} disabled={Boolean(busyAction)}>
                     {busyAction === "approveRun" ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
@@ -794,6 +841,25 @@ function defaultNewWorkflowName(index: number, language: Language): string {
   return language === "zh-CN" ? `新建工作流 ${index}` : `New workflow ${index}`;
 }
 
+function downloadWorkflowPackage(workflowPackage: PortableWorkflowPackage, workflowName: string): void {
+  const blob = new Blob([`${JSON.stringify(workflowPackage, null, 2)}\n`], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${safeWorkflowFileName(workflowName)}.workflow.json`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function safeWorkflowFileName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "workflow";
+}
+
 function makeClientId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -804,6 +870,8 @@ function makeClientId(prefix: string): string {
 function errorMessageForAction(action: string, t: Messages): string {
   if (action === "createWorkflow") return t.errors.save;
   if (action === "saveWorkflow") return t.errors.save;
+  if (action === "exportWorkflow") return t.errors.save;
+  if (action === "importWorkflow") return t.errors.save;
   if (action === "runWorkflow") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "saveWorkspace") return t.errors.workspace;
