@@ -19,6 +19,10 @@ import type {
   OpenClawConfigResponse,
   OpenClawConfigWizardMetadata,
   OpenClawConfigWizardResponse,
+  OpenClawModelUsageResponse,
+  OpenClawModelUsageSummary,
+  OpenClawVersionInfo,
+  OpenClawVersionResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
   SaveDashboardStateRequest,
@@ -64,6 +68,16 @@ export const api = {
   async getOpenClawConfigWizard(): Promise<OpenClawConfigWizardMetadata> {
     const response = await request<OpenClawConfigWizardResponse>("/api/openclaw-config/wizard");
     return response.wizard;
+  },
+
+  async getOpenClawVersion(): Promise<OpenClawVersionInfo> {
+    const response = await request<OpenClawVersionResponse>("/api/openclaw-version");
+    return response.version;
+  },
+
+  async getOpenClawModelUsage(): Promise<OpenClawModelUsageSummary[]> {
+    const response = await request<OpenClawModelUsageResponse>("/api/openclaw-usage/models");
+    return response.usage;
   },
 
   async updateOpenClawDefaultModel(modelId: string): Promise<OpenClawConfigState> {

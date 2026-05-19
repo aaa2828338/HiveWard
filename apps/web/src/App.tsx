@@ -1,24 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bot,
-  CalendarClock,
-  Check,
+  CalendarDays,
   ChevronDown,
   Database,
-  Download,
-  FolderKanban,
+  Inbox,
   Languages,
   LayoutTemplate,
-  Loader2,
+  ListChecks,
   Moon,
-  Play,
-  Plus,
-  RefreshCw,
   Radio,
-  Save,
-  ShieldAlert,
-  Sun,
-  Upload
+  Settings,
+  Sun
 } from "lucide-react";
 import type {
   CatalogSnapshot,
@@ -30,6 +23,8 @@ import type {
   DashboardWidgetType,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
+  OpenClawModelUsageSummary,
+  OpenClawVersionInfo,
   PendingApprovalItem,
   PortableWorkflowPackage,
   RuntimeOverview,
@@ -45,11 +40,11 @@ import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, Mo
 
 const sidebarIcons = {
   workflow: LayoutTemplate,
-  runs: FolderKanban,
-  approvals: ShieldAlert,
+  runs: ListChecks,
+  approvals: Inbox,
   models: Database,
   agents: Bot,
-  schedule: CalendarClock,
+  schedule: CalendarDays,
   channels: Radio
 };
 
@@ -66,6 +61,8 @@ export function App() {
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
+  const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
+  const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runs, setRuns] = useState<WorkflowRunView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
@@ -76,11 +73,13 @@ export function App() {
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
+  const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const t = messages[language];
   const messageRef = useRef(t);
   const selectedWorkflowIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const companySwitcherRef = useRef<HTMLDivElement | null>(null);
+  const systemMenuRef = useRef<HTMLDivElement | null>(null);
   const workflowImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -141,6 +140,7 @@ export function App() {
         nextCatalog,
         nextOpenClawConfig,
         nextOpenClawWizard,
+        nextOpenClawModelUsage,
         nextRuns,
         nextApprovals,
         nextDashboard,
@@ -151,10 +151,11 @@ export function App() {
         api.getCatalogSnapshot(),
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
+        api.getOpenClawModelUsage().catch(() => []),
         api.listWorkflowRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
-        api.getRuntimeOverview()
+        api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
 
       setCompanies(companyDirectory.companies);
@@ -163,6 +164,7 @@ export function App() {
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
+      setOpenClawModelUsage(nextOpenClawModelUsage);
       setRuns(nextRuns);
       setApprovals(nextApprovals);
       setDashboard(nextDashboard);
@@ -185,24 +187,54 @@ export function App() {
     () => companies.find((company) => company.id === selectedCompanyId),
     [companies, selectedCompanyId]
   );
-  const sectionLabel = t.navigation[section] ?? messages.en.navigation[section] ?? section;
-  const pageCopy = t.pages[section] ?? messages.en.pages[section] ?? { title: section, description: "" };
+  const systemUi = useMemo(
+    () =>
+      language === "zh-CN"
+        ? {
+            title: "\u7cfb\u7edf",
+            settings: "\u8bbe\u7f6e",
+            theme: "\u989c\u8272",
+            language: "\u8bed\u8a00",
+            switchToDay: "\u5207\u6362\u5230\u65e5\u95f4\u6a21\u5f0f",
+            switchToNight: "\u5207\u6362\u5230\u591c\u95f4\u6a21\u5f0f",
+            day: "\u65e5\u95f4",
+            night: "\u591c\u95f4",
+            versionPrefix: "v"
+          }
+        : {
+            title: "System",
+            settings: "Settings",
+            theme: "Theme",
+            language: "Language",
+            switchToDay: "Switch to day mode",
+            switchToNight: "Switch to night mode",
+            day: "Day",
+            night: "Night",
+            versionPrefix: "v"
+          },
+    [language]
+  );
+  const openClawVersionLabel = openClawVersion?.version
+    ? `${systemUi.versionPrefix}${openClawVersion.version}`
+    : `${systemUi.versionPrefix}--`;
+  const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
+  const openClawVersionStatusLabel = openClawVersionHealthy
+    ? language === "zh-CN" ? "OpenClaw \u53ef\u7528" : "OpenClaw available"
+    : language === "zh-CN" ? "OpenClaw \u4e0d\u53ef\u7528" : "OpenClaw unavailable";
+  const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
+  const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
   const companyUi = useMemo(
     () =>
       language === "zh-CN"
         ? {
-            placeholder: "\u70B9\u51FB\u9009\u62E9\u516C\u53F8",
-            hintSelected: "\u67E5\u770B\u516C\u53F8\u72B6\u6001\u5E76\u5207\u6362",
-            hintEmpty: "\u6240\u6709\u5DE5\u4F5C\u533A\u6570\u636E\u90FD\u5F52\u5C5E\u4E8E\u4E00\u4E2A\u516C\u53F8",
+            placeholder: "\u9009\u62E9\u516C\u53F8",
             menuTitle: "\u5207\u6362\u516C\u53F8",
             noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u9009\u516C\u53F8",
             clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
             workflowCount: (count: number) => `${count} \u4E2A\u5DE5\u4F5C\u6D41`
           }
         : {
-            placeholder: "Click to choose company",
-            hintSelected: "View company status and switch",
-            hintEmpty: "All workspace data is scoped to a company",
+            placeholder: "Choose company",
             menuTitle: "Switch company",
             noCompanies: "No companies available",
             clear: "Clear selection",
@@ -227,6 +259,10 @@ export function App() {
     () => (workflow ? runs.find((runView) => runView.run.workflowId === workflow.id) : undefined),
     [runs, workflow]
   );
+  const activeTaskCount = useMemo(
+    () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
+    [runs]
+  );
 
   const selectWorkflow = useCallback(
     (workflowId: string) => {
@@ -243,18 +279,20 @@ export function App() {
   const sidebarMeta = useMemo(
     () => ({
       workflow: workflows.length,
-      runs: runs.length,
+      runs: activeTaskCount,
       approvals: approvals.length,
-      models: catalog?.models.length ?? 0,
+      models: openClawConfig?.configuredModels.length ?? catalog?.models.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? catalog?.agents.length ?? 0,
       schedule: runtime?.tasks.length ?? 0,
       channels: openClawConfig?.configuredChannels.length ?? catalog?.channels.length ?? 0
     }),
     [
       approvals.length,
+      activeTaskCount,
       catalog?.agents.length,
       catalog?.channels.length,
       catalog?.models.length,
+      openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
       runtime?.tasks.length,
@@ -274,6 +312,21 @@ export function App() {
       setBusyAction(undefined);
     }
   }, []);
+
+  const loadOpenClawVersion = useCallback(async () => {
+    try {
+      setOpenClawVersion(await api.getOpenClawVersion());
+    } catch (versionError) {
+      setOpenClawVersion({
+        resolvedAt: new Date().toISOString(),
+        error: versionError instanceof Error ? versionError.message : String(versionError)
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadOpenClawVersion();
+  }, [loadOpenClawVersion]);
 
   const updateWorkflow = useCallback((updater: (current: WorkflowDefinition) => WorkflowDefinition) => {
     setWorkflow((current) => (current ? updater(current) : current));
@@ -303,41 +356,25 @@ export function App() {
   const refreshCatalog = useCallback(
     () =>
       withBusy("refreshCatalog", async () => {
-        const [nextCatalog, nextOpenClawConfig, nextRuntime] = await Promise.all([
+        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextRuntime] = await Promise.all([
           api.refreshCatalog(),
           api.getOpenClawConfig(),
-          api.getRuntimeOverview()
+          api.getOpenClawModelUsage().catch(() => []),
+          api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
+        setOpenClawModelUsage(nextOpenClawModelUsage);
         setRuntime(nextRuntime);
       }),
-    [withBusy]
-  );
-
-  const saveOpenClawDefaultModel = useCallback(
-    (modelId: string) => {
-      void withBusy("saveOpenClawDefaultModel", async () => {
-        const [nextOpenClawConfig, nextCatalog] = await Promise.all([
-          api.updateOpenClawDefaultModel(modelId),
-          api.refreshCatalog()
-        ]);
-        setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
-      });
-    },
     [withBusy]
   );
 
   const addOpenClawAgent = useCallback(
     (input: { name: string; workspace?: string; modelId?: string }) => {
       void withBusy("addOpenClawAgent", async () => {
-        const [nextOpenClawConfig, nextCatalog] = await Promise.all([
-          api.addOpenClawAgent(input),
-          api.refreshCatalog()
-        ]);
+        const nextOpenClawConfig = await api.addOpenClawAgent(input);
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -347,9 +384,7 @@ export function App() {
     (input: CreateOpenClawModelRequest) => {
       void withBusy("addOpenClawModel", async () => {
         const nextOpenClawConfig = await api.addOpenClawModel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -359,9 +394,17 @@ export function App() {
     (input: ConfigureOpenClawModelAuthRequest) => {
       void withBusy("configureOpenClawModelAuth", async () => {
         const nextOpenClawConfig = await api.configureOpenClawModelAuth(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
+  const setOpenClawDefaultModel = useCallback(
+    (modelId: string) => {
+      void withBusy(`setOpenClawDefaultModel:${modelId}`, async () => {
+        const nextOpenClawConfig = await api.updateOpenClawDefaultModel(modelId);
+        setOpenClawConfig(nextOpenClawConfig);
       });
     },
     [withBusy]
@@ -371,9 +414,7 @@ export function App() {
     (input: CreateOpenClawChannelRequest) => {
       void withBusy("addOpenClawChannel", async () => {
         const nextOpenClawConfig = await api.addOpenClawChannel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -383,9 +424,7 @@ export function App() {
     (input: ConfigureOpenClawChannelRequest) => {
       void withBusy("configureOpenClawChannel", async () => {
         const nextOpenClawConfig = await api.configureOpenClawChannel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -517,6 +556,18 @@ export function App() {
   }, [companyMenuOpen]);
 
   useEffect(() => {
+    if (!systemMenuOpen) return;
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (systemMenuRef.current?.contains(event.target as Node)) return;
+      setSystemMenuOpen(false);
+    };
+
+    window.addEventListener("mousedown", handlePointerDown);
+    return () => window.removeEventListener("mousedown", handlePointerDown);
+  }, [systemMenuOpen]);
+
+  useEffect(() => {
     const activeRun =
       section === "runs"
         ? runs.find((runView) => runView.run.id === selectedRunId)
@@ -565,12 +616,22 @@ export function App() {
       return (
         <WorkflowStudioPage
           workflow={workflow}
+          workflows={workflows}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
           runView={latestRunForWorkflow}
           selectedNodeId={selectedNodeId}
+          selectedCompanyId={selectedCompanyId}
           language={language}
           busy={Boolean(busyAction)}
+          busyAction={busyAction}
+          onSelectWorkflow={selectWorkflow}
+          onCreateWorkflow={createWorkflow}
+          onRefreshWorkspace={refreshWorkspace}
+          onOpenWorkflowImport={openWorkflowImport}
+          onExportWorkflow={exportWorkflow}
+          onSaveWorkflow={saveWorkflow}
+          onRunWorkflow={runWorkflow}
           onSelectNode={setSelectedNodeId}
           onUpdateWorkflow={updateWorkflow}
           onApproveRun={() => approveRun()}
@@ -604,8 +665,12 @@ export function App() {
           language={language}
           t={t}
           busy={Boolean(busyAction)}
-          onSaveDefaultModel={saveOpenClawDefaultModel}
+          busyAction={busyAction}
+          runs={runs}
+          openClawModelUsage={openClawModelUsage}
+          onRefreshCatalog={refreshCatalog}
           onConfigureModelAuth={configureOpenClawModelAuth}
+          onSetDefaultModel={setOpenClawDefaultModel}
         />
       );
     }
@@ -622,7 +687,7 @@ export function App() {
       );
     }
     if (section === "schedule") {
-      return <SchedulePage runtime={runtime} language={language} t={t} />;
+      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} workflows={workflows} language={language} t={t} />;
     }
     return (
       <ChannelsPage
@@ -647,59 +712,6 @@ export function App() {
             <p>{t.common.brandTagline}</p>
           </div>
         </div>
-        <div className="sidebar-company" ref={companySwitcherRef}>
-          <button
-            type="button"
-            className={`company-switcher sidebar-company-switcher ${section === "company" ? "active" : ""}`}
-            title={selectedCompany?.name ?? companyUi.placeholder}
-            onClick={() => {
-              setSection("company");
-              setCompanyMenuOpen((current) => !current);
-            }}
-          >
-            <span className="company-switcher-avatar">
-              {selectedCompany?.logoUrl ? (
-                <img src={selectedCompany.logoUrl} alt={selectedCompany.name} />
-              ) : (
-                <span>{companyMonogram(selectedCompany)}</span>
-              )}
-            </span>
-            <span className="company-switcher-copy">
-              <strong>{selectedCompany?.name ?? companyUi.placeholder}</strong>
-              <span>{selectedCompany ? companyUi.hintSelected : companyUi.hintEmpty}</span>
-            </span>
-            <ChevronDown size={16} />
-          </button>
-
-          {companyMenuOpen && (
-            <div className="company-menu sidebar-company-menu">
-              <div className="company-menu-title">{companyUi.menuTitle}</div>
-              {companies.length === 0 ? (
-                <div className="company-menu-empty">{companyUi.noCompanies}</div>
-              ) : (
-                companies.map((company) => (
-                  <button
-                    key={company.id}
-                    type="button"
-                    className={`company-menu-item ${company.id === selectedCompanyId ? "active" : ""}`}
-                    onClick={() => selectCompany(company.id)}
-                  >
-                    <span className="company-switcher-avatar small">
-                      {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : <span>{companyMonogram(company)}</span>}
-                    </span>
-                    <span className="company-menu-copy">
-                      <strong>{company.name}</strong>
-                      <span>{companyUi.workflowCount(company.workflowCount)}</span>
-                    </span>
-                  </button>
-                ))
-              )}
-              <button type="button" className="company-menu-clear" onClick={() => selectCompany(undefined)}>
-                {companyUi.clear}
-              </button>
-            </div>
-          )}
-        </div>
         <nav className="sidebar-nav">
           {appSections.map((item) => {
             const Icon = sidebarIcons[item];
@@ -721,105 +733,112 @@ export function App() {
         </nav>
         <div className="sidebar-status">
           {dashboardDirty && <span className="status-badge">{t.common.dirtyWorkspace}</span>}
+          <div className="sidebar-system" ref={systemMenuRef}>
+            <div className="sidebar-company" ref={companySwitcherRef}>
+              <button
+                type="button"
+                className={`company-switcher sidebar-company-switcher ${section === "company" ? "active" : ""}`}
+                title={selectedCompany?.name ?? companyUi.placeholder}
+                onClick={() => {
+                  setSection("company");
+                  setSystemMenuOpen(false);
+                  setCompanyMenuOpen((current) => !current);
+                }}
+              >
+                <span className="company-switcher-avatar">
+                  {selectedCompany?.logoUrl ? (
+                    <img src={selectedCompany.logoUrl} alt={selectedCompany.name} />
+                  ) : (
+                    <span>{companyMonogram(selectedCompany)}</span>
+                  )}
+                </span>
+                <span className="company-switcher-copy">
+                  <strong>{selectedCompany?.name ?? companyUi.placeholder}</strong>
+                </span>
+                <ChevronDown size={16} />
+              </button>
+
+              {companyMenuOpen && (
+                <div className="company-menu sidebar-company-menu">
+                  <div className="company-menu-title">{companyUi.menuTitle}</div>
+                  {companies.length === 0 ? (
+                    <div className="company-menu-empty">{companyUi.noCompanies}</div>
+                  ) : (
+                    companies.map((company) => (
+                      <button
+                        key={company.id}
+                        type="button"
+                        className={`company-menu-item ${company.id === selectedCompanyId ? "active" : ""}`}
+                        onClick={() => selectCompany(company.id)}
+                      >
+                        <span className="company-switcher-avatar small">
+                          {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : <span>{companyMonogram(company)}</span>}
+                        </span>
+                        <span className="company-menu-copy">
+                          <strong>{company.name}</strong>
+                          <span>{companyUi.workflowCount(company.workflowCount)}</span>
+                        </span>
+                      </button>
+                    ))
+                  )}
+                  <button type="button" className="company-menu-clear" onClick={() => selectCompany(undefined)}>
+                    {companyUi.clear}
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="sidebar-system-control">
+              <div
+                className={`sidebar-system-version ${openClawVersionHealthy ? "online" : "offline"}`}
+                aria-label={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
+                title={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
+              >
+                <span className="sidebar-system-dot" aria-hidden="true" />
+                <strong>{openClawVersionLabel}</strong>
+              </div>
+              <button
+                type="button"
+                className={`sidebar-system-settings ${systemMenuOpen ? "active" : ""}`}
+                title={systemUi.settings}
+                aria-label={systemUi.settings}
+                aria-expanded={systemMenuOpen}
+                onClick={() => {
+                  setCompanyMenuOpen(false);
+                  setSystemMenuOpen((current) => !current);
+                }}
+              >
+                <Settings size={14} />
+              </button>
+              {systemMenuOpen && (
+                <div className="sidebar-system-menu" aria-label={systemUi.title}>
+                  <button type="button" title={themeToggleTitle} aria-label={themeToggleTitle} onClick={toggleTheme}>
+                    {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+                    <span>{systemUi.theme}</span>
+                    <strong>{themeToggleLabel}</strong>
+                  </button>
+                  <button type="button" title={t.actions.switchLanguage} aria-label={t.actions.switchLanguage} onClick={toggleLanguage}>
+                    <Languages size={14} />
+                    <span>{systemUi.language}</span>
+                    <strong>{language === "zh-CN" ? "ZH" : "EN"}</strong>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </aside>
 
       <section className="main-shell">
-        <header className="topbar">
-          <div className="hero-copy">
-            <span className="hero-eyebrow">{sectionLabel}</span>
-            <h2>{pageCopy.title}</h2>
-            <p>{pageCopy.description}</p>
-          </div>
-          <div className="toolbar">
-            {section === "workflow" && (
-              <select
-                value={workflow?.id ?? ""}
-                onChange={(event) => {
-                  selectWorkflow(event.target.value);
-                }}
-              >
-                {workflows.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            {section === "workflow" && (
-              <button type="button" title={t.actions.createWorkflow} onClick={createWorkflow} disabled={!selectedCompanyId || Boolean(busyAction)}>
-                {busyAction === "createWorkflow" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-                {t.actions.createWorkflow}
-              </button>
-            )}
-            <button type="button" title={t.actions.refreshWorkspace} onClick={refreshWorkspace} disabled={Boolean(busyAction)}>
-              {busyAction === "refreshWorkspace" || busyAction === "load" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-              {t.actions.refreshWorkspace}
-            </button>
-            {(["models", "agents", "schedule", "channels"] as AppSectionId[]).includes(section) && (
-              <button type="button" title={t.actions.refreshCatalog} onClick={refreshCatalog} disabled={Boolean(busyAction)}>
-                {busyAction === "refreshCatalog" ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-                {t.actions.refreshCatalog}
-              </button>
-            )}
-            {section === "company" && (
-              <button type="button" title={t.actions.saveWorkspace} onClick={saveWorkspace} disabled={!dashboardDirty || !dashboard || Boolean(busyAction)}>
-                {busyAction === "saveWorkspace" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
-                {t.actions.saveWorkspace}
-              </button>
-            )}
-            {section === "workflow" && (
-              <>
-                <input
-                  ref={workflowImportInputRef}
-                  type="file"
-                  accept="application/json,.json"
-                  hidden
-                  onChange={(event) => {
-                    importWorkflowFile(event.target.files?.[0]);
-                    event.currentTarget.value = "";
-                  }}
-                />
-                <button type="button" title={t.actions.importWorkflow} onClick={openWorkflowImport} disabled={!selectedCompanyId || Boolean(busyAction)}>
-                  {busyAction === "importWorkflow" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
-                  {t.actions.importWorkflow}
-                </button>
-                <button type="button" title={t.actions.exportWorkflow} onClick={exportWorkflow} disabled={!workflow || Boolean(busyAction)}>
-                  {busyAction === "exportWorkflow" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
-                  {t.actions.exportWorkflow}
-                </button>
-                {latestRunForWorkflow?.run.status === "waiting_approval" && (
-                  <button type="button" title={t.actions.approve} onClick={() => approveRun()} disabled={Boolean(busyAction)}>
-                    {busyAction === "approveRun" ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
-                    {t.actions.approve}
-                  </button>
-                )}
-                <button type="button" title={t.actions.saveWorkflow} onClick={saveWorkflow} disabled={!workflow || Boolean(busyAction)}>
-                  {busyAction === "saveWorkflow" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
-                  {t.actions.save}
-                </button>
-                <button className="primary-action" type="button" title={t.actions.runWorkflow} onClick={runWorkflow} disabled={!workflow || Boolean(busyAction)}>
-                  {busyAction === "runWorkflow" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-                  {t.actions.run}
-                </button>
-              </>
-            )}
-            <button type="button" title={t.actions.switchLanguage} aria-label={t.actions.switchLanguage} onClick={toggleLanguage}>
-              <Languages size={16} />
-              {language === "zh-CN" ? "ZH" : "EN"}
-            </button>
-            <button
-              type="button"
-              title={theme === "dark" ? (language === "zh-CN" ? "切换到白天模式" : "Switch to day mode") : (language === "zh-CN" ? "切换到夜晚模式" : "Switch to night mode")}
-              aria-label={theme === "dark" ? (language === "zh-CN" ? "切换到白天模式" : "Switch to day mode") : (language === "zh-CN" ? "切换到夜晚模式" : "Switch to night mode")}
-              onClick={toggleTheme}
-            >
-              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-              {theme === "dark" ? (language === "zh-CN" ? "日间" : "Day") : (language === "zh-CN" ? "夜间" : "Night")}
-            </button>
-          </div>
-        </header>
-
+        <input
+          ref={workflowImportInputRef}
+          type="file"
+          accept="application/json,.json"
+          hidden
+          onChange={(event) => {
+            importWorkflowFile(event.target.files?.[0]);
+            event.currentTarget.value = "";
+          }}
+        />
         <section className="page-shell">
           {error && <div className="error-banner">{error}</div>}
           {renderSection()}
@@ -840,7 +859,7 @@ function companyMonogram(company?: Pick<CompanyOverview, "logoLabel" | "name">):
       .join("")
       .toUpperCase();
   }
-  return "??";
+  return "CO";
 }
 
 function getInitialTheme(): AppTheme {
@@ -848,6 +867,13 @@ function getInitialTheme(): AppTheme {
   if (stored === "light" || stored === "dark") return stored;
   if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
+}
+
+function emptyRuntimeOverview(): RuntimeOverview {
+  return {
+    sessions: [],
+    tasks: []
+  };
 }
 
 function defaultWidgetTitle(type: DashboardWidgetType, t: Messages): string {
@@ -905,9 +931,9 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runWorkflow") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "saveWorkspace") return t.errors.workspace;
-  if (action === "saveOpenClawDefaultModel") return t.errors.catalog;
   if (action === "addOpenClawModel") return t.errors.catalog;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
+  if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;
   if (action === "addOpenClawChannel") return t.errors.catalog;
   if (action === "configureOpenClawChannel") return t.errors.catalog;

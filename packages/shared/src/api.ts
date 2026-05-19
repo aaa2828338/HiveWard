@@ -1,6 +1,12 @@
 import type { CatalogSnapshot } from "./catalog";
 import type { CompanyOverview } from "./company";
-import type { OpenClawConfigState, OpenClawSessionSummary, OpenClawTaskSummary } from "./openclaw";
+import type {
+  OpenClawConfigState,
+  OpenClawModelUsageSummary,
+  OpenClawSessionSummary,
+  OpenClawTaskSummary,
+  OpenClawVersionInfo
+} from "./openclaw";
 import type { PortableWorkflowPackage, WorkflowDefinition, WorkflowRunView } from "./workflow";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
@@ -136,6 +142,10 @@ export interface OpenClawConfigWizardResponse {
   wizard: OpenClawConfigWizardMetadata;
 }
 
+export interface OpenClawVersionResponse {
+  version: OpenClawVersionInfo;
+}
+
 export interface ConfigureOpenClawModelAuthRequest {
   providerId: string;
   methodId: string;
@@ -203,6 +213,10 @@ export interface RuntimeOverview {
 
 export interface RuntimeOverviewResponse {
   runtime: RuntimeOverview;
+}
+
+export interface OpenClawModelUsageResponse {
+  usage: OpenClawModelUsageSummary[];
 }
 
 export interface CatalogSnapshotResponse {

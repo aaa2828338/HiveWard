@@ -6,6 +6,7 @@ import type {
   OpenClawSessionSummary,
   OpenClawTaskSummary,
   OpenClawTool,
+  RuntimeOverview,
   SendChannelInput,
   SendChannelResult,
   AgentTaskResult,
@@ -23,6 +24,7 @@ export interface OpenClawAdapter {
   listChannels(): Promise<OpenClawChannel[]>;
   listSessions(): Promise<OpenClawSessionSummary[]>;
   listTasks(): Promise<OpenClawTaskSummary[]>;
+  getRuntimeOverview(): Promise<RuntimeOverview>;
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
@@ -113,6 +115,11 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
       { id: "task-demo-1", title: "Requirements Agent", status: "succeeded", updatedAt: now },
       { id: "task-demo-2", title: "Architecture Agent", status: "running", updatedAt: now }
     ];
+  }
+
+  async getRuntimeOverview(): Promise<RuntimeOverview> {
+    const [sessions, tasks] = await Promise.all([this.listSessions(), this.listTasks()]);
+    return { sessions, tasks };
   }
 
   async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {

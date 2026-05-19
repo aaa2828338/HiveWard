@@ -13,7 +13,8 @@ import type {
   OpenClawConfigState,
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
-  OpenClawConfiguredModel
+  OpenClawConfiguredModel,
+  OpenClawVersionInfo
 } from "@openclaw-cui/shared";
 import {
   buildChannelRequest,
@@ -64,6 +65,23 @@ export class OpenClawConfigStore {
   async getState(): Promise<OpenClawConfigState> {
     const config = await this.readConfig();
     return this.toState(config);
+  }
+
+  async getVersion(): Promise<OpenClawVersionInfo> {
+    const resolvedAt = new Date().toISOString();
+    try {
+      const raw = await runOpenClawCli(["--version"], { timeoutMs: 15_000 });
+      return {
+        version: parseOpenClawVersion(raw),
+        raw: raw || undefined,
+        resolvedAt
+      };
+    } catch (error) {
+      return {
+        resolvedAt,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   }
 
   getWizardMetadata(): OpenClawConfigWizardMetadata {
@@ -491,6 +509,12 @@ async function runOpenClawCli(args: string[], options?: { timeoutMs?: number }):
     const detail = failure.stderr?.trim() || failure.stdout?.trim() || failure.message;
     throw new Error(detail);
   }
+}
+
+function parseOpenClawVersion(output: string): string | undefined {
+  const trimmed = output.trim();
+  if (!trimmed) return undefined;
+  return trimmed.match(/\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b/)?.[1] ?? trimmed;
 }
 
 async function resolveOpenClawCliEntry(): Promise<string> {

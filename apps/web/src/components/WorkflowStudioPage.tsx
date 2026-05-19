@@ -18,7 +18,7 @@ import {
   type OnNodeDrag,
   type OnNodesChange
 } from "@xyflow/react";
-import { Bot, Check, GitBranch, MessagesSquare, Network, Plus, Repeat2, Send, ShieldCheck, X } from "lucide-react";
+import { Bot, Check, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Upload, X } from "lucide-react";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -88,24 +88,44 @@ const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 
 export function WorkflowStudioPage({
   workflow,
+  workflows,
   catalog,
   configuredAgents,
   runView,
   selectedNodeId,
+  selectedCompanyId,
   language,
   busy,
+  busyAction,
+  onSelectWorkflow,
+  onCreateWorkflow,
+  onRefreshWorkspace,
+  onOpenWorkflowImport,
+  onExportWorkflow,
+  onSaveWorkflow,
+  onRunWorkflow,
   onSelectNode,
   onUpdateWorkflow,
   onApproveRun,
   t
 }: {
   workflow?: WorkflowDefinition;
+  workflows: WorkflowDefinition[];
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   runView?: WorkflowRunView;
   selectedNodeId?: string;
+  selectedCompanyId?: string;
   language: Language;
   busy: boolean;
+  busyAction?: string;
+  onSelectWorkflow: (workflowId: string) => void;
+  onCreateWorkflow: () => void;
+  onRefreshWorkspace: () => void;
+  onOpenWorkflowImport: () => void;
+  onExportWorkflow: () => void;
+  onSaveWorkflow: () => void;
+  onRunWorkflow: () => void;
   onSelectNode: (nodeId?: string) => void;
   onUpdateWorkflow: (updater: (current: WorkflowDefinition) => WorkflowDefinition) => void;
   onApproveRun: () => void;
@@ -517,10 +537,54 @@ export function WorkflowStudioPage({
             minZoom={0.35}
             maxZoom={1.5}
           >
-            <Background gap={24} size={1} />
+            <Background gap={24} size={2} />
             <MiniMap pannable zoomable />
             <Controls position="bottom-right" />
           </ReactFlow>
+
+          <div className="workflow-action-dock" aria-label={t.navigation.workflow}>
+            <select
+              value={workflow?.id ?? ""}
+              onChange={(event) => onSelectWorkflow(event.target.value)}
+              disabled={busy || workflows.length === 0}
+            >
+              {workflows.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            <button type="button" title={t.actions.createWorkflow} onClick={onCreateWorkflow} disabled={!selectedCompanyId || busy}>
+              {busyAction === "createWorkflow" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+              {t.actions.createWorkflow}
+            </button>
+            <button type="button" title={t.actions.refreshWorkspace} onClick={onRefreshWorkspace} disabled={busy}>
+              {busyAction === "refreshWorkspace" || busyAction === "load" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+              {t.actions.refreshWorkspace}
+            </button>
+            <button type="button" title={t.actions.importWorkflow} onClick={onOpenWorkflowImport} disabled={!selectedCompanyId || busy}>
+              {busyAction === "importWorkflow" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
+              {t.actions.importWorkflow}
+            </button>
+            <button type="button" title={t.actions.exportWorkflow} onClick={onExportWorkflow} disabled={!workflow || busy}>
+              {busyAction === "exportWorkflow" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
+              {t.actions.exportWorkflow}
+            </button>
+            {runView?.run.status === "waiting_approval" && (
+              <button type="button" title={t.actions.approve} onClick={onApproveRun} disabled={busy}>
+                {busyAction === "approveRun" ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+                {t.actions.approve}
+              </button>
+            )}
+            <button type="button" title={t.actions.saveWorkflow} onClick={onSaveWorkflow} disabled={!workflow || busy}>
+              {busyAction === "saveWorkflow" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              {t.actions.save}
+            </button>
+            <button className="primary-action" type="button" title={t.actions.runWorkflow} onClick={onRunWorkflow} disabled={!workflow || busy}>
+              {busyAction === "runWorkflow" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
+              {t.actions.run}
+            </button>
+          </div>
 
           {nodeMenuOpen && workflow && (
             <div
