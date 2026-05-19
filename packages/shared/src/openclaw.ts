@@ -75,9 +75,21 @@ export interface OpenClawConfigState {
   configPath: string;
   defaultWorkspace: string;
   defaultModelId?: string;
+  gateway?: OpenClawGatewaySettingsSummary;
   configuredModels: OpenClawConfiguredModel[];
   configuredAgents: OpenClawConfiguredAgent[];
   configuredChannels: OpenClawConfiguredChannel[];
+}
+
+export interface OpenClawGatewaySettingsSummary {
+  url?: string;
+  origin?: string;
+  locale: string;
+  requestTimeoutMs: number;
+  agentStartTimeoutMs: number;
+  tokenConfigured: boolean;
+  passwordConfigured: boolean;
+  source: "environment" | "config" | "none";
 }
 
 export interface OpenClawVersionInfo {

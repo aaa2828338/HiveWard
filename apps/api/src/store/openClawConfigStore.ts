@@ -14,6 +14,7 @@ import type {
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
   OpenClawConfiguredModel,
+  OpenClawGatewaySettingsSummary,
   OpenClawVersionInfo
 } from "@openclaw-cui/shared";
 import {
@@ -50,6 +51,18 @@ interface OpenClawConfigFile {
   };
   models?: {
     providers?: Record<string, OpenClawProviderConfig>;
+  };
+  gateway?: {
+    port?: number;
+    remote?: {
+      url?: string;
+      token?: string;
+      password?: string;
+    };
+    auth?: {
+      token?: string;
+      password?: string;
+    };
   };
   channels?: Record<string, unknown>;
   [key: string]: unknown;
@@ -235,6 +248,7 @@ export class OpenClawConfigStore {
       configPath: this.configPath,
       defaultWorkspace,
       defaultModelId,
+      gateway: summarizeGatewaySettings(config),
       configuredModels: collectConfiguredModels(config, defaultModelId),
       configuredAgents: buildConfiguredAgents(config, defaultWorkspace, defaultModelId),
       configuredChannels: collectConfiguredChannels(config)
@@ -267,6 +281,32 @@ function resolveDefaultWorkspace(config: OpenClawConfigFile): string {
 
 function resolveSuggestedWorkspace(config: OpenClawConfigFile, agentId: string): string {
   return path.join(resolveDefaultWorkspace(config), agentId);
+}
+
+function summarizeGatewaySettings(config: OpenClawConfigFile): OpenClawGatewaySettingsSummary {
+  const envUrl = readString(process.env.OPENCLAW_GATEWAY_URL);
+  const configuredUrl = readString(config.gateway?.remote?.url);
+  const configuredPort = isPositiveNumber(config.gateway?.port) ? Math.floor(config.gateway.port) : undefined;
+  const url = envUrl ?? configuredUrl ?? (configuredPort ? `ws://127.0.0.1:${configuredPort}` : undefined);
+  const token =
+    readString(process.env.OPENCLAW_GATEWAY_TOKEN) ??
+    readString(config.gateway?.remote?.token) ??
+    readString(config.gateway?.auth?.token);
+  const password =
+    readString(process.env.OPENCLAW_GATEWAY_PASSWORD) ??
+    readString(config.gateway?.remote?.password) ??
+    readString(config.gateway?.auth?.password);
+
+  return {
+    url,
+    origin: readString(process.env.OPENCLAW_GATEWAY_ORIGIN) ?? (url ? websocketUrlToHttpOrigin(url) : undefined),
+    locale: readString(process.env.OPENCLAW_GATEWAY_LOCALE) ?? "zh-CN",
+    requestTimeoutMs: readPositiveIntegerEnv("OPENCLAW_GATEWAY_REQUEST_TIMEOUT_MS", 20_000),
+    agentStartTimeoutMs: readPositiveIntegerEnv("OPENCLAW_AGENT_START_TIMEOUT_MS", 20_000),
+    tokenConfigured: Boolean(token),
+    passwordConfigured: Boolean(password),
+    source: envUrl ? "environment" : configuredUrl || configuredPort ? "config" : "none"
+  };
 }
 
 function buildConfiguredAgents(
@@ -493,6 +533,26 @@ function escapeConfigPathKey(value: string): string {
 
 function expandHome(value: string): string {
   return value.startsWith("~") ? path.join(homedir(), value.slice(1)) : value;
+}
+
+function websocketUrlToHttpOrigin(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    parsed.protocol = parsed.protocol === "wss:" ? "https:" : "http:";
+    parsed.pathname = "/";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+function readPositiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 async function runOpenClawCli(args: string[], options?: { timeoutMs?: number }): Promise<string> {

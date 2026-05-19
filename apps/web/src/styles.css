@@ -4809,3 +4809,250 @@ html[data-theme="light"] .sidebar-system-menu button {
 html[data-theme="light"] .sidebar-system-menu button:hover:not(:disabled) {
   background: #f2f4f7;
 }
+
+.sidebar-status .sidebar-company {
+  z-index: 30;
+}
+
+.sidebar-shell {
+  z-index: 100;
+}
+
+.sidebar-system-control {
+  z-index: 60;
+}
+
+button.sidebar-system-version {
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.sidebar-system-version:hover:not(:disabled),
+button.sidebar-system-version.active {
+  transform: none;
+  border-color: var(--line-strong);
+  background: var(--paper-raised);
+}
+
+.sidebar-system-menu {
+  z-index: 90;
+}
+
+.openclaw-control-page {
+  gap: 14px;
+}
+
+.openclaw-control-hero {
+  gap: 16px;
+}
+
+.openclaw-control-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.openclaw-control-section {
+  align-content: start;
+  gap: 10px;
+}
+
+.openclaw-page-head {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.openclaw-page-actions {
+  flex: 0 0 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.openclaw-panel-head,
+.openclaw-panel-title,
+.openclaw-panel-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.openclaw-panel-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.openclaw-panel-title {
+  gap: 9px;
+}
+
+.openclaw-panel-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.openclaw-panel-title strong {
+  min-width: 0;
+  font-size: 18px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openclaw-panel-title span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openclaw-panel-state {
+  flex: 0 0 auto;
+  min-height: 24px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted-strong);
+  background: var(--paper);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.openclaw-panel-state.online,
+.openclaw-panel-metric.online strong {
+  color: #34d399;
+}
+
+.openclaw-panel-state.offline,
+.openclaw-panel-metric.offline strong {
+  color: #fb7185;
+}
+
+.openclaw-panel-metrics {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.openclaw-panel-metric {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+}
+
+.openclaw-panel-metric span,
+.openclaw-panel-row span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.openclaw-panel-metric strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.openclaw-panel-section {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.openclaw-panel-section > strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.openclaw-panel-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(128px, 0.36fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.openclaw-panel-row strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.openclaw-panel-actions {
+  justify-content: flex-end;
+}
+
+.openclaw-panel-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+}
+
+html[data-theme="light"] .openclaw-panel-state.online,
+html[data-theme="light"] .openclaw-panel-metric.online strong {
+  color: #15803d;
+}
+
+html[data-theme="light"] .openclaw-panel-state.offline,
+html[data-theme="light"] .openclaw-panel-metric.offline strong {
+  color: #be123c;
+}
+
+@media (max-width: 1080px) {
+  .openclaw-control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .openclaw-page-head {
+    flex-direction: column;
+  }
+
+  .openclaw-page-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 520px) {
+  .openclaw-panel-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .openclaw-panel-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .openclaw-panel-row strong {
+    text-align: left;
+  }
+}

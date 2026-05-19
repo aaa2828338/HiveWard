@@ -6,9 +6,10 @@ export type AppSectionId =
   | "models"
   | "agents"
   | "schedule"
-  | "channels";
+  | "channels"
+  | "openclaw";
 
-export const appSections: Array<Exclude<AppSectionId, "company">> = [
+export const appSections: Array<Exclude<AppSectionId, "company" | "openclaw">> = [
   "workflow",
   "runs",
   "approvals",

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bot,
   CalendarDays,
   ChevronDown,
+  Cloud,
   Database,
   Inbox,
   Languages,
@@ -10,6 +11,7 @@ import {
   ListChecks,
   Moon,
   Radio,
+  RefreshCw,
   Settings,
   Sun
 } from "lucide-react";
@@ -49,6 +51,40 @@ const sidebarIcons = {
 };
 
 type AppTheme = "light" | "dark";
+
+type OpenClawPanelCopy = {
+  title: string;
+  subtitle: string;
+  openPanel: string;
+  version: string;
+  gateway: string;
+  config: string;
+  activity: string;
+  available: string;
+  unavailable: string;
+  configured: string;
+  notConfigured: string;
+  environment: string;
+  configFile: string;
+  none: string;
+  url: string;
+  origin: string;
+  locale: string;
+  source: string;
+  auth: string;
+  requestTimeout: string;
+  agentStartTimeout: string;
+  configPath: string;
+  workspace: string;
+  defaultModel: string;
+  models: string;
+  agents: string;
+  channels: string;
+  catalogRefreshed: string;
+  lastChecked: string;
+  checkUpdates: string;
+  checking: string;
+};
 
 export function App() {
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
@@ -104,9 +140,9 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (selectedCompanyId) return;
+    if (selectedCompanyId || section === "openclaw") return;
     setSection("company");
-  }, [selectedCompanyId]);
+  }, [section, selectedCompanyId]);
 
   useEffect(() => {
     const preventGesture = (event: Event) => {
@@ -214,6 +250,77 @@ export function App() {
           },
     [language]
   );
+  const openClawPanelUi = useMemo<OpenClawPanelCopy>(
+    () =>
+      language === "zh-CN"
+        ? {
+            title: "OpenClaw \u63a7\u5236\u9762\u677f",
+            subtitle: "\u7f51\u5173\u3001\u914d\u7f6e\u548c\u7248\u672c\u68c0\u67e5",
+            openPanel: "\u6253\u5f00 OpenClaw \u63a7\u5236\u9762\u677f",
+            version: "\u7248\u672c",
+            gateway: "\u7f51\u5173",
+            config: "\u914d\u7f6e",
+            activity: "\u8fd0\u884c",
+            available: "\u53ef\u7528",
+            unavailable: "\u4e0d\u53ef\u7528",
+            configured: "\u5df2\u914d\u7f6e",
+            notConfigured: "\u672a\u914d\u7f6e",
+            environment: "\u73af\u5883\u53d8\u91cf",
+            configFile: "\u914d\u7f6e\u6587\u4ef6",
+            none: "-",
+            url: "URL",
+            origin: "Origin",
+            locale: "Locale",
+            source: "\u6765\u6e90",
+            auth: "\u8ba4\u8bc1",
+            requestTimeout: "\u8bf7\u6c42\u8d85\u65f6",
+            agentStartTimeout: "\u4ee3\u7406\u542f\u52a8\u8d85\u65f6",
+            configPath: "\u914d\u7f6e\u6587\u4ef6",
+            workspace: "\u9ed8\u8ba4\u5de5\u4f5c\u533a",
+            defaultModel: "\u9ed8\u8ba4\u6a21\u578b",
+            models: "\u6a21\u578b",
+            agents: "\u4ee3\u7406",
+            channels: "\u6e20\u9053",
+            catalogRefreshed: "\u76ee\u5f55\u5237\u65b0",
+            lastChecked: "\u6700\u540e\u68c0\u67e5",
+            checkUpdates: "\u68c0\u67e5\u66f4\u65b0",
+            checking: "\u68c0\u67e5\u4e2d"
+          }
+        : {
+            title: "OpenClaw Control Panel",
+            subtitle: "Gateway, configuration, and version checks",
+            openPanel: "Open OpenClaw control panel",
+            version: "Version",
+            gateway: "Gateway",
+            config: "Config",
+            activity: "Activity",
+            available: "Available",
+            unavailable: "Unavailable",
+            configured: "Configured",
+            notConfigured: "Not configured",
+            environment: "Environment",
+            configFile: "Config file",
+            none: "-",
+            url: "URL",
+            origin: "Origin",
+            locale: "Locale",
+            source: "Source",
+            auth: "Auth",
+            requestTimeout: "Request timeout",
+            agentStartTimeout: "Agent start timeout",
+            configPath: "Config file",
+            workspace: "Default workspace",
+            defaultModel: "Default model",
+            models: "Models",
+            agents: "Agents",
+            channels: "Channels",
+            catalogRefreshed: "Catalog refreshed",
+            lastChecked: "Last checked",
+            checkUpdates: "Check updates",
+            checking: "Checking"
+          },
+    [language]
+  );
   const openClawVersionLabel = openClawVersion?.version
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
@@ -221,6 +328,21 @@ export function App() {
   const openClawVersionStatusLabel = openClawVersionHealthy
     ? language === "zh-CN" ? "OpenClaw \u53ef\u7528" : "OpenClaw available"
     : language === "zh-CN" ? "OpenClaw \u4e0d\u53ef\u7528" : "OpenClaw unavailable";
+  const gatewaySettings = openClawConfig?.gateway;
+  const gatewayStatusLabel = gatewaySettings?.url ? openClawPanelUi.configured : openClawPanelUi.notConfigured;
+  const gatewaySourceLabel =
+    gatewaySettings?.source === "environment"
+      ? openClawPanelUi.environment
+      : gatewaySettings?.source === "config"
+        ? openClawPanelUi.configFile
+        : openClawPanelUi.none;
+  const gatewayAuthLabel = [
+    gatewaySettings?.tokenConfigured ? "Token" : undefined,
+    gatewaySettings?.passwordConfigured ? "Password" : undefined
+  ]
+    .filter(Boolean)
+    .join(" / ") || openClawPanelUi.notConfigured;
+  const openClawPanelBusy = busyAction === "checkOpenClawUpdates";
   const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
   const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
   const companyUi = useMemo(
@@ -362,6 +484,25 @@ export function App() {
           api.getOpenClawModelUsage().catch(() => []),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
+        setCatalog(nextCatalog);
+        setOpenClawConfig(nextOpenClawConfig);
+        setOpenClawModelUsage(nextOpenClawModelUsage);
+        setRuntime(nextRuntime);
+      }),
+    [withBusy]
+  );
+
+  const checkOpenClawUpdates = useCallback(
+    () =>
+      withBusy("checkOpenClawUpdates", async () => {
+        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextRuntime] = await Promise.all([
+          api.getOpenClawVersion(),
+          api.refreshCatalog(),
+          api.getOpenClawConfig(),
+          api.getOpenClawModelUsage().catch(() => []),
+          api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
+        ]);
+        setOpenClawVersion(nextOpenClawVersion);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
         setOpenClawModelUsage(nextOpenClawModelUsage);
@@ -612,6 +753,26 @@ export function App() {
         </>
       );
     }
+    if (section === "openclaw") {
+      return (
+        <OpenClawControlPanelPage
+          ui={openClawPanelUi}
+          language={language}
+          openClawVersionLabel={openClawVersionLabel}
+          openClawVersionHealthy={openClawVersionHealthy}
+          openClawVersion={openClawVersion}
+          openClawConfig={openClawConfig}
+          catalog={catalog}
+          runtime={runtime}
+          gatewaySettings={gatewaySettings}
+          gatewayStatusLabel={gatewayStatusLabel}
+          gatewaySourceLabel={gatewaySourceLabel}
+          gatewayAuthLabel={gatewayAuthLabel}
+          busy={openClawPanelBusy}
+          onCheckUpdates={checkOpenClawUpdates}
+        />
+      );
+    }
     if (section === "workflow") {
       return (
         <WorkflowStudioPage
@@ -788,14 +949,20 @@ export function App() {
               )}
             </div>
             <div className="sidebar-system-control">
-              <div
-                className={`sidebar-system-version ${openClawVersionHealthy ? "online" : "offline"}`}
-                aria-label={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
+              <button
+                type="button"
+                className={`sidebar-system-version ${openClawVersionHealthy ? "online" : "offline"} ${section === "openclaw" ? "active" : ""}`}
+                aria-label={`${openClawPanelUi.openPanel}: ${openClawVersionLabel} ${openClawVersionStatusLabel}`}
                 title={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
+                onClick={() => {
+                  setCompanyMenuOpen(false);
+                  setSystemMenuOpen(false);
+                  setSection("openclaw");
+                }}
               >
                 <span className="sidebar-system-dot" aria-hidden="true" />
                 <strong>{openClawVersionLabel}</strong>
-              </div>
+              </button>
               <button
                 type="button"
                 className={`sidebar-system-settings ${systemMenuOpen ? "active" : ""}`}
@@ -848,6 +1015,125 @@ export function App() {
   );
 }
 
+function OpenClawControlPanelPage({
+  ui,
+  language,
+  openClawVersionLabel,
+  openClawVersionHealthy,
+  openClawVersion,
+  openClawConfig,
+  catalog,
+  runtime,
+  gatewaySettings,
+  gatewayStatusLabel,
+  gatewaySourceLabel,
+  gatewayAuthLabel,
+  busy,
+  onCheckUpdates
+}: {
+  ui: OpenClawPanelCopy;
+  language: Language;
+  openClawVersionLabel: string;
+  openClawVersionHealthy: boolean;
+  openClawVersion?: OpenClawVersionInfo;
+  openClawConfig?: OpenClawConfigState;
+  catalog?: CatalogSnapshot;
+  runtime?: RuntimeOverview;
+  gatewaySettings?: OpenClawConfigState["gateway"];
+  gatewayStatusLabel: string;
+  gatewaySourceLabel: string;
+  gatewayAuthLabel: string;
+  busy: boolean;
+  onCheckUpdates: () => void;
+}) {
+  return (
+    <section id="openclaw-control-panel" className="page-grid openclaw-control-page">
+      <div className="content-card stack-card openclaw-control-hero">
+        <div className="openclaw-page-head">
+          <div className="openclaw-panel-title">
+            <Cloud size={18} />
+            <div>
+              <strong>{ui.title}</strong>
+              <span>{ui.subtitle}</span>
+            </div>
+          </div>
+          <div className="openclaw-page-actions">
+            <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
+              {openClawVersionHealthy ? ui.available : ui.unavailable}
+            </span>
+            <button type="button" onClick={onCheckUpdates} disabled={busy}>
+              <RefreshCw size={14} className={busy ? "spin" : undefined} />
+              {busy ? ui.checking : ui.checkUpdates}
+            </button>
+          </div>
+        </div>
+
+        <div className="openclaw-panel-metrics">
+          <OpenClawPanelMetric label={ui.version} value={openClawVersionLabel} />
+          <OpenClawPanelMetric label={ui.gateway} value={gatewayStatusLabel} tone={gatewaySettings?.url ? "online" : "offline"} />
+          <OpenClawPanelMetric label={ui.config} value={(openClawConfig?.configuredModels.length ?? 0) + (openClawConfig?.configuredAgents.length ?? 0)} />
+          <OpenClawPanelMetric label={ui.activity} value={runtime?.tasks.length ?? 0} />
+        </div>
+      </div>
+
+      <div className="openclaw-control-grid">
+        <div className="content-card stack-card openclaw-control-section">
+          <div className="card-title-block">
+            <h3>{ui.gateway}</h3>
+          </div>
+          <OpenClawPanelRow label={ui.url} value={gatewaySettings?.url ?? ui.none} />
+          <OpenClawPanelRow label={ui.origin} value={gatewaySettings?.origin ?? ui.none} />
+          <OpenClawPanelRow label={ui.source} value={gatewaySourceLabel} />
+          <OpenClawPanelRow label={ui.auth} value={gatewayAuthLabel} />
+          <OpenClawPanelRow label={ui.locale} value={gatewaySettings?.locale ?? ui.none} />
+          <OpenClawPanelRow label={ui.requestTimeout} value={formatDurationMs(gatewaySettings?.requestTimeoutMs, ui.none)} />
+          <OpenClawPanelRow label={ui.agentStartTimeout} value={formatDurationMs(gatewaySettings?.agentStartTimeoutMs, ui.none)} />
+        </div>
+
+        <div className="content-card stack-card openclaw-control-section">
+          <div className="card-title-block">
+            <h3>{ui.config}</h3>
+          </div>
+          <OpenClawPanelRow label={ui.configPath} value={openClawConfig?.configPath ?? ui.none} />
+          <OpenClawPanelRow label={ui.workspace} value={openClawConfig?.defaultWorkspace ?? ui.none} />
+          <OpenClawPanelRow label={ui.defaultModel} value={openClawConfig?.defaultModelId ?? ui.none} />
+          <OpenClawPanelRow label={ui.models} value={(openClawConfig?.configuredModels.length ?? catalog?.models.length ?? 0).toLocaleString(language)} />
+          <OpenClawPanelRow label={ui.agents} value={(openClawConfig?.configuredAgents.length ?? catalog?.agents.length ?? 0).toLocaleString(language)} />
+          <OpenClawPanelRow label={ui.channels} value={(openClawConfig?.configuredChannels.length ?? catalog?.channels.length ?? 0).toLocaleString(language)} />
+          <OpenClawPanelRow label={ui.catalogRefreshed} value={formatDateTimeLabel(catalog?.refreshedAt, language, ui.none)} />
+          <OpenClawPanelRow label={ui.lastChecked} value={formatDateTimeLabel(openClawVersion?.resolvedAt, language, ui.none)} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function OpenClawPanelMetric({
+  label,
+  value,
+  tone
+}: {
+  label: string;
+  value: ReactNode;
+  tone?: "online" | "offline";
+}) {
+  return (
+    <div className={`openclaw-panel-metric ${tone ?? ""}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function OpenClawPanelRow({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="openclaw-panel-row">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
 function companyMonogram(company?: Pick<CompanyOverview, "logoLabel" | "name">): string {
   if (company?.logoLabel?.trim()) return company.logoLabel.trim().slice(0, 2).toUpperCase();
   if (company?.name?.trim()) {
@@ -867,6 +1153,20 @@ function getInitialTheme(): AppTheme {
   if (stored === "light" || stored === "dark") return stored;
   if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
+}
+
+function formatDurationMs(value: number | undefined, fallback: string): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toLocaleString()} ms` : fallback;
+}
+
+function formatDateTimeLabel(value: string | undefined, language: Language, fallback: string): string {
+  if (!value) return fallback;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(language, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(date);
 }
 
 function emptyRuntimeOverview(): RuntimeOverview {
