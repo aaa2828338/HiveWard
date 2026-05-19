@@ -83,6 +83,42 @@ describe("agent SDK runtime", () => {
     expect(result.status).toBe("succeeded");
   });
 
+  it("fails SDK nodes before provider calls when modelId is missing", async () => {
+    const workspace = createWorkspace({ git: true });
+    let claudeCalled = false;
+    let codexCalled = false;
+    const claudeRuntime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => {
+        claudeCalled = true;
+        return fakeClaudeQuery([])({ prompt: "" });
+      }
+    );
+    const codexRuntime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => {
+        codexCalled = true;
+        return fakeCodexClient({ threadId: "unused", finalResponse: "unused", usage: null });
+      }
+    );
+
+    const claudeStarted = await claudeRuntime.startTask(
+      createStartInput({ source: "claude", workingDirectory: workspace, modelId: undefined })
+    );
+    const codexStarted = await codexRuntime.startTask(
+      createStartInput({ source: "codex", workingDirectory: workspace, modelId: undefined })
+    );
+
+    expect(claudeStarted.status).toBe("failed");
+    expect(claudeStarted.error).toContain("model_not_configured");
+    expect(codexStarted.status).toBe("failed");
+    expect(codexStarted.error).toContain("model_not_configured");
+    expect(claudeCalled).toBe(false);
+    expect(codexCalled).toBe(false);
+  });
+
   it("normalizes a Claude SDK success result", async () => {
     const workspace = createWorkspace();
     const runtime = new ClaudeAgentSdkRuntime(
@@ -184,6 +220,7 @@ describe("agent SDK runtime", () => {
     });
 
     expect(threadOptions?.workingDirectory).toBe(workspace);
+    expect(threadOptions?.model).toBe("test-model");
     expect(threadOptions?.sandboxMode).toBe("workspace-write");
     expect(threadOptions?.approvalPolicy).toBe("never");
     expect(turnOptions?.outputSchema).toEqual({
@@ -240,6 +277,7 @@ function createStartInput(
     source: "claude",
     agentName: "agent",
     prompt: "Return a result.",
+    modelId: "test-model",
     permissionProfile: "read_only",
     workingDirectory: createWorkspace(),
     timeoutMs: 60_000,

@@ -7,7 +7,7 @@ import type {
   StartedAgentTaskResult,
   WaitForAgentTaskInput
 } from "@openclaw-cui/shared";
-import { formatAgentSdkError, getErrorMessage, isAbortLikeError } from "./errors";
+import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapCodexSandbox, normalizePermissionProfile } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
@@ -45,6 +45,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
 
     let workingDirectory: string;
     try {
+      requireConfiguredModel(input.modelId);
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
       assertGitWorkspace(workingDirectory, this.options.workspaceRoot);
     } catch (error) {
@@ -174,7 +175,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         sessionKey,
         source: "codex",
         status: "failed",
-        error: formatAgentSdkError("provider_error", getErrorMessage(error))
+        error: formatAgentSdkProviderError("Codex", error)
       });
     }
   }
@@ -200,6 +201,12 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Task exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Task was cancelled.")
     });
+  }
+}
+
+function requireConfiguredModel(modelId: string | undefined): void {
+  if (!modelId?.trim()) {
+    throw new Error(formatAgentSdkError("model_not_configured", "Codex agent node requires an explicit modelId."));
   }
 }
 

@@ -13,7 +13,7 @@ import type {
   StartedAgentTaskResult,
   WaitForAgentTaskInput
 } from "@openclaw-cui/shared";
-import { AgentSdkError, formatAgentSdkError, getErrorMessage, isAbortLikeError } from "./errors";
+import { AgentSdkError, formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
@@ -37,6 +37,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
 
     let workingDirectory: string;
     try {
+      requireConfiguredModel(input.modelId);
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
     } catch (error) {
       return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
@@ -155,7 +156,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         sessionKey,
         source: "claude",
         status: "failed",
-        error: formatAgentSdkError("provider_error", getErrorMessage(error))
+        error: formatAgentSdkProviderError("Claude Code", error)
       });
     }
 
@@ -231,6 +232,12 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Task exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Task was cancelled.")
     });
+  }
+}
+
+function requireConfiguredModel(modelId: string | undefined): void {
+  if (!modelId?.trim()) {
+    throw new Error(formatAgentSdkError("model_not_configured", "Claude Code agent node requires an explicit modelId."));
   }
 }
 

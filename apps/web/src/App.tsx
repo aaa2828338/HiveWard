@@ -749,7 +749,6 @@ export function App() {
           runView={latestRunForWorkflow}
           selectedNodeId={selectedNodeId}
           selectedCompanyId={selectedCompanyId}
-          language={language}
           busy={Boolean(busyAction)}
           busyAction={busyAction}
           onSelectWorkflow={selectWorkflow}

@@ -47,7 +47,7 @@ import {
   WorkflowNodeCard,
   type WorkflowNodeCardData
 } from "./WorkflowNodeCard";
-import { type Language, type Messages } from "../lib/i18n";
+import { type Messages } from "../lib/i18n";
 
 const nodeTypes = {
   workflowNode: WorkflowNodeCard
@@ -97,7 +97,6 @@ export function WorkflowStudioPage({
   runView,
   selectedNodeId,
   selectedCompanyId,
-  language,
   busy,
   busyAction,
   onSelectWorkflow,
@@ -119,7 +118,6 @@ export function WorkflowStudioPage({
   runView?: WorkflowRunView;
   selectedNodeId?: string;
   selectedCompanyId?: string;
-  language: Language;
   busy: boolean;
   busyAction?: string;
   onSelectWorkflow: (workflowId: string) => void;
@@ -626,8 +624,6 @@ export function WorkflowStudioPage({
             catalog={catalog}
             configuredAgents={configuredAgents}
             node={inspectedNode}
-            nodeRun={statusByNode.get(inspectedNode.id)}
-            language={language}
             t={t}
             onClose={() => setInspectedNodeId(undefined)}
             onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
@@ -642,8 +638,6 @@ function NodeDetailModal({
   catalog,
   configuredAgents,
   node,
-  nodeRun,
-  language,
   t,
   onClose,
   onPatchConfig
@@ -651,8 +645,6 @@ function NodeDetailModal({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   node: WorkflowNode;
-  nodeRun?: WorkflowNodeRun;
-  language: Language;
   t: Messages;
   onClose: () => void;
   onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
@@ -667,11 +659,8 @@ function NodeDetailModal({
           <div>
             <span className="hero-eyebrow modal-eyebrow">{t.nodeTypes[node.type]}</span>
             <h3>{node.config.label}</h3>
-            <p>
-              {t.fields.nodeId}: {node.id}
-            </p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose}>
+          <button type="button" className="icon-button node-modal-close" onClick={onClose}>
             <X size={18} />
           </button>
         </header>
@@ -679,7 +668,7 @@ function NodeDetailModal({
         <div className="node-modal-grid">
           <div className="node-modal-main">
             <div className="node-modal-section">
-              <h4>{t.panels.inspector}</h4>
+              <h4>{t.fields.settings}</h4>
               <NodeConfigForm
                 catalog={catalog}
                 node={node}
@@ -690,45 +679,6 @@ function NodeDetailModal({
                 t={t}
               />
             </div>
-          </div>
-
-          <aside className="node-modal-side">
-            <div className="node-modal-section">
-              <h4>{t.panels.run}</h4>
-              <dl className="meta-grid">
-                <dt>{t.fields.status}</dt>
-                <dd>{t.status[nodeRun?.status ?? "idle"]}</dd>
-                <dt>{t.fields.position}</dt>
-                <dd>
-                  {Math.round(node.position.x)}, {Math.round(node.position.y)}
-                </dd>
-                {nodeRun?.openclawRef?.taskId && (
-                  <>
-                    <dt>{t.fields.openclawTask}</dt>
-                    <dd>{nodeRun.openclawRef.taskId}</dd>
-                  </>
-                )}
-                {nodeRun?.openclawRef?.runId && (
-                  <>
-                    <dt>{t.fields.openclawRun}</dt>
-                    <dd>{nodeRun.openclawRef.runId}</dd>
-                  </>
-                )}
-                {nodeRun?.openclawRef?.sessionKey && (
-                  <>
-                    <dt>{t.fields.openclawSession}</dt>
-                    <dd>{nodeRun.openclawRef.sessionKey}</dd>
-                  </>
-                )}
-                {nodeRun?.startedAt && (
-                  <>
-                    <dt>{t.fields.updatedAt}</dt>
-                    <dd>{new Date(nodeRun.startedAt).toLocaleString(language)}</dd>
-                  </>
-                )}
-              </dl>
-            </div>
-
             {node.type === "openclaw_agent" && (
               <AgentSkillPanel
                 node={node}
@@ -737,15 +687,7 @@ function NodeDetailModal({
                 onPatchConfig={onPatchConfig}
               />
             )}
-
-            {(nodeRun?.output !== undefined || nodeRun?.error) && (
-              <div className="node-modal-section">
-                <h4>{t.fields.output}</h4>
-                {nodeRun?.output !== undefined && <pre className="output-block">{formatOutput(nodeRun.output)}</pre>}
-                {nodeRun?.error && <pre className="node-output-error output-block">{nodeRun.error}</pre>}
-              </div>
-            )}
-          </aside>
+          </div>
         </div>
       </section>
     </div>
@@ -786,87 +728,97 @@ function NodeConfigForm({
     const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
 
     return (
-      <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.title}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
-        {!isSdkProvider && (
+      <div className="node-agent-config">
+        <div className="config-form node-modal-form node-agent-primary-form">
           <label>
-            <span>{t.fields.openclawAgent}</span>
-            <select
-              value={selectedAgentId}
-              onChange={(event) => onPatchConfig({ agentId: event.target.value })}
-            >
-              {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-              {agentOptions.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name ? `${agent.name} (${agent.id})` : agent.id}
-                </option>
-              ))}
-            </select>
+            <span>{t.fields.title}</span>
+            <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
           </label>
-        )}
-        <label>
-          <span>{t.fields.model}</span>
-          {isSdkProvider ? (
-            <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
-          ) : (
-            <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-              <option value="">{t.common.defaultModel}</option>
-              {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </label>
-        <label>
-          <span>{t.fields.runLabel}</span>
-          <input value={config.agentName} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
-        </label>
-        {isSdkProvider && (
-          <>
+          <label className="field-span-full">
+            <span>{t.fields.prompt}</span>
+            <textarea rows={10} value={config.prompt} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
+          </label>
+        </div>
+        <details className="node-advanced-settings">
+          <summary>
+            <span>{t.fields.advancedSettings}</span>
+            <small>{t.fields.advancedSettingsHint}</small>
+          </summary>
+          <div className="config-form node-modal-form node-agent-advanced-form">
+            {!isSdkProvider && (
+              <label>
+                <span>{t.fields.openclawAgent}</span>
+                <select
+                  value={selectedAgentId}
+                  onChange={(event) => onPatchConfig({ agentId: event.target.value })}
+                >
+                  {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+                  {agentOptions.map((agent) => (
+                    <option key={agent.id} value={agent.id}>
+                      {agent.name ? `${agent.name} (${agent.id})` : agent.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
-              <span>Permission</span>
-              <select
-                value={config.permissionProfile ?? "read_only"}
-                onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
-              >
-                <option value="read_only">Read only</option>
-                <option value="workspace_write">Workspace write</option>
-              </select>
+              <span>{t.fields.model}</span>
+              {isSdkProvider ? (
+                <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
+              ) : (
+                <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
+                  <option value="">{t.common.defaultModel}</option>
+                  {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+                  {models.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </label>
             <label>
-              <span>Working directory</span>
-              <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
+              <span>{t.fields.runLabel}</span>
+              <input value={config.agentName} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
             </label>
-            <label>
-              <span>Timeout ms</span>
-              <input
-                min={1}
-                type="number"
-                value={config.timeoutMs ?? 600000}
-                onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
-              />
-            </label>
-            <label className="field-span-full">
-              <span>Output schema</span>
-              <textarea
-                rows={6}
-                value={schemaText}
-                onChange={(event) => setSchemaText(event.target.value)}
-                onBlur={() => onPatchConfig({ outputSchema: readOutputSchema(schemaText) })}
-              />
-            </label>
-          </>
-        )}
-        <label className="field-span-full">
-          <span>{t.fields.prompt}</span>
-          <textarea rows={10} value={config.prompt} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
-        </label>
+            {isSdkProvider && (
+              <>
+                <label>
+                  <span>Permission</span>
+                  <select
+                    value={config.permissionProfile ?? "read_only"}
+                    onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
+                  >
+                    <option value="read_only">Read only</option>
+                    <option value="workspace_write">Workspace write</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Working directory</span>
+                  <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
+                </label>
+                <label>
+                  <span>Timeout ms</span>
+                  <input
+                    min={1}
+                    type="number"
+                    value={config.timeoutMs ?? 600000}
+                    onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+                  />
+                </label>
+                <label className="field-span-full">
+                  <span>Output schema</span>
+                  <textarea
+                    rows={6}
+                    value={schemaText}
+                    onChange={(event) => setSchemaText(event.target.value)}
+                    onBlur={() => onPatchConfig({ outputSchema: readOutputSchema(schemaText) })}
+                  />
+                </label>
+              </>
+            )}
+          </div>
+        </details>
       </div>
     );
   }
@@ -1247,11 +1199,6 @@ function AgentSkillPanel({
       </div>
     </div>
   );
-}
-
-function formatOutput(output: unknown): string {
-  if (typeof output === "string") return output;
-  return JSON.stringify(output, null, 2);
 }
 
 function clampNumberInput(value: string, min: number, max: number, fallback: number): number {

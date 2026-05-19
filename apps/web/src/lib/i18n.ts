@@ -107,6 +107,8 @@ export interface Messages {
     workspace: string;
   };
   fields: {
+    advancedSettings: string;
+    advancedSettingsHint: string;
     body: string;
     category: string;
     channels: string;
@@ -123,9 +125,6 @@ export interface Messages {
     mode: string;
     nodeId: string;
     openclawAgent: string;
-    openclawRun: string;
-    openclawSession: string;
-    openclawTask: string;
     output: string;
     position: string;
     ports: string;
@@ -136,6 +135,7 @@ export interface Messages {
     relatedWorkflow: string;
     runLabel: string;
     section: string;
+    settings: string;
     skills: string;
     slot: string;
     status: string;
@@ -336,6 +336,8 @@ export const messages: Record<Language, Messages> = {
       workspace: "Failed to save workspace state."
     },
     fields: {
+      advancedSettings: "Advanced settings",
+      advancedSettingsHint: "Model, identity, permission, workspace, timeout, output",
       body: "Body",
       category: "Category",
       channels: "Channels",
@@ -352,9 +354,6 @@ export const messages: Record<Language, Messages> = {
       mode: "Mode",
       nodeId: "Node ID",
       openclawAgent: "OpenClaw Agent",
-      openclawRun: "OpenClaw 运行",
-      openclawSession: "OpenClaw 会话",
-      openclawTask: "OpenClaw 任务",
       output: "Output",
       position: "Position",
       ports: "Ports",
@@ -365,6 +364,7 @@ export const messages: Record<Language, Messages> = {
       relatedWorkflow: "Related workflow",
       runLabel: "Task label",
       section: "Section",
+      settings: "Settings",
       skills: "Skills",
       slot: "Slot",
       status: "Status",
@@ -636,6 +636,8 @@ export const messages: Record<Language, Messages> = {
       workspace: "保存工作区状态失败。"
     },
     fields: {
+      advancedSettings: "\u9ad8\u7ea7\u8bbe\u7f6e",
+      advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u6743\u9650\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
       body: "内容",
       category: "分类",
       channels: "通道",
@@ -652,9 +654,6 @@ export const messages: Record<Language, Messages> = {
       mode: "模式",
       nodeId: "节点 ID",
       openclawAgent: "OpenClaw agent",
-      openclawRun: "OpenClaw run",
-      openclawSession: "OpenClaw session",
-      openclawTask: "OpenClaw task",
       output: "输出",
       position: "位置",
       ports: "端口",
@@ -665,6 +664,7 @@ export const messages: Record<Language, Messages> = {
       relatedWorkflow: "关联工作流",
       runLabel: "任务标签",
       section: "页面",
+      settings: "设置",
       skills: "技能",
       slot: "槽位",
       status: "状态",
