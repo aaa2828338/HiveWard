@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n api,web -c cyan,magenta \"npm run dev -w @openclaw-cui/api\" \"npm run dev -w @openclaw-cui/web\"",
+    "dev": "npm run dev -w @openclaw-cui/web",
     "build": "npm run build -w @openclaw-cui/web && npm run typecheck -w @openclaw-cui/api && npm run typecheck -w @openclaw-cui/shared && npm run typecheck -w @openclaw-cui/adapter",
     "check": "npm run check:boundaries && npm run typecheck -ws --if-present",
     "check:boundaries": "node scripts/check-boundaries.mjs",

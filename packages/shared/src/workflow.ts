@@ -1,7 +1,12 @@
-import type { OpenClawObjectRef, OpenClawUsageFact } from "./openclaw";
+import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
+
+export type AgentWorkflowNodeType =
+  | "openclaw_agent"
+  | "codex_agent"
+  | "claude_code_agent";
 
 export type WorkflowNodeType =
-  | "agent"
+  | AgentWorkflowNodeType
   | "parallel_agents"
   | "manager"
   | "manager_slot"
@@ -50,6 +55,10 @@ export interface AgentNodeConfig extends WorkflowNodeBaseConfig {
   agentName: string;
   prompt: string;
   modelId?: string;
+  permissionProfile?: AgentPermissionProfile;
+  workingDirectory?: string;
+  timeoutMs?: number;
+  outputSchema?: Record<string, unknown>;
   tools: string[];
 }
 
@@ -114,6 +123,16 @@ export type WorkflowNodeConfig =
   | SendNodeConfig
   | NoteNodeConfig
   | GroupNodeConfig;
+
+export function isAgentWorkflowNodeType(type: WorkflowNodeType): type is AgentWorkflowNodeType {
+  return type === "openclaw_agent" || type === "codex_agent" || type === "claude_code_agent";
+}
+
+export function resolveAgentNodeSource(type: AgentWorkflowNodeType): OpenClawObjectSource {
+  if (type === "codex_agent") return "codex";
+  if (type === "claude_code_agent") return "claude";
+  return "openclaw";
+}
 
 export interface WorkflowNode {
   id: string;
@@ -242,7 +261,7 @@ export function createStarterWorkflow(now: string, companyId = "company-openclaw
     nodes: [
       {
         id: "requirements",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 80, y: 120 },
         config: {
           label: "Requirements Agent",
@@ -254,7 +273,7 @@ export function createStarterWorkflow(now: string, companyId = "company-openclaw
       },
       {
         id: "architecture",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 420, y: 36 },
         config: {
           label: "Architecture Agent",
@@ -266,7 +285,7 @@ export function createStarterWorkflow(now: string, companyId = "company-openclaw
       },
       {
         id: "tests",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 420, y: 220 },
         config: {
           label: "Test Agent",
@@ -336,7 +355,7 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
     nodes: [
       {
         id: "brief",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 120, y: 180 },
         config: {
           label: "1. Brief",
@@ -349,7 +368,7 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
       },
       {
         id: "plan",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 500, y: 180 },
         config: {
           label: "2. Plan",
@@ -362,7 +381,7 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
       },
       {
         id: "verify",
-        type: "agent",
+        type: "openclaw_agent",
         position: { x: 880, y: 180 },
         config: {
           label: "3. Verify",
@@ -381,6 +400,124 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
     variables: {},
     display: {
       viewport: { x: 0, y: 0, zoom: 0.95 }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function createMultiAgentCompatibilityWorkflow(
+  now: string,
+  companyId = "company-openclaw-studio",
+  workingDirectory = ""
+): WorkflowDefinition {
+  const workspaceConfig = workingDirectory ? { workingDirectory } : {};
+
+  return {
+    id: "multi-agent-compatibility-workflow",
+    companyId,
+    name: "Multi-agent compatibility smoke test",
+    description:
+      "A focused workflow that validates OpenClaw, Codex, and Claude Code agent nodes through one shared upstream payload and one merged result.",
+    version: 1,
+    nodes: [
+      {
+        id: "compat-openclaw-brief",
+        type: "openclaw_agent",
+        position: { x: 80, y: 180 },
+        config: {
+          label: "1. OpenClaw Brief",
+          agentId: "main",
+          agentName: "openclaw-compat-brief",
+          prompt:
+            "Create a concise JSON compatibility brief for this workflow. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
+          tools: []
+        }
+      },
+      {
+        id: "compat-codex-check",
+        type: "codex_agent",
+        position: { x: 480, y: 64 },
+        config: {
+          label: "2A. Codex Check",
+          agentName: "codex-compat-check",
+          prompt:
+            "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be codex.",
+          permissionProfile: "read_only",
+          timeoutMs: 600000,
+          outputSchema: {
+            type: "object",
+            required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
+            properties: {
+              runtime: { type: "string" },
+              upstreamReceived: { type: "boolean" },
+              contractAccepted: { type: "boolean" },
+              notes: { type: "array", items: { type: "string" } }
+            }
+          },
+          ...workspaceConfig,
+          tools: []
+        }
+      },
+      {
+        id: "compat-claude-check",
+        type: "claude_code_agent",
+        position: { x: 480, y: 296 },
+        config: {
+          label: "2B. Claude Code Check",
+          agentName: "claude-code-compat-check",
+          prompt:
+            "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be claude_code.",
+          permissionProfile: "read_only",
+          timeoutMs: 600000,
+          outputSchema: {
+            type: "object",
+            required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
+            properties: {
+              runtime: { type: "string" },
+              upstreamReceived: { type: "boolean" },
+              contractAccepted: { type: "boolean" },
+              notes: { type: "array", items: { type: "string" } }
+            }
+          },
+          ...workspaceConfig,
+          tools: []
+        }
+      },
+      {
+        id: "compat-merge",
+        type: "summary",
+        position: { x: 880, y: 180 },
+        config: {
+          label: "3. Merge Compatibility Results",
+          mode: "structured_merge",
+          description: "Merge the Codex and Claude Code compatibility outputs."
+        }
+      },
+      {
+        id: "compat-openclaw-verify",
+        type: "openclaw_agent",
+        position: { x: 1240, y: 180 },
+        config: {
+          label: "4. OpenClaw Verify",
+          agentId: "main",
+          agentName: "openclaw-compat-verifier",
+          prompt:
+            "Inspect the merged upstream outputs. Return only JSON with keys: passed, checkedRuntimes, missingRuntimes, recommendation.",
+          tools: []
+        }
+      }
+    ],
+    edges: [
+      { id: "compat-e1", source: "compat-openclaw-brief", target: "compat-codex-check", condition: "success" },
+      { id: "compat-e2", source: "compat-openclaw-brief", target: "compat-claude-check", condition: "success" },
+      { id: "compat-e3", source: "compat-codex-check", target: "compat-merge", condition: "success" },
+      { id: "compat-e4", source: "compat-claude-check", target: "compat-merge", condition: "success" },
+      { id: "compat-e5", source: "compat-merge", target: "compat-openclaw-verify", condition: "success" }
+    ],
+    variables: {},
+    display: {
+      viewport: { x: 0, y: 0, zoom: 0.78 }
     },
     createdAt: now,
     updatedAt: now
@@ -421,7 +558,7 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
       },
       {
         id: "html-manager-slot-1-agent-1",
-        type: "agent",
+        type: "openclaw_agent",
         parentId: "html-manager-slot-1",
         position: { x: 76, y: 154 },
         config: {
@@ -435,7 +572,7 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
       },
       {
         id: "html-manager-slot-1-agent-2",
-        type: "agent",
+        type: "openclaw_agent",
         parentId: "html-manager-slot-1",
         position: { x: 424, y: 154 },
         config: {
@@ -460,7 +597,7 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
       },
       {
         id: "html-manager-slot-2-agent-1",
-        type: "agent",
+        type: "openclaw_agent",
         parentId: "html-manager-slot-2",
         position: { x: 264, y: 132 },
         config: {
@@ -485,7 +622,7 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
       },
       {
         id: "html-manager-slot-3-agent-1",
-        type: "agent",
+        type: "openclaw_agent",
         parentId: "html-manager-slot-3",
         position: { x: 264, y: 132 },
         config: {
@@ -605,10 +742,15 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
   };
 }
 
-export function createDefaultWorkflows(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition[] {
+export function createDefaultWorkflows(
+  now: string,
+  companyId = "company-openclaw-studio",
+  workingDirectory = ""
+): WorkflowDefinition[] {
   return [
     createStarterWorkflow(now, companyId),
     createRealThreeAgentWorkflow(now, companyId),
+    createMultiAgentCompatibilityWorkflow(now, companyId, workingDirectory),
     createManagerDrivenHtmlWorkflow(now, companyId)
   ];
 }
@@ -729,13 +871,16 @@ function toPortableWorkflowNode(node: WorkflowNode): WorkflowNode {
 }
 
 function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNodeConfig): WorkflowNodeConfig {
-  if (type === "agent") {
+  if (isAgentWorkflowNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       label: agentConfig.label,
       description: agentConfig.description,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
+      permissionProfile: agentConfig.permissionProfile,
+      timeoutMs: agentConfig.timeoutMs,
+      outputSchema: cloneJsonObject(agentConfig.outputSchema),
       tools: []
     };
   }
@@ -744,7 +889,7 @@ function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNo
     return {
       label: parallelConfig.label,
       description: parallelConfig.description,
-      agents: parallelConfig.agents.map((agent) => toPortableWorkflowNodeConfig("agent", agent) as AgentNodeConfig),
+      agents: parallelConfig.agents.map((agent) => toPortableWorkflowNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
       waitFor: parallelConfig.waitFor
     };
   }
@@ -770,6 +915,10 @@ function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNo
   return { ...config };
 }
 
+function cloneJsonObject(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : undefined;
+}
+
 function applyImportDefaultsToNode(node: WorkflowNode, defaults: WorkflowImportDefaults = {}): WorkflowNode {
   return {
     ...node,
@@ -783,7 +932,7 @@ function applyImportDefaultsToConfig(
   config: WorkflowNodeConfig,
   defaults: WorkflowImportDefaults
 ): WorkflowNodeConfig {
-  if (type === "agent") {
+  if (isAgentWorkflowNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       ...agentConfig,
@@ -796,7 +945,7 @@ function applyImportDefaultsToConfig(
     const parallelConfig = config as ParallelAgentsNodeConfig;
     return {
       ...parallelConfig,
-      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults) as AgentNodeConfig)
+      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("openclaw_agent", agent, defaults) as AgentNodeConfig)
     };
   }
   if (type === "summary") {

@@ -1,0 +1,267 @@
+import { nanoid } from "nanoid";
+import {
+  query as claudeQuery,
+  type Options,
+  type Query,
+  type SDKMessage,
+  type SDKResultMessage
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  AgentTaskResult,
+  OpenClawUsageFact,
+  StartAgentTaskInput,
+  StartedAgentTaskResult,
+  WaitForAgentTaskInput
+} from "@openclaw-cui/shared";
+import { AgentSdkError, formatAgentSdkError, getErrorMessage, isAbortLikeError } from "./errors";
+import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
+import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
+import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
+import type { AgentSdkRuntime } from "./types";
+import { resolveSdkWorkingDirectory } from "./workspace";
+
+export type ClaudeQueryFn = (params: { prompt: string; options?: Options }) => Query;
+
+export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
+  constructor(
+    private readonly registry: AgentSdkTaskRegistry,
+    private readonly options: { defaultTimeoutMs: number; workspaceRoot: string },
+    private readonly queryFn: ClaudeQueryFn = claudeQuery
+  ) {}
+
+  async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+    const now = new Date().toISOString();
+    const taskId = `claude-task-${nanoid(10)}`;
+    const runId = `claude-run-${nanoid(10)}`;
+    const sessionKey = `claude-session-${input.nodeRunId}`;
+
+    let workingDirectory: string;
+    try {
+      workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
+    } catch (error) {
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
+    }
+
+    const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
+    const abortController = new AbortController();
+    let timedOut = false;
+    const final = this.registry.runWithConcurrency(() =>
+      this.runClaudeTask({
+        input,
+        taskId,
+        runId,
+        initialSessionKey: sessionKey,
+        workingDirectory,
+        abortController,
+        isTimedOut: () => timedOut
+      })
+    );
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      abortController.abort("timeout");
+    }, timeoutMs);
+
+    this.registry.register({
+      taskId,
+      runId,
+      provider: "claude",
+      nodeRunId: input.nodeRunId,
+      workflowRunId: input.workflowRunId,
+      sessionKey,
+      startedAt: now,
+      abortController,
+      timeout,
+      final
+    });
+
+    return {
+      taskId,
+      runId,
+      sessionKey,
+      source: "claude",
+      status: "running",
+      updatedAt: now
+    };
+  }
+
+  waitForTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    return this.registry.waitForTask(input);
+  }
+
+  cancelTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    return this.registry.cancelTask(input);
+  }
+
+  private async runClaudeTask({
+    input,
+    taskId,
+    runId,
+    initialSessionKey,
+    workingDirectory,
+    abortController,
+    isTimedOut
+  }: {
+    input: StartAgentTaskInput;
+    taskId: string;
+    runId: string;
+    initialSessionKey: string;
+    workingDirectory: string;
+    abortController: AbortController;
+    isTimedOut: () => boolean;
+  }): Promise<AgentTaskResult> {
+    let sessionKey = initialSessionKey;
+    let finalMessage: SDKResultMessage | undefined;
+    const permissionProfile = normalizePermissionProfile(input.permissionProfile);
+    const sdkOptions: Options = {
+      abortController,
+      cwd: workingDirectory,
+      model: input.modelId,
+      permissionMode: mapClaudePermission(permissionProfile),
+      tools: mapClaudeAvailableTools(permissionProfile, input.tools),
+      allowedTools: mapClaudeTools(permissionProfile, input.tools),
+      outputFormat: input.outputSchema ? { type: "json_schema", schema: input.outputSchema } : undefined
+    };
+
+    try {
+      if (abortController.signal.aborted) {
+        return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
+      }
+
+      for await (const message of this.queryFn({ prompt: buildPromptEnvelope(input), options: sdkOptions })) {
+        if (hasSessionId(message)) {
+          sessionKey = message.session_id;
+        }
+        if (message.type === "result") {
+          finalMessage = message;
+        }
+      }
+    } catch (error) {
+      if (isAbortLikeError(error) || abortController.signal.aborted) {
+        return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
+      }
+      if (error instanceof AgentSdkError) {
+        return createTerminalTaskResult({
+          taskId,
+          runId,
+          sessionKey,
+          source: "claude",
+          status: "failed",
+          error: error.message
+        });
+      }
+      return createTerminalTaskResult({
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: "failed",
+        error: formatAgentSdkError("provider_error", getErrorMessage(error))
+      });
+    }
+
+    if (!finalMessage) {
+      return createTerminalTaskResult({
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: "failed",
+        error: formatAgentSdkError("provider_error", "SDK did not return a result message.")
+      });
+    }
+
+    if (finalMessage.subtype !== "success") {
+      return createTerminalTaskResult({
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: "failed",
+        error: formatAgentSdkError("provider_error", finalMessage.errors.join("; ") || finalMessage.subtype),
+        usage: mapClaudeUsage(input, finalMessage)
+      });
+    }
+
+    const output =
+      finalMessage.structured_output === undefined
+        ? finalMessage.result
+        : formatStructuredOutput(finalMessage.structured_output);
+    if (!validateOutputSchema(output, input.outputSchema)) {
+      return createTerminalTaskResult({
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: "failed",
+        error: formatAgentSdkError("invalid_output", "SDK output does not match outputSchema."),
+        usage: mapClaudeUsage(input, finalMessage)
+      });
+    }
+
+    return {
+      taskId,
+      runId,
+      sessionKey,
+      source: "claude",
+      status: "succeeded",
+      output,
+      usage: mapClaudeUsage(input, finalMessage),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  private failedStart(taskId: string, runId: string, sessionKey: string, error: string, updatedAt: string): StartedAgentTaskResult {
+    return {
+      taskId,
+      runId,
+      sessionKey,
+      source: "claude",
+      status: "failed",
+      error,
+      updatedAt
+    };
+  }
+
+  private cancelledResult(taskId: string, runId: string, sessionKey: string, timedOut: boolean): AgentTaskResult {
+    return createTerminalTaskResult({
+      taskId,
+      runId,
+      sessionKey,
+      source: "claude",
+      status: "cancelled",
+      error: timedOut ? formatAgentSdkError("timeout", "Task exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Task was cancelled.")
+    });
+  }
+}
+
+function mapClaudeUsage(input: StartAgentTaskInput, result: SDKResultMessage): OpenClawUsageFact {
+  const modelUsageEntries = Object.entries(result.modelUsage);
+  const inputTokens = modelUsageEntries.reduce(
+    (sum, [, usage]) => sum + usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
+    0
+  );
+  const outputTokens = modelUsageEntries.reduce((sum, [, usage]) => sum + usage.outputTokens, 0);
+
+  return {
+    id: `usage-${nanoid(10)}`,
+    modelId: input.modelId ?? modelUsageEntries[0]?.[0] ?? "claude",
+    inputTokens: inputTokens || readUsageNumber(result.usage, ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]),
+    outputTokens: outputTokens || readUsageNumber(result.usage, ["output_tokens"]),
+    costUsd: Number(result.total_cost_usd.toFixed(6)),
+    recordedAt: new Date().toISOString()
+  };
+}
+
+function readUsageNumber(usage: unknown, keys: string[]): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const record = usage as Record<string, unknown>;
+  return keys.reduce((sum, key) => sum + (typeof record[key] === "number" ? record[key] : 0), 0);
+}
+
+function hasSessionId(message: SDKMessage): message is SDKMessage & { session_id: string } {
+  return "session_id" in message && typeof message.session_id === "string";
+}
+
+function normalizeTimeout(value: number | undefined, defaultValue: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : defaultValue;
+}

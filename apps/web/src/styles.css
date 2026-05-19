@@ -1937,11 +1937,6 @@ dd {
   place-items: center;
 }
 
-.node-type-agent {
-  background: #e0f2f1;
-  color: var(--accent);
-}
-
 .node-type-manager {
   background: #e8e4ff;
   color: #5141a4;
@@ -3604,11 +3599,6 @@ textarea {
   background: #0e131b;
 }
 
-.node-type-agent {
-  color: #67e8f9;
-  background: rgb(8 145 178 / 0.16);
-}
-
 .node-type-manager,
 .node-type-manager_slot {
   color: #c4b5fd;
@@ -4029,11 +4019,6 @@ button:hover:not(:disabled) {
   background: #0f172a;
 }
 
-.node-type-agent {
-  color: #93c5fd;
-  background: rgb(59 130 246 / 0.16);
-}
-
 .node-type-loop {
   color: #bfdbfe;
   background: rgb(96 165 250 / 0.14);
@@ -4170,7 +4155,6 @@ body,
   background: #171b22;
 }
 
-.node-type-agent,
 .node-type-loop {
   color: #9ec5ff;
   background: #171d27;
@@ -4430,10 +4414,63 @@ html[data-theme="light"] .node-status {
   background: #f1f5f9;
 }
 
-html[data-theme="light"] .node-type-agent,
 html[data-theme="light"] .node-type-loop {
   color: var(--accent-strong);
   background: #eff6ff;
+}
+
+.workflow-node-openclaw_agent {
+  border-color: #7dd3fc;
+}
+
+.workflow-node-codex_agent {
+  border-color: #c4b5fd;
+}
+
+.workflow-node-claude_code_agent {
+  border-color: #f7c873;
+}
+
+.node-type-openclaw_agent {
+  color: #67e8f9;
+  background: rgb(8 145 178 / 0.16);
+}
+
+.node-type-codex_agent {
+  color: #c4b5fd;
+  background: rgb(124 58 237 / 0.16);
+}
+
+.node-type-claude_code_agent {
+  color: #facc15;
+  background: rgb(202 138 4 / 0.16);
+}
+
+html[data-theme="light"] .workflow-node-openclaw_agent {
+  border-color: #7dd3fc;
+}
+
+html[data-theme="light"] .workflow-node-codex_agent {
+  border-color: #c4b5fd;
+}
+
+html[data-theme="light"] .workflow-node-claude_code_agent {
+  border-color: #f7c873;
+}
+
+html[data-theme="light"] .node-type-openclaw_agent {
+  color: #0369a1;
+  background: #e0f2fe;
+}
+
+html[data-theme="light"] .node-type-codex_agent {
+  color: #6d28d9;
+  background: #f3e8ff;
+}
+
+html[data-theme="light"] .node-type-claude_code_agent {
+  color: #92400e;
+  background: #fef3c7;
 }
 
 html[data-theme="light"] .node-start-badge {

@@ -63,7 +63,7 @@ export class FileCuiStore {
         await this.writeStateUnlocked({
           companies,
           selectedCompanyId: seededCompanyId,
-          workflows: createDefaultWorkflows(now, seededCompanyId),
+          workflows: createDefaultWorkflows(now, seededCompanyId, this.defaultSdkWorkingDirectory()),
           workflowRuns: [],
           nodeRuns: [],
           events: [],
@@ -404,7 +404,7 @@ export class FileCuiStore {
           ...workflow,
           companyId: readScopedCompanyId(workflow.companyId, primaryCompanyId)
         }))
-      : createDefaultWorkflows(now, primaryCompanyId);
+      : createDefaultWorkflows(now, primaryCompanyId, this.defaultSdkWorkingDirectory());
     const workflowCompanyIds = new Map(normalizedWorkflows.map((workflow) => [workflow.id, workflow.companyId]));
     const normalizedRuns = Array.isArray(state.workflowRuns)
       ? state.workflowRuns.map((run) => ({
@@ -443,6 +443,10 @@ export class FileCuiStore {
       nodeRuns: state.nodeRuns.filter((item) => item.workflowRunId === workflowRunId),
       events: state.events.filter((item) => item.workflowRunId === workflowRunId)
     };
+  }
+
+  private defaultSdkWorkingDirectory(): string {
+    return resolve(dirname(this.filePath), "..");
   }
 
   private buildCompanyOverviews(state: CUIStoreState): CompanyOverview[] {

@@ -51,9 +51,13 @@ export interface Messages {
     yes: string;
   };
   defaults: {
-    agentLabel: string;
     agentName: string;
-    agentPrompt: string;
+    openClawAgentLabel: string;
+    openClawAgentPrompt: string;
+    codexAgentLabel: string;
+    codexAgentPrompt: string;
+    claudeCodeAgentLabel: string;
+    claudeCodeAgentPrompt: string;
     approvalInstructions: string;
     approvalLabel: string;
     approvalOwner: string;
@@ -275,9 +279,13 @@ export const messages: Record<Language, Messages> = {
       yes: "Yes"
     },
     defaults: {
-      agentLabel: "OpenClaw call",
       agentName: "agent",
-      agentPrompt: "Execute this CUI node through OpenClaw.",
+      openClawAgentLabel: "OpenClaw Agent",
+      openClawAgentPrompt: "Execute this CUI node through the selected OpenClaw agent.",
+      codexAgentLabel: "Codex Agent",
+      codexAgentPrompt: "Execute this CUI node through Codex SDK.",
+      claudeCodeAgentLabel: "Claude Code Agent",
+      claudeCodeAgentPrompt: "Execute this CUI node through Claude Code SDK.",
       approvalInstructions: "Review the merged output.",
       approvalLabel: "Approval",
       approvalOwner: "Owner",
@@ -397,7 +405,9 @@ export const messages: Record<Language, Messages> = {
       channels: "Channels"
     },
     nodeTypes: {
-      agent: "OpenClaw call",
+      openclaw_agent: "OpenClaw Agent",
+      codex_agent: "Codex Agent",
+      claude_code_agent: "Claude Code Agent",
       approval: "Approval",
       condition: "Condition",
       group: "Group",
@@ -570,9 +580,13 @@ export const messages: Record<Language, Messages> = {
       yes: "是"
     },
     defaults: {
-      agentLabel: "OpenClaw 调用",
       agentName: "agent",
-      agentPrompt: "通过 OpenClaw 执行这个 CUI 节点。",
+      openClawAgentLabel: "OpenClaw Agent",
+      openClawAgentPrompt: "通过选定的 OpenClaw Agent 执行这个 CUI 节点。",
+      codexAgentLabel: "Codex Agent",
+      codexAgentPrompt: "通过 Codex SDK 执行这个 CUI 节点。",
+      claudeCodeAgentLabel: "Claude Code Agent",
+      claudeCodeAgentPrompt: "通过 Claude Code SDK 执行这个 CUI 节点。",
       approvalInstructions: "审核汇总后的输出。",
       approvalLabel: "人工审批",
       approvalOwner: "负责人",
@@ -691,7 +705,9 @@ export const messages: Record<Language, Messages> = {
       channels: "Channel"
     },
     nodeTypes: {
-      agent: "OpenClaw 调用",
+      openclaw_agent: "OpenClaw Agent",
+      codex_agent: "Codex Agent",
+      claude_code_agent: "Claude Code Agent",
       approval: "人工审批",
       condition: "条件",
       group: "分组",

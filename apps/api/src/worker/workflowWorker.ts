@@ -1,27 +1,42 @@
 import { nanoid } from "nanoid";
 import type { OpenClawAdapter } from "@openclaw-cui/adapter";
-import type {
-  AgentNodeConfig,
-  ApprovalNodeConfig,
-  AgentTaskResult,
-  ConditionNodeConfig,
-  LoopNodeConfig,
-  ManagerNodeConfig,
-  OpenClawObjectRef,
-  ParallelAgentsNodeConfig,
-  SendNodeConfig,
-  StartAgentTaskInput,
-  SummaryNodeConfig,
-  WorkflowDefinition,
-  WorkflowEdge,
-  WorkflowNode,
-  WorkflowNodeEvent,
-  WorkflowNodeRun,
-  WorkflowRun
+import {
+  isAgentWorkflowNodeType,
+  resolveAgentNodeSource,
+  type AgentNodeConfig,
+  type AgentWorkflowNodeType,
+  type ApprovalNodeConfig,
+  type AgentTaskResult,
+  type ConditionNodeConfig,
+  type LoopNodeConfig,
+  type ManagerNodeConfig,
+  type OpenClawObjectRef,
+  type ParallelAgentsNodeConfig,
+  type SendNodeConfig,
+  type StartAgentTaskInput,
+  type SummaryNodeConfig,
+  type WorkflowDefinition,
+  type WorkflowEdge,
+  type WorkflowNode,
+  type WorkflowNodeEvent,
+  type WorkflowNodeRun,
+  type WorkflowRun
 } from "@openclaw-cui/shared";
 import type { FileCuiStore } from "../store/fileCuiStore";
 
-const executableTypes = new Set(["agent", "parallel_agents", "manager", "manager_slot", "loop", "condition", "summary", "approval", "send"]);
+const executableTypes = new Set([
+  "openclaw_agent",
+  "codex_agent",
+  "claude_code_agent",
+  "parallel_agents",
+  "manager",
+  "manager_slot",
+  "loop",
+  "condition",
+  "summary",
+  "approval",
+  "send"
+]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInnerOutHandle = "manager-slot-inner-out";
@@ -214,8 +229,8 @@ export class WorkflowWorker {
     const nodeRun = await this.createRunningNodeRun(workflow, run, node);
 
     try {
-      if (node.type === "agent") {
-        await this.executeAgentNode(workflow, run, node, nodeRun);
+      if (isAgentWorkflowNodeType(node.type)) {
+        await this.executeAgentNode(workflow, run, asAgentWorkflowNode(node), nodeRun);
       } else if (node.type === "parallel_agents") {
         await this.executeParallelAgentsNode(workflow, run, node, nodeRun);
       } else if (node.type === "manager") {
@@ -261,7 +276,7 @@ export class WorkflowWorker {
   private async executeAgentNode(
     workflow: WorkflowDefinition,
     run: WorkflowRun,
-    node: WorkflowNode,
+    node: WorkflowNode & { type: AgentWorkflowNodeType },
     nodeRun: WorkflowNodeRun
   ): Promise<void> {
     await this.executeAgentNodeWithInput(workflow, run, node, nodeRun, {
@@ -272,7 +287,7 @@ export class WorkflowWorker {
   private async executeAgentNodeWithInput(
     _workflow: WorkflowDefinition,
     run: WorkflowRun,
-    node: WorkflowNode,
+    node: WorkflowNode & { type: AgentWorkflowNodeType },
     nodeRun: WorkflowNodeRun,
     input: unknown
   ): Promise<AgentTaskResult> {
@@ -280,15 +295,20 @@ export class WorkflowWorker {
     const { result, openclawRef } = await this.runAgentTask({
       workflowRunId: run.id,
       nodeRunId: nodeRun.id,
+      source: resolveAgentNodeSource(node.type),
       agentId: config.agentId ?? "main",
       agentName: config.agentName,
       prompt: config.prompt,
       modelId: config.modelId,
+      permissionProfile: config.permissionProfile,
+      workingDirectory: config.workingDirectory,
+      timeoutMs: config.timeoutMs,
+      outputSchema: config.outputSchema,
       input,
       tools: config.tools
     });
     if (result.status !== "succeeded") {
-      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `OpenClaw agent run ${result.status}.`);
+      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
       return result;
     }
 
@@ -330,10 +350,15 @@ export class WorkflowWorker {
         this.runAgentTask({
           workflowRunId: run.id,
           nodeRunId: nodeRun.id,
+          source: "openclaw",
           agentId: agent.agentId ?? "main",
           agentName: agent.agentName,
           prompt: agent.prompt,
           modelId: agent.modelId,
+          permissionProfile: agent.permissionProfile,
+          workingDirectory: agent.workingDirectory,
+          timeoutMs: agent.timeoutMs,
+          outputSchema: agent.outputSchema,
           input: {
             upstream
           },
@@ -359,7 +384,7 @@ export class WorkflowWorker {
 
     const failed = outputs.find((output) => output.result.status !== "succeeded");
     if (failed) {
-      await this.failNode(nodeRun, failed.result.error ?? `OpenClaw agent run ${failed.result.status}.`);
+      await this.failNode(nodeRun, failed.result.error ?? `Agent task ${failed.result.status}.`);
       return;
     }
     await this.completeNode(
@@ -451,9 +476,9 @@ export class WorkflowWorker {
       };
       let result: AgentTaskResult;
 
-      if (assignment.target.type === "agent") {
+      if (isAgentWorkflowNodeType(assignment.target.type)) {
         const participantRun = await this.createRunningNodeRun(workflow, run, assignment.target);
-        result = await this.executeAgentNodeWithInput(workflow, run, assignment.target, participantRun, managerContext);
+        result = await this.executeAgentNodeWithInput(workflow, run, asAgentWorkflowNode(assignment.target), participantRun, managerContext);
       } else if (assignment.target.type === "manager_slot") {
         const slotRun = await this.createRunningNodeRun(workflow, run, assignment.target);
         result = await this.executeManagerSlotNode(workflow, run, assignment.target, slotRun, managerContext);
@@ -597,8 +622,8 @@ export class WorkflowWorker {
     upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
   ): Promise<void> {
     const nodeRun = await this.createRunningNodeRun(workflow, run, node);
-    if (node.type === "agent") {
-      await this.executeAgentNodeWithInput(workflow, run, node, nodeRun, { upstream });
+    if (isAgentWorkflowNodeType(node.type)) {
+      await this.executeAgentNodeWithInput(workflow, run, asAgentWorkflowNode(node), nodeRun, { upstream });
     } else if (node.type === "parallel_agents") {
       await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, upstream);
     } else if (node.type === "condition") {
@@ -760,6 +785,7 @@ export class WorkflowWorker {
       taskId: nodeRunId,
       runId: nodeRunId,
       sessionKey: `manager-slot:${nodeRunId}`,
+      source: "openclaw",
       status,
       output,
       error,
@@ -820,6 +846,7 @@ export class WorkflowWorker {
       const { result, openclawRef } = await this.runAgentTask({
         workflowRunId: run.id,
         nodeRunId: nodeRun.id,
+        source: "openclaw",
         agentId: "main",
         agentName: "summary-agent",
         prompt: config.prompt ?? "Summarize upstream node outputs.",
@@ -830,7 +857,7 @@ export class WorkflowWorker {
         tools: []
       });
       if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `OpenClaw agent run ${result.status}.`);
+        await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
         return;
       }
       await this.completeNode({ ...nodeRun, openclawRef, usage: result.usage }, result.output ?? "", openclawRef);
@@ -1316,8 +1343,9 @@ export class WorkflowWorker {
 
   private async runAgentTask(input: StartAgentTaskInput): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {
     const started = await this.adapter.startAgentTask(input);
+    const source = started.source;
     const openclawRef: OpenClawObjectRef = {
-      source: "openclaw",
+      source,
       sourceId: started.taskId,
       sourceUpdatedAt: started.updatedAt,
       taskId: started.taskId,
@@ -1337,16 +1365,27 @@ export class WorkflowWorker {
       };
     }
 
+    const result = await this.adapter.waitForAgentTask({
+      nodeRunId: input.nodeRunId,
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source,
+      agentId: input.agentId,
+      modelId: input.modelId
+    });
+
     return {
-      result: await this.adapter.waitForAgentTask({
-        nodeRunId: input.nodeRunId,
-        taskId: started.taskId,
-        runId: started.runId,
-        sessionKey: started.sessionKey,
-        agentId: input.agentId,
-        modelId: input.modelId
-      }),
-      openclawRef
+      result,
+      openclawRef: {
+        ...openclawRef,
+        sourceId: result.taskId,
+        sourceUpdatedAt: result.updatedAt,
+        taskId: result.taskId,
+        runId: result.runId,
+        sessionKey: result.sessionKey,
+        usageRef: result.usage?.id
+      }
     };
   }
 
@@ -1367,6 +1406,13 @@ export class WorkflowWorker {
       openclawRef
     });
   }
+}
+
+function asAgentWorkflowNode(node: WorkflowNode): WorkflowNode & { type: AgentWorkflowNodeType } {
+  if (!isAgentWorkflowNodeType(node.type)) {
+    throw new Error(`Node type ${node.type} is not an agent node.`);
+  }
+  return node as WorkflowNode & { type: AgentWorkflowNodeType };
 }
 
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {

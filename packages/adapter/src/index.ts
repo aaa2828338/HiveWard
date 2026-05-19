@@ -16,6 +16,7 @@ import type {
 } from "@openclaw-cui/shared";
 import { GatewayOpenClawAdapter } from "./gateway-adapter";
 import { resolveGatewayAdapterConfig } from "./gateway-config";
+import { createAgentSdkRuntime, isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkRuntime } from "./sdk-runtime";
 
 export interface OpenClawAdapter {
   listModels(): Promise<OpenClawModel[]>;
@@ -134,6 +135,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
       taskId,
       runId,
       sessionKey: `oc-session-${input.workflowRunId}`,
+      source: "openclaw",
       status: "succeeded",
       output: `${input.agentName} completed through OpenClaw adapter. Prompt boundary stayed outside CUI runtime.`,
       error: undefined,
@@ -152,6 +154,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
       taskId,
       runId,
       sessionKey: `oc-session-${input.workflowRunId}`,
+      source: "openclaw",
       status: "running",
       updatedAt: now
     };
@@ -174,15 +177,69 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
   }
 }
 
-export function createOpenClawAdapter(): OpenClawAdapter {
+export interface CreateOpenClawAdapterOptions {
+  sdkWorkspaceRoot: string;
+}
+
+export class SdkRoutingOpenClawAdapter implements OpenClawAdapter {
+  constructor(
+    private readonly baseAdapter: OpenClawAdapter,
+    private readonly sdkRuntime: AgentSdkRuntime
+  ) {}
+
+  listModels(): Promise<OpenClawModel[]> {
+    return this.baseAdapter.listModels();
+  }
+
+  listAgents(): Promise<OpenClawAgent[]> {
+    return this.baseAdapter.listAgents();
+  }
+
+  listTools(): Promise<OpenClawTool[]> {
+    return this.baseAdapter.listTools();
+  }
+
+  listChannels(): Promise<OpenClawChannel[]> {
+    return this.baseAdapter.listChannels();
+  }
+
+  listSessions(): Promise<OpenClawSessionSummary[]> {
+    return this.baseAdapter.listSessions();
+  }
+
+  listTasks(): Promise<OpenClawTaskSummary[]> {
+    return this.baseAdapter.listTasks();
+  }
+
+  getRuntimeOverview(): Promise<RuntimeOverview> {
+    return this.baseAdapter.getRuntimeOverview();
+  }
+
+  startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+    return isAgentSdkProvider(input.source) ? this.sdkRuntime.startTask(input) : this.baseAdapter.startAgentTask(input);
+  }
+
+  waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    return input.source === "claude" || input.source === "codex"
+      ? this.sdkRuntime.waitForTask(input)
+      : this.baseAdapter.waitForAgentTask(input);
+  }
+
+  sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult> {
+    return this.baseAdapter.sendChannelMessage(input);
+  }
+}
+
+export function createOpenClawAdapter(options: CreateOpenClawAdapterOptions): OpenClawAdapter {
   const mode = (process.env.OPENCLAW_ADAPTER ?? "auto").trim().toLowerCase();
+  const sdkRuntime = createAgentSdkRuntime(readAgentSdkRuntimeOptions(options.sdkWorkspaceRoot));
   if (mode === "mock") {
-    return new MockOpenClawAdapter();
+    return new SdkRoutingOpenClawAdapter(new MockOpenClawAdapter(), sdkRuntime);
   }
 
   const gatewayConfig = resolveGatewayAdapterConfig();
   if (gatewayConfig) {
-    return new GatewayOpenClawAdapter(gatewayConfig);
+    return new SdkRoutingOpenClawAdapter(new GatewayOpenClawAdapter(gatewayConfig), sdkRuntime);
   }
 
   if (mode === "real" || mode === "gateway") {
@@ -191,9 +248,10 @@ export function createOpenClawAdapter(): OpenClawAdapter {
     );
   }
 
-  return new MockOpenClawAdapter();
+  return new SdkRoutingOpenClawAdapter(new MockOpenClawAdapter(), sdkRuntime);
 }
 
 export { GatewayOpenClawAdapter } from "./gateway-adapter";
 export { GatewayRequestError, GatewaySession } from "./gateway-client";
 export { resolveGatewayAdapterConfig, type GatewayAdapterConfig } from "./gateway-config";
+export { createAgentSdkRuntime, isAgentSdkProvider } from "./sdk-runtime";

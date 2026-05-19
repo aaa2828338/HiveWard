@@ -4,6 +4,7 @@ import {
   createBlankWorkflow,
   createDefaultWorkflows,
   createManagerDrivenHtmlWorkflow,
+  createMultiAgentCompatibilityWorkflow,
   createRealThreeAgentWorkflow,
   createStarterWorkflow,
   hydrateImportedWorkflow,
@@ -19,9 +20,9 @@ describe("workflow contracts", () => {
     const workflow = createStarterWorkflow("2026-05-18T00:00:00.000Z");
 
     expect(workflow.nodes.map((node) => node.type)).toEqual([
-      "agent",
-      "agent",
-      "agent",
+      "openclaw_agent",
+      "openclaw_agent",
+      "openclaw_agent",
       "summary",
       "approval",
       "send"
@@ -35,7 +36,7 @@ describe("workflow contracts", () => {
     const workflow = createRealThreeAgentWorkflow("2026-05-18T00:00:00.000Z");
 
     expect(workflow.nodes.map((node) => node.id)).toEqual(["brief", "plan", "verify"]);
-    expect(workflow.nodes.every((node) => node.type === "agent")).toBe(true);
+    expect(workflow.nodes.every((node) => node.type === "openclaw_agent")).toBe(true);
     expect(workflow.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
       "brief->plan",
       "plan->verify"
@@ -54,10 +55,40 @@ describe("workflow contracts", () => {
     expect(workflow.companyId).toBe(defaultCompanyId);
   });
 
+  it("creates a multi-agent compatibility smoke workflow", () => {
+    const workflow = createMultiAgentCompatibilityWorkflow(
+      "2026-05-18T00:00:00.000Z",
+      defaultCompanyId,
+      "D:\\openclaw-cui"
+    );
+
+    expect(workflow.nodes.map((node) => node.type)).toEqual([
+      "openclaw_agent",
+      "codex_agent",
+      "claude_code_agent",
+      "summary",
+      "openclaw_agent"
+    ]);
+    expect(workflow.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
+      "compat-openclaw-brief->compat-codex-check",
+      "compat-openclaw-brief->compat-claude-check",
+      "compat-codex-check->compat-merge",
+      "compat-claude-check->compat-merge",
+      "compat-merge->compat-openclaw-verify"
+    ]);
+    expect((workflow.nodes.find((node) => node.id === "compat-codex-check")!.config as AgentNodeConfig).workingDirectory).toBe(
+      "D:\\openclaw-cui"
+    );
+    expect((workflow.nodes.find((node) => node.id === "compat-claude-check")!.config as AgentNodeConfig).permissionProfile).toBe(
+      "read_only"
+    );
+  });
+
   it("seeds the default workflow set", () => {
     expect(createDefaultWorkflows("2026-05-18T00:00:00.000Z").map((workflow) => workflow.id)).toEqual([
       "starter-workflow",
       "real-three-agent-workflow",
+      "multi-agent-compatibility-workflow",
       "manager-driven-html-workflow"
     ]);
   });
