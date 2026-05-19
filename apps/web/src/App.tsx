@@ -10,12 +10,14 @@ import {
   Languages,
   LayoutTemplate,
   Loader2,
+  Moon,
   Play,
   Plus,
   RefreshCw,
   Radio,
   Save,
   ShieldAlert,
+  Sun,
   Upload
 } from "lucide-react";
 import type {
@@ -51,8 +53,11 @@ const sidebarIcons = {
   channels: Radio
 };
 
+type AppTheme = "light" | "dark";
+
 export function App() {
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
+  const [theme, setTheme] = useState<AppTheme>(() => getInitialTheme());
   const [section, setSection] = useState<AppSectionId>("workflow");
   const [companies, setCompanies] = useState<CompanyOverview[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
@@ -93,6 +98,11 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("openclaw-cui-language", language);
   }, [language]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem("openclaw-cui-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     if (selectedCompanyId) return;
@@ -490,6 +500,10 @@ export function App() {
     setLanguage((current) => (current === "zh-CN" ? "en" : "zh-CN"));
   }, []);
 
+  const toggleTheme = useCallback(() => {
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }, []);
+
   useEffect(() => {
     if (!companyMenuOpen) return;
 
@@ -794,6 +808,15 @@ export function App() {
               <Languages size={16} />
               {language === "zh-CN" ? "ZH" : "EN"}
             </button>
+            <button
+              type="button"
+              title={theme === "dark" ? (language === "zh-CN" ? "切换到白天模式" : "Switch to day mode") : (language === "zh-CN" ? "切换到夜晚模式" : "Switch to night mode")}
+              aria-label={theme === "dark" ? (language === "zh-CN" ? "切换到白天模式" : "Switch to day mode") : (language === "zh-CN" ? "切换到夜晚模式" : "Switch to night mode")}
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+              {theme === "dark" ? (language === "zh-CN" ? "日间" : "Day") : (language === "zh-CN" ? "夜间" : "Night")}
+            </button>
           </div>
         </header>
 
@@ -818,6 +841,13 @@ function companyMonogram(company?: Pick<CompanyOverview, "logoLabel" | "name">):
       .toUpperCase();
   }
   return "??";
+}
+
+function getInitialTheme(): AppTheme {
+  const stored = localStorage.getItem("openclaw-cui-theme");
+  if (stored === "light" || stored === "dark") return stored;
+  if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
+  return "dark";
 }
 
 function defaultWidgetTitle(type: DashboardWidgetType, t: Messages): string {
