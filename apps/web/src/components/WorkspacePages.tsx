@@ -41,6 +41,110 @@ import type {
 } from "@openclaw-cui/shared";
 import type { Language, Messages } from "../lib/i18n";
 
+type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
+type IdentityKind = "model" | "agent" | "channel" | "provider";
+
+type IdentitySpec = {
+  key: string;
+  label: string;
+  initials: string;
+  logoUrl?: string;
+};
+
+const OPENAI_PRODUCT_ICON =
+  "https://images.ctfassets.net/j22is2dtoxu1/intercom-img-d177d076c9a5453052925143/49d5d812b0a6fcc20a14faa8c629d9fb/icon-ios-1024_401x.png";
+const OPENCLAW_ICON = "/favicon.svg";
+
+function lobeIcon(name: string): string {
+  return `https://cdn.jsdelivr.net/npm/@lobehub/icons-static-svg@latest/icons/${name}.svg`;
+}
+
+function simpleIcon(name: string): string {
+  return `https://cdn.simpleicons.org/${name}`;
+}
+
+const KNOWN_IDENTITIES: Record<string, { label: string; initials: string; logoUrl?: string }> = {
+  anthropic: { label: "Anthropic", initials: "A", logoUrl: lobeIcon("claude-color") },
+  arcee: { label: "Arcee", initials: "AR", logoUrl: lobeIcon("arcee-color") },
+  baidu: { label: "Baidu", initials: "BD", logoUrl: lobeIcon("baidu-color") },
+  byteplus: { label: "BytePlus", initials: "BP", logoUrl: lobeIcon("bytedance-color") },
+  cerebras: { label: "Cerebras", initials: "CB", logoUrl: lobeIcon("cerebras-color") },
+  chutes: { label: "Chutes", initials: "CH", logoUrl: OPENCLAW_ICON },
+  clickclack: { label: "ClickClack", initials: "CC", logoUrl: OPENCLAW_ICON },
+  cloudflare: { label: "Cloudflare", initials: "CF", logoUrl: lobeIcon("cloudflare-color") },
+  codex: { label: "Codex", initials: "CX", logoUrl: lobeIcon("codex-color") },
+  deepseek: { label: "DeepSeek", initials: "DS", logoUrl: "https://cdn.deepseek.com/chat/icon.png" },
+  deepinfra: { label: "DeepInfra", initials: "DI", logoUrl: lobeIcon("deepinfra-color") },
+  discord: { label: "Discord", initials: "D", logoUrl: simpleIcon("discord") },
+  feishu: { label: "Feishu", initials: "FS", logoUrl: "https://www.larksuite.com/favicon.ico" },
+  fireworks: { label: "Fireworks", initials: "FW", logoUrl: lobeIcon("fireworks-color") },
+  github: { label: "GitHub", initials: "GH", logoUrl: simpleIcon("github") },
+  "github-copilot": { label: "GitHub Copilot", initials: "GC", logoUrl: lobeIcon("githubcopilot") },
+  google: { label: "Google", initials: "G", logoUrl: lobeIcon("google-color") },
+  "google-chat": {
+    label: "Google Chat",
+    initials: "GC",
+    logoUrl: "https://fonts.gstatic.com/s/i/productlogos/chat_2020q4/v1/web-64dp/logo_chat_2020q4_color_2x_web_64dp.png"
+  },
+  "google-vertex": { label: "Google Vertex AI", initials: "GV", logoUrl: lobeIcon("vertexai-color") },
+  groq: { label: "Groq", initials: "GQ", logoUrl: lobeIcon("groq") },
+  huggingface: { label: "Hugging Face", initials: "HF", logoUrl: lobeIcon("huggingface-color") },
+  imessage: { label: "iMessage", initials: "IM", logoUrl: simpleIcon("imessage") },
+  irc: { label: "IRC", initials: "IR", logoUrl: simpleIcon("liberadotchat") },
+  kilocode: { label: "Kilo Code", initials: "KC", logoUrl: lobeIcon("kilocode") },
+  line: { label: "LINE", initials: "LN", logoUrl: "https://line.me/static/img/apple-touch-icon-180x180.png" },
+  litellm: { label: "LiteLLM", initials: "LL", logoUrl: "https://docs.litellm.ai/img/favicon.ico" },
+  lmstudio: { label: "LM Studio", initials: "LM", logoUrl: lobeIcon("lmstudio") },
+  matrix: { label: "Matrix", initials: "MX", logoUrl: "https://matrix.org/assets/favicon.svg" },
+  mattermost: { label: "Mattermost", initials: "MM", logoUrl: simpleIcon("mattermost") },
+  "microsoft-teams": {
+    label: "Microsoft Teams",
+    initials: "MT",
+    logoUrl: "https://static2.sharepointonline.com/files/fabric/assets/brand-icons/product/svg/teams_48x1.svg"
+  },
+  "microsoft-foundry": { label: "Microsoft Foundry", initials: "MF", logoUrl: lobeIcon("microsoft-color") },
+  minimax: { label: "MiniMax", initials: "MM", logoUrl: "/brand/minimax.svg" },
+  mistral: { label: "Mistral AI", initials: "MI", logoUrl: lobeIcon("mistral-color") },
+  moonshot: { label: "Moonshot", initials: "MS", logoUrl: lobeIcon("moonshot") },
+  "nextcloud-talk": { label: "Nextcloud Talk", initials: "NT", logoUrl: simpleIcon("nextcloud") },
+  nostr: { label: "Nostr", initials: "NO", logoUrl: "https://nostr.com/favicon.ico" },
+  nvidia: { label: "NVIDIA", initials: "NV", logoUrl: lobeIcon("nvidia-color") },
+  ollama: { label: "Ollama", initials: "OL", logoUrl: "https://ollama.com/public/ollama.png" },
+  openai: { label: "OpenAI", initials: "OA", logoUrl: OPENAI_PRODUCT_ICON },
+  "openai-codex": { label: "OpenAI Codex", initials: "OC", logoUrl: OPENAI_PRODUCT_ICON },
+  opencode: { label: "OpenCode", initials: "OC", logoUrl: lobeIcon("opencode") },
+  openrouter: { label: "OpenRouter", initials: "OR", logoUrl: lobeIcon("openrouter") },
+  "qa-channel": { label: "QA Channel", initials: "QA", logoUrl: OPENCLAW_ICON },
+  qianfan: { label: "Qianfan", initials: "QF", logoUrl: lobeIcon("baiducloud-color") },
+  qq: { label: "QQ", initials: "QQ", logoUrl: simpleIcon("qq") },
+  qwen: { label: "Qwen", initials: "QW", logoUrl: lobeIcon("qwen-color") },
+  signal: { label: "Signal", initials: "SG", logoUrl: "https://signal.org/assets/images/favicon/favicon.svg" },
+  sglang: {
+    label: "SGLang",
+    initials: "SG",
+    logoUrl: "https://mintcdn.com/lmsysorg/iZdDMbLWP1BLEIzC/favicon.png?fit=max&auto=format&n=iZdDMbLWP1BLEIzC&q=85&s=5524ba9694253eabf4da70fafa1db208"
+  },
+  slack: { label: "Slack", initials: "SL", logoUrl: "https://slack.com/img/icons/app-256.png" },
+  stepfun: { label: "StepFun", initials: "SF", logoUrl: lobeIcon("stepfun-color") },
+  synology: { label: "Synology Chat", initials: "SY", logoUrl: simpleIcon("synology") },
+  synthetic: { label: "Synthetic", initials: "SY", logoUrl: OPENCLAW_ICON },
+  telegram: { label: "Telegram", initials: "TG", logoUrl: "https://telegram.org/img/website_icon.svg" },
+  tencent: { label: "Tencent", initials: "TE", logoUrl: lobeIcon("tencent-color") },
+  tlon: { label: "Tlon", initials: "TL", logoUrl: "https://tlon.io/favicon.ico" },
+  together: { label: "Together AI", initials: "TO", logoUrl: lobeIcon("together-color") },
+  twitch: { label: "Twitch", initials: "TW", logoUrl: simpleIcon("twitch") },
+  venice: { label: "Venice AI", initials: "VE", logoUrl: lobeIcon("venice-color") },
+  vercel: { label: "Vercel", initials: "VC", logoUrl: lobeIcon("vercel") },
+  vllm: { label: "vLLM", initials: "VL", logoUrl: lobeIcon("vllm-color") },
+  volcengine: { label: "Volcengine", initials: "VE", logoUrl: lobeIcon("volcengine-color") },
+  whatsapp: { label: "WhatsApp", initials: "WA", logoUrl: "https://static.whatsapp.net/rsrc.php/y1/r/FJbTMJqMap7.svg" },
+  xai: { label: "xAI", initials: "XA", logoUrl: lobeIcon("xai") },
+  xiaomi: { label: "Xiaomi", initials: "MI", logoUrl: simpleIcon("xiaomi") },
+  zai: { label: "ZAI", initials: "ZA", logoUrl: lobeIcon("zai") },
+  zalo: { label: "Zalo", initials: "ZA", logoUrl: "https://stc-zaloprofile.zdn.vn/favicon.ico" },
+  "zalo-user": { label: "Zalo User", initials: "ZU", logoUrl: "https://stc-zaloprofile.zdn.vn/favicon.ico" }
+};
+
 type TraceIssue = {
   key: string;
   index: number;
@@ -49,7 +153,8 @@ type TraceIssue = {
   depth: number;
   node?: WorkflowNode;
   nodeRun?: WorkflowNodeRun;
-  issueStatus: "completed" | "in_progress" | "pending";
+  issueStatus: TraceIssueStatus;
+  statusLabel: string;
   outputPreview: string;
   outputBody?: string;
   events: WorkflowNodeEvent[];
@@ -293,7 +398,7 @@ export function RunsPage({
                   <div className="trace-issue-main">
                     <div className="trace-issue-topline">
                       <strong>{issue.label}</strong>
-                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{labelForIssueStatus(issue.issueStatus, t)}</span>
+                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{issue.statusLabel}</span>
                     </div>
                     <span>{issue.outputPreview}</span>
                   </div>
@@ -307,19 +412,9 @@ export function RunsPage({
           {activeIssue ? (
             <>
               <div className="trace-column-header">
-                <div>
-                  <h3>{t.trace.modelOutput}</h3>
-                  <p>{t.trace.currentIssue(activeIssue.label)}</p>
-                </div>
+                <h3>{t.trace.modelOutput}</h3>
               </div>
               <div className="trace-output-stream">
-                <TraceBubble role="system" title={t.trace.flowStarted} body={activeRun ? formatDateTime(activeRun.run.startedAt, language) : "-"} />
-                {activeIssue.nodeRun?.startedAt && (
-                  <TraceBubble role="system" title={t.status[activeIssue.nodeRun.status]} body={formatDateTime(activeIssue.nodeRun.startedAt, language)} />
-                )}
-                {activeIssue.events.map((event) => (
-                  <TraceBubble key={event.id} role="system" title={t.events[event.type]} body={event.message} />
-                ))}
                 {activeIssue.outputBody !== undefined ? (
                   <TraceBubble
                     role={activeIssue.kind === "slot_input" ? "system" : "assistant"}
@@ -333,7 +428,6 @@ export function RunsPage({
                 ) : (
                   <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
                 )}
-                {activeRun?.run.endedAt && <TraceBubble role="system" title={t.trace.flowFinished} body={formatDateTime(activeRun.run.endedAt, language)} />}
               </div>
             </>
           ) : (
@@ -645,11 +739,8 @@ export function ModelsPage({
               return (
                 <article key={model.id} className={`model-card ${isDefault ? "default" : ""}`}>
                   <div className="model-card-head">
-                    <span className="model-provider-badge">{model.provider}</span>
+                    <IdentityTitle kind="model" id={model.provider} label={model.label} />
                     {isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
-                  </div>
-                  <div className="model-card-main">
-                    <strong>{model.label}</strong>
                   </div>
                   <div className="model-card-usage" aria-label={modelCopy.usage}>
                     <div className="model-usage-head">
@@ -723,6 +814,7 @@ export function ModelsPage({
                 options={filteredProviders}
                 selectedId={selectedProvider?.id}
                 emptyText={wizardCopy.empty}
+                identityKind="provider"
                 onSelect={(provider) => {
                   setSelectedProviderId(provider.id);
                   setSelectedMethodId("");
@@ -746,6 +838,8 @@ export function ModelsPage({
                 options={selectedProvider.methods}
                 selectedId={selectedMethodId}
                 emptyText={wizardCopy.empty}
+                identityKind="provider"
+                getIdentityId={() => selectedProvider.id}
                 onSelect={(method) => {
                   setSelectedMethodId(method.id);
                   setModelStep("details");
@@ -843,11 +937,10 @@ export function AgentsPage({
             configuredAgents.map((agent) => (
               <article key={agent.id} className={`model-card ${agent.isDefault ? "default" : ""}`}>
                 <div className="model-card-head">
-                  <span className="model-provider-badge">{agent.id}</span>
+                  <IdentityTitle kind="agent" id={agent.id} label={agent.name ?? agent.id} />
                   {agent.isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
                 </div>
                 <div className="model-card-main">
-                  <strong>{agent.name ?? agent.id}</strong>
                   <code>{agent.agentDir}</code>
                 </div>
                 <div className="model-card-meta">
@@ -1217,13 +1310,12 @@ export function ChannelsPage({
               channel.accounts.map((account) => (
                 <article key={`${channel.id}:${account.id}`} className={`model-card ${account.isDefault ? "default" : ""}`}>
                   <div className="model-card-head">
-                    <span className="model-provider-badge">{channel.id}</span>
+                    <IdentityTitle kind="channel" id={channel.id} label={account.name ?? `${channel.label} / ${account.id}`} />
                     <span className={`status-pill ${account.enabled && channel.enabled ? "status-succeeded" : "status-cancelled"}`}>
                       {account.enabled && channel.enabled ? copy.enabled : copy.disabled}
                     </span>
                   </div>
                   <div className="model-card-main">
-                    <strong>{account.name ?? `${channel.label} / ${account.id}`}</strong>
                     <code>{`${channel.id}:${account.id}`}</code>
                   </div>
                   <div className="model-card-meta">
@@ -1261,6 +1353,7 @@ export function ChannelsPage({
                 options={filteredChannels}
                 selectedId={selectedChannel?.id}
                 emptyText={wizardCopy.empty}
+                identityKind="channel"
                 onSelect={(channel) => {
                   setSelectedChannelId(channel.id);
                   setChannelStep("details");
@@ -1421,6 +1514,113 @@ function mergeModelCatalogOptions(fields: OpenClawWizardField[], providerId: str
   });
 }
 
+function IdentityTitle({ kind, id, label }: { kind: IdentityKind; id: string; label: string }) {
+  return (
+    <div className="identity-title">
+      <IdentityMark kind={kind} id={id} label={label} />
+      <strong>{label}</strong>
+    </div>
+  );
+}
+
+function IdentityMark({ kind, id, label }: { kind: IdentityKind; id: string; label: string }) {
+  const identity = identitySpecFor(kind, id, label);
+  const [logoFailed, setLogoFailed] = useState(false);
+  useEffect(() => setLogoFailed(false), [identity.logoUrl]);
+  const hasLogo = Boolean(identity.logoUrl && !logoFailed);
+  return (
+    <span
+      className={`identity-mark identity-${kind} identity-${identity.key} ${hasLogo ? "identity-has-logo" : "identity-avatar"}`}
+      title={identity.label}
+      aria-label={identity.label}
+    >
+      {hasLogo ? (
+        <img
+          src={identity.logoUrl}
+          alt=""
+          aria-hidden="true"
+          onError={(event) => {
+            event.currentTarget.style.display = "none";
+            setLogoFailed(true);
+          }}
+        />
+      ) : (
+        <span className="identity-initials" aria-hidden="true">
+          {identity.initials}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function identitySpecFor(kind: IdentityKind, id: string, label: string): IdentitySpec {
+  if (kind === "agent") {
+    return {
+      key: sanitizeIdentityKey(id || label),
+      label,
+      initials: initialsFor(label || id, "AG")
+    };
+  }
+
+  const normalized = normalizeIdentityKey(id || label);
+  const known = KNOWN_IDENTITIES[normalized] ?? KNOWN_IDENTITIES[normalized.replace(/_/g, "-")];
+  if (known) {
+    return {
+      key: sanitizeIdentityKey(normalized),
+      label: known.label,
+      initials: known.initials,
+      logoUrl: known.logoUrl
+    };
+  }
+
+  return {
+    key: sanitizeIdentityKey(normalized || label),
+    label: label || id,
+    initials: initialsFor(label || id, kind === "channel" ? "CH" : "AI")
+  };
+}
+
+function normalizeIdentityKey(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, "/")
+    .split("/")
+    .find(Boolean) ?? value.trim().toLowerCase();
+
+  const compact = normalized.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (compact.includes("openai")) return "openai";
+  if (compact.includes("codex")) return "openai";
+  if (compact.includes("deepseek")) return "deepseek";
+  if (compact.includes("minimax")) return "minimax";
+  if (compact.includes("claude") || compact.includes("anthropic")) return "anthropic";
+  if (compact.includes("feishu") || compact.includes("lark")) return "feishu";
+  if (compact.includes("google-chat") || compact.includes("googlechat")) return "google-chat";
+  if (compact.includes("mattermost")) return "mattermost";
+  if (compact.includes("nostr")) return "nostr";
+  if (compact.includes("tlon")) return "tlon";
+  if (compact.includes("whatsapp") || compact.includes("whats-app")) return "whatsapp";
+  if (compact.includes("zalo-user") || compact.includes("zalouser")) return "zalo-user";
+  if (compact.includes("zalo")) return "zalo";
+  if (compact.includes("microsoft-teams") || compact.includes("teams")) return "microsoft-teams";
+  if (compact.includes("nextcloud")) return "nextcloud-talk";
+  if (compact.includes("qa-channel")) return "qa-channel";
+  if (compact.includes("synology")) return "synology";
+  if (compact.includes("qq")) return "qq";
+  return compact;
+}
+
+function sanitizeIdentityKey(value: string): string {
+  return normalizeIdentityKey(value).replace(/[^a-z0-9_-]/g, "-") || "generic";
+}
+
+function initialsFor(value: string, fallback: string): string {
+  const clean = value.trim().replace(/[_/\\.-]+/g, " ");
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
+  return (parts[0]?.slice(0, 2) || fallback).toUpperCase();
+}
+
 function WizardPath({ items }: { items: Array<string | undefined> }) {
   const visibleItems = items.filter((item): item is string => Boolean(item?.trim()));
   return (
@@ -1439,11 +1639,15 @@ function WizardChoiceList<T extends { id: string; label: string; hint?: string }
   options,
   selectedId,
   emptyText,
+  identityKind,
+  getIdentityId,
   onSelect
 }: {
   options: T[];
   selectedId?: string;
   emptyText: string;
+  identityKind?: IdentityKind;
+  getIdentityId?: (option: T) => string;
   onSelect: (option: T) => void;
 }) {
   if (options.length === 0) return <div className="empty-state page-empty">{emptyText}</div>;
@@ -1457,6 +1661,7 @@ function WizardChoiceList<T extends { id: string; label: string; hint?: string }
           className={`wizard-option ${option.id === selectedId ? "selected" : ""}`}
           onClick={() => onSelect(option)}
         >
+          {identityKind && <IdentityMark kind={identityKind} id={getIdentityId?.(option) ?? option.id} label={option.label} />}
           <span className="wizard-option-main">
             <strong>{option.label}</strong>
             <span>{option.hint ?? option.id}</span>
@@ -1627,6 +1832,7 @@ function buildTraceIssues(
 
     const slotLabel = nodeRun.nodeLabel || node.config.label || nodeRun.nodeId;
     const slotEvents = activeRun.events.filter((event) => event.nodeRunId === nodeRun.id);
+    const slotInputStatus = nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status);
     issues.push({
       key: `${nodeRun.id}:input`,
       index: issueIndex,
@@ -1635,7 +1841,8 @@ function buildTraceIssues(
       depth: 0,
       node,
       nodeRun,
-      issueStatus: nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status),
+      issueStatus: slotInputStatus,
+      statusLabel: nodeRun.startedAt ? t.trace.completed : statusLabelForNodeRun(nodeRun.status, t),
       outputPreview: t.trace.managerInputPreview,
       outputBody: t.trace.managerInputBody,
       events: slotEvents.filter((event) => event.type !== "node.run.completed")
@@ -1653,6 +1860,7 @@ function buildTraceIssues(
       childRunIndex += 1;
     }
 
+    const slotOutputStatus = toSlotOutputIssueStatus(nodeRun);
     issues.push({
       key: `${nodeRun.id}:output`,
       index: issueIndex,
@@ -1661,7 +1869,8 @@ function buildTraceIssues(
       depth: 0,
       node,
       nodeRun,
-      issueStatus: toSlotOutputIssueStatus(nodeRun),
+      issueStatus: slotOutputStatus,
+      statusLabel: labelForIssueStatus(slotOutputStatus, t),
       outputPreview: nodeRun.output === undefined ? t.trace.waitingNestedNodes : summarizeOutput(nodeRun.output, t),
       events: slotEvents
     });
@@ -1726,6 +1935,7 @@ function createNodeTraceIssue(
     node,
     nodeRun,
     issueStatus: toIssueStatus(nodeRun.status),
+    statusLabel: statusLabelForNodeRun(nodeRun.status, t),
     outputPreview: summarizeOutput(nodeRun.output, t),
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
@@ -1740,6 +1950,7 @@ function createPendingTraceIssue(node: WorkflowNode, index: number, depth: numbe
     depth,
     node,
     issueStatus: "pending",
+    statusLabel: t.trace.pending,
     outputPreview: summarizeOutput(undefined, t),
     events: []
   };
@@ -1755,19 +1966,23 @@ function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind:
     depth: 0,
     node,
     issueStatus: "pending",
+    statusLabel: t.trace.pending,
     outputPreview: isInput ? t.trace.managerInputWaiting : t.trace.waitingNestedNodes,
     events: []
   };
 }
 
-function toIssueStatus(status?: WorkflowNodeRunStatus): "completed" | "in_progress" | "pending" {
-  if (status === "running" || status === "waiting_approval") return "in_progress";
+function toIssueStatus(status?: WorkflowNodeRunStatus): TraceIssueStatus {
+  if (status === "queued" || status === "running" || status === "waiting_approval") return "in_progress";
   if (status === "succeeded" || status === "skipped") return "completed";
+  if (status === "failed" || status === "cancelled") return "failed";
   return "pending";
 }
 
-function toSlotOutputIssueStatus(nodeRun: WorkflowNodeRun): "completed" | "pending" {
+function toSlotOutputIssueStatus(nodeRun: WorkflowNodeRun): TraceIssueStatus {
+  if (nodeRun.status === "failed" || nodeRun.status === "cancelled") return "failed";
   if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
+  if (nodeRun.status === "queued" || nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "in_progress";
   return "pending";
 }
 
@@ -1781,10 +1996,15 @@ function selectPreferredTraceIssue(issues: TraceIssue[]): TraceIssue | undefined
   );
 }
 
-function labelForIssueStatus(status: "completed" | "in_progress" | "pending", t: Messages): string {
+function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
   if (status === "completed") return t.trace.completed;
   if (status === "in_progress") return t.trace.inProgress;
+  if (status === "failed") return t.status.failed;
   return t.trace.pending;
+}
+
+function statusLabelForNodeRun(status: WorkflowNodeRunStatus | undefined, t: Messages): string {
+  return status ? t.status[status] : t.trace.pending;
 }
 
 function summarizeOutput(output: unknown, t: Messages): string {
@@ -2082,7 +2302,17 @@ function companyMonogram(company: Pick<CompanyOverview, "logoLabel" | "name">): 
 }
 
 function formatOutput(output: unknown): string {
-  if (typeof output === "string") return output;
+  if (typeof output === "string") {
+    const trimmed = output.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try {
+        return JSON.stringify(JSON.parse(trimmed), null, 2);
+      } catch {
+        return output;
+      }
+    }
+    return output;
+  }
   return JSON.stringify(output, null, 2);
 }
 
