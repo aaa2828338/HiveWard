@@ -5,6 +5,7 @@ import type {
   OpenClawSessionSummary,
   OpenClawTaskSummary,
   OpenClawTool,
+  OpenClawUsageFact,
   RuntimeOverview,
   SendChannelInput,
   SendChannelResult,
@@ -149,9 +150,11 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
     const runId = readString(result.runId) ?? input.runId;
     const sessionKey = readString(result.sessionKey) ?? input.sessionKey;
     const ok = readString(result.status) !== "error";
-    const transcriptResult = ok ? await readAgentTranscriptResult(session, sessionKey, input.nodeRunId) : undefined;
+    const fallbackModelId = readModelId(result) ?? input.modelId;
+    const transcriptResult = ok ? await readAgentTranscriptResult(session, sessionKey, input.nodeRunId, fallbackModelId) : undefined;
     const transcriptError = transcriptResult?.error;
     const status = ok && !transcriptError ? "succeeded" : "failed";
+    const usage = readUsageFact(result, fallbackModelId, runId) ?? transcriptResult?.usage;
 
     return {
       taskId: input.taskId,
@@ -160,7 +163,7 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
       status,
       output: status === "succeeded" ? transcriptResult?.output ?? summarizeAgentResult(result) : undefined,
       error: transcriptError ?? (ok ? undefined : summarizeAgentResult(result)),
-      usage: undefined,
+      usage,
       updatedAt: new Date().toISOString(),
     };
   }
@@ -357,7 +360,8 @@ async function readAgentTranscriptResult(
   session: GatewaySession,
   sessionKey: string,
   nodeRunId: string,
-): Promise<{ output?: string; error?: string } | undefined> {
+  fallbackModelId?: string,
+): Promise<{ output?: string; error?: string; usage?: OpenClawUsageFact } | undefined> {
   try {
     const history = await session.request<{ messages?: unknown[] }>("chat.history", {
       sessionKey,
@@ -374,13 +378,15 @@ async function readAgentTranscriptResult(
 
     for (const message of messages.slice(userIndex + 1)) {
       if (!isRecord(message) || readString(message.role) !== "assistant") continue;
+      const usage = readUsageFact(message, fallbackModelId);
       const errorMessage = readString(message.errorMessage);
-      if (errorMessage) return { error: errorMessage };
+      if (errorMessage) return { error: errorMessage, usage };
       const text = extractMessageText(message).trim();
-      if (text && text !== "completed") return { output: text };
+      if (text && text !== "completed") return { output: text, usage };
       if (readString(message.stopReason) === "error") {
-        return { error: "OpenClaw assistant stopped with an error before returning visible output." };
+        return { error: "OpenClaw assistant stopped with an error before returning visible output.", usage };
       }
+      if (usage) return { usage };
     }
   } catch {
     return undefined;
@@ -407,6 +413,111 @@ function extractMessageText(value: unknown): string {
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function readUsageFact(value: unknown, fallbackModelId?: string, fallbackId?: string): OpenClawUsageFact | undefined {
+  const candidate = findUsageRecord(value);
+  if (!candidate) return undefined;
+
+  const baseInputTokens =
+    readNumberFromRecord(candidate, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens", "tokensIn", "tokens_in"]) ?? 0;
+  const cachedInputTokens =
+    readNumberFromRecord(candidate, [
+      "cachedInputTokens",
+      "cached_input_tokens",
+      "cacheReadInputTokens",
+      "cache_read_input_tokens",
+      "cacheCreationInputTokens",
+      "cache_creation_input_tokens",
+    ]) ?? 0;
+  const inputTokens = baseInputTokens + cachedInputTokens;
+  const outputTokens =
+    readNumberFromRecord(candidate, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens", "tokensOut", "tokens_out"]) ?? 0;
+  const totalTokens = readNumberFromRecord(candidate, ["totalTokens", "total_tokens", "tokens", "tokenCount", "token_count"]);
+  const normalizedOutputTokens = outputTokens || Math.max(0, (totalTokens ?? 0) - inputTokens);
+  const modelId = readModelId(candidate) ?? readModelId(value) ?? fallbackModelId;
+
+  if (!modelId || inputTokens + normalizedOutputTokens <= 0) return undefined;
+
+  return {
+    id: readString(candidate.id) ?? readString(candidate.usageId) ?? (fallbackId ? `usage-${fallbackId}` : createGatewayId("usage")),
+    modelId,
+    inputTokens,
+    outputTokens: normalizedOutputTokens,
+    costUsd: readNumberFromRecord(candidate, ["costUsd", "cost_usd", "costUSD", "usd", "cost", "totalCostUsd", "total_cost_usd"]) ?? 0,
+    recordedAt: readUsageRecordedAt(candidate) ?? new Date().toISOString(),
+  };
+}
+
+function findUsageRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+
+  for (const key of ["usage", "tokenUsage", "usageMetadata", "usageStats", "metrics"]) {
+    const candidate = value[key];
+    if (looksLikeUsageRecord(candidate)) return candidate;
+  }
+
+  for (const key of ["result", "response", "message", "assistant", "metadata", "metrics"]) {
+    const nested = findUsageRecord(value[key]);
+    if (nested) return nested;
+  }
+
+  return looksLikeUsageRecord(value) ? value : undefined;
+}
+
+function looksLikeUsageRecord(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  return (
+    readNumberFromRecord(value, [
+      "inputTokens",
+      "input_tokens",
+      "promptTokens",
+      "prompt_tokens",
+      "outputTokens",
+      "output_tokens",
+      "completionTokens",
+      "completion_tokens",
+      "totalTokens",
+      "total_tokens",
+      "tokens",
+      "tokenCount",
+      "token_count",
+    ]) !== undefined
+  );
+}
+
+function readModelId(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const direct =
+    readString(value.modelId) ??
+    readString(value.model_id) ??
+    readString(value.model) ??
+    readString(value.primaryModel) ??
+    readString(value.primary_model);
+  if (direct) return direct;
+
+  const provider = readString(value.provider);
+  const model = isRecord(value.model) ? readString(value.model.id) ?? readString(value.model.name) : undefined;
+  return provider && model ? `${provider}/${model}` : undefined;
+}
+
+function readUsageRecordedAt(value: Record<string, unknown>): string | undefined {
+  const direct = readString(value.recordedAt) ?? readString(value.recorded_at) ?? readString(value.createdAt) ?? readString(value.created_at);
+  if (direct) return direct;
+  const timestampMs = readNumber(value.timestampMs) ?? readNumber(value.timestamp_ms) ?? readNumber(value.createdAtMs);
+  return timestampMs ? new Date(timestampMs).toISOString() : undefined;
+}
+
+function readNumberFromRecord(value: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const direct = readNumber(value[key]);
+    if (direct !== undefined) return direct;
+    if (typeof value[key] === "string") {
+      const parsed = Number(value[key]);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return undefined;
 }
 
 function mapExecutionStatus(status: string | undefined): OpenClawTaskSummary["status"] {

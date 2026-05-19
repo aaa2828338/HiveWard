@@ -13,6 +13,7 @@ import {
   Loader2,
   MessageSquareText,
   PanelsTopLeft,
+  RefreshCw,
   Search,
   Tag,
   Trash2
@@ -24,6 +25,7 @@ import type {
   OpenClawChannelSetupOption,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
+  OpenClawModelUsageSummary,
   OpenClawWizardField,
   OpenClawWizardValue,
   CompanyOverview,
@@ -857,8 +859,12 @@ export function ModelsPage({
   language,
   t,
   busy,
-  onSaveDefaultModel,
-  onConfigureModelAuth
+  busyAction,
+  runs,
+  openClawModelUsage,
+  onRefreshCatalog,
+  onConfigureModelAuth,
+  onSetDefaultModel
 }: {
   catalog?: CatalogSnapshot;
   openClawConfig?: OpenClawConfigState;
@@ -866,83 +872,61 @@ export function ModelsPage({
   language: Language;
   t: Messages;
   busy: boolean;
-  onSaveDefaultModel: (modelId: string) => void;
+  busyAction?: string;
+  runs: WorkflowRunView[];
+  openClawModelUsage: OpenClawModelUsageSummary[];
+  onRefreshCatalog: () => void;
   onConfigureModelAuth: (input: ConfigureOpenClawModelAuthRequest) => void;
+  onSetDefaultModel: (modelId: string) => void;
 }) {
-  const stale = catalog ? isCatalogStale(catalog) : false;
-  const [selectedModelId, setSelectedModelId] = useState("");
   const [modelStep, setModelStep] = useState<"provider" | "method" | "details">("provider");
   const [providerSearch, setProviderSearch] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState("");
   const [selectedMethodId, setSelectedMethodId] = useState("");
   const [modelValues, setModelValues] = useState<Record<string, OpenClawWizardValue>>({});
-  const copy =
-    language === "zh-CN"
-      ? {
-          configuredModels: "已配置模型",
-          contextWindow: "上下文窗口",
-          catalogHealth: "配置状态"
-        }
-      : {
-          configuredModels: "Configured models",
-          contextWindow: "Context window",
-          catalogHealth: "Catalog health"
-        };
-  const configCopy =
-    language === "zh-CN"
-      ? {
-          addModel: "添加模型配置",
-          modelId: "模型 ID",
-          alias: "别名",
-          apiAdapter: "API 适配器",
-          baseUrl: "Base URL",
-          credentialSource: "凭据来源",
-          envSecret: "环境变量 SecretRef",
-          directSecret: "直接写入",
-          noSecret: "不写入凭据",
-          apiKeyEnv: "API Key 环境变量",
-          apiKey: "API Key",
-          maxTokens: "最大输出",
-          setDefault: "设为默认模型",
-          addDescription: "通过 openclaw config set 写入 models.providers，并按需调用 openclaw models aliases/set。"
-        }
-      : {
-          addModel: "Add model config",
-          modelId: "Model ID",
-          alias: "Alias",
-          apiAdapter: "API adapter",
-          baseUrl: "Base URL",
-          credentialSource: "Credential source",
-          envSecret: "Env SecretRef",
-          directSecret: "Direct value",
-          noSecret: "No credential",
-          apiKeyEnv: "API key env var",
-          apiKey: "API key",
-          maxTokens: "Max output",
-          setDefault: "Set as default model",
-          addDescription: "Writes models.providers through openclaw config set, then optionally calls openclaw models aliases/set."
-        };
-
   const modelCopy =
     language === "zh-CN"
       ? {
+          availableModels: "可用模型",
           configuredModels: "\u5df2\u914d\u7f6e\u6a21\u578b",
           contextWindow: "\u4e0a\u4e0b\u6587\u7a97\u53e3",
-          catalogHealth: "\u914d\u7f6e\u72b6\u6001"
+          usage: "\u7528\u91cf",
+          calls: "\u8c03\u7528",
+          tokens: "Token",
+          cost: "\u8d39\u7528",
+          recent7d: "\u6700\u8fd1 7 \u5929",
+          setDefault: "\u8bbe\u4e3a\u9ed8\u8ba4"
         }
-      : copy;
-
-  useEffect(() => {
-    setSelectedModelId(openClawConfig?.defaultModelId ?? catalog?.models[0]?.id ?? "");
-  }, [catalog?.models, openClawConfig?.defaultModelId]);
+      : {
+          availableModels: "Available models",
+          configuredModels: "Configured models",
+          contextWindow: "Context window",
+          usage: "Usage",
+          calls: "Calls",
+          tokens: "Tokens",
+          cost: "Cost",
+          recent7d: "Last 7 days",
+          setDefault: "Set default"
+        };
 
   const configuredModels = openClawConfig?.configuredModels ?? [];
+  const usageByModel = useMemo(
+    () => buildModelUsageIndex(runs, openClawModelUsage, openClawConfig?.defaultModelId),
+    [openClawModelUsage, runs, openClawConfig?.defaultModelId]
+  );
+  const orderedConfiguredModels = useMemo(
+    () =>
+      [...configuredModels].sort((left, right) => {
+        if (left.id === openClawConfig?.defaultModelId) return -1;
+        if (right.id === openClawConfig?.defaultModelId) return 1;
+        return left.label.localeCompare(right.label);
+      }),
+    [configuredModels, openClawConfig?.defaultModelId]
+  );
   const wizardCopy =
     language === "zh-CN"
       ? {
-          title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0\u6a21\u578b\u8ba4\u8bc1",
-          description:
-            "\u5148\u9009 Model/auth provider\uff0c\u518d\u8fdb\u5165\u8be5 provider \u7684 auth method\uff0c\u6700\u540e\u6309 OpenClaw \u914d\u7f6e\u5f62\u72b6\u5199\u5165 models.providers \u548c\u9ed8\u8ba4\u6a21\u578b\u3002",
+          title: "\u914d\u7f6e\u6a21\u578b",
           providerStep: "Model/auth provider",
           methodStep: "auth method",
           detailsStep: "\u586b\u5199\u914d\u7f6e",
@@ -955,9 +939,7 @@ export function ModelsPage({
             "OAuth / Device Pairing \u65b9\u5f0f\u4f1a\u7ed1\u5b9a\u4e3b\u673a\u4e0a\u5df2\u5b58\u5728\u7684 OpenClaw \u767b\u5f55\u8bb0\u5f55\uff1b\u771f\u6b63\u767b\u5f55\u4ecd\u7531 openclaw models auth login \u5728\u4ea4\u4e92\u7ec8\u7aef\u4e2d\u5b8c\u6210\u3002"
         }
       : {
-          title: "Add model auth through the CLI path",
-          description:
-            "Choose Model/auth provider first, enter that provider's auth method screen, then write the matching OpenClaw models.providers/default-model config.",
+          title: "Configure model",
           providerStep: "Model/auth provider",
           methodStep: "auth method",
           detailsStep: "Configuration",
@@ -1008,50 +990,71 @@ export function ModelsPage({
       <div className="content-card stack-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{t.common.defaultModel}</h3>
-            <p>{openClawConfig ? openClawConfig.configPath : t.catalogConfig.configFallback}</p>
+            <h3>{modelCopy.configuredModels}</h3>
           </div>
-        </div>
-        <div className="form-grid form-grid-wide">
-          <label className="field-span-full">
-            <span>{t.fields.primaryModel}</span>
-            <select value={selectedModelId} onChange={(event) => setSelectedModelId(event.target.value)}>
-              {(catalog?.models ?? []).map((model) => (
-                <option key={model.id} value={model.id}>
-                  {`${model.label} (${model.id})`}
-                </option>
-              ))}
-              {configuredModels
-                .filter((model) => !(catalog?.models ?? []).some((item) => item.id === model.id))
-                .map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {`${model.label} (${model.id})`}
-                  </option>
-                ))}
-            </select>
-          </label>
-        </div>
-        <div className="metric-strip compact-metric-strip">
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{openClawConfig?.defaultModelId ?? t.common.noDefaultModel}</span>
-          </div>
-          <div className="metric-chip">
-            <Database size={16} />
-            <span>{modelCopy.catalogHealth}: {stale ? t.common.stale : t.common.fresh}</span>
-          </div>
-          {catalog && (
-            <div className="metric-chip">
-              <Database size={16} />
-              <span>{`${t.fields.updatedAt}: ${formatDateTime(catalog.refreshedAt, language)}`}</span>
-            </div>
-          )}
-        </div>
-        <div className="card-actions">
-          <button type="button" className="primary-action" disabled={!selectedModelId || busy} onClick={() => onSaveDefaultModel(selectedModelId)}>
-            {busy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
-            {t.actions.saveModel}
+          <button type="button" title={t.actions.refreshCatalog} disabled={busy} onClick={onRefreshCatalog}>
+            {busyAction === "refreshCatalog" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+            {t.actions.refreshCatalog}
           </button>
+        </div>
+        <div className="model-card-grid">
+          {orderedConfiguredModels.length ? (
+            orderedConfiguredModels.map((model) => {
+              const isDefault = model.id === openClawConfig?.defaultModelId;
+              const usage = modelUsageFor(model.id, usageByModel);
+              const recentDays = recentModelUsageDays(usage, language);
+              const recentTotal = summarizeRecentModelUsage(recentDays);
+              const maxDailyTokens = Math.max(1, ...recentDays.map((day) => day.totalTokens));
+
+              return (
+                <article key={model.id} className={`model-card ${isDefault ? "default" : ""}`}>
+                  <div className="model-card-head">
+                    <span className="model-provider-badge">{model.provider}</span>
+                    {isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
+                  </div>
+                  <div className="model-card-main">
+                    <strong>{model.label}</strong>
+                  </div>
+                  <div className="model-card-usage" aria-label={modelCopy.usage}>
+                    <div className="model-usage-head">
+                      <span>{modelCopy.recent7d}</span>
+                      <strong>{`${formatCompactTokenValue(recentTotal.totalTokens)} ${modelCopy.tokens}`}</strong>
+                    </div>
+                    <div className="model-usage-chart">
+                      {recentDays.map((day) => (
+                        <div
+                          key={day.dateKey}
+                          className="model-usage-day"
+                          title={`${day.fullLabel}: ${day.totalTokens.toLocaleString(language)} ${modelCopy.tokens}, $${day.costUsd.toFixed(4)}`}
+                        >
+                          <div className="model-usage-bar-track">
+                            <span
+                              className={`model-usage-bar ${day.totalTokens === 0 ? "empty" : ""}`}
+                              style={{ height: `${modelUsageBarHeight(day.totalTokens, maxDailyTokens)}%` }}
+                            />
+                          </div>
+                          <span className="model-usage-value">{formatCompactTokenValue(day.totalTokens)}</span>
+                          <span className="model-usage-label">{day.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="model-usage-foot">
+                      <span>{`${modelCopy.calls}: ${recentTotal.calls.toLocaleString(language)}`}</span>
+                      <span>{`${modelCopy.cost}: $${recentTotal.costUsd.toFixed(4)}`}</span>
+                    </div>
+                  </div>
+                  <div className="model-card-actions">
+                    <button type="button" disabled={busy || isDefault} onClick={() => onSetDefaultModel(model.id)}>
+                      {busyAction === `setOpenClawDefaultModel:${model.id}` && !isDefault ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
+                      {isDefault ? t.common.defaultOption : modelCopy.setDefault}
+                    </button>
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+          )}
         </div>
       </div>
 
@@ -1059,7 +1062,6 @@ export function ModelsPage({
         <div className="card-toolbar">
           <div className="card-title-block">
             <h3>{wizardCopy.title}</h3>
-            <p>{wizardCopy.description}</p>
           </div>
         </div>
 
@@ -1144,46 +1146,35 @@ export function ModelsPage({
         </div>
       </div>
 
-      <section className="card-grid data-card-grid">
-        <TableCard title={t.tables.models} rows={catalog?.models.length ?? 0}>
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{modelCopy.availableModels}</h3>
+            <p>{catalog?.models.length ?? 0}</p>
+          </div>
+        </div>
+        <div className="model-card-grid">
           {catalog?.models.length ? (
             catalog.models.map((model) => (
-              <div key={model.id} className="table-row">
-                <div>
-                  <strong>{model.label}</strong>
-                  <p>{model.id}</p>
+              <article key={model.id} className="model-card">
+                <div className="model-card-head">
+                  <span className="model-provider-badge">{model.provider}</span>
+                  {model.supportsTools && <span className="status-pill status-succeeded">{t.fields.supportsTools}</span>}
                 </div>
-                <div className="table-meta">
-                  <span>{model.provider}</span>
-                  <span>{`${t.fields.supportsTools}: ${model.supportsTools ? t.common.yes : t.common.no}`}</span>
+                <div className="model-card-main">
+                  <strong>{model.label}</strong>
+                  <code>{model.id}</code>
+                </div>
+                <div className="model-card-meta">
                   <span>{`${modelCopy.contextWindow}: ${model.contextWindow?.toLocaleString(language) ?? t.common.unknown}`}</span>
                 </div>
-              </div>
+              </article>
             ))
           ) : (
             <div className="empty-state page-empty">{t.empty.noCatalog}</div>
           )}
-        </TableCard>
-
-        <TableCard title={modelCopy.configuredModels} rows={configuredModels.length}>
-          {configuredModels.length ? (
-            configuredModels.map((model) => (
-              <div key={model.id} className="table-row">
-                <div>
-                  <strong>{model.label}</strong>
-                  <p>{model.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{model.provider}</span>
-                  <span>{model.alias ?? t.common.defaultOption}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
-          )}
-        </TableCard>
-      </section>
+        </div>
+      </div>
     </section>
   );
 }
@@ -1844,7 +1835,6 @@ export function CatalogPage({
         <div className="card-toolbar">
           <div className="card-title-block">
             <h3>{t.catalogConfig.quickConfig}</h3>
-            <p>{openClawConfig ? openClawConfig.configPath : t.catalogConfig.configFallback}</p>
           </div>
         </div>
 
@@ -2640,6 +2630,229 @@ function workflowNameFor(workflows: WorkflowDefinition[], workflowId: string): s
   return workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId;
 }
 
+type ModelUsageSummary = {
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  days: Map<string, ModelUsageDay>;
+};
+
+type ModelUsageDay = {
+  dateKey: string;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  costUsd: number;
+};
+
+type ModelUsageDayView = ModelUsageDay & {
+  label: string;
+  fullLabel: string;
+};
+
+function createEmptyModelUsageSummary(): ModelUsageSummary {
+  return {
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    costUsd: 0,
+    days: new Map<string, ModelUsageDay>()
+  };
+}
+
+function buildModelUsageIndex(
+  runs: WorkflowRunView[],
+  openClawUsage: OpenClawModelUsageSummary[],
+  fallbackModelId?: string
+): Map<string, ModelUsageSummary> {
+  const usageByModel = new Map<string, ModelUsageSummary>();
+
+  for (const usage of openClawUsage) {
+    if (!usage.modelId) continue;
+    const current = usageByModel.get(usage.modelId) ?? createEmptyModelUsageSummary();
+    for (const day of usage.days) {
+      addUsageFactToModelSummary(
+        current,
+        day.date,
+        day.inputTokens,
+        day.outputTokens,
+        day.costUsd,
+        day.calls,
+        day.totalTokens
+      );
+    }
+    usageByModel.set(usage.modelId, current);
+  }
+
+  for (const runView of runs) {
+    let hasNodeUsage = false;
+    for (const nodeRun of runView.nodeRuns) {
+      const usage = nodeRun.usage;
+      if (!usage?.modelId) continue;
+      hasNodeUsage = true;
+      const current = usageByModel.get(usage.modelId) ?? createEmptyModelUsageSummary();
+      addUsageFactToModelSummary(current, usage.recordedAt, usage.inputTokens, usage.outputTokens, usage.costUsd);
+      usageByModel.set(usage.modelId, current);
+    }
+
+    const totalTokens = runView.run.totalInputTokens + runView.run.totalOutputTokens;
+    if (!hasNodeUsage && fallbackModelId && totalTokens > 0) {
+      const current = usageByModel.get(fallbackModelId) ?? createEmptyModelUsageSummary();
+      addUsageFactToModelSummary(
+        current,
+        runView.run.endedAt ?? runView.run.startedAt,
+        runView.run.totalInputTokens,
+        runView.run.totalOutputTokens,
+        runView.run.totalCostUsd
+      );
+      usageByModel.set(fallbackModelId, current);
+    }
+  }
+
+  return usageByModel;
+}
+
+function modelUsageFor(modelId: string, usageByModel: Map<string, ModelUsageSummary>): ModelUsageSummary {
+  const direct = usageByModel.get(modelId);
+  if (direct) return direct;
+
+  const modelName = lastModelPathSegment(modelId);
+  let summary: ModelUsageSummary | undefined;
+  for (const [usageModelId, usage] of usageByModel) {
+    if (usageModelId !== modelName && lastModelPathSegment(usageModelId) !== modelName) continue;
+    summary ??= createEmptyModelUsageSummary();
+    mergeModelUsageSummary(summary, usage);
+  }
+
+  return summary ?? createEmptyModelUsageSummary();
+}
+
+function addUsageFactToModelSummary(
+  summary: ModelUsageSummary,
+  recordedAt: string,
+  inputTokens: number,
+  outputTokens: number,
+  costUsd: number,
+  calls = 1,
+  totalTokens = inputTokens + outputTokens
+): void {
+  summary.calls += calls;
+  summary.inputTokens += inputTokens;
+  summary.outputTokens += outputTokens;
+  summary.costUsd += costUsd;
+
+  const dateKey = toUsageDateKey(recordedAt);
+  if (!dateKey) return;
+
+  const currentDay = summary.days.get(dateKey) ?? {
+    dateKey,
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0
+  };
+  currentDay.calls += calls;
+  currentDay.inputTokens += inputTokens;
+  currentDay.outputTokens += outputTokens;
+  currentDay.totalTokens += totalTokens;
+  currentDay.costUsd += costUsd;
+  summary.days.set(dateKey, currentDay);
+}
+
+function toUsageDateKey(recordedAt: string): string {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(recordedAt)) return recordedAt;
+  return toDateInputValue(recordedAt);
+}
+
+function mergeModelUsageSummary(target: ModelUsageSummary, source: ModelUsageSummary): void {
+  target.calls += source.calls;
+  target.inputTokens += source.inputTokens;
+  target.outputTokens += source.outputTokens;
+  target.costUsd += source.costUsd;
+
+  for (const [dateKey, sourceDay] of source.days) {
+    const targetDay = target.days.get(dateKey) ?? {
+      dateKey,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0
+    };
+    targetDay.calls += sourceDay.calls;
+    targetDay.inputTokens += sourceDay.inputTokens;
+    targetDay.outputTokens += sourceDay.outputTokens;
+    targetDay.totalTokens += sourceDay.totalTokens;
+    targetDay.costUsd += sourceDay.costUsd;
+    target.days.set(dateKey, targetDay);
+  }
+}
+
+function recentModelUsageDays(usage: ModelUsageSummary, language: Language): ModelUsageDayView[] {
+  const today = new Date();
+  return Array.from({ length: 7 }, (_, index) => {
+    const day = new Date(today);
+    day.setDate(today.getDate() - (6 - index));
+    const dateKey = toDateInputValue(day);
+    const usageDay = usage.days.get(dateKey) ?? {
+      dateKey,
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0
+    };
+    return {
+      ...usageDay,
+      label: formatCompactDayLabel(dateKey, language),
+      fullLabel: formatDateLabel(dateKey, language)
+    };
+  });
+}
+
+function summarizeRecentModelUsage(days: ModelUsageDay[]): ModelUsageDay {
+  return days.reduce<ModelUsageDay>(
+    (summary, day) => ({
+      dateKey: summary.dateKey,
+      calls: summary.calls + day.calls,
+      inputTokens: summary.inputTokens + day.inputTokens,
+      outputTokens: summary.outputTokens + day.outputTokens,
+      totalTokens: summary.totalTokens + day.totalTokens,
+      costUsd: summary.costUsd + day.costUsd
+    }),
+    {
+      dateKey: "recent",
+      calls: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0
+    }
+  );
+}
+
+function modelUsageBarHeight(totalTokens: number, maxDailyTokens: number): number {
+  if (totalTokens <= 0) return 3;
+  return Math.max(16, Math.round((totalTokens / maxDailyTokens) * 100));
+}
+
+function formatCompactTokenValue(value: number): string {
+  if (value >= 1_000_000) return `${trimFixed(value / 1_000_000, value >= 10_000_000 ? 1 : 2)}M`;
+  if (value >= 1_000) return `${trimFixed(value / 1_000, value >= 10_000 ? 1 : 2)}K`;
+  return Math.round(value).toLocaleString();
+}
+
+function trimFixed(value: number, digits: number): string {
+  return value.toFixed(digits).replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
+}
+
+function lastModelPathSegment(modelId: string): string {
+  return modelId.split("/").pop() ?? modelId;
+}
+
 function isActiveRunStatus(status: WorkflowRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
 }
@@ -2676,6 +2889,14 @@ function formatDateLabel(value: string, language: Language): string {
   const date = new Date(`${value}T00:00:00`);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleDateString(language, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatCompactDayLabel(value: string, language: Language): string {
+  if (!value) return "-";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  if (language === "zh-CN") return `${date.getMonth() + 1}/${date.getDate()}`;
+  return date.toLocaleDateString(language, { month: "numeric", day: "numeric" });
 }
 
 function formatDateTime(value: string, language: Language): string {

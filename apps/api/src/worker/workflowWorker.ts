@@ -818,7 +818,7 @@ export class WorkflowWorker {
   ): Promise<void> {
     const config = node.config as SummaryNodeConfig;
     if (config.mode === "openclaw_agent") {
-      const { result } = await this.runAgentTask({
+      const { result, openclawRef } = await this.runAgentTask({
         workflowRunId: run.id,
         nodeRunId: nodeRun.id,
         agentId: "main",
@@ -831,10 +831,10 @@ export class WorkflowWorker {
         tools: []
       });
       if (result.status !== "succeeded") {
-        await this.failNode(nodeRun, result.error ?? `OpenClaw agent run ${result.status}.`);
+        await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `OpenClaw agent run ${result.status}.`);
         return;
       }
-      await this.completeNode(nodeRun, result.output ?? "");
+      await this.completeNode({ ...nodeRun, openclawRef, usage: result.usage }, result.output ?? "", openclawRef);
       return;
     }
 
@@ -1344,7 +1344,8 @@ export class WorkflowWorker {
         taskId: started.taskId,
         runId: started.runId,
         sessionKey: started.sessionKey,
-        agentId: input.agentId
+        agentId: input.agentId,
+        modelId: input.modelId
       }),
       openclawRef
     };

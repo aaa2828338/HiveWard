@@ -4570,6 +4570,197 @@ html[data-theme="light"] .workflow-action-dock {
   }
 }
 
+.model-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.model-card {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-strong);
+}
+
+.model-card.default {
+  border-color: var(--accent-line);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.model-card-head,
+.model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.model-card-head {
+  justify-content: space-between;
+}
+
+.model-provider-badge {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted-strong);
+  background: rgb(255 255 255 / 0.04);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.model-card-main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.model-card-main strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.model-card-main code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+}
+
+.model-card-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-card-usage {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.03);
+}
+
+.model-usage-head,
+.model-usage-foot {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.model-usage-head span,
+.model-usage-foot span {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.model-usage-head strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.model-usage-chart {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.model-usage-day {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 44px 14px 14px;
+  align-items: end;
+  justify-items: center;
+  gap: 2px;
+}
+
+.model-usage-bar-track {
+  width: 100%;
+  height: 44px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.model-usage-bar {
+  width: min(16px, 68%);
+  min-height: 4px;
+  display: block;
+  border-radius: 5px 5px 2px 2px;
+  background: linear-gradient(180deg, #fb7185 0%, #be4b55 100%);
+  box-shadow: 0 0 0 1px rgb(251 113 133 / 0.12);
+}
+
+.model-usage-bar.empty {
+  min-height: 2px;
+  background: var(--line-strong);
+  box-shadow: none;
+}
+
+.model-usage-value,
+.model-usage-label {
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-usage-value {
+  color: var(--muted-strong);
+  font-weight: 680;
+}
+
+.model-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.model-card-actions button {
+  min-height: 34px;
+}
+
+html[data-theme="light"] .model-card {
+  border-color: var(--line);
+  background: #ffffff;
+}
+
+html[data-theme="light"] .model-card.default {
+  border-color: var(--line-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+html[data-theme="light"] .model-provider-badge {
+  background: #f8fafc;
+}
+
+html[data-theme="light"] .model-card-usage {
+  background: #f8fafc;
+}
+
+html[data-theme="light"] .model-usage-bar.empty {
+  background: #dbe4ef;
+}
+
 .sidebar-system {
   border-top-color: var(--line);
 }

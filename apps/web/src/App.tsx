@@ -23,6 +23,7 @@ import type {
   DashboardWidgetType,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
+  OpenClawModelUsageSummary,
   OpenClawVersionInfo,
   PendingApprovalItem,
   PortableWorkflowPackage,
@@ -60,6 +61,7 @@ export function App() {
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
+  const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runs, setRuns] = useState<WorkflowRunView[]>([]);
@@ -138,6 +140,7 @@ export function App() {
         nextCatalog,
         nextOpenClawConfig,
         nextOpenClawWizard,
+        nextOpenClawModelUsage,
         nextRuns,
         nextApprovals,
         nextDashboard,
@@ -148,6 +151,7 @@ export function App() {
         api.getCatalogSnapshot(),
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
+        api.getOpenClawModelUsage().catch(() => []),
         api.listWorkflowRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
@@ -160,6 +164,7 @@ export function App() {
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
+      setOpenClawModelUsage(nextOpenClawModelUsage);
       setRuns(nextRuns);
       setApprovals(nextApprovals);
       setDashboard(nextDashboard);
@@ -276,7 +281,7 @@ export function App() {
       workflow: workflows.length,
       runs: activeTaskCount,
       approvals: approvals.length,
-      models: catalog?.models.length ?? 0,
+      models: openClawConfig?.configuredModels.length ?? catalog?.models.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? catalog?.agents.length ?? 0,
       schedule: runtime?.tasks.length ?? 0,
       channels: openClawConfig?.configuredChannels.length ?? catalog?.channels.length ?? 0
@@ -287,6 +292,7 @@ export function App() {
       catalog?.agents.length,
       catalog?.channels.length,
       catalog?.models.length,
+      openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
       runtime?.tasks.length,
@@ -350,41 +356,25 @@ export function App() {
   const refreshCatalog = useCallback(
     () =>
       withBusy("refreshCatalog", async () => {
-        const [nextCatalog, nextOpenClawConfig, nextRuntime] = await Promise.all([
+        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextRuntime] = await Promise.all([
           api.refreshCatalog(),
           api.getOpenClawConfig(),
+          api.getOpenClawModelUsage().catch(() => []),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
+        setOpenClawModelUsage(nextOpenClawModelUsage);
         setRuntime(nextRuntime);
       }),
-    [withBusy]
-  );
-
-  const saveOpenClawDefaultModel = useCallback(
-    (modelId: string) => {
-      void withBusy("saveOpenClawDefaultModel", async () => {
-        const [nextOpenClawConfig, nextCatalog] = await Promise.all([
-          api.updateOpenClawDefaultModel(modelId),
-          api.refreshCatalog()
-        ]);
-        setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
-      });
-    },
     [withBusy]
   );
 
   const addOpenClawAgent = useCallback(
     (input: { name: string; workspace?: string; modelId?: string }) => {
       void withBusy("addOpenClawAgent", async () => {
-        const [nextOpenClawConfig, nextCatalog] = await Promise.all([
-          api.addOpenClawAgent(input),
-          api.refreshCatalog()
-        ]);
+        const nextOpenClawConfig = await api.addOpenClawAgent(input);
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -394,9 +384,7 @@ export function App() {
     (input: CreateOpenClawModelRequest) => {
       void withBusy("addOpenClawModel", async () => {
         const nextOpenClawConfig = await api.addOpenClawModel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -406,9 +394,17 @@ export function App() {
     (input: ConfigureOpenClawModelAuthRequest) => {
       void withBusy("configureOpenClawModelAuth", async () => {
         const nextOpenClawConfig = await api.configureOpenClawModelAuth(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
+      });
+    },
+    [withBusy]
+  );
+
+  const setOpenClawDefaultModel = useCallback(
+    (modelId: string) => {
+      void withBusy(`setOpenClawDefaultModel:${modelId}`, async () => {
+        const nextOpenClawConfig = await api.updateOpenClawDefaultModel(modelId);
+        setOpenClawConfig(nextOpenClawConfig);
       });
     },
     [withBusy]
@@ -418,9 +414,7 @@ export function App() {
     (input: CreateOpenClawChannelRequest) => {
       void withBusy("addOpenClawChannel", async () => {
         const nextOpenClawConfig = await api.addOpenClawChannel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -430,9 +424,7 @@ export function App() {
     (input: ConfigureOpenClawChannelRequest) => {
       void withBusy("configureOpenClawChannel", async () => {
         const nextOpenClawConfig = await api.configureOpenClawChannel(input);
-        const nextCatalog = await api.refreshCatalog();
         setOpenClawConfig(nextOpenClawConfig);
-        setCatalog(nextCatalog);
       });
     },
     [withBusy]
@@ -673,8 +665,12 @@ export function App() {
           language={language}
           t={t}
           busy={Boolean(busyAction)}
-          onSaveDefaultModel={saveOpenClawDefaultModel}
+          busyAction={busyAction}
+          runs={runs}
+          openClawModelUsage={openClawModelUsage}
+          onRefreshCatalog={refreshCatalog}
           onConfigureModelAuth={configureOpenClawModelAuth}
+          onSetDefaultModel={setOpenClawDefaultModel}
         />
       );
     }
@@ -935,9 +931,9 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runWorkflow") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "saveWorkspace") return t.errors.workspace;
-  if (action === "saveOpenClawDefaultModel") return t.errors.catalog;
   if (action === "addOpenClawModel") return t.errors.catalog;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
+  if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;
   if (action === "addOpenClawChannel") return t.errors.catalog;
   if (action === "configureOpenClawChannel") return t.errors.catalog;

@@ -116,6 +116,30 @@ export interface OpenClawUsageFact {
   recordedAt: string;
 }
 
+export interface OpenClawModelUsageDay {
+  date: string;
+  modelId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  calls: number;
+}
+
+export interface OpenClawModelUsageSummary {
+  modelId: string;
+  days: OpenClawModelUsageDay[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  costUsd: number;
+  calls: number;
+}
+
 export interface StartAgentTaskInput {
   workflowRunId: string;
   nodeRunId: string;
@@ -142,6 +166,7 @@ export interface WaitForAgentTaskInput {
   runId: string;
   sessionKey: string;
   agentId?: string;
+  modelId?: string;
 }
 
 export interface AgentTaskResult extends StartedAgentTaskResult {

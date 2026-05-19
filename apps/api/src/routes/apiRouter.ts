@@ -14,6 +14,7 @@ import type {
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
   ParallelAgentsNodeConfig,
+  SummaryNodeConfig,
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
@@ -25,6 +26,7 @@ import { createPortableWorkflowPackage, readPortableWorkflowPackage } from "@ope
 import type { OpenClawAdapter } from "@openclaw-cui/adapter";
 import type { FileCuiStore } from "../store/fileCuiStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
+import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { WorkflowWorker } from "../worker/workflowWorker";
 
 interface ApiRouterDeps {
@@ -73,6 +75,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.get("/api/openclaw-version", async (_req, res, next) => {
     try {
       res.json({ version: await openClawConfigStore.getVersion() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/openclaw-usage/models", async (_req, res, next) => {
+    try {
+      res.json({ usage: await listOpenClawModelUsage() });
     } catch (error) {
       next(error);
     }
@@ -223,8 +233,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
         return;
       }
-      const configuredAgents = await openClawConfigStore.getState();
-      const invalidAgentIds = collectInvalidAgentIds(workflow, new Set(configuredAgents.configuredAgents.map((agent) => agent.id)));
+      const config = await openClawConfigStore.getState();
+      const invalidAgentIds = collectInvalidAgentIds(workflow, new Set(config.configuredAgents.map((agent) => agent.id)));
       if (invalidAgentIds.length > 0) {
         res.status(400).json({
           error: {
@@ -235,7 +245,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = req.body as StartWorkflowRunRequest;
-      const run = await worker.startRun(workflow, body.startedBy ?? "local-user");
+      const run = await worker.startRun(withRunDefaults(workflow, config.defaultModelId), body.startedBy ?? "local-user");
       const view = await store.getRunView(run.id);
       res.status(201).json({ run: view });
     } catch (error) {
@@ -332,11 +342,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
 
   router.get("/api/catalog/snapshot", async (_req, res, next) => {
     try {
-      let snapshot = await store.getCatalogSnapshot();
-      if (!snapshot) {
-        snapshot = await refreshCatalog(adapter, store);
-      }
-      res.json({ snapshot });
+      res.json({ snapshot: (await store.getCatalogSnapshot()) ?? emptyCatalogSnapshot() });
     } catch (error) {
       next(error);
     }
@@ -373,6 +379,35 @@ function collectInvalidAgentIds(workflow: WorkflowDefinition, configuredAgentIds
   return [...invalid];
 }
 
+function withRunDefaults(workflow: WorkflowDefinition, defaultModelId?: string): WorkflowDefinition {
+  if (!defaultModelId) return workflow;
+
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map((node) => {
+      if (node.type === "agent") {
+        const config = node.config as AgentNodeConfig;
+        return config.modelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
+      }
+      if (node.type === "parallel_agents") {
+        const config = node.config as ParallelAgentsNodeConfig;
+        return {
+          ...node,
+          config: {
+            ...config,
+            agents: config.agents.map((agent) => (agent.modelId ? agent : { ...agent, modelId: defaultModelId }))
+          }
+        };
+      }
+      if (node.type === "summary") {
+        const config = node.config as SummaryNodeConfig;
+        return config.mode === "openclaw_agent" && !config.modelId ? { ...node, config: { ...config, modelId: defaultModelId } } : node;
+      }
+      return node;
+    })
+  };
+}
+
 async function refreshCatalog(adapter: OpenClawAdapter, store: FileCuiStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
@@ -387,6 +422,21 @@ async function refreshCatalog(adapter: OpenClawAdapter, store: FileCuiStore): Pr
     channels: await adapter.listChannels()
   };
   return store.saveCatalogSnapshot(snapshot);
+}
+
+function emptyCatalogSnapshot(): CatalogSnapshot {
+  const now = new Date();
+  return {
+    id: "catalog-unscanned",
+    source: "openclaw",
+    sourceUpdatedAt: now.toISOString(),
+    refreshedAt: now.toISOString(),
+    staleAfter: now.toISOString(),
+    models: [],
+    agents: [],
+    tools: [],
+    channels: []
+  };
 }
 
 function selectDefaultAgentId(agents: OpenClawConfiguredAgent[]): string {
