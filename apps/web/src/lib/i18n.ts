@@ -37,7 +37,6 @@ export interface Messages {
   common: {
     allStatuses: string;
     allMissions: string;
-    brandTagline: string;
     defaultModel: string;
     defaultOption: string;
     dirtyWorkspace: string;
@@ -265,7 +264,6 @@ export const messages: Record<Language, Messages> = {
     common: {
       allStatuses: "All statuses",
       allMissions: "全部 Mission",
-      brandTagline: "Command layer for autonomous agent teams",
       defaultModel: "OpenClaw default",
       defaultOption: "default",
       dirtyWorkspace: "Unsaved workspace state",
@@ -566,7 +564,6 @@ export const messages: Record<Language, Messages> = {
     common: {
       allStatuses: "全部状态",
       allMissions: "All missions",
-      brandTagline: "Command layer for autonomous agent teams",
       defaultModel: "OpenClaw 默认",
       defaultOption: "默认",
       dirtyWorkspace: "工作区状态未保存",

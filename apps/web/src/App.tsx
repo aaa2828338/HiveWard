@@ -837,7 +837,6 @@ export function App() {
           </div>
           <div>
             <h1>Hiveward</h1>
-            <p>{t.common.brandTagline}</p>
           </div>
         </div>
         <nav className="sidebar-nav">
