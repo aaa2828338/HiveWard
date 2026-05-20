@@ -1,4 +1,4 @@
-import type { AgentTaskResult, OpenClawExecutionStatus, OpenClawUsageFact, WaitForAgentTaskInput } from "@openclaw-cui/shared";
+import type { AgentTaskResult, OpenClawExecutionStatus, OpenClawUsageFact, WaitForAgentTaskInput } from "@hiveward/shared";
 import type { AgentSdkTaskRecord } from "./types";
 
 export class AgentSdkTaskRegistry {

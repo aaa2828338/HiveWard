@@ -9,7 +9,7 @@ import type {
   OpenClawModelAuthProviderOption,
   OpenClawWizardField,
   OpenClawWizardValue
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 
 type ModelProviderDefinition = Omit<OpenClawModelAuthProviderOption, "methods"> & {
   methods: ModelMethodDefinition[];

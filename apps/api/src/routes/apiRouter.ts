@@ -6,10 +6,10 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawChannelRequest,
-  CreateWorkflowRequest,
+  CreateMissionRequest,
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
-  ImportWorkflowPackageRequest,
+  ImportMissionPackageRequest,
   RuntimeOverview,
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
@@ -18,22 +18,22 @@ import type {
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
-  SaveWorkflowRequest,
-  WorkflowDefinition,
-  StartWorkflowRunRequest
-} from "@openclaw-cui/shared";
-import { createPortableWorkflowPackage, readPortableWorkflowPackage } from "@openclaw-cui/shared";
-import type { OpenClawAdapter } from "@openclaw-cui/adapter";
-import type { FileCuiStore } from "../store/fileCuiStore";
+  SaveMissionRequest,
+  MissionDefinition,
+  StartMissionRunRequest
+} from "@hiveward/shared";
+import { createPortableMissionPackage, readPortableMissionPackage } from "@hiveward/shared";
+import type { OpenClawAdapter } from "@hiveward/adapter";
+import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
-import type { WorkflowWorker } from "../worker/workflowWorker";
+import type { MissionWorker } from "../worker/missionWorker";
 
 interface ApiRouterDeps {
-  store: FileCuiStore;
+  store: FileHivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: OpenClawAdapter;
-  worker: WorkflowWorker;
+  worker: MissionWorker;
 }
 
 export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
@@ -150,102 +150,105 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/workflows", async (_req, res, next) => {
+  router.get("/api/missions", async (_req, res, next) => {
     try {
-      res.json({ workflows: await store.listWorkflows() });
+      res.json({ missions: await store.listMissions() });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/workflows", async (req, res, next) => {
+  router.post("/api/missions", async (req, res, next) => {
     try {
-      const body = req.body as CreateWorkflowRequest;
-      const workflow = await store.createWorkflow({
+      const body = req.body as CreateMissionRequest;
+      const mission = await store.createMission({
         name: body.name,
         description: body.description
       });
-      res.status(201).json({ workflow });
+      res.status(201).json({ mission });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/workflows/import", async (req, res, next) => {
+  router.post("/api/missions/import", async (req, res, next) => {
     try {
-      const body = req.body as ImportWorkflowPackageRequest;
-      const workflowPackage = readPortableWorkflowPackage(body.workflowPackage);
+      const body = req.body as ImportMissionPackageRequest;
+      const missionPackage = readPortableMissionPackage(body.missionPackage);
       const config = await openClawConfigStore.getState();
-      const workflows = await store.importWorkflowPackage(workflowPackage, {
+      const missions = await store.importMissionPackage(missionPackage, {
         agentId: selectDefaultAgentId(config.configuredAgents),
         modelId: config.defaultModelId,
         channelId: selectDefaultChannelId(config.configuredChannels)
       });
-      res.status(201).json({ workflows });
+      res.status(201).json({ missions });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/workflows/:workflowId", async (req, res, next) => {
+  router.get("/api/missions/:missionId", async (req, res, next) => {
     try {
-      const workflow = await store.getWorkflow(req.params.workflowId);
-      if (!workflow) {
-        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+      const missionId = readRouteParam(req.params.missionId, "missionId");
+      const mission = await store.getMission(missionId);
+      if (!mission) {
+        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
         return;
       }
-      res.json({ workflow });
+      res.json({ mission });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/workflows/:workflowId/export", async (req, res, next) => {
+  router.get("/api/missions/:missionId/export", async (req, res, next) => {
     try {
-      const workflow = await store.getWorkflow(req.params.workflowId);
-      if (!workflow) {
-        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+      const missionId = readRouteParam(req.params.missionId, "missionId");
+      const mission = await store.getMission(missionId);
+      if (!mission) {
+        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
         return;
       }
-      res.json({ workflowPackage: createPortableWorkflowPackage([workflow], new Date().toISOString()) });
+      res.json({ missionPackage: createPortableMissionPackage([mission], new Date().toISOString()) });
     } catch (error) {
       next(error);
     }
   });
 
-  router.put("/api/workflows/:workflowId", async (req, res, next) => {
+  router.put("/api/missions/:missionId", async (req, res, next) => {
     try {
-      const body = req.body as SaveWorkflowRequest;
-      const saved = await store.saveWorkflow({
-        ...body.workflow,
-        id: req.params.workflowId
+      const body = req.body as SaveMissionRequest;
+      const saved = await store.saveMission({
+        ...body.mission,
+        id: readRouteParam(req.params.missionId, "missionId")
       });
-      res.json({ workflow: saved });
+      res.json({ mission: saved });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/workflows/:workflowId/runs", async (req, res, next) => {
+  router.post("/api/missions/:missionId/runs", async (req, res, next) => {
     try {
-      const workflow = await store.getWorkflow(req.params.workflowId);
-      if (!workflow) {
-        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+      const missionId = readRouteParam(req.params.missionId, "missionId");
+      const mission = await store.getMission(missionId);
+      if (!mission) {
+        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
         return;
       }
       const config = await openClawConfigStore.getState();
-      const invalidAgentIds = collectInvalidAgentIds(workflow, new Set(config.configuredAgents.map((agent) => agent.id)));
+      const invalidAgentIds = collectInvalidAgentIds(mission, new Set(config.configuredAgents.map((agent) => agent.id)));
       if (invalidAgentIds.length > 0) {
         res.status(400).json({
           error: {
-            code: "workflow_agent_invalid",
-            message: `Workflow references agent ids that are not present in OpenClaw config: ${invalidAgentIds.join(", ")}`
+            code: "mission_agent_invalid",
+            message: `Mission references agent ids that are not present in OpenClaw config: ${invalidAgentIds.join(", ")}`
           }
         });
         return;
       }
-      const body = req.body as StartWorkflowRunRequest;
-      const run = await worker.startRun(withRunDefaults(workflow, config.defaultModelId), body.startedBy ?? "local-user");
+      const body = req.body as StartMissionRunRequest;
+      const run = await worker.startRun(withRunDefaults(mission, config.defaultModelId), body.startedBy ?? "local-user");
       const view = await store.getRunView(run.id);
       res.status(201).json({ run: view });
     } catch (error) {
@@ -253,24 +256,25 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/workflows/:workflowId/runs/latest", async (req, res, next) => {
+  router.get("/api/missions/:missionId/runs/latest", async (req, res, next) => {
     try {
-      const workflow = await store.getWorkflow(req.params.workflowId);
-      if (!workflow) {
-        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+      const missionId = readRouteParam(req.params.missionId, "missionId");
+      const mission = await store.getMission(missionId);
+      if (!mission) {
+        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
         return;
       }
-      res.json({ run: (await store.getLatestRunViewForWorkflow(req.params.workflowId)) ?? null });
+      res.json({ run: (await store.getLatestRunViewForMission(missionId)) ?? null });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/workflow-runs/:runId", async (req, res, next) => {
+  router.get("/api/mission-runs/:runId", async (req, res, next) => {
     try {
-      const view = await store.getRunView(req.params.runId);
+      const view = await store.getRunView(readRouteParam(req.params.runId, "runId"));
       if (!view) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Workflow run not found." } });
+        res.status(404).json({ error: { code: "run_not_found", message: "Mission run not found." } });
         return;
       }
       res.json({ run: view });
@@ -279,7 +283,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/workflow-runs", async (_req, res, next) => {
+  router.get("/api/mission-runs", async (_req, res, next) => {
     try {
       res.json({ runs: await store.listRunViews() });
     } catch (error) {
@@ -320,19 +324,19 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.post("/api/workflow-runs/:runId/approve", async (req, res, next) => {
+  router.post("/api/mission-runs/:runId/approve", async (req, res, next) => {
     try {
-      const run = await store.getWorkflowRun(req.params.runId);
+      const run = await store.getMissionRun(readRouteParam(req.params.runId, "runId"));
       if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Workflow run not found." } });
+        res.status(404).json({ error: { code: "run_not_found", message: "Mission run not found." } });
         return;
       }
-      const workflow = await store.getWorkflow(run.workflowId);
-      if (!workflow) {
-        res.status(404).json({ error: { code: "workflow_not_found", message: "Workflow not found." } });
+      const mission = await store.getMission(run.missionId);
+      if (!mission) {
+        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
         return;
       }
-      const updated = await worker.approveRun(workflow, run);
+      const updated = await worker.approveRun(mission, run);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -359,10 +363,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   return router;
 }
 
-function collectInvalidAgentIds(workflow: WorkflowDefinition, configuredAgentIds: Set<string>): string[] {
+function collectInvalidAgentIds(mission: MissionDefinition, configuredAgentIds: Set<string>): string[] {
   const invalid = new Set<string>();
 
-  for (const node of workflow.nodes) {
+  for (const node of mission.nodes) {
     if (node.type === "openclaw_agent") {
       const agentId = (node.config as AgentNodeConfig).agentId ?? "main";
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
@@ -379,12 +383,21 @@ function collectInvalidAgentIds(workflow: WorkflowDefinition, configuredAgentIds
   return [...invalid];
 }
 
-function withRunDefaults(workflow: WorkflowDefinition, defaultModelId?: string): WorkflowDefinition {
-  if (!defaultModelId) return workflow;
+function readRouteParam(value: string | string[] | undefined, name: string): string {
+  if (Array.isArray(value)) {
+    const [first] = value;
+    if (first) return first;
+  }
+  if (typeof value === "string" && value) return value;
+  throw new Error(`Missing route parameter: ${name}`);
+}
+
+function withRunDefaults(mission: MissionDefinition, defaultModelId?: string): MissionDefinition {
+  if (!defaultModelId) return mission;
 
   return {
-    ...workflow,
-    nodes: workflow.nodes.map((node) => {
+    ...mission,
+    nodes: mission.nodes.map((node) => {
       if (node.type === "openclaw_agent") {
         const config = node.config as AgentNodeConfig;
         return config.modelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
@@ -408,7 +421,7 @@ function withRunDefaults(workflow: WorkflowDefinition, defaultModelId?: string):
   };
 }
 
-async function refreshCatalog(adapter: OpenClawAdapter, store: FileCuiStore): Promise<CatalogSnapshot> {
+async function refreshCatalog(adapter: OpenClawAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
     id: `catalog-${nanoid(8)}`,

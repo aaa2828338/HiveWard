@@ -1,4 +1,4 @@
-import type { AgentTaskResult, StartAgentTaskInput, StartedAgentTaskResult, WaitForAgentTaskInput } from "@openclaw-cui/shared";
+import type { AgentTaskResult, StartAgentTaskInput, StartedAgentTaskResult, WaitForAgentTaskInput } from "@hiveward/shared";
 import { ClaudeAgentSdkRuntime } from "./claude-runtime";
 import { CodexAgentSdkRuntime } from "./codex-runtime";
 import { AgentSdkTaskRegistry } from "./task-registry";

@@ -12,7 +12,7 @@ import type {
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import { AgentSdkError, formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
@@ -67,7 +67,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       provider: "claude",
       nodeRunId: input.nodeRunId,
-      workflowRunId: input.workflowRunId,
+      missionRunId: input.missionRunId,
       sessionKey,
       startedAt: now,
       abortController,

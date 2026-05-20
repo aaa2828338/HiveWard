@@ -137,10 +137,14 @@ pre {
   border-radius: 6.5px;
   display: grid;
   place-items: center;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  color: #0f2e36;
-  background: linear-gradient(145deg, #f5d28d 0%, #fff4d7 100%);
+  overflow: hidden;
+  background: #fff4d7;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .sidebar-brand h1,
@@ -1485,11 +1489,11 @@ dd {
   line-height: 1.55;
 }
 
-.workflow-shell {
+.mission-shell {
   min-height: calc(100vh - 176px);
 }
 
-.workflow-canvas-panel {
+.mission-canvas-panel {
   position: relative;
   min-width: 0;
   width: 100%;
@@ -1510,15 +1514,15 @@ dd {
   -webkit-touch-callout: none;
 }
 
-.workflow-canvas-panel > .react-flow,
-.workflow-canvas-panel .react-flow__renderer,
-.workflow-canvas-panel .react-flow__viewport,
-.workflow-canvas-panel .react-flow__pane {
+.mission-canvas-panel > .react-flow,
+.mission-canvas-panel .react-flow__renderer,
+.mission-canvas-panel .react-flow__viewport,
+.mission-canvas-panel .react-flow__pane {
   width: 100%;
   height: 100%;
 }
 
-.expanded-workflow-panel {
+.expanded-mission-panel {
   width: 100%;
 }
 
@@ -1526,17 +1530,17 @@ dd {
   display: none;
 }
 
-.workflow-overlay {
+.mission-overlay {
   position: absolute;
   z-index: 6;
 }
 
-.workflow-overlay-left {
+.mission-overlay-left {
   top: 18px;
   left: 18px;
 }
 
-.workflow-overlay-right {
+.mission-overlay-right {
   top: 18px;
   right: 18px;
 }
@@ -1820,7 +1824,7 @@ dd {
   min-height: 86px;
 }
 
-.workflow-node {
+.mission-node {
   position: relative;
   width: 232px;
   min-height: 108px;
@@ -1831,13 +1835,13 @@ dd {
   box-shadow: 0 14px 28px rgb(38 51 77 / 0.12);
 }
 
-.workflow-node-manager {
+.mission-node-manager {
   width: 248px;
   padding: 16px 18px;
   overflow: visible;
 }
 
-.workflow-node-manager_slot {
+.mission-node-manager_slot {
   padding: 0;
   overflow: visible;
   background: rgb(255 255 255 / 0.88);
@@ -1860,20 +1864,20 @@ dd {
   opacity: 0;
 }
 
-.workflow-node-manager_slot .node-topline {
+.mission-node-manager_slot .node-topline {
   display: block;
   margin: 0;
 }
 
-.workflow-node-manager_slot .node-type,
-.workflow-node-manager_slot .node-status,
-.workflow-node-manager_slot .node-label,
-.workflow-node-manager_slot .node-kind {
+.mission-node-manager_slot .node-type,
+.mission-node-manager_slot .node-status,
+.mission-node-manager_slot .node-label,
+.mission-node-manager_slot .node-kind {
   position: absolute;
   z-index: 1;
 }
 
-.workflow-node-manager_slot .node-type {
+.mission-node-manager_slot .node-type {
   top: 22px;
   left: 28px;
   width: 34px;
@@ -1881,7 +1885,7 @@ dd {
   border-radius: 6px;
 }
 
-.workflow-node-manager_slot .node-status {
+.mission-node-manager_slot .node-status {
   top: 22px;
   right: 28px;
   width: 34px;
@@ -1889,7 +1893,7 @@ dd {
   border-radius: 6px;
 }
 
-.workflow-node-manager_slot .node-label {
+.mission-node-manager_slot .node-label {
   top: 22px;
   right: 78px;
   left: 76px;
@@ -1900,7 +1904,7 @@ dd {
   white-space: nowrap;
 }
 
-.workflow-node-manager_slot .node-kind {
+.mission-node-manager_slot .node-kind {
   top: 47px;
   right: 78px;
   left: 76px;
@@ -1912,20 +1916,20 @@ dd {
   white-space: nowrap;
 }
 
-.workflow-node.selected {
+.mission-node.selected {
   border-color: color-mix(in srgb, var(--accent) 72%, white);
   box-shadow: 0 0 0 3px rgb(15 118 110 / 0.28), 0 14px 28px rgb(38 51 77 / 0.12);
   background: rgb(255 255 255 / 0.95);
 }
 
-.workflow-node-manager_slot.selected .manager-slot-box-body {
+.mission-node-manager_slot.selected .manager-slot-box-body {
   border-color: color-mix(in srgb, var(--accent) 58%, white);
   box-shadow:
     0 0 0 3px rgb(15 118 110 / 0.16),
     inset 0 1px 0 rgb(255 255 255 / 0.88);
 }
 
-.workflow-node.disabled {
+.mission-node.disabled {
   opacity: 0.48;
   filter: saturate(0.72);
 }
@@ -2098,15 +2102,15 @@ dd {
   z-index: 4;
 }
 
-.manager-workflow-handle {
+.manager-mission-handle {
   z-index: 4;
 }
 
-.manager-workflow-input-handle {
+.manager-mission-input-handle {
   box-shadow: 0 0 0 1px rgb(15 118 110 / 0.24), 0 4px 10px rgb(15 118 110 / 0.16);
 }
 
-.manager-workflow-output-handle {
+.manager-mission-output-handle {
   box-shadow: 0 0 0 1px rgb(209 139 69 / 0.24), 0 4px 10px rgb(209 139 69 / 0.16);
 }
 
@@ -2174,7 +2178,7 @@ dd {
   transform: translate(50%, -50%);
 }
 
-.workflow-edge {
+.mission-edge {
   stroke-width: 2;
 }
 
@@ -2288,17 +2292,17 @@ dd {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .workflow-shell,
+  .mission-shell,
   .form-grid,
   .form-grid-wide {
     grid-template-columns: 1fr;
   }
 
-  .workflow-shell {
+  .mission-shell {
     min-height: 0;
   }
 
-  .workflow-canvas-panel {
+  .mission-canvas-panel {
     height: 560px;
     min-height: 560px;
   }
@@ -2337,11 +2341,11 @@ dd {
     width: min(320px, calc(100vw - 32px));
   }
 
-  .workflow-shell {
+  .mission-shell {
     min-height: 0;
   }
 
-  .workflow-canvas-panel {
+  .mission-canvas-panel {
     height: 520px;
     min-height: 520px;
   }
@@ -2368,13 +2372,13 @@ dd {
     grid-template-columns: 1fr;
   }
 
-  .workflow-overlay-left,
-  .workflow-overlay-right {
+  .mission-overlay-left,
+  .mission-overlay-right {
     left: 14px;
     right: 14px;
   }
 
-  .workflow-overlay-right {
+  .mission-overlay-right {
     top: auto;
     bottom: 14px;
   }
@@ -2389,7 +2393,7 @@ dd {
 }
 
 /* Raycast-inspired command center refactor. Keep this layer last so the
-   interaction-heavy workflow code can stay unchanged while the product shell
+   interaction-heavy mission code can stay unchanged while the product shell
    moves to a compact, keyboard-first tool surface. */
 :root {
   font-family:
@@ -3325,11 +3329,11 @@ textarea {
   font-size: 12px;
 }
 
-.workflow-shell {
+.mission-shell {
   min-height: calc(100vh - 98px);
 }
 
-.workflow-canvas-panel {
+.mission-canvas-panel {
   height: calc(100vh - 102px);
   min-height: 620px;
   border-color: #2a3443;
@@ -3347,35 +3351,35 @@ textarea {
     var(--shadow-tight);
 }
 
-.workflow-canvas-panel .react-flow__background {
+.mission-canvas-panel .react-flow__background {
   opacity: 0.58;
 }
 
-.workflow-canvas-panel .react-flow__minimap {
+.mission-canvas-panel .react-flow__minimap {
   border: 1px solid #263244;
   border-radius: var(--radius-sm);
   overflow: hidden;
   background: #0b1018;
 }
 
-.workflow-canvas-panel .react-flow__minimap-mask {
+.mission-canvas-panel .react-flow__minimap-mask {
   fill: rgb(15 19 26 / 0.72);
   stroke: rgb(59 130 246 / 0.22);
 }
 
-.workflow-canvas-panel .react-flow__minimap-node {
+.mission-canvas-panel .react-flow__minimap-node {
   fill: #64748b;
   stroke: transparent;
 }
 
-.workflow-canvas-panel .react-flow__controls {
+.mission-canvas-panel .react-flow__controls {
   overflow: hidden;
   border: 1px solid #263244;
   border-radius: var(--radius-sm);
   box-shadow: none;
 }
 
-.workflow-canvas-panel .react-flow__controls-button {
+.mission-canvas-panel .react-flow__controls-button {
   width: 30px;
   height: 30px;
   min-height: 30px;
@@ -3386,17 +3390,17 @@ textarea {
   background: #111722;
 }
 
-.workflow-canvas-panel .react-flow__controls-button:hover {
+.mission-canvas-panel .react-flow__controls-button:hover {
   color: var(--text);
   background: #1a2230;
   transform: none;
 }
 
-.workflow-canvas-panel .react-flow__controls-button svg {
+.mission-canvas-panel .react-flow__controls-button svg {
   fill: currentColor;
 }
 
-.workflow-edge {
+.mission-edge {
   stroke: #64748b;
   stroke-width: 2;
 }
@@ -3634,7 +3638,7 @@ textarea {
   font-size: 12px;
 }
 
-.workflow-node {
+.mission-node {
   width: 224px;
   min-height: 98px;
   padding: 12px;
@@ -3649,16 +3653,16 @@ textarea {
     0 12px 24px rgb(0 0 0 / 0.28);
 }
 
-.workflow-node:hover {
+.mission-node:hover {
   border-color: #475569;
 }
 
-.workflow-node-manager {
+.mission-node-manager {
   width: 244px;
   padding: 14px 16px;
 }
 
-.workflow-node-manager_slot {
+.mission-node-manager_slot {
   border-color: #334155;
   background: rgb(15 23 42 / 0.58);
   box-shadow:
@@ -3666,7 +3670,7 @@ textarea {
     0 16px 34px rgb(0 0 0 / 0.18);
 }
 
-.workflow-node.selected {
+.mission-node.selected {
   border-color: var(--accent-line);
   background:
     linear-gradient(180deg, rgb(56 189 248 / 0.12), rgb(255 255 255 / 0.018)),
@@ -3676,14 +3680,14 @@ textarea {
     0 14px 30px rgb(0 0 0 / 0.34);
 }
 
-.workflow-node-manager_slot.selected .manager-slot-box-body {
+.mission-node-manager_slot.selected .manager-slot-box-body {
   border-color: var(--accent-line);
   box-shadow:
     0 0 0 3px rgb(56 189 248 / 0.12),
     inset 0 1px 0 rgb(255 255 255 / 0.06);
 }
 
-.workflow-node.disabled {
+.mission-node.disabled {
   opacity: 0.42;
 }
 
@@ -3824,23 +3828,23 @@ textarea {
   background: rgb(148 163 184 / 0.18);
 }
 
-.workflow-node-manager_slot .node-type {
+.mission-node-manager_slot .node-type {
   width: 30px;
   height: 30px;
   border-radius: var(--radius-sm);
 }
 
-.workflow-node-manager_slot .node-status {
+.mission-node-manager_slot .node-status {
   width: 30px;
   height: 30px;
   border-radius: var(--radius-sm);
 }
 
-.workflow-node-manager_slot .node-label {
+.mission-node-manager_slot .node-label {
   color: var(--text);
 }
 
-.workflow-node-manager_slot .node-kind {
+.mission-node-manager_slot .node-kind {
   color: var(--muted);
 }
 
@@ -3878,7 +3882,7 @@ textarea {
     justify-content: flex-start;
   }
 
-  .workflow-canvas-panel {
+  .mission-canvas-panel {
     height: 620px;
     min-height: 620px;
   }
@@ -3912,7 +3916,7 @@ textarea {
     padding: 12px;
   }
 
-  .workflow-canvas-panel {
+  .mission-canvas-panel {
     height: 540px;
     min-height: 540px;
   }
@@ -3971,8 +3975,8 @@ body,
 .skill-item,
 .node-modal,
 .node-modal-section,
-.workflow-node,
-.workflow-node-manager_slot,
+.mission-node,
+.mission-node-manager_slot,
 .manager-slot-box-body {
   background-image: none;
 }
@@ -4085,7 +4089,7 @@ button:hover:not(:disabled) {
   box-shadow: none;
 }
 
-.workflow-canvas-panel {
+.mission-canvas-panel {
   background:
     linear-gradient(90deg, rgb(148 163 184 / 0.035) 1px, transparent 1px),
     linear-gradient(180deg, rgb(148 163 184 / 0.035) 1px, transparent 1px),
@@ -4093,21 +4097,21 @@ button:hover:not(:disabled) {
   box-shadow: none;
 }
 
-.workflow-node {
+.mission-node {
   background: #131a24;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.22);
 }
 
-.workflow-node:hover {
+.mission-node:hover {
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.24);
 }
 
-.workflow-node.selected {
+.mission-node.selected {
   background: #141f25;
   box-shadow: 0 0 0 2px rgb(59 130 246 / 0.18);
 }
 
-.workflow-node-manager_slot.selected .manager-slot-box-body {
+.mission-node-manager_slot.selected .manager-slot-box-body {
   box-shadow: inset 0 0 0 1px rgb(59 130 246 / 0.12);
 }
 
@@ -4115,8 +4119,8 @@ button:hover:not(:disabled) {
 .node-handle,
 .floating-run-pill,
 .node-menu-trigger,
-.workflow-canvas-panel .react-flow__minimap,
-.workflow-canvas-panel .react-flow__controls {
+.mission-canvas-panel .react-flow__minimap,
+.mission-canvas-panel .react-flow__controls {
   box-shadow: none;
 }
 
@@ -4220,7 +4224,7 @@ body,
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.workflow-canvas-panel {
+.mission-canvas-panel {
   background:
     linear-gradient(90deg, rgb(148 163 184 / 0.032) 1px, transparent 1px),
     linear-gradient(180deg, rgb(148 163 184 / 0.032) 1px, transparent 1px),
@@ -4228,24 +4232,24 @@ body,
   border-color: #2b3440;
 }
 
-.workflow-node {
+.mission-node {
   background: #12151a;
   border-color: #303946;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.24);
 }
 
-.workflow-node:hover {
+.mission-node:hover {
   background: #15191f;
   box-shadow: 0 1px 2px rgb(0 0 0 / 0.24);
 }
 
-.workflow-node.selected {
+.mission-node.selected {
   background: #15191f;
   border-color: var(--accent-line);
   box-shadow: 0 0 0 2px rgb(59 130 246 / 0.16);
 }
 
-.workflow-node-manager_slot {
+.mission-node-manager_slot {
   background: rgb(18 21 26 / 0.86);
 }
 
@@ -4254,7 +4258,7 @@ body,
   border-color: #303946;
 }
 
-.workflow-node-manager_slot.selected .manager-slot-box-body {
+.mission-node-manager_slot.selected .manager-slot-box-body {
   border-color: var(--accent-line);
   box-shadow: inset 0 0 0 1px rgb(59 130 246 / 0.10);
 }
@@ -4473,7 +4477,7 @@ html[data-theme="light"] .hero-copy p {
   color: var(--muted);
 }
 
-html[data-theme="light"] .workflow-canvas-panel {
+html[data-theme="light"] .mission-canvas-panel {
   border-color: #dce3ec;
   background:
     linear-gradient(90deg, rgb(100 116 139 / 0.065) 1px, transparent 1px),
@@ -4481,29 +4485,29 @@ html[data-theme="light"] .workflow-canvas-panel {
     #f8fafc;
 }
 
-html[data-theme="light"] .workflow-canvas-panel .react-flow__background {
+html[data-theme="light"] .mission-canvas-panel .react-flow__background {
   opacity: 0.72;
 }
 
-html[data-theme="light"] .workflow-node {
+html[data-theme="light"] .mission-node {
   border-color: #d6dee8;
   background: #ffffff;
   color: var(--text);
   box-shadow: 0 1px 2px rgb(15 23 42 / 0.08);
 }
 
-html[data-theme="light"] .workflow-node:hover {
+html[data-theme="light"] .mission-node:hover {
   background: #ffffff;
   box-shadow: 0 1px 3px rgb(15 23 42 / 0.10);
 }
 
-html[data-theme="light"] .workflow-node.selected {
+html[data-theme="light"] .mission-node.selected {
   border-color: var(--accent-line);
   background: #ffffff;
   box-shadow: 0 0 0 2px rgb(37 99 235 / 0.14);
 }
 
-html[data-theme="light"] .workflow-node-manager_slot {
+html[data-theme="light"] .mission-node-manager_slot {
   background: rgb(255 255 255 / 0.86);
 }
 
@@ -4512,7 +4516,7 @@ html[data-theme="light"] .manager-slot-box-body {
   background: #f8fafc;
 }
 
-html[data-theme="light"] .workflow-node-manager_slot.selected .manager-slot-box-body {
+html[data-theme="light"] .mission-node-manager_slot.selected .manager-slot-box-body {
   border-color: var(--accent-line);
   box-shadow: inset 0 0 0 1px rgb(37 99 235 / 0.10);
 }
@@ -4528,15 +4532,15 @@ html[data-theme="light"] .node-type-loop {
   background: #eff6ff;
 }
 
-.workflow-node-openclaw_agent {
+.mission-node-openclaw_agent {
   border-color: #7dd3fc;
 }
 
-.workflow-node-codex_agent {
+.mission-node-codex_agent {
   border-color: #c4b5fd;
 }
 
-.workflow-node-claude_code_agent {
+.mission-node-claude_code_agent {
   border-color: #f7c873;
 }
 
@@ -4555,15 +4559,15 @@ html[data-theme="light"] .node-type-loop {
   background: rgb(202 138 4 / 0.16);
 }
 
-html[data-theme="light"] .workflow-node-openclaw_agent {
+html[data-theme="light"] .mission-node-openclaw_agent {
   border-color: #7dd3fc;
 }
 
-html[data-theme="light"] .workflow-node-codex_agent {
+html[data-theme="light"] .mission-node-codex_agent {
   border-color: #c4b5fd;
 }
 
-html[data-theme="light"] .workflow-node-claude_code_agent {
+html[data-theme="light"] .mission-node-claude_code_agent {
   border-color: #f7c873;
 }
 
@@ -4593,24 +4597,24 @@ html[data-theme="light"] .node-handle {
   box-shadow: 0 0 0 1px rgb(15 23 42 / 0.18);
 }
 
-html[data-theme="light"] .workflow-canvas-panel .react-flow__minimap,
-html[data-theme="light"] .workflow-canvas-panel .react-flow__controls {
+html[data-theme="light"] .mission-canvas-panel .react-flow__minimap,
+html[data-theme="light"] .mission-canvas-panel .react-flow__controls {
   border-color: #dce3ec;
   background: #ffffff;
 }
 
-html[data-theme="light"] .workflow-canvas-panel .react-flow__controls-button {
+html[data-theme="light"] .mission-canvas-panel .react-flow__controls-button {
   border-bottom-color: #e5e7eb;
   background: #ffffff;
   color: var(--muted-strong);
 }
 
-html[data-theme="light"] .workflow-canvas-panel .react-flow__minimap-mask {
+html[data-theme="light"] .mission-canvas-panel .react-flow__minimap-mask {
   fill: rgb(148 163 184 / 0.18);
   stroke: rgb(37 99 235 / 0.16);
 }
 
-html[data-theme="light"] .workflow-canvas-panel .react-flow__minimap-node {
+html[data-theme="light"] .mission-canvas-panel .react-flow__minimap-node {
   fill: #94a3b8;
   stroke: transparent;
 }
@@ -4634,15 +4638,15 @@ html[data-theme="light"] .node-output-row pre {
   min-height: 100vh;
 }
 
-.workflow-shell {
+.mission-shell {
   min-height: calc(100vh - 32px);
 }
 
-.workflow-canvas-panel {
+.mission-canvas-panel {
   height: calc(100vh - 32px);
 }
 
-.workflow-action-dock {
+.mission-action-dock {
   position: absolute;
   z-index: 8;
   right: 332px;
@@ -4663,7 +4667,7 @@ html[data-theme="light"] .node-output-row pre {
   backdrop-filter: blur(18px);
 }
 
-.workflow-action-dock select {
+.mission-action-dock select {
   flex: 1 1 280px;
   width: auto;
   min-width: min(280px, 100%);
@@ -4671,21 +4675,21 @@ html[data-theme="light"] .node-output-row pre {
   min-height: 32px;
 }
 
-.workflow-action-dock button {
+.mission-action-dock button {
   flex: 0 0 auto;
   min-height: 32px;
   padding: 0 10px;
   white-space: nowrap;
 }
 
-html[data-theme="light"] .workflow-action-dock {
+html[data-theme="light"] .mission-action-dock {
   border-color: #dce3ec;
   background: rgb(255 255 255 / 0.92);
   box-shadow: 0 16px 38px rgb(15 23 42 / 0.14);
 }
 
 @media (max-width: 1180px) {
-  .workflow-action-dock {
+  .mission-action-dock {
     right: 18px;
   }
 }
@@ -4695,23 +4699,23 @@ html[data-theme="light"] .workflow-action-dock {
     min-height: 100vh;
   }
 
-  .workflow-shell {
+  .mission-shell {
     min-height: calc(100vh - 24px);
   }
 
-  .workflow-canvas-panel {
+  .mission-canvas-panel {
     height: calc(100vh - 24px);
   }
 
-  .workflow-action-dock {
+  .mission-action-dock {
     right: 12px;
     bottom: 12px;
     left: 12px;
     justify-content: flex-start;
   }
 
-  .workflow-action-dock select,
-  .workflow-action-dock button {
+  .mission-action-dock select,
+  .mission-action-dock button {
     flex: 1 1 auto;
   }
 }

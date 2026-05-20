@@ -31,14 +31,14 @@ import type {
   PendingApprovalItem,
   RuntimeOverview,
   WorkspaceDashboard,
-  WorkflowDefinition,
-  WorkflowNode,
-  WorkflowNodeEvent,
-  WorkflowNodeRun,
-  WorkflowNodeRunStatus,
-  WorkflowRunStatus,
-  WorkflowRunView
-} from "@openclaw-cui/shared";
+  MissionDefinition,
+  MissionNode,
+  MissionNodeEvent,
+  MissionNodeRun,
+  MissionNodeRunStatus,
+  MissionRunStatus,
+  MissionRunView
+} from "@hiveward/shared";
 import type { Language, Messages } from "../lib/i18n";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
@@ -151,13 +151,13 @@ type TraceIssue = {
   label: string;
   kind: "node" | "slot_input" | "slot_output";
   depth: number;
-  node?: WorkflowNode;
-  nodeRun?: WorkflowNodeRun;
+  node?: MissionNode;
+  nodeRun?: MissionNodeRun;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   outputPreview: string;
   outputBody?: string;
-  events: WorkflowNodeEvent[];
+  events: MissionNodeEvent[];
 };
 
 export function CompanyPage({
@@ -178,7 +178,7 @@ export function CompanyPage({
           noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u4ECE\u4E0B\u65B9\u5217\u8868\u4E2D\u5207\u6362\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
-          workflows: "\u5DE5\u4F5C\u6D41",
+          missions: "Mission",
           runs: "\u4EFB\u52A1",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
@@ -196,7 +196,7 @@ export function CompanyPage({
           noSelection: "No company is selected yet. Choose one from the list below.",
           noCompanies: "No companies are available.",
           goal: "Business goal",
-          workflows: "Workflows",
+          missions: "Missions",
           runs: "Tasks",
           tokens: "Tokens",
           approvals: "Pending approvals",
@@ -238,7 +238,7 @@ export function CompanyPage({
             </div>
 
             <div className="company-stat-grid">
-              <CompanyStatCard label={copy.workflows} value={selectedCompany.workflowCount.toLocaleString(language)} />
+              <CompanyStatCard label={copy.missions} value={selectedCompany.missionCount.toLocaleString(language)} />
               <CompanyStatCard label={copy.runs} value={selectedCompany.runCount.toLocaleString(language)} />
               <CompanyStatCard label={copy.tokens} value={selectedCompany.totalTokens.toLocaleString(language)} />
               <CompanyStatCard label={copy.approvals} value={selectedCompany.activeApprovalCount.toLocaleString(language)} />
@@ -281,7 +281,7 @@ export function CompanyPage({
                   </div>
                 </div>
                 <div className="company-list-card-metrics">
-                  <span>{`${copy.workflows}: ${company.workflowCount}`}</span>
+                  <span>{`${copy.missions}: ${company.missionCount}`}</span>
                   <span>{`${copy.tokens}: ${company.totalTokens}`}</span>
                   <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
                 </div>
@@ -303,36 +303,36 @@ export function CompanyPage({
 
 export function RunsPage({
   runs,
-  workflows,
-  workflow,
+  missions,
+  mission,
   selectedRunId,
   language,
   t,
-  onSelectWorkflow,
+  onSelectMission,
   onSelectRun
 }: {
-  runs: WorkflowRunView[];
-  workflows: WorkflowDefinition[];
-  workflow?: WorkflowDefinition;
+  runs: MissionRunView[];
+  missions: MissionDefinition[];
+  mission?: MissionDefinition;
   selectedRunId?: string;
   language: Language;
   t: Messages;
-  onSelectWorkflow: (workflowId: string) => void;
+  onSelectMission: (missionId: string) => void;
   onSelectRun: (runId: string) => void;
 }) {
-  const workflowRuns = useMemo(
-    () => (workflow ? runs.filter((runView) => runView.run.workflowId === workflow.id) : []),
-    [runs, workflow]
+  const missionRuns = useMemo(
+    () => (mission ? runs.filter((runView) => runView.run.missionId === mission.id) : []),
+    [runs, mission]
   );
-  const currentTasks = useMemo(() => workflowRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [workflowRuns]);
-  const taskOptions = currentTasks.length > 0 ? currentTasks : workflowRuns;
+  const currentTasks = useMemo(() => missionRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [missionRuns]);
+  const taskOptions = currentTasks.length > 0 ? currentTasks : missionRuns;
   const activeRun = taskOptions.find((runView) => runView.run.id === selectedRunId) ?? taskOptions[0];
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
-  const orderedNodes = useMemo(() => getWorkflowNodeOrder(workflow), [workflow]);
+  const orderedNodes = useMemo(() => getMissionNodeOrder(mission), [mission]);
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, workflow, orderedNodes, t);
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, workflow?.nodes]);
+    return buildTraceIssues(activeRun, mission, orderedNodes, t);
+  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, mission?.nodes]);
 
   const activeIssue =
     issues.find((issue) => issue.key === activeIssueKey) ??
@@ -353,8 +353,8 @@ export function RunsPage({
             <p>{currentTasks.length > 0 ? t.metrics.runs(currentTasks.length) : t.trace.description}</p>
           </div>
           <div className="toolbar-cluster trace-toolbar">
-            <select value={workflow?.id ?? ""} onChange={(event) => onSelectWorkflow(event.target.value)}>
-              {workflows.map((item) => (
+            <select value={mission?.id ?? ""} onChange={(event) => onSelectMission(event.target.value)}>
+              {missions.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
                 </option>
@@ -382,8 +382,8 @@ export function RunsPage({
             {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
           </div>
           <div className="trace-issue-list">
-            {!workflow ? (
-              <div className="empty-state page-empty">{t.empty.selectWorkflow}</div>
+            {!mission ? (
+              <div className="empty-state page-empty">{t.empty.selectMission}</div>
             ) : issues.length === 0 ? (
               <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
             ) : (
@@ -448,7 +448,7 @@ export function ApprovalsPage({
   approvals: PendingApprovalItem[];
   language: Language;
   t: Messages;
-  onApprove: (workflowRunId: string) => void;
+  onApprove: (missionRunId: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
 
@@ -470,22 +470,22 @@ export function ApprovalsPage({
                 <div className="feature-card-header">
                   <div>
                     <strong>{approval.nodeLabel}</strong>
-                    <p>{approval.workflowName}</p>
+                    <p>{approval.missionName}</p>
                   </div>
                   <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
                 </div>
                 <dl className="meta-grid">
-                  <dt>{t.fields.relatedWorkflow}</dt>
-                  <dd>{approval.workflowName}</dd>
+                  <dt>{t.fields.relatedMission}</dt>
+                  <dd>{approval.missionName}</dd>
                   <dt>{t.fields.relatedRun}</dt>
-                  <dd>{approval.workflowRunId}</dd>
+                  <dd>{approval.missionRunId}</dd>
                   <dt>{t.fields.updatedAt}</dt>
                   <dd>{formatDateTime(approval.requestedAt, language)}</dd>
                 </dl>
                 {approval.approverHint && <p className="supporting-copy">{approval.approverHint}</p>}
                 {approval.instructions && <pre className="inline-note">{approval.instructions}</pre>}
                 <div className="card-actions">
-                  <button type="button" className="primary-action" onClick={() => onApprove(approval.workflowRunId)}>
+                  <button type="button" className="primary-action" onClick={() => onApprove(approval.missionRunId)}>
                     <BadgeCheck size={16} />
                     {t.actions.approve}
                   </button>
@@ -501,7 +501,7 @@ export function ApprovalsPage({
 
 export function DashboardPage({
   dashboard,
-  workflows,
+  missions,
   runs,
   approvals,
   catalog,
@@ -512,8 +512,8 @@ export function DashboardPage({
   onRemoveWidget
 }: {
   dashboard?: WorkspaceDashboard;
-  workflows: WorkflowDefinition[];
-  runs: WorkflowRunView[];
+  missions: MissionDefinition[];
+  runs: MissionRunView[];
   approvals: PendingApprovalItem[];
   catalog?: CatalogSnapshot;
   runtime?: RuntimeOverview;
@@ -524,7 +524,7 @@ export function DashboardPage({
 }) {
   const widgets = (dashboard?.dashboardWidgets ?? []).filter((widget) => widget.type !== "notes");
   const summary = [
-    { icon: FolderKanban, label: t.metrics.workflows(workflows.length) },
+    { icon: FolderKanban, label: t.metrics.missions(missions.length) },
     { icon: Activity, label: t.metrics.runs(runs.length) },
     { icon: Clock3, label: t.metrics.approvals(approvals.length) },
     { icon: Database, label: t.metrics.models(catalog?.models.length ?? 0) }
@@ -607,7 +607,7 @@ export function ModelsPage({
   t: Messages;
   busy: boolean;
   busyAction?: string;
-  runs: WorkflowRunView[];
+  runs: MissionRunView[];
   openClawModelUsage: OpenClawModelUsageSummary[];
   onRefreshCatalog: () => void;
   onConfigureModelAuth: (input: ConfigureOpenClawModelAuthRequest) => void;
@@ -1015,14 +1015,14 @@ export function SchedulePage({
   runtime,
   runs,
   approvals,
-  workflows,
+  missions,
   language,
   t
 }: {
   runtime?: RuntimeOverview;
-  runs: WorkflowRunView[];
+  runs: MissionRunView[];
   approvals: PendingApprovalItem[];
-  workflows: WorkflowDefinition[];
+  missions: MissionDefinition[];
   language: Language;
   t: Messages;
 }) {
@@ -1032,7 +1032,7 @@ export function SchedulePage({
           calendar: "\u65e5\u5386",
           records: "\u5f53\u5929\u8bb0\u5f55",
           active: "\u8fdb\u884c\u4e2d",
-          workflowTasks: "\u5de5\u4f5c\u6d41\u4efb\u52a1",
+          missionTasks: "Mission \u4efb\u52a1",
           inbox: "\u6536\u4ef6\u7bb1",
           selectedDate: "\u9009\u62e9\u65e5\u671f",
           noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
@@ -1042,7 +1042,7 @@ export function SchedulePage({
           calendar: "Calendar",
           records: "Records for the day",
           active: "In progress",
-          workflowTasks: "Workflow tasks",
+          missionTasks: "Mission tasks",
           inbox: "Inbox",
           selectedDate: "Selected date",
           noRecords: "No records for this date.",
@@ -1057,7 +1057,7 @@ export function SchedulePage({
     () => (runtime?.sessions ?? []).filter((session) => isSameLocalDate(session.updatedAt, selectedDate)),
     [runtime?.sessions, selectedDate]
   );
-  const workflowTasksForDay = useMemo(
+  const missionTasksForDay = useMemo(
     () =>
       runs.filter(
         (runView) =>
@@ -1072,8 +1072,8 @@ export function SchedulePage({
   );
   const activeTasks =
     runtimeTasksForDay.filter((task) => task.status === "queued" || task.status === "running").length +
-    workflowTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
-  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + workflowTasksForDay.length + inboxForDay.length;
+    missionTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
+  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + missionTasksForDay.length + inboxForDay.length;
 
   return (
     <section className="page-grid">
@@ -1105,12 +1105,12 @@ export function SchedulePage({
       </div>
 
       <section className="card-grid data-card-grid">
-        <TableCard title={copy.workflowTasks} rows={workflowTasksForDay.length}>
-          {workflowTasksForDay.length ? (
-            workflowTasksForDay.map((runView) => (
+        <TableCard title={copy.missionTasks} rows={missionTasksForDay.length}>
+          {missionTasksForDay.length ? (
+            missionTasksForDay.map((runView) => (
               <div key={runView.run.id} className="table-row">
                 <div>
-                  <strong>{workflowNameFor(workflows, runView.run.workflowId)}</strong>
+                  <strong>{missionNameFor(missions, runView.run.missionId)}</strong>
                   <p>{runView.run.id}</p>
                 </div>
                 <div className="table-meta">
@@ -1149,7 +1149,7 @@ export function SchedulePage({
               <div key={approval.nodeRunId} className="table-row">
                 <div>
                   <strong>{approval.nodeLabel}</strong>
-                  <p>{approval.workflowName}</p>
+                  <p>{approval.missionName}</p>
                 </div>
                 <div className="table-meta">
                   <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
@@ -1405,7 +1405,7 @@ function WidgetCard({
 }: {
   widget: DashboardWidget;
   dashboard?: WorkspaceDashboard;
-  runs: WorkflowRunView[];
+  runs: MissionRunView[];
   approvals: PendingApprovalItem[];
   catalog?: CatalogSnapshot;
   runtime?: RuntimeOverview;
@@ -1442,7 +1442,7 @@ function WidgetCard({
           </div>
           {approvals.slice(0, 3).map((approval) => (
             <div key={approval.nodeRunId} className="mini-row">
-              <span>{approval.workflowName}</span>
+              <span>{approval.missionName}</span>
               <code>{approval.nodeLabel}</code>
             </div>
           ))}
@@ -1801,18 +1801,18 @@ function TraceBubble({
 }
 
 function buildTraceIssues(
-  activeRun: WorkflowRunView | undefined,
-  workflow: WorkflowDefinition | undefined,
-  orderedNodes: WorkflowNode[],
+  activeRun: MissionRunView | undefined,
+  mission: MissionDefinition | undefined,
+  orderedNodes: MissionNode[],
   t: Messages
 ): TraceIssue[] {
   if (!activeRun?.nodeRuns.length) {
-    return buildPendingTraceIssues(workflow, orderedNodes, t);
+    return buildPendingTraceIssues(mission, orderedNodes, t);
   }
 
-  const nodesById = new Map((workflow?.nodes ?? []).map((node) => [node.id, node]));
+  const nodesById = new Map((mission?.nodes ?? []).map((node) => [node.id, node]));
   const childrenBySlotId = new Map<string, Set<string>>();
-  for (const node of workflow?.nodes ?? []) {
+  for (const node of mission?.nodes ?? []) {
     if (!node.parentId) continue;
     const parent = nodesById.get(node.parentId);
     if (parent?.type !== "manager_slot") continue;
@@ -1881,13 +1881,13 @@ function buildTraceIssues(
   return issues;
 }
 
-function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, orderedNodes: WorkflowNode[], t: Messages): TraceIssue[] {
-  if (!workflow) return [];
+function buildPendingTraceIssues(mission: MissionDefinition | undefined, orderedNodes: MissionNode[], t: Messages): TraceIssue[] {
+  if (!mission) return [];
 
-  const childrenBySlotId = new Map<string, WorkflowNode[]>();
-  for (const node of workflow.nodes) {
+  const childrenBySlotId = new Map<string, MissionNode[]>();
+  for (const node of mission.nodes) {
     if (!node.parentId) continue;
-    const parent = workflow.nodes.find((candidate) => candidate.id === node.parentId);
+    const parent = mission.nodes.find((candidate) => candidate.id === node.parentId);
     if (parent?.type !== "manager_slot") continue;
     childrenBySlotId.set(node.parentId, [...(childrenBySlotId.get(node.parentId) ?? []), node]);
   }
@@ -1918,9 +1918,9 @@ function buildPendingTraceIssues(workflow: WorkflowDefinition | undefined, order
 }
 
 function createNodeTraceIssue(
-  activeRun: WorkflowRunView,
-  nodeRun: WorkflowNodeRun,
-  node: WorkflowNode | undefined,
+  activeRun: MissionRunView,
+  nodeRun: MissionNodeRun,
+  node: MissionNode | undefined,
   index: number,
   depth: number,
   t: Messages
@@ -1941,7 +1941,7 @@ function createNodeTraceIssue(
   };
 }
 
-function createPendingTraceIssue(node: WorkflowNode, index: number, depth: number, t: Messages): TraceIssue {
+function createPendingTraceIssue(node: MissionNode, index: number, depth: number, t: Messages): TraceIssue {
   return {
     key: `node:${node.id}`,
     index,
@@ -1956,7 +1956,7 @@ function createPendingTraceIssue(node: WorkflowNode, index: number, depth: numbe
   };
 }
 
-function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
+function createPendingSlotBoundaryIssue(node: MissionNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
   const isInput = kind === "slot_input";
   return {
     key: `node:${node.id}:${kind}`,
@@ -1972,14 +1972,14 @@ function createPendingSlotBoundaryIssue(node: WorkflowNode, index: number, kind:
   };
 }
 
-function toIssueStatus(status?: WorkflowNodeRunStatus): TraceIssueStatus {
+function toIssueStatus(status?: MissionNodeRunStatus): TraceIssueStatus {
   if (status === "queued" || status === "running" || status === "waiting_approval") return "in_progress";
   if (status === "succeeded" || status === "skipped") return "completed";
   if (status === "failed" || status === "cancelled") return "failed";
   return "pending";
 }
 
-function toSlotOutputIssueStatus(nodeRun: WorkflowNodeRun): TraceIssueStatus {
+function toSlotOutputIssueStatus(nodeRun: MissionNodeRun): TraceIssueStatus {
   if (nodeRun.status === "failed" || nodeRun.status === "cancelled") return "failed";
   if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
   if (nodeRun.status === "queued" || nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "in_progress";
@@ -2003,7 +2003,7 @@ function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
   return t.trace.pending;
 }
 
-function statusLabelForNodeRun(status: WorkflowNodeRunStatus | undefined, t: Messages): string {
+function statusLabelForNodeRun(status: MissionNodeRunStatus | undefined, t: Messages): string {
   return status ? t.status[status] : t.trace.pending;
 }
 
@@ -2014,20 +2014,20 @@ function summarizeOutput(output: unknown, t: Messages): string {
   return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
 }
 
-function getWorkflowNodeOrder(workflow?: WorkflowDefinition): WorkflowNode[] {
-  if (!workflow) return [];
+function getMissionNodeOrder(mission?: MissionDefinition): MissionNode[] {
+  if (!mission) return [];
 
-  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const indegree = new Map<string, number>(workflow.nodes.map((node) => [node.id, 0]));
+  const nodesById = new Map(mission.nodes.map((node) => [node.id, node]));
+  const indegree = new Map<string, number>(mission.nodes.map((node) => [node.id, 0]));
   const outgoing = new Map<string, string[]>();
 
-  for (const edge of workflow.edges) {
+  for (const edge of mission.edges) {
     indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
     outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
   }
 
-  const queue = workflow.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
-  const ordered: WorkflowNode[] = [];
+  const queue = mission.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
+  const ordered: MissionNode[] = [];
   const visited = new Set<string>();
 
   while (queue.length > 0) {
@@ -2044,7 +2044,7 @@ function getWorkflowNodeOrder(workflow?: WorkflowDefinition): WorkflowNode[] {
     }
   }
 
-  for (const node of workflow.nodes) {
+  for (const node of mission.nodes) {
     if (!visited.has(node.id)) ordered.push(node);
   }
 
@@ -2059,8 +2059,8 @@ function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {
   return t.widgetTypes.notes;
 }
 
-function workflowNameFor(workflows: WorkflowDefinition[], workflowId: string): string {
-  return workflows.find((workflow) => workflow.id === workflowId)?.name ?? workflowId;
+function missionNameFor(missions: MissionDefinition[], missionId: string): string {
+  return missions.find((mission) => mission.id === missionId)?.name ?? missionId;
 }
 
 type ModelUsageSummary = {
@@ -2096,7 +2096,7 @@ function createEmptyModelUsageSummary(): ModelUsageSummary {
 }
 
 function buildModelUsageIndex(
-  runs: WorkflowRunView[],
+  runs: MissionRunView[],
   openClawUsage: OpenClawModelUsageSummary[],
   fallbackModelId?: string
 ): Map<string, ModelUsageSummary> {
@@ -2286,7 +2286,7 @@ function lastModelPathSegment(modelId: string): string {
   return modelId.split("/").pop() ?? modelId;
 }
 
-function isActiveRunStatus(status: WorkflowRunStatus): boolean {
+function isActiveRunStatus(status: MissionRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
 }
 

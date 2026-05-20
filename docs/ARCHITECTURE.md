@@ -1,14 +1,14 @@
 # Architecture
 
-`openclaw-cui` is a product and orchestration layer, not a replacement runtime.
+`hiveward` is a product and orchestration layer, not a replacement runtime.
 
 ## Ownership
 
 | Area | Owner |
 | --- | --- |
-| Workflow canvas, graph, layout, versions | CUI |
-| Workflow runs, node runs, approval state | CUI |
-| Dashboard widgets, saved views, tags, notes | CUI |
+| Mission canvas, graph, layout, versions | Hiveward |
+| Mission runs, node runs, approval state | Hiveward |
+| Dashboard widgets, saved views, tags, notes | Hiveward |
 | Agents, tasks, tools, model routing, channel delivery | OpenClaw |
 | Provider usage facts and execution transcripts | OpenClaw |
 
@@ -16,10 +16,10 @@
 
 ```mermaid
 graph LR
-  Web[openclaw-cui Web]
-  API[CUI Companion API]
-  DB[(CUI Store)]
-  Worker[CUI Workflow Worker]
+  Web[hiveward Web]
+  API[Hiveward API]
+  DB[(Hiveward Store)]
+  Worker[Hiveward Mission Worker]
   Adapter[OpenClaw Adapter]
   OC[OpenClaw Gateway / Runtime]
 
@@ -34,9 +34,9 @@ graph LR
 
 ## MVP Scope
 
-- Web canvas for workflow editing and run observation.
-- Companion API for CUI-owned state.
-- Embedded workflow worker for orchestration.
+- Web canvas for mission editing and run observation.
+- Companion API for Hiveward-owned state.
+- Embedded mission worker for orchestration.
 - Adapter interface with both mock and OpenClaw Gateway implementations.
 - Boundary check script for CI.
 

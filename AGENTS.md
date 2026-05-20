@@ -1,13 +1,13 @@
-# openclaw-cui Engineering Principles
+# Hiveward Engineering Principles
 
-You are working on `openclaw-cui`, a CUI-owned visual orchestration product that delegates real execution to OpenClaw. Keep the project clean, bounded, and verifiable.
+You are working on `hiveward`, a Hiveward-owned multi-agent command layer that delegates real execution to OpenClaw. Keep the project clean, bounded, and verifiable.
 
 ## Product Boundary
 
-- CUI owns workflow definitions, canvas state, node configuration, run views, approval state, and local display state.
+- Hiveward owns mission definitions, canvas state, node configuration, run views, approval state, and local display state.
 - OpenClaw owns agents, models, tools, channels, sessions, transcripts, runtime execution, usage facts, and delivery integrations.
-- Runtime-specific Gateway/RPC details belong in `packages/adapter`; do not leak protocol mechanics into React components, shared workflow contracts, or the API worker.
-- Node labels such as `1. Brief` or `Requirements Agent` are CUI display labels. Real execution identity must come from explicit fields such as `agentId`, `modelId`, `taskId`, `runId`, and `sessionKey`.
+- Runtime-specific Gateway/RPC details belong in `packages/adapter`; do not leak protocol mechanics into React components, shared mission contracts, or the API worker.
+- Node labels such as `1. Brief` or `Requirements Agent` are Hiveward display labels. Real execution identity must come from explicit fields such as `agentId`, `modelId`, `taskId`, `runId`, and `sessionKey`.
 
 ## Change Discipline
 
@@ -19,35 +19,34 @@ You are working on `openclaw-cui`, a CUI-owned visual orchestration product that
 
 ## Data Hygiene
 
-- `data/cui-store.json` must always remain valid UTF-8 JSON. Validate it after manual edits.
+- `data/hiveward-store.json` must always remain valid UTF-8 JSON. Validate it after manual edits.
 - Avoid writing non-ASCII seed data through PowerShell here; console encoding can corrupt JSON. Prefer ASCII seed fixtures or carefully verified UTF-8 writes.
-- Do not delete user-created workflows, runs, or catalog snapshots unless explicitly asked.
+- Do not delete user-created missions, runs, or catalog snapshots unless explicitly asked.
 - Do not store secrets, tokens, or `~/.openclaw/openclaw.json` contents in the repo.
-- Do not commit or depend on generated build output. Keep source of truth in source files and `data/cui-store.json`.
+- Do not commit or depend on generated build output. Keep source of truth in source files and `data/hiveward-store.json`.
 
 ## Real OpenClaw Execution
 
 - Before claiming real execution, verify with Gateway-backed evidence: refreshed catalog, real `agentId`, real `modelId`, and OpenClaw `taskId` or `runId`.
 - Avoid expensive real agent runs unless the request requires proof. Prefer `deepseek/deepseek-v4-flash` or the configured default for smoke tests.
-- For chained workflows, downstream agent nodes must receive upstream outputs through structured input, not just status strings.
-- If OpenClaw returns only a status summary, inspect `chat.history` and persist the assistant text so the CUI run result is useful.
+- For chained missions, downstream agent nodes must receive upstream outputs through structured input, not just status strings.
+- If OpenClaw returns only a status summary, inspect `chat.history` and persist the assistant text so the Hiveward run result is useful.
 
 ## UI Principles
 
-- Build the usable workflow surface, not a marketing shell.
-- Keep controls direct: workflow selector, language toggle, catalog refresh, save, run, inspector, and run results.
+- Build the usable mission command surface, not a marketing shell.
+- Keep controls direct: mission selector, language toggle, catalog refresh, save, run, inspector, and run results.
 - The run panel must make completed node outputs visible without requiring hidden browser state.
-- Use concise labels and stable layout. Avoid UI text that misrepresents CUI nodes as registered OpenClaw agents.
+- Use concise labels and stable layout. Avoid UI text that misrepresents Hiveward nodes as registered OpenClaw agents.
 
 ## Verification Gate
 
 Run the smallest checks that prove the change, then broaden when shared contracts are touched.
 
 - Shared/API/adapter contract changes: `npm run check`
-- Frontend behavior changes: `npm run typecheck -w @openclaw-cui/web` and `npm run build`
-- Workflow semantics changes: `npm test`
+- Frontend behavior changes: `npm run typecheck -w @hiveward/web` and `npm run build`
+- Mission semantics changes: `npm test`
 - Boundary-sensitive changes: `npm run check:boundaries`
-- JSON store edits: `node -e "JSON.parse(require('fs').readFileSync('data/cui-store.json','utf8')); console.log('valid json')"`
+- JSON store edits: `node -e "JSON.parse(require('fs').readFileSync('data/hiveward-store.json','utf8')); console.log('valid json')"`
 
 Do not claim completion without fresh verification evidence or an explicit note explaining why a check could not be run.
-

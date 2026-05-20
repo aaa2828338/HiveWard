@@ -1,7 +1,7 @@
-import type { WorkflowNodeEvent, WorkflowNodeRunStatus, WorkflowNodeType, WorkflowRunStatus } from "@openclaw-cui/shared";
+import type { MissionNodeEvent, MissionNodeRunStatus, MissionNodeType, MissionRunStatus } from "@hiveward/shared";
 
 export type Language = "en" | "zh-CN";
-export type StatusKey = WorkflowNodeRunStatus | WorkflowRunStatus | "idle";
+export type StatusKey = MissionNodeRunStatus | MissionRunStatus | "idle";
 
 export interface Messages {
   actions: {
@@ -17,26 +17,26 @@ export interface Messages {
     addWidget: string;
     approve: string;
     catalog: string;
-    createWorkflow: string;
+    createMission: string;
     deleteNode: string;
     disableNode: string;
     enableNode: string;
-    exportWorkflow: string;
-    importWorkflow: string;
+    exportMission: string;
+    importMission: string;
     refreshCatalog: string;
     refreshWorkspace: string;
     remove: string;
     run: string;
-    runWorkflow: string;
+    runMission: string;
     save: string;
     saveModel: string;
-    saveWorkflow: string;
+    saveMission: string;
     saveWorkspace: string;
     switchLanguage: string;
   };
   common: {
     allStatuses: string;
-    allWorkflows: string;
+    allMissions: string;
     brandTagline: string;
     defaultModel: string;
     defaultOption: string;
@@ -96,7 +96,7 @@ export interface Messages {
     selectNode: string;
     selectRun: string;
     selectSkill: string;
-    selectWorkflow: string;
+    selectMission: string;
   };
   errors: {
     approve: string;
@@ -132,7 +132,7 @@ export interface Messages {
     prompt: string;
     provider: string;
     relatedRun: string;
-    relatedWorkflow: string;
+    relatedMission: string;
     runLabel: string;
     section: string;
     settings: string;
@@ -146,7 +146,7 @@ export interface Messages {
     title: string;
     updatedAt: string;
     waitFor: string;
-    workflow: string;
+    mission: string;
     workspace: string;
   };
   metrics: {
@@ -163,10 +163,10 @@ export interface Messages {
     tokens: (count: number) => string;
     tools: (count: number) => string;
     widgets: (count: number) => string;
-    workflows: (count: number) => string;
+    missions: (count: number) => string;
   };
   navigation: Record<string, string>;
-  nodeTypes: Record<WorkflowNodeType, string>;
+  nodeTypes: Record<MissionNodeType, string>;
   pages: Record<
     string,
     {
@@ -227,7 +227,7 @@ export interface Messages {
     widgets: string;
   };
   widgetTypes: Record<"approvals" | "catalog" | "notes" | "runs", string>;
-  events: Record<WorkflowNodeEvent["type"], string>;
+  events: Record<MissionNodeEvent["type"], string>;
 }
 
 export const messages: Record<Language, Messages> = {
@@ -245,27 +245,27 @@ export const messages: Record<Language, Messages> = {
       addWidget: "Add widget",
       approve: "Approve",
       catalog: "Catalog",
-      createWorkflow: "New workflow",
+      createMission: "新建 Mission",
       deleteNode: "Delete node",
       disableNode: "Disable node",
       enableNode: "Enable node",
-      exportWorkflow: "Export",
-      importWorkflow: "Import",
+      exportMission: "导出 Mission",
+      importMission: "导入 Mission",
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
       run: "Start task",
-      runWorkflow: "Start workflow task",
+      runMission: "启动 Mission",
       save: "Save",
       saveModel: "Save model",
-      saveWorkflow: "Save workflow",
+      saveMission: "保存 Mission",
       saveWorkspace: "Save workspace",
       switchLanguage: "Switch language"
     },
     common: {
       allStatuses: "All statuses",
-      allWorkflows: "All workflows",
-      brandTagline: "CUI-owned orchestration surface",
+      allMissions: "全部 Mission",
+      brandTagline: "Command layer for autonomous agent teams",
       defaultModel: "OpenClaw default",
       defaultOption: "default",
       dirtyWorkspace: "Unsaved workspace state",
@@ -281,11 +281,11 @@ export const messages: Record<Language, Messages> = {
     defaults: {
       agentName: "agent",
       openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "Execute this CUI node through the selected OpenClaw agent.",
+      openClawAgentPrompt: "Execute this Hiveward mission node through the selected OpenClaw agent.",
       codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "Execute this CUI node through Codex SDK.",
+      codexAgentPrompt: "Execute this Hiveward mission node through Codex SDK.",
       claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "Execute this CUI node through Claude Code SDK.",
+      claudeCodeAgentPrompt: "Execute this Hiveward mission node through Claude Code SDK.",
       approvalInstructions: "Review the merged output.",
       approvalLabel: "Approval",
       approvalOwner: "Owner",
@@ -300,7 +300,7 @@ export const messages: Record<Language, Messages> = {
       noteLabel: "Note",
       parallelAgentsLabel: "Parallel agents",
       savedViewName: "New saved view",
-      sendBody: "Workflow {{workflow.name}} completed. Summary: {{summary}}",
+      sendBody: "Mission {{mission.name}} completed. Summary: {{summary}}",
       sendLabel: "Send",
       summaryLabel: "Summary",
       tagColor: "#0f766e",
@@ -314,8 +314,8 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
       noRun: "No task yet",
-      noRunHistory: "This workflow has no task activity yet.",
-      noRuns: "No workflow tasks yet",
+      noRunHistory: "这个 Mission 还没有运行记录。",
+      noRuns: "还没有 Mission 运行",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
       noSkills: "No skills added",
@@ -325,14 +325,14 @@ export const messages: Record<Language, Messages> = {
       selectNode: "Select a node",
       selectRun: "Select a task",
       selectSkill: "Select a skill",
-      selectWorkflow: "No workflow is selected."
+      selectMission: "尚未选择 Mission。"
     },
     errors: {
       approve: "Failed to approve run.",
       catalog: "Failed to refresh config data.",
       load: "Failed to load workspace.",
       run: "Failed to start task.",
-      save: "Failed to save workflow.",
+      save: "Failed to save mission.",
       workspace: "Failed to save workspace state."
     },
     fields: {
@@ -361,7 +361,7 @@ export const messages: Record<Language, Messages> = {
       prompt: "提示词",
       provider: "Provider",
       relatedRun: "Related task",
-      relatedWorkflow: "Related workflow",
+      relatedMission: "Related mission",
       runLabel: "Task label",
       section: "Section",
       settings: "Settings",
@@ -375,7 +375,7 @@ export const messages: Record<Language, Messages> = {
       title: "Title",
       updatedAt: "Updated",
       waitFor: "Wait for",
-      workflow: "Workflow",
+      mission: "Mission",
       workspace: "Workspace"
     },
     metrics: {
@@ -392,11 +392,11 @@ export const messages: Record<Language, Messages> = {
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} tools`,
       widgets: (count) => `${count} overview widgets`,
-      workflows: (count) => `${count} workflows`
+      missions: (count) => `${count} missions`
     },
     navigation: {
       company: "Company",
-      workflow: "Workflow",
+      mission: "Mission",
       runs: "Tasks",
       approvals: "Inbox",
       models: "Models",
@@ -422,19 +422,19 @@ export const messages: Record<Language, Messages> = {
     pages: {
       company: {
         title: "Company Context",
-        description: "Switch the active company, inspect company-level usage, and keep workflow data scoped to a single operator context."
+        description: "Switch the active company, inspect company-level usage, and keep mission data scoped to a single operator context."
       },
-      workflow: {
-        title: "Workflow Studio",
-        description: "Edit graph structure, configure node execution, and inspect the latest run."
+      mission: {
+        title: "Mission Studio",
+        description: "Command agent teams through mission structure, handoffs, gates, and run evidence."
       },
       runs: {
         title: "Tasks",
-        description: "Track current workflow tasks, node outputs, and execution evidence."
+        description: "Track mission runs, agent outputs, and execution evidence."
       },
       approvals: {
         title: "Inbox",
-        description: "Handle workflow pauses that are waiting on a human decision."
+        description: "Handle mission pauses that are waiting on a human decision."
       },
       models: {
         title: "Models",
@@ -442,7 +442,7 @@ export const messages: Record<Language, Messages> = {
       },
       agents: {
         title: "Agents",
-        description: "Create configured OpenClaw agents and inspect available agents separately from workflows."
+        description: "Create configured OpenClaw agents and inspect available agents separately from missions."
       },
       schedule: {
         title: "Schedule",
@@ -475,9 +475,9 @@ export const messages: Record<Language, Messages> = {
     trace: {
       completed: "Completed",
       currentIssue: (label) => `Current step: ${label}`,
-      description: "Review current task progress on the left, and read node output on the right.",
-      flowFinished: "Flow finished",
-      flowStarted: "Flow started",
+      description: "Review mission progress on the left, and read agent output on the right.",
+      flowFinished: "Mission finished",
+      flowStarted: "Mission started",
       inProgress: "In progress",
       issueList: "Task steps",
       managerInputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
@@ -527,9 +527,9 @@ export const messages: Record<Language, Messages> = {
       "node.run.queued": "Node queued",
       "node.run.started": "Node started",
       "node.run.waiting_approval": "Waiting for inbox",
-      "workflow.run.completed": "Workflow completed",
-      "workflow.run.failed": "Workflow failed",
-      "workflow.run.started": "Workflow started"
+      "mission.run.completed": "Mission completed",
+      "mission.run.failed": "Mission failed",
+      "mission.run.started": "Mission started"
     }
   },
   "zh-CN": {
@@ -546,27 +546,27 @@ export const messages: Record<Language, Messages> = {
       addWidget: "添加卡片",
       approve: "批准",
       catalog: "目录",
-      createWorkflow: "新建工作流",
+      createMission: "New mission",
       deleteNode: "删除节点",
       disableNode: "禁用节点",
       enableNode: "启用节点",
-      exportWorkflow: "导出",
-      importWorkflow: "导入",
+      exportMission: "Export mission",
+      importMission: "Import mission",
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
       run: "启动任务",
-      runWorkflow: "启动工作流任务",
+      runMission: "Start mission",
       save: "保存",
       saveModel: "保存模型",
-      saveWorkflow: "保存工作流",
+      saveMission: "Save mission",
       saveWorkspace: "保存工作区",
       switchLanguage: "切换语言"
     },
     common: {
       allStatuses: "全部状态",
-      allWorkflows: "全部工作流",
-      brandTagline: "CUI 持有的编排工作台",
+      allMissions: "All missions",
+      brandTagline: "Command layer for autonomous agent teams",
       defaultModel: "OpenClaw 默认",
       defaultOption: "默认",
       dirtyWorkspace: "工作区状态未保存",
@@ -582,11 +582,11 @@ export const messages: Record<Language, Messages> = {
     defaults: {
       agentName: "agent",
       openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "通过选定的 OpenClaw Agent 执行这个 CUI 节点。",
+      openClawAgentPrompt: "Execute this Hiveward mission node through the selected OpenClaw agent.",
       codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "通过 Codex SDK 执行这个 CUI 节点。",
+      codexAgentPrompt: "Execute this Hiveward mission node through Codex SDK.",
       claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "通过 Claude Code SDK 执行这个 CUI 节点。",
+      claudeCodeAgentPrompt: "Execute this Hiveward mission node through Claude Code SDK.",
       approvalInstructions: "审核汇总后的输出。",
       approvalLabel: "人工审批",
       approvalOwner: "负责人",
@@ -600,7 +600,7 @@ export const messages: Record<Language, Messages> = {
       noteLabel: "备注",
       parallelAgentsLabel: "并行代理",
       savedViewName: "新建视图",
-      sendBody: "工作流 {{workflow.name}} 已完成。摘要：{{summary}}",
+      sendBody: "Mission {{mission.name}} completed. Summary: {{summary}}",
       sendLabel: "发送",
       summaryLabel: "汇总",
       tagColor: "#0f766e",
@@ -614,8 +614,8 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
       noRun: "还没有任务",
-      noRunHistory: "这个工作流还没有任务记录。",
-      noRuns: "还没有工作流任务",
+      noRunHistory: "This mission has no run activity yet.",
+      noRuns: "No mission runs yet",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
       noSkills: "还没有添加 Skill",
@@ -625,14 +625,14 @@ export const messages: Record<Language, Messages> = {
       selectNode: "请选择一个节点",
       selectRun: "请选择一个任务",
       selectSkill: "选择一个 Skill",
-      selectWorkflow: "当前未选中工作流。"
+      selectMission: "No mission is selected."
     },
     errors: {
       approve: "批准运行失败。",
       catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
       run: "启动任务失败。",
-      save: "保存工作流失败。",
+      save: "保存 Mission 失败。",
       workspace: "保存工作区状态失败。"
     },
     fields: {
@@ -661,7 +661,7 @@ export const messages: Record<Language, Messages> = {
       prompt: "Prompt",
       provider: "提供方",
       relatedRun: "关联任务",
-      relatedWorkflow: "关联工作流",
+      relatedMission: "关联 Mission",
       runLabel: "任务标签",
       section: "页面",
       settings: "设置",
@@ -675,7 +675,7 @@ export const messages: Record<Language, Messages> = {
       title: "标题",
       updatedAt: "更新时间",
       waitFor: "等待条件",
-      workflow: "工作流",
+      mission: "Mission",
       workspace: "工作区"
     },
     metrics: {
@@ -692,11 +692,11 @@ export const messages: Record<Language, Messages> = {
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} 个工具`,
       widgets: (count) => `${count} 张总览卡片`,
-      workflows: (count) => `${count} 个工作流`
+      missions: (count) => `${count} 个 Mission`
     },
     navigation: {
       company: "公司",
-      workflow: "工作流",
+      mission: "Mission",
       runs: "任务",
       approvals: "收件箱",
       models: "模型",
@@ -724,9 +724,9 @@ export const messages: Record<Language, Messages> = {
         title: "公司上下文",
         description: "切换当前公司、查看公司级用量，并在同一页面维护总览卡片。"
       },
-      workflow: {
-        title: "工作流工作台",
-        description: "编辑图结构、配置节点执行方式，并查看该工作流最近一次运行。"
+      mission: {
+        title: "Mission 指挥台",
+        description: "组织多 Agent Mission 结构、交接和审查关，并查看最近一次运行证据。"
       },
       runs: {
         title: "任务",
@@ -734,7 +734,7 @@ export const messages: Record<Language, Messages> = {
       },
       approvals: {
         title: "收件箱",
-        description: "处理因为人工决策而暂停的工作流。"
+        description: "处理因为人工决策而暂停的 Mission。"
       },
       models: {
         title: "模型",
@@ -742,7 +742,7 @@ export const messages: Record<Language, Messages> = {
       },
       agents: {
         title: "Agent",
-        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与工作流配置分开查看。"
+        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与 Mission 配置分开查看。"
       },
       schedule: {
         title: "日程",
@@ -827,15 +827,15 @@ export const messages: Record<Language, Messages> = {
       "node.run.queued": "节点已排队",
       "node.run.started": "节点已启动",
       "node.run.waiting_approval": "等待收件箱处理",
-      "workflow.run.completed": "工作流已完成",
-      "workflow.run.failed": "工作流失败",
-      "workflow.run.started": "工作流已启动"
+      "mission.run.completed": "Mission 已完成",
+      "mission.run.failed": "Mission 失败",
+      "mission.run.started": "Mission 已启动"
     }
   }
 };
 
 export function getInitialLanguage(): Language {
-  const stored = localStorage.getItem("openclaw-cui-language");
+  const stored = localStorage.getItem("hiveward-language");
   if (stored === "en" || stored === "zh-CN") return stored;
   return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
 }

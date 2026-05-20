@@ -9,7 +9,7 @@ export interface CompanyProfile {
 }
 
 export interface CompanyOverview extends CompanyProfile {
-  workflowCount: number;
+  missionCount: number;
   runCount: number;
   totalTokens: number;
   totalCostUsd: number;
@@ -20,15 +20,17 @@ export interface CompanyOverview extends CompanyProfile {
   latestRunAt?: string;
 }
 
-export const defaultCompanyId = "company-openclaw-studio";
+export const defaultCompanyId = "company-hiveward-studio";
 
 export function createDefaultCompanies(now: string): CompanyProfile[] {
   return [
     {
       id: defaultCompanyId,
-      name: "OpenClaw Studio",
-      logoLabel: "OC",
-      businessGoal: "Embed OpenClaw into a company-owned orchestration surface with reviewable workflow logic and visible runtime evidence.",
+      name: "Hiveward Studio",
+      logoLabel: "HW",
+      logoUrl: "/brand/hiveward-hive.png",
+      businessGoal:
+        "Command autonomous agent teams through structured missions, governed handoffs, review gates, and auditable runs.",
       createdAt: now,
       updatedAt: now
     }

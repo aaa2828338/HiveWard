@@ -26,20 +26,20 @@ import type {
   OpenClawModelUsageSummary,
   OpenClawVersionInfo,
   PendingApprovalItem,
-  PortableWorkflowPackage,
+  PortableMissionPackage,
   RuntimeOverview,
   WorkspaceDashboard,
-  WorkflowDefinition,
-  WorkflowRunView
-} from "@openclaw-cui/shared";
+  MissionDefinition,
+  MissionRunView
+} from "@hiveward/shared";
 import { api } from "./lib/api";
 import { appSections, type AppSectionId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
-import { WorkflowStudioPage } from "./components/WorkflowStudioPage";
+import { MissionStudioPage } from "./components/MissionStudioPage";
 import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
 
 const sidebarIcons = {
-  workflow: LayoutTemplate,
+  mission: LayoutTemplate,
   runs: ListChecks,
   approvals: Inbox,
   models: Database,
@@ -87,18 +87,18 @@ type OpenClawPanelCopy = {
 export function App() {
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
   const [theme, setTheme] = useState<AppTheme>(() => getInitialTheme());
-  const [section, setSection] = useState<AppSectionId>("workflow");
+  const [section, setSection] = useState<AppSectionId>("mission");
   const [companies, setCompanies] = useState<CompanyOverview[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
-  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
-  const [workflow, setWorkflow] = useState<WorkflowDefinition | undefined>();
+  const [missions, setMissions] = useState<MissionDefinition[]>([]);
+  const [mission, setMission] = useState<MissionDefinition | undefined>();
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
-  const [runs, setRuns] = useState<WorkflowRunView[]>([]);
+  const [runs, setRuns] = useState<MissionRunView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
@@ -110,31 +110,31 @@ export function App() {
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const t = messages[language];
   const messageRef = useRef(t);
-  const selectedWorkflowIdRef = useRef<string | undefined>(undefined);
+  const selectedMissionIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const companySwitcherRef = useRef<HTMLDivElement | null>(null);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
-  const workflowImportInputRef = useRef<HTMLInputElement | null>(null);
+  const missionImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     messageRef.current = t;
   }, [t]);
 
   useEffect(() => {
-    selectedWorkflowIdRef.current = workflow?.id;
-  }, [workflow?.id]);
+    selectedMissionIdRef.current = mission?.id;
+  }, [mission?.id]);
 
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
   }, [selectedRunId]);
 
   useEffect(() => {
-    localStorage.setItem("openclaw-cui-language", language);
+    localStorage.setItem("hiveward-language", language);
   }, [language]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("openclaw-cui-theme", theme);
+    localStorage.setItem("hiveward-theme", theme);
   }, [theme]);
 
   useEffect(() => {
@@ -167,10 +167,10 @@ export function App() {
   }, []);
 
   const hydrateWorkspace = useCallback(
-    async (options?: { workflowId?: string; runId?: string }) => {
+    async (options?: { missionId?: string; runId?: string }) => {
       const [
         companyDirectory,
-        nextWorkflows,
+        nextMissions,
         nextCatalog,
         nextOpenClawConfig,
         nextOpenClawWizard,
@@ -181,12 +181,12 @@ export function App() {
         nextRuntime
       ] = await Promise.all([
         api.listCompanies(),
-        api.listWorkflows(),
+        api.listMissions(),
         api.getCatalogSnapshot(),
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
-        api.listWorkflowRuns(),
+        api.listMissionRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
@@ -194,7 +194,7 @@ export function App() {
 
       setCompanies(companyDirectory.companies);
       setSelectedCompanyId(companyDirectory.selectedCompanyId);
-      setWorkflows(nextWorkflows);
+      setMissions(nextMissions);
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
@@ -205,9 +205,9 @@ export function App() {
       setRuntime(nextRuntime);
       setDashboardDirty(false);
 
-      const preferredWorkflowId = options?.workflowId ?? selectedWorkflowIdRef.current ?? nextWorkflows[0]?.id;
-      const nextWorkflow = nextWorkflows.find((item) => item.id === preferredWorkflowId) ?? nextWorkflows[0];
-      setWorkflow(nextWorkflow);
+      const preferredMissionId = options?.missionId ?? selectedMissionIdRef.current ?? nextMissions[0]?.id;
+      const nextMission = nextMissions.find((item) => item.id === preferredMissionId) ?? nextMissions[0];
+      setMission(nextMission);
       setSelectedNodeId(undefined);
 
       const preferredRunId = options?.runId ?? selectedRunIdRef.current ?? nextRuns[0]?.run.id;
@@ -351,14 +351,14 @@ export function App() {
             menuTitle: "\u5207\u6362\u516C\u53F8",
             noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u9009\u516C\u53F8",
             clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-            workflowCount: (count: number) => `${count} \u4E2A\u5DE5\u4F5C\u6D41`
+            missionCount: (count: number) => `${count} \u4E2A Mission`
           }
         : {
             placeholder: "Choose company",
             menuTitle: "Switch company",
             noCompanies: "No companies available",
             clear: "Clear selection",
-            workflowCount: (count: number) => `${count} workflows`
+            missionCount: (count: number) => `${count} missions`
           },
     [language]
   );
@@ -375,30 +375,30 @@ export function App() {
       });
   }, [hydrateWorkspace]);
 
-  const latestRunForWorkflow = useMemo(
-    () => (workflow ? runs.find((runView) => runView.run.workflowId === workflow.id) : undefined),
-    [runs, workflow]
+  const latestRunForMission = useMemo(
+    () => (mission ? runs.find((runView) => runView.run.missionId === mission.id) : undefined),
+    [runs, mission]
   );
   const activeTaskCount = useMemo(
     () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
     [runs]
   );
 
-  const selectWorkflow = useCallback(
-    (workflowId: string) => {
-      const next = workflows.find((item) => item.id === workflowId);
+  const selectMission = useCallback(
+    (missionId: string) => {
+      const next = missions.find((item) => item.id === missionId);
       if (!next) return;
-      setWorkflow(next);
+      setMission(next);
       setSelectedNodeId(undefined);
-      const latestRunForNextWorkflow = runs.find((runView) => runView.run.workflowId === next.id);
-      setSelectedRunId(latestRunForNextWorkflow?.run.id);
+      const latestRunForNextMission = runs.find((runView) => runView.run.missionId === next.id);
+      setSelectedRunId(latestRunForNextMission?.run.id);
     },
-    [runs, workflows]
+    [runs, missions]
   );
 
   const sidebarMeta = useMemo(
     () => ({
-      workflow: workflows.length,
+      mission: missions.length,
       runs: activeTaskCount,
       approvals: approvals.length,
       models: openClawConfig?.configuredModels.length ?? 0,
@@ -414,7 +414,7 @@ export function App() {
       openClawConfig?.configuredChannels.length,
       runtime?.tasks.length,
       runs.length,
-      workflows.length
+      missions.length
     ]
   );
 
@@ -445,8 +445,8 @@ export function App() {
     void loadOpenClawVersion();
   }, [loadOpenClawVersion]);
 
-  const updateWorkflow = useCallback((updater: (current: WorkflowDefinition) => WorkflowDefinition) => {
-    setWorkflow((current) => (current ? updater(current) : current));
+  const updateMission = useCallback((updater: (current: MissionDefinition) => MissionDefinition) => {
+    setMission((current) => (current ? updater(current) : current));
   }, []);
 
   const mutateDashboard = useCallback((updater: (current: WorkspaceDashboard) => WorkspaceDashboard) => {
@@ -546,69 +546,69 @@ export function App() {
     [withBusy]
   );
 
-  const saveWorkflow = useCallback(() => {
-    if (!workflow) return;
-    void withBusy("saveWorkflow", async () => {
-      const saved = await api.saveWorkflow(workflow);
-      await hydrateWorkspace({ workflowId: saved.id });
+  const saveMission = useCallback(() => {
+    if (!mission) return;
+    void withBusy("saveMission", async () => {
+      const saved = await api.saveMission(mission);
+      await hydrateWorkspace({ missionId: saved.id });
     });
-  }, [hydrateWorkspace, withBusy, workflow]);
+  }, [hydrateWorkspace, withBusy, mission]);
 
-  const exportWorkflow = useCallback(() => {
-    if (!workflow) return;
-    void withBusy("exportWorkflow", async () => {
-      const workflowPackage = await api.exportWorkflow(workflow.id);
-      downloadWorkflowPackage(workflowPackage, workflow.name);
+  const exportMission = useCallback(() => {
+    if (!mission) return;
+    void withBusy("exportMission", async () => {
+      const missionPackage = await api.exportMission(mission.id);
+      downloadMissionPackage(missionPackage, mission.name);
     });
-  }, [withBusy, workflow]);
+  }, [withBusy, mission]);
 
-  const openWorkflowImport = useCallback(() => {
-    workflowImportInputRef.current?.click();
+  const openMissionImport = useCallback(() => {
+    missionImportInputRef.current?.click();
   }, []);
 
-  const importWorkflowFile = useCallback(
+  const importMissionFile = useCallback(
     (file?: File) => {
       if (!file) return;
-      void withBusy("importWorkflow", async () => {
-        const workflowPackage = JSON.parse(await file.text());
-        const imported = await api.importWorkflowPackage(workflowPackage);
-        await hydrateWorkspace({ workflowId: imported[0]?.id });
-        setSection("workflow");
+      void withBusy("importMission", async () => {
+        const missionPackage = JSON.parse(await file.text());
+        const imported = await api.importMissionPackage(missionPackage);
+        await hydrateWorkspace({ missionId: imported[0]?.id });
+        setSection("mission");
       });
     },
     [hydrateWorkspace, withBusy]
   );
 
-  const createWorkflow = useCallback(() => {
-    void withBusy("createWorkflow", async () => {
-      const created = await api.createWorkflow({
-        name: defaultNewWorkflowName(workflows.length + 1, language)
+  const createMission = useCallback(() => {
+    void withBusy("createMission", async () => {
+      const created = await api.createMission({
+        name: defaultNewMissionName(missions.length + 1, language)
       });
-      await hydrateWorkspace({ workflowId: created.id });
-      setSection("workflow");
+      await hydrateWorkspace({ missionId: created.id });
+      setSection("mission");
     });
-  }, [hydrateWorkspace, language, withBusy, workflows.length]);
+  }, [hydrateWorkspace, language, withBusy, missions.length]);
 
-  const runWorkflow = useCallback(() => {
-    if (!workflow) return;
-    void withBusy("runWorkflow", async () => {
-      const saved = await api.saveWorkflow(workflow);
-      const runView = await api.startWorkflowRun(saved.id);
-      await hydrateWorkspace({ workflowId: saved.id, runId: runView.run.id });
+  const runMission = useCallback(() => {
+    if (!mission) return;
+    void withBusy("runMission", async () => {
+      const saved = await api.saveMission(mission);
+      const runView = await api.startMissionRun(saved.id);
+      await hydrateWorkspace({ missionId: saved.id, runId: runView.run.id });
       setSection("runs");
     });
-  }, [hydrateWorkspace, withBusy, workflow]);
+  }, [hydrateWorkspace, withBusy, mission]);
 
   const approveRun = useCallback(
-    (workflowRunId?: string) => {
-      const targetRunId = workflowRunId ?? latestRunForWorkflow?.run.id;
+    (missionRunId?: string) => {
+      const targetRunId = missionRunId ?? latestRunForMission?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveWorkflowRun(targetRunId);
-        await hydrateWorkspace({ workflowId: updated.run.workflowId, runId: updated.run.id });
+        const updated = await api.approveMissionRun(targetRunId);
+        await hydrateWorkspace({ missionId: updated.run.missionId, runId: updated.run.id });
       });
     },
-    [hydrateWorkspace, latestRunForWorkflow?.run.id, withBusy]
+    [hydrateWorkspace, latestRunForMission?.run.id, withBusy]
   );
 
   const addWidget = useCallback(
@@ -678,7 +678,7 @@ export function App() {
     const activeRun =
       section === "runs"
         ? runs.find((runView) => runView.run.id === selectedRunId)
-        : latestRunForWorkflow;
+        : latestRunForMission;
 
     if (!activeRun || !["queued", "running", "waiting_approval"].includes(activeRun.run.status)) {
       return;
@@ -686,13 +686,13 @@ export function App() {
 
     const timer = window.setTimeout(() => {
       void hydrateWorkspace({
-        workflowId: selectedWorkflowIdRef.current,
+        missionId: selectedMissionIdRef.current,
         runId: section === "runs" ? selectedRunIdRef.current : activeRun.run.id
       }).catch(() => undefined);
     }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [hydrateWorkspace, latestRunForWorkflow, runs, section, selectedRunId]);
+  }, [hydrateWorkspace, latestRunForMission, runs, section, selectedRunId]);
 
   const renderSection = () => {
     if (section === "company") {
@@ -706,7 +706,7 @@ export function App() {
           />
           <DashboardPage
             dashboard={dashboard}
-            workflows={workflows}
+            missions={missions}
             runs={runs}
             approvals={approvals}
             catalog={catalog}
@@ -739,27 +739,27 @@ export function App() {
         />
       );
     }
-    if (section === "workflow") {
+    if (section === "mission") {
       return (
-        <WorkflowStudioPage
-          workflow={workflow}
-          workflows={workflows}
+        <MissionStudioPage
+          mission={mission}
+          missions={missions}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
-          runView={latestRunForWorkflow}
+          runView={latestRunForMission}
           selectedNodeId={selectedNodeId}
           selectedCompanyId={selectedCompanyId}
           busy={Boolean(busyAction)}
           busyAction={busyAction}
-          onSelectWorkflow={selectWorkflow}
-          onCreateWorkflow={createWorkflow}
+          onSelectMission={selectMission}
+          onCreateMission={createMission}
           onRefreshWorkspace={refreshWorkspace}
-          onOpenWorkflowImport={openWorkflowImport}
-          onExportWorkflow={exportWorkflow}
-          onSaveWorkflow={saveWorkflow}
-          onRunWorkflow={runWorkflow}
+          onOpenMissionImport={openMissionImport}
+          onExportMission={exportMission}
+          onSaveMission={saveMission}
+          onRunMission={runMission}
           onSelectNode={setSelectedNodeId}
-          onUpdateWorkflow={updateWorkflow}
+          onUpdateMission={updateMission}
           onApproveRun={() => approveRun()}
           t={t}
         />
@@ -769,12 +769,12 @@ export function App() {
       return (
         <RunsPage
           runs={runs}
-          workflows={workflows}
-          workflow={workflow}
+          missions={missions}
+          mission={mission}
           selectedRunId={selectedRunId}
           language={language}
           t={t}
-          onSelectWorkflow={selectWorkflow}
+          onSelectMission={selectMission}
           onSelectRun={setSelectedRunId}
         />
       );
@@ -813,7 +813,7 @@ export function App() {
       );
     }
     if (section === "schedule") {
-      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} workflows={workflows} language={language} t={t} />;
+      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} missions={missions} language={language} t={t} />;
     }
     return (
       <ChannelsPage
@@ -832,9 +832,11 @@ export function App() {
     <main className="app-shell">
       <aside className="sidebar-shell">
         <div className="sidebar-brand">
-          <div className="brand-mark">OC</div>
+          <div className="brand-mark">
+            <img src="/brand/hiveward-hive.png" alt="" />
+          </div>
           <div>
-            <h1>openclaw-cui</h1>
+            <h1>Hiveward</h1>
             <p>{t.common.brandTagline}</p>
           </div>
         </div>
@@ -902,7 +904,7 @@ export function App() {
                         </span>
                         <span className="company-menu-copy">
                           <strong>{company.name}</strong>
-                          <span>{companyUi.workflowCount(company.workflowCount)}</span>
+                          <span>{companyUi.missionCount(company.missionCount)}</span>
                         </span>
                       </button>
                     ))
@@ -962,12 +964,12 @@ export function App() {
 
       <section className="main-shell">
         <input
-          ref={workflowImportInputRef}
+          ref={missionImportInputRef}
           type="file"
           accept="application/json,.json"
           hidden
           onChange={(event) => {
-            importWorkflowFile(event.target.files?.[0]);
+            importMissionFile(event.target.files?.[0]);
             event.currentTarget.value = "";
           }}
         />
@@ -1114,7 +1116,7 @@ function companyMonogram(company?: Pick<CompanyOverview, "logoLabel" | "name">):
 }
 
 function getInitialTheme(): AppTheme {
-  const stored = localStorage.getItem("openclaw-cui-theme");
+  const stored = localStorage.getItem("hiveward-theme");
   if (stored === "light" || stored === "dark") return stored;
   if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
@@ -1158,27 +1160,27 @@ function defaultWidgetLayout(index: number) {
   };
 }
 
-function defaultNewWorkflowName(index: number, language: Language): string {
-  return language === "zh-CN" ? `新建工作流 ${index}` : `New workflow ${index}`;
+function defaultNewMissionName(index: number, language: Language): string {
+  return language === "zh-CN" ? `新建 Mission ${index}` : `New mission ${index}`;
 }
 
-function downloadWorkflowPackage(workflowPackage: PortableWorkflowPackage, workflowName: string): void {
-  const blob = new Blob([`${JSON.stringify(workflowPackage, null, 2)}\n`], { type: "application/json" });
+function downloadMissionPackage(missionPackage: PortableMissionPackage, missionName: string): void {
+  const blob = new Blob([`${JSON.stringify(missionPackage, null, 2)}\n`], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${safeWorkflowFileName(workflowName)}.workflow.json`;
+  link.download = `${safeMissionFileName(missionName)}.mission.json`;
   link.click();
   URL.revokeObjectURL(url);
 }
 
-function safeWorkflowFileName(value: string): string {
+function safeMissionFileName(value: string): string {
   return value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "workflow";
+    .slice(0, 80) || "mission";
 }
 
 function makeClientId(prefix: string): string {
@@ -1189,11 +1191,11 @@ function makeClientId(prefix: string): string {
 }
 
 function errorMessageForAction(action: string, t: Messages): string {
-  if (action === "createWorkflow") return t.errors.save;
-  if (action === "saveWorkflow") return t.errors.save;
-  if (action === "exportWorkflow") return t.errors.save;
-  if (action === "importWorkflow") return t.errors.save;
-  if (action === "runWorkflow") return t.errors.run;
+  if (action === "createMission") return t.errors.save;
+  if (action === "saveMission") return t.errors.save;
+  if (action === "exportMission") return t.errors.save;
+  if (action === "importMission") return t.errors.save;
+  if (action === "runMission") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

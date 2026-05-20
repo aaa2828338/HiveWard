@@ -3,14 +3,14 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { AgentSdkError } from "./errors";
 
 export function resolveSdkWorkingDirectory(inputDirectory: string | undefined, workspaceRoot: string): string {
+  const resolvedRoot = resolve(workspaceRoot);
   if (!inputDirectory?.trim()) {
-    throw new AgentSdkError("workspace_not_allowed", "workingDirectory must be an absolute directory.");
+    return resolvedRoot;
   }
   if (!isAbsolute(inputDirectory)) {
     throw new AgentSdkError("workspace_not_allowed", "workingDirectory must be absolute.");
   }
 
-  const resolvedRoot = resolve(workspaceRoot);
   const resolvedDirectory = resolve(inputDirectory);
   const relation = relative(resolvedRoot, resolvedDirectory);
   if (relation.startsWith("..") || isAbsolute(relation)) {

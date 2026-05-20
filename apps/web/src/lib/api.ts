@@ -5,15 +5,15 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawAgentRequest,
-  CreateWorkflowRequest,
+  CreateMissionRequest,
   DashboardStateResponse,
-  ExportWorkflowResponse,
-  ImportWorkflowPackageRequest,
-  ImportWorkflowPackageResponse,
-  LatestWorkflowRunResponse,
+  ExportMissionResponse,
+  ImportMissionPackageRequest,
+  ImportMissionPackageResponse,
+  LatestMissionRunResponse,
   ListPendingApprovalsResponse,
-  ListWorkflowRunViewsResponse,
-  ListWorkflowsResponse,
+  ListMissionRunViewsResponse,
+  ListMissionsResponse,
   OpenClawConfigResponse,
   OpenClawConfigWizardMetadata,
   OpenClawConfigWizardResponse,
@@ -23,18 +23,18 @@ import type {
   OpenClawVersionResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
-  SaveWorkflowRequest,
+  SaveMissionRequest,
   SelectCompanyRequest,
-  StartWorkflowRunResponse,
+  StartMissionRunResponse,
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
   OpenClawConfigState,
-  PortableWorkflowPackage,
+  PortableMissionPackage,
   WorkspaceDashboard,
-  WorkflowDefinition,
-  WorkflowResponse,
-  WorkflowRunResponse
-} from "@openclaw-cui/shared";
+  MissionDefinition,
+  MissionResponse,
+  MissionRunResponse
+} from "@hiveward/shared";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -120,26 +120,26 @@ export const api = {
     });
   },
 
-  async listWorkflows(): Promise<WorkflowDefinition[]> {
-    const response = await request<ListWorkflowsResponse>("/api/workflows");
-    return response.workflows;
+  async listMissions(): Promise<MissionDefinition[]> {
+    const response = await request<ListMissionsResponse>("/api/missions");
+    return response.missions;
   },
 
-  async createWorkflow(input: CreateWorkflowRequest): Promise<WorkflowDefinition> {
-    const response = await request<WorkflowResponse>("/api/workflows", {
+  async createMission(input: CreateMissionRequest): Promise<MissionDefinition> {
+    const response = await request<MissionResponse>("/api/missions", {
       method: "POST",
-      body: JSON.stringify(input satisfies CreateWorkflowRequest)
+      body: JSON.stringify(input satisfies CreateMissionRequest)
     });
-    return response.workflow;
+    return response.mission;
   },
 
-  async getWorkflow(id: string): Promise<WorkflowDefinition> {
-    const response = await request<WorkflowResponse>(`/api/workflows/${id}`);
-    return response.workflow;
+  async getMission(id: string): Promise<MissionDefinition> {
+    const response = await request<MissionResponse>(`/api/missions/${id}`);
+    return response.mission;
   },
 
-  async listWorkflowRuns(): Promise<ListWorkflowRunViewsResponse["runs"]> {
-    const response = await request<ListWorkflowRunViewsResponse>("/api/workflow-runs");
+  async listMissionRuns(): Promise<ListMissionRunViewsResponse["runs"]> {
+    const response = await request<ListMissionRunViewsResponse>("/api/mission-runs");
     return response.runs;
   },
 
@@ -148,42 +148,42 @@ export const api = {
     return response.approvals;
   },
 
-  async saveWorkflow(workflow: WorkflowDefinition): Promise<WorkflowDefinition> {
-    const response = await request<WorkflowResponse>(`/api/workflows/${workflow.id}`, {
+  async saveMission(mission: MissionDefinition): Promise<MissionDefinition> {
+    const response = await request<MissionResponse>(`/api/missions/${mission.id}`, {
       method: "PUT",
-      body: JSON.stringify({ workflow } satisfies SaveWorkflowRequest)
+      body: JSON.stringify({ mission } satisfies SaveMissionRequest)
     });
-    return response.workflow;
+    return response.mission;
   },
 
-  async exportWorkflow(workflowId: string): Promise<PortableWorkflowPackage> {
-    const response = await request<ExportWorkflowResponse>(`/api/workflows/${workflowId}/export`);
-    return response.workflowPackage;
+  async exportMission(missionId: string): Promise<PortableMissionPackage> {
+    const response = await request<ExportMissionResponse>(`/api/missions/${missionId}/export`);
+    return response.missionPackage;
   },
 
-  async importWorkflowPackage(workflowPackage: PortableWorkflowPackage): Promise<WorkflowDefinition[]> {
-    const response = await request<ImportWorkflowPackageResponse>("/api/workflows/import", {
+  async importMissionPackage(missionPackage: PortableMissionPackage): Promise<MissionDefinition[]> {
+    const response = await request<ImportMissionPackageResponse>("/api/missions/import", {
       method: "POST",
-      body: JSON.stringify({ workflowPackage } satisfies ImportWorkflowPackageRequest)
+      body: JSON.stringify({ missionPackage } satisfies ImportMissionPackageRequest)
     });
-    return response.workflows;
+    return response.missions;
   },
 
-  async startWorkflowRun(workflowId: string): Promise<StartWorkflowRunResponse["run"]> {
-    const response = await request<StartWorkflowRunResponse>(`/api/workflows/${workflowId}/runs`, {
+  async startMissionRun(missionId: string): Promise<StartMissionRunResponse["run"]> {
+    const response = await request<StartMissionRunResponse>(`/api/missions/${missionId}/runs`, {
       method: "POST",
       body: JSON.stringify({ startedBy: "local-user" })
     });
     return response.run;
   },
 
-  async getLatestWorkflowRun(workflowId: string): Promise<StartWorkflowRunResponse["run"] | undefined> {
-    const response = await request<LatestWorkflowRunResponse>(`/api/workflows/${workflowId}/runs/latest`);
+  async getLatestMissionRun(missionId: string): Promise<StartMissionRunResponse["run"] | undefined> {
+    const response = await request<LatestMissionRunResponse>(`/api/missions/${missionId}/runs/latest`);
     return response.run ?? undefined;
   },
 
-  async approveWorkflowRun(runId: string): Promise<WorkflowRunResponse["run"]> {
-    const response = await request<WorkflowRunResponse>(`/api/workflow-runs/${runId}/approve`, {
+  async approveMissionRun(runId: string): Promise<MissionRunResponse["run"]> {
+    const response = await request<MissionRunResponse>(`/api/mission-runs/${runId}/approve`, {
       method: "POST",
       body: JSON.stringify({})
     });

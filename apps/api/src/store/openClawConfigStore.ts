@@ -16,7 +16,7 @@ import type {
   OpenClawConfiguredModel,
   OpenClawGatewaySettingsSummary,
   OpenClawVersionInfo
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import {
   buildChannelRequest,
   buildModelAuthRequest,

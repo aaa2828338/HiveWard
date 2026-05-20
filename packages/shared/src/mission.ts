@@ -1,12 +1,12 @@
 import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
 
-export type AgentWorkflowNodeType =
+export type AgentMissionNodeType =
   | "openclaw_agent"
   | "codex_agent"
   | "claude_code_agent";
 
-export type WorkflowNodeType =
-  | AgentWorkflowNodeType
+export type MissionNodeType =
+  | AgentMissionNodeType
   | "parallel_agents"
   | "manager"
   | "manager_slot"
@@ -18,7 +18,7 @@ export type WorkflowNodeType =
   | "note"
   | "group";
 
-export type WorkflowRunStatus =
+export type MissionRunStatus =
   | "queued"
   | "running"
   | "succeeded"
@@ -26,7 +26,7 @@ export type WorkflowRunStatus =
   | "cancelled"
   | "waiting_approval";
 
-export type WorkflowNodeRunStatus =
+export type MissionNodeRunStatus =
   | "queued"
   | "running"
   | "succeeded"
@@ -45,12 +45,12 @@ export interface CanvasSize {
   height: number;
 }
 
-export interface WorkflowNodeBaseConfig {
+export interface MissionNodeBaseConfig {
   label: string;
   description?: string;
 }
 
-export interface AgentNodeConfig extends WorkflowNodeBaseConfig {
+export interface AgentNodeConfig extends MissionNodeBaseConfig {
   agentId?: string;
   agentName: string;
   prompt: string;
@@ -62,56 +62,56 @@ export interface AgentNodeConfig extends WorkflowNodeBaseConfig {
   tools: string[];
 }
 
-export interface ParallelAgentsNodeConfig extends WorkflowNodeBaseConfig {
+export interface ParallelAgentsNodeConfig extends MissionNodeBaseConfig {
   agents: AgentNodeConfig[];
   waitFor: "all" | "first_success";
 }
 
-export interface ManagerNodeConfig extends WorkflowNodeBaseConfig {
+export interface ManagerNodeConfig extends MissionNodeBaseConfig {
   portCount: number;
   maxHandoffs: number;
   instructions?: string;
 }
 
-export interface ManagerSlotNodeConfig extends WorkflowNodeBaseConfig {
+export interface ManagerSlotNodeConfig extends MissionNodeBaseConfig {
   managerNodeId: string;
   slot: number;
 }
 
-export interface LoopNodeConfig extends WorkflowNodeBaseConfig {
+export interface LoopNodeConfig extends MissionNodeBaseConfig {
   maxIterations: number;
 }
 
-export interface ConditionNodeConfig extends WorkflowNodeBaseConfig {
+export interface ConditionNodeConfig extends MissionNodeBaseConfig {
   expression: string;
 }
 
-export interface SummaryNodeConfig extends WorkflowNodeBaseConfig {
+export interface SummaryNodeConfig extends MissionNodeBaseConfig {
   mode: "structured_merge" | "openclaw_agent";
   prompt?: string;
   modelId?: string;
 }
 
-export interface ApprovalNodeConfig extends WorkflowNodeBaseConfig {
+export interface ApprovalNodeConfig extends MissionNodeBaseConfig {
   approverHint?: string;
   instructions?: string;
 }
 
-export interface SendNodeConfig extends WorkflowNodeBaseConfig {
+export interface SendNodeConfig extends MissionNodeBaseConfig {
   channelId: string;
   target: string;
   bodyTemplate: string;
 }
 
-export interface NoteNodeConfig extends WorkflowNodeBaseConfig {
+export interface NoteNodeConfig extends MissionNodeBaseConfig {
   body: string;
 }
 
-export interface GroupNodeConfig extends WorkflowNodeBaseConfig {
+export interface GroupNodeConfig extends MissionNodeBaseConfig {
   color: string;
 }
 
-export type WorkflowNodeConfig =
+export type MissionNodeConfig =
   | AgentNodeConfig
   | ParallelAgentsNodeConfig
   | ManagerNodeConfig
@@ -124,27 +124,27 @@ export type WorkflowNodeConfig =
   | NoteNodeConfig
   | GroupNodeConfig;
 
-export function isAgentWorkflowNodeType(type: WorkflowNodeType): type is AgentWorkflowNodeType {
+export function isAgentMissionNodeType(type: MissionNodeType): type is AgentMissionNodeType {
   return type === "openclaw_agent" || type === "codex_agent" || type === "claude_code_agent";
 }
 
-export function resolveAgentNodeSource(type: AgentWorkflowNodeType): OpenClawObjectSource {
+export function resolveAgentNodeSource(type: AgentMissionNodeType): OpenClawObjectSource {
   if (type === "codex_agent") return "codex";
   if (type === "claude_code_agent") return "claude";
   return "openclaw";
 }
 
-export interface WorkflowNode {
+export interface MissionNode {
   id: string;
-  type: WorkflowNodeType;
+  type: MissionNodeType;
   position: CanvasPosition;
   size?: CanvasSize;
-  config: WorkflowNodeConfig;
+  config: MissionNodeConfig;
   parentId?: string;
   disabled?: boolean;
 }
 
-export interface WorkflowEdge {
+export interface MissionEdge {
   id: string;
   source: string;
   target: string;
@@ -154,14 +154,14 @@ export interface WorkflowEdge {
   condition?: "true" | "false" | "success" | "failure";
 }
 
-export interface WorkflowDefinition {
+export interface MissionDefinition {
   id: string;
   companyId: string;
   name: string;
   description?: string;
   version: number;
-  nodes: WorkflowNode[];
-  edges: WorkflowEdge[];
+  nodes: MissionNode[];
+  edges: MissionEdge[];
   variables: Record<string, string>;
   display: {
     viewport?: {
@@ -174,31 +174,31 @@ export interface WorkflowDefinition {
   updatedAt: string;
 }
 
-export const portableWorkflowPackageSchema = "openclaw-cui.workflow-package/v1";
+export const portableMissionPackageSchema = "hiveward.mission-package/v1";
 
-export type PortableWorkflowDefinition = Pick<
-  WorkflowDefinition,
+export type PortableMissionDefinition = Pick<
+  MissionDefinition,
   "id" | "name" | "description" | "version" | "nodes" | "edges" | "variables" | "display"
 >;
 
-export interface PortableWorkflowPackage {
-  schema: typeof portableWorkflowPackageSchema;
+export interface PortableMissionPackage {
+  schema: typeof portableMissionPackageSchema;
   exportedAt: string;
-  workflows: PortableWorkflowDefinition[];
+  missions: PortableMissionDefinition[];
 }
 
-export interface WorkflowImportDefaults {
+export interface MissionImportDefaults {
   agentId?: string;
   modelId?: string;
   channelId?: string;
 }
 
-export interface WorkflowRun {
+export interface MissionRun {
   id: string;
   companyId: string;
-  workflowId: string;
-  workflowVersion: number;
-  status: WorkflowRunStatus;
+  missionId: string;
+  missionVersion: number;
+  status: MissionRunStatus;
   startedBy: string;
   startedAt: string;
   endedAt?: string;
@@ -209,14 +209,14 @@ export interface WorkflowRun {
   openclawRefs: OpenClawObjectRef[];
 }
 
-export interface WorkflowNodeRun {
+export interface MissionNodeRun {
   id: string;
-  workflowRunId: string;
-  workflowId: string;
+  missionRunId: string;
+  missionId: string;
   nodeId: string;
   nodeLabel: string;
-  nodeType: WorkflowNodeType;
-  status: WorkflowNodeRunStatus;
+  nodeType: MissionNodeType;
+  status: MissionNodeRunStatus;
   queuedAt: string;
   startedAt?: string;
   endedAt?: string;
@@ -226,37 +226,38 @@ export interface WorkflowNodeRun {
   openclawRef?: OpenClawObjectRef;
 }
 
-export interface WorkflowNodeEvent {
+export interface MissionNodeEvent {
   id: string;
-  workflowRunId: string;
+  missionRunId: string;
   nodeRunId?: string;
   type:
-    | "workflow.run.started"
+    | "mission.run.started"
     | "node.run.queued"
     | "node.run.started"
     | "node.run.waiting_approval"
     | "node.run.completed"
     | "node.run.failed"
     | "node.run.cancelled"
-    | "workflow.run.completed"
-    | "workflow.run.failed";
+    | "mission.run.completed"
+    | "mission.run.failed";
   message: string;
   createdAt: string;
   openclawRef?: OpenClawObjectRef;
 }
 
-export interface WorkflowRunView {
-  run: WorkflowRun;
-  nodeRuns: WorkflowNodeRun[];
-  events: WorkflowNodeEvent[];
+export interface MissionRunView {
+  run: MissionRun;
+  nodeRuns: MissionNodeRun[];
+  events: MissionNodeEvent[];
 }
 
-export function createStarterWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
+export function createStarterMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
   return {
-    id: "starter-workflow",
+    id: "starter-mission",
     companyId,
     name: "Multi-agent delivery review",
-    description: "A minimal n8n-style OpenClaw workflow for requirements, architecture, test review, approval, and Slack delivery.",
+    description:
+      "A governed Hiveward mission for requirements, architecture, test review, approval, and delivery through full agent harnesses.",
     version: 1,
     nodes: [
       {
@@ -323,7 +324,7 @@ export function createStarterWorkflow(now: string, companyId = "company-openclaw
           label: "Send to Slack",
           channelId: "slack",
           target: "#engineering",
-          bodyTemplate: "Workflow {{workflow.name}} completed. Summary: {{summary}}"
+          bodyTemplate: "Mission {{mission.name}} completed. Summary: {{summary}}"
         }
       }
     ],
@@ -344,13 +345,13 @@ export function createStarterWorkflow(now: string, companyId = "company-openclaw
   };
 }
 
-export function createRealThreeAgentWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
+export function createRealThreeAgentMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
   return {
-    id: "real-three-agent-workflow",
+    id: "real-three-agent-mission",
     companyId,
     name: "Real 3-node OpenClaw agent chain",
     description:
-      "A minimal executable chain that calls the real OpenClaw agent configured as main. Each node receives upstream output from the previous node.",
+      "A minimal executable Hiveward mission that calls the real OpenClaw agent configured as main. Each node receives upstream output from the previous node.",
     version: 1,
     nodes: [
       {
@@ -406,19 +407,19 @@ export function createRealThreeAgentWorkflow(now: string, companyId = "company-o
   };
 }
 
-export function createMultiAgentCompatibilityWorkflow(
+export function createMultiAgentCompatibilityMission(
   now: string,
-  companyId = "company-openclaw-studio",
+  companyId = "company-hiveward-studio",
   workingDirectory = ""
-): WorkflowDefinition {
+): MissionDefinition {
   const workspaceConfig = workingDirectory ? { workingDirectory } : {};
 
   return {
-    id: "multi-agent-compatibility-workflow",
+    id: "multi-agent-compatibility-mission",
     companyId,
     name: "Multi-agent compatibility smoke test",
     description:
-      "A focused workflow that validates OpenClaw, Codex, and Claude Code agent nodes through one shared upstream payload and one merged result.",
+      "A focused mission that validates OpenClaw, Codex, and Claude Code agent nodes through one shared upstream payload and one merged result.",
     version: 1,
     nodes: [
       {
@@ -430,7 +431,7 @@ export function createMultiAgentCompatibilityWorkflow(
           agentId: "main",
           agentName: "openclaw-compat-brief",
           prompt:
-            "Create a concise JSON compatibility brief for this workflow. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
+            "Create a concise JSON compatibility brief for this Hiveward mission. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
           tools: []
         }
       },
@@ -524,13 +525,13 @@ export function createMultiAgentCompatibilityWorkflow(
   };
 }
 
-export function createManagerDrivenHtmlWorkflow(now: string, companyId = "company-openclaw-studio"): WorkflowDefinition {
+export function createManagerDrivenHtmlMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
   return {
-    id: "manager-driven-html-workflow",
+    id: "manager-driven-html-mission",
     companyId,
     name: "Manager-driven HTML delivery",
     description:
-      "A manager orchestrates three slot boxes: inspiration and execution document, HTML implementation, and QA verification.",
+      "A manager coordinates three mission slots: inspiration and execution document, HTML implementation, and QA verification.",
     version: 1,
     nodes: [
       {
@@ -742,23 +743,23 @@ export function createManagerDrivenHtmlWorkflow(now: string, companyId = "compan
   };
 }
 
-export function createDefaultWorkflows(
+export function createDefaultMissions(
   now: string,
-  companyId = "company-openclaw-studio",
+  companyId = "company-hiveward-studio",
   workingDirectory = ""
-): WorkflowDefinition[] {
+): MissionDefinition[] {
   return [
-    createStarterWorkflow(now, companyId),
-    createRealThreeAgentWorkflow(now, companyId),
-    createMultiAgentCompatibilityWorkflow(now, companyId, workingDirectory),
-    createManagerDrivenHtmlWorkflow(now, companyId)
+    createStarterMission(now, companyId),
+    createRealThreeAgentMission(now, companyId),
+    createMultiAgentCompatibilityMission(now, companyId, workingDirectory),
+    createManagerDrivenHtmlMission(now, companyId)
   ];
 }
 
-export function createBlankWorkflow({
+export function createBlankMission({
   id,
   now,
-  companyId = "company-openclaw-studio",
+  companyId = "company-hiveward-studio",
   name,
   description
 }: {
@@ -767,12 +768,12 @@ export function createBlankWorkflow({
   companyId?: string;
   name?: string;
   description?: string;
-}): WorkflowDefinition {
+}): MissionDefinition {
   return {
     id,
     companyId,
-    name: normalizeWorkflowText(name, "Untitled workflow"),
-    description: normalizeWorkflowText(description, "Start with an empty canvas and add CUI-owned workflow nodes."),
+    name: normalizeMissionText(name, "Untitled mission"),
+    description: normalizeMissionText(description, "Start with an empty command canvas and add Hiveward mission nodes."),
     version: 1,
     nodes: [],
     edges: [],
@@ -785,93 +786,93 @@ export function createBlankWorkflow({
   };
 }
 
-export function createPortableWorkflowPackage(
-  workflows: WorkflowDefinition[],
+export function createPortableMissionPackage(
+  missions: MissionDefinition[],
   exportedAt: string
-): PortableWorkflowPackage {
+): PortableMissionPackage {
   return {
-    schema: portableWorkflowPackageSchema,
+    schema: portableMissionPackageSchema,
     exportedAt,
-    workflows: workflows.map(toPortableWorkflowDefinition)
+    missions: missions.map(toPortableMissionDefinition)
   };
 }
 
-export function toPortableWorkflowDefinition(workflow: WorkflowDefinition): PortableWorkflowDefinition {
+export function toPortableMissionDefinition(mission: MissionDefinition): PortableMissionDefinition {
   return {
-    id: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    version: workflow.version,
-    nodes: workflow.nodes.map(toPortableWorkflowNode),
-    edges: workflow.edges.map((edge) => ({ ...edge })),
-    variables: { ...workflow.variables },
+    id: mission.id,
+    name: mission.name,
+    description: mission.description,
+    version: mission.version,
+    nodes: mission.nodes.map(toPortableMissionNode),
+    edges: mission.edges.map((edge) => ({ ...edge })),
+    variables: { ...mission.variables },
     display: {
-      viewport: workflow.display.viewport ? { ...workflow.display.viewport } : undefined
+      viewport: mission.display.viewport ? { ...mission.display.viewport } : undefined
     }
   };
 }
 
-export function readPortableWorkflowPackage(value: unknown): PortableWorkflowPackage {
+export function readPortableMissionPackage(value: unknown): PortableMissionPackage {
   if (!isRecord(value)) {
-    throw new Error("Workflow package must be a JSON object.");
+    throw new Error("Mission package must be a JSON object.");
   }
-  if (value.schema !== portableWorkflowPackageSchema) {
-    throw new Error(`Unsupported workflow package schema: ${String(value.schema ?? "missing")}`);
+  if (value.schema !== portableMissionPackageSchema) {
+    throw new Error(`Unsupported mission package schema: ${String(value.schema ?? "missing")}`);
   }
-  if (!Array.isArray(value.workflows) || value.workflows.length === 0) {
-    throw new Error("Workflow package does not contain any workflows.");
+  if (!Array.isArray(value.missions) || value.missions.length === 0) {
+    throw new Error("Mission package does not contain any missions.");
   }
 
   return {
-    schema: portableWorkflowPackageSchema,
+    schema: portableMissionPackageSchema,
     exportedAt: readRequiredString(value.exportedAt, "exportedAt"),
-    workflows: value.workflows.map(readPortableWorkflowDefinition)
+    missions: value.missions.map(readPortableMissionDefinition)
   };
 }
 
-export function hydrateImportedWorkflow(
-  portableWorkflow: PortableWorkflowDefinition,
+export function hydrateImportedMission(
+  portableMission: PortableMissionDefinition,
   options: {
     id: string;
     companyId: string;
     now: string;
-    defaults?: WorkflowImportDefaults;
+    defaults?: MissionImportDefaults;
     name?: string;
   }
-): WorkflowDefinition {
+): MissionDefinition {
   return {
     id: options.id,
     companyId: options.companyId,
-    name: normalizeWorkflowText(options.name ?? portableWorkflow.name, "Imported workflow"),
-    description: portableWorkflow.description,
+    name: normalizeMissionText(options.name ?? portableMission.name, "Imported mission"),
+    description: portableMission.description,
     version: 1,
-    nodes: portableWorkflow.nodes.map((node) => applyImportDefaultsToNode(toPortableWorkflowNode(node), options.defaults)),
-    edges: portableWorkflow.edges.map((edge) => ({ ...edge })),
-    variables: { ...portableWorkflow.variables },
+    nodes: portableMission.nodes.map((node) => applyImportDefaultsToNode(toPortableMissionNode(node), options.defaults)),
+    edges: portableMission.edges.map((edge) => ({ ...edge })),
+    variables: { ...portableMission.variables },
     display: {
-      viewport: portableWorkflow.display.viewport ? { ...portableWorkflow.display.viewport } : { x: 0, y: 0, zoom: 1 }
+      viewport: portableMission.display.viewport ? { ...portableMission.display.viewport } : { x: 0, y: 0, zoom: 1 }
     },
     createdAt: options.now,
     updatedAt: options.now
   };
 }
 
-function normalizeWorkflowText(value: string | undefined, fallback: string): string {
+function normalizeMissionText(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
   return trimmed ? trimmed : fallback;
 }
 
-function toPortableWorkflowNode(node: WorkflowNode): WorkflowNode {
+function toPortableMissionNode(node: MissionNode): MissionNode {
   return {
     ...node,
     position: { ...node.position },
     size: node.size ? { ...node.size } : undefined,
-    config: toPortableWorkflowNodeConfig(node.type, node.config)
+    config: toPortableMissionNodeConfig(node.type, node.config)
   };
 }
 
-function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNodeConfig): WorkflowNodeConfig {
-  if (isAgentWorkflowNodeType(type)) {
+function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeConfig): MissionNodeConfig {
+  if (isAgentMissionNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       label: agentConfig.label,
@@ -889,7 +890,7 @@ function toPortableWorkflowNodeConfig(type: WorkflowNodeType, config: WorkflowNo
     return {
       label: parallelConfig.label,
       description: parallelConfig.description,
-      agents: parallelConfig.agents.map((agent) => toPortableWorkflowNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
+      agents: parallelConfig.agents.map((agent) => toPortableMissionNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
       waitFor: parallelConfig.waitFor
     };
   }
@@ -919,7 +920,7 @@ function cloneJsonObject(value: Record<string, unknown> | undefined): Record<str
   return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : undefined;
 }
 
-function applyImportDefaultsToNode(node: WorkflowNode, defaults: WorkflowImportDefaults = {}): WorkflowNode {
+function applyImportDefaultsToNode(node: MissionNode, defaults: MissionImportDefaults = {}): MissionNode {
   return {
     ...node,
     disabled: node.type === "send" ? true : node.disabled,
@@ -928,11 +929,11 @@ function applyImportDefaultsToNode(node: WorkflowNode, defaults: WorkflowImportD
 }
 
 function applyImportDefaultsToConfig(
-  type: WorkflowNodeType,
-  config: WorkflowNodeConfig,
-  defaults: WorkflowImportDefaults
-): WorkflowNodeConfig {
-  if (isAgentWorkflowNodeType(type)) {
+  type: MissionNodeType,
+  config: MissionNodeConfig,
+  defaults: MissionImportDefaults
+): MissionNodeConfig {
+  if (isAgentMissionNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       ...agentConfig,
@@ -966,9 +967,9 @@ function applyImportDefaultsToConfig(
   return config;
 }
 
-function readPortableWorkflowDefinition(value: unknown): PortableWorkflowDefinition {
+function readPortableMissionDefinition(value: unknown): PortableMissionDefinition {
   if (!isRecord(value)) {
-    throw new Error("Workflow entry must be an object.");
+    throw new Error("Mission entry must be an object.");
   }
   const display = isRecord(value.display) ? value.display : {};
   const viewport = isRecord(display.viewport)
@@ -980,12 +981,12 @@ function readPortableWorkflowDefinition(value: unknown): PortableWorkflowDefinit
     : undefined;
 
   return {
-    id: readRequiredString(value.id, "workflow.id"),
-    name: readRequiredString(value.name, "workflow.name"),
+    id: readRequiredString(value.id, "mission.id"),
+    name: readRequiredString(value.name, "mission.name"),
     description: readOptionalString(value.description),
     version: readNumber(value.version, 1),
-    nodes: readArray(value.nodes, "workflow.nodes") as WorkflowNode[],
-    edges: readArray(value.edges, "workflow.edges") as WorkflowEdge[],
+    nodes: readArray(value.nodes, "mission.nodes") as MissionNode[],
+    edges: readArray(value.edges, "mission.edges") as MissionEdge[],
     variables: isRecord(value.variables) ? readStringRecord(value.variables) : {},
     display: {
       viewport

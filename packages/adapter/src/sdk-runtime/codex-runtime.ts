@@ -6,7 +6,7 @@ import type {
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapCodexSandbox, normalizePermissionProfile } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
@@ -76,7 +76,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       provider: "codex",
       nodeRunId: input.nodeRunId,
-      workflowRunId: input.workflowRunId,
+      missionRunId: input.missionRunId,
       sessionKey,
       startedAt: now,
       abortController,

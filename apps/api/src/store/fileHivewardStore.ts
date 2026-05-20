@@ -7,46 +7,45 @@ import type {
   CompanyOverview,
   CompanyProfile,
   PendingApprovalItem,
-  PortableWorkflowPackage,
+  PortableMissionPackage,
   WorkspaceDashboard,
-  WorkflowDefinition,
-  WorkflowImportDefaults,
-  WorkflowNodeEvent,
-  WorkflowNodeRun,
-  WorkflowRun,
-  WorkflowRunView
-} from "@openclaw-cui/shared";
+  MissionDefinition,
+  MissionImportDefaults,
+  MissionNodeEvent,
+  MissionNodeRun,
+  MissionRun,
+  MissionRunView
+} from "@hiveward/shared";
 import {
-  createBlankWorkflow,
+  createBlankMission,
   createDefaultCompanies,
-  createDefaultWorkflows,
+  createDefaultMissions,
   createDefaultWorkspaceDashboard,
   defaultCompanyId,
-  hydrateImportedWorkflow,
+  hydrateImportedMission,
   normalizeWorkspaceDashboard
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 
-interface CUIStoreState {
+interface HivewardStoreState {
   companies: CompanyProfile[];
   selectedCompanyId: string | null;
-  workflows: WorkflowDefinition[];
-  workflowRuns: WorkflowRun[];
-  nodeRuns: WorkflowNodeRun[];
-  events: WorkflowNodeEvent[];
+  missions: MissionDefinition[];
+  missionRuns: MissionRun[];
+  nodeRuns: MissionNodeRun[];
+  events: MissionNodeEvent[];
   catalogSnapshot?: CatalogSnapshot;
   companyDashboards: Record<string, WorkspaceDashboard>;
 }
 
-type RawCUIStoreState = Partial<CUIStoreState> & {
-  workspaceDashboard?: Partial<WorkspaceDashboard>;
+type RawHivewardStoreState = Partial<HivewardStoreState> & {
   companyDashboards?: Record<string, Partial<WorkspaceDashboard>>;
 };
 
-export class FileCuiStore {
+export class FileHivewardStore {
   private readonly filePath: string;
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/cui-store.json")) {
+  constructor(filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/hiveward-store.json")) {
     this.filePath = filePath;
   }
 
@@ -63,8 +62,8 @@ export class FileCuiStore {
         await this.writeStateUnlocked({
           companies,
           selectedCompanyId: seededCompanyId,
-          workflows: createDefaultWorkflows(now, seededCompanyId, this.defaultSdkWorkingDirectory()),
-          workflowRuns: [],
+          missions: createDefaultMissions(now, seededCompanyId),
+          missionRuns: [],
           nodeRuns: [],
           events: [],
           companyDashboards: {
@@ -104,90 +103,90 @@ export class FileCuiStore {
     });
   }
 
-  async listWorkflows(): Promise<WorkflowDefinition[]> {
+  async listMissions(): Promise<MissionDefinition[]> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
       if (!companyId) return [];
-      return state.workflows.filter((workflow) => workflow.companyId === companyId);
+      return state.missions.filter((mission) => mission.companyId === companyId);
     });
   }
 
-  async getWorkflow(id: string): Promise<WorkflowDefinition | undefined> {
+  async getMission(id: string): Promise<MissionDefinition | undefined> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
       if (!companyId) return undefined;
-      return state.workflows.find((workflow) => workflow.id === id && workflow.companyId === companyId);
+      return state.missions.find((mission) => mission.id === id && mission.companyId === companyId);
     });
   }
 
-  async saveWorkflow(workflow: WorkflowDefinition): Promise<WorkflowDefinition> {
+  async saveMission(mission: MissionDefinition): Promise<MissionDefinition> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.requireSelectedCompanyId(state);
       const now = new Date().toISOString();
-      const existingIndex = state.workflows.findIndex((item) => item.id === workflow.id && item.companyId === companyId);
-      const currentVersion = existingIndex >= 0 ? state.workflows[existingIndex]!.version : workflow.version;
-      const currentCreatedAt = existingIndex >= 0 ? state.workflows[existingIndex]!.createdAt : now;
-      const nextWorkflow: WorkflowDefinition = {
-        ...workflow,
+      const existingIndex = state.missions.findIndex((item) => item.id === mission.id && item.companyId === companyId);
+      const currentVersion = existingIndex >= 0 ? state.missions[existingIndex]!.version : mission.version;
+      const currentCreatedAt = existingIndex >= 0 ? state.missions[existingIndex]!.createdAt : now;
+      const nextMission: MissionDefinition = {
+        ...mission,
         companyId,
-        version: existingIndex >= 0 ? currentVersion + 1 : workflow.version,
+        version: existingIndex >= 0 ? currentVersion + 1 : mission.version,
         updatedAt: now,
         createdAt: currentCreatedAt
       };
 
       if (existingIndex >= 0) {
-        state.workflows[existingIndex] = nextWorkflow;
+        state.missions[existingIndex] = nextMission;
       } else {
-        state.workflows.push(nextWorkflow);
+        state.missions.push(nextMission);
       }
 
       await this.writeStateUnlocked(state);
-      return nextWorkflow;
+      return nextMission;
     });
   }
 
-  async createWorkflow(input: { name?: string; description?: string } = {}): Promise<WorkflowDefinition> {
+  async createMission(input: { name?: string; description?: string } = {}): Promise<MissionDefinition> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.requireSelectedCompanyId(state);
       const now = new Date().toISOString();
-      const workflow = createBlankWorkflow({
-        id: nextWorkflowId(state.workflows),
+      const mission = createBlankMission({
+        id: nextMissionId(state.missions),
         companyId,
         now,
         name: input.name,
         description: input.description
       });
 
-      state.workflows.push(workflow);
+      state.missions.push(mission);
       await this.writeStateUnlocked(state);
-      return workflow;
+      return mission;
     });
   }
 
-  async importWorkflowPackage(
-    workflowPackage: PortableWorkflowPackage,
-    defaults: WorkflowImportDefaults = {}
-  ): Promise<WorkflowDefinition[]> {
+  async importMissionPackage(
+    missionPackage: PortableMissionPackage,
+    defaults: MissionImportDefaults = {}
+  ): Promise<MissionDefinition[]> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.requireSelectedCompanyId(state);
       const now = new Date().toISOString();
-      const imported: WorkflowDefinition[] = [];
+      const imported: MissionDefinition[] = [];
 
-      for (const portableWorkflow of workflowPackage.workflows) {
-        const workflow = hydrateImportedWorkflow(portableWorkflow, {
-          id: nextWorkflowId(state.workflows),
+      for (const portableMission of missionPackage.missions) {
+        const mission = hydrateImportedMission(portableMission, {
+          id: nextMissionId(state.missions),
           companyId,
           now,
           defaults,
-          name: nextImportedWorkflowName(state.workflows, portableWorkflow.name)
+          name: nextImportedMissionName(state.missions, portableMission.name)
         });
-        state.workflows.push(workflow);
-        imported.push(workflow);
+        state.missions.push(mission);
+        imported.push(mission);
       }
 
       await this.writeStateUnlocked(state);
@@ -195,14 +194,14 @@ export class FileCuiStore {
     });
   }
 
-  async createWorkflowRun(workflow: WorkflowDefinition, startedBy: string): Promise<WorkflowRun> {
+  async createMissionRun(mission: MissionDefinition, startedBy: string): Promise<MissionRun> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
-      const run: WorkflowRun = {
+      const run: MissionRun = {
         id: `run-${nanoid(10)}`,
-        companyId: workflow.companyId,
-        workflowId: workflow.id,
-        workflowVersion: workflow.version,
+        companyId: mission.companyId,
+        missionId: mission.id,
+        missionVersion: mission.version,
         status: "queued",
         startedBy,
         startedAt: new Date().toISOString(),
@@ -211,36 +210,36 @@ export class FileCuiStore {
         totalCostUsd: 0,
         openclawRefs: []
       };
-      state.workflowRuns.push(run);
+      state.missionRuns.push(run);
       await this.writeStateUnlocked(state);
       return run;
     });
   }
 
-  async updateWorkflowRun(run: WorkflowRun): Promise<void> {
+  async updateMissionRun(run: MissionRun): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.readStateUnlocked();
-      const index = state.workflowRuns.findIndex((item) => item.id === run.id);
+      const index = state.missionRuns.findIndex((item) => item.id === run.id);
       if (index < 0) {
-        throw new Error(`Workflow run not found: ${run.id}`);
+        throw new Error(`Mission run not found: ${run.id}`);
       }
-      state.workflowRuns[index] = run;
+      state.missionRuns[index] = run;
       await this.writeStateUnlocked(state);
     });
   }
 
-  async getWorkflowRun(id: string): Promise<WorkflowRun | undefined> {
+  async getMissionRun(id: string): Promise<MissionRun | undefined> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
-      const run = state.workflowRuns.find((candidate) => candidate.id === id);
+      const run = state.missionRuns.find((candidate) => candidate.id === id);
       if (!run) return undefined;
       if (!companyId || run.companyId !== companyId) return undefined;
       return run;
     });
   }
 
-  async upsertNodeRun(nodeRun: WorkflowNodeRun): Promise<void> {
+  async upsertNodeRun(nodeRun: MissionNodeRun): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const index = state.nodeRuns.findIndex((item) => item.id === nodeRun.id);
@@ -253,14 +252,14 @@ export class FileCuiStore {
     });
   }
 
-  async listNodeRuns(workflowRunId: string): Promise<WorkflowNodeRun[]> {
+  async listNodeRuns(missionRunId: string): Promise<MissionNodeRun[]> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
-      return state.nodeRuns.filter((run) => run.workflowRunId === workflowRunId);
+      return state.nodeRuns.filter((run) => run.missionRunId === missionRunId);
     });
   }
 
-  async appendEvent(event: WorkflowNodeEvent): Promise<void> {
+  async appendEvent(event: MissionNodeEvent): Promise<void> {
     await this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       state.events.push(event);
@@ -268,41 +267,41 @@ export class FileCuiStore {
     });
   }
 
-  async getRunView(workflowRunId: string): Promise<WorkflowRunView | undefined> {
+  async getRunView(missionRunId: string): Promise<MissionRunView | undefined> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
-      const view = this.getRunViewFromState(state, workflowRunId);
+      const view = this.getRunViewFromState(state, missionRunId);
       if (!view) return undefined;
       if (!companyId || view.run.companyId !== companyId) return undefined;
       return view;
     });
   }
 
-  async getLatestRunViewForWorkflow(workflowId: string): Promise<WorkflowRunView | undefined> {
+  async getLatestRunViewForMission(missionId: string): Promise<MissionRunView | undefined> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
       if (!companyId) return undefined;
-      const run = state.workflowRuns
-        .filter((item) => item.companyId === companyId && item.workflowId === workflowId)
+      const run = state.missionRuns
+        .filter((item) => item.companyId === companyId && item.missionId === missionId)
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
       if (!run) return undefined;
       return this.getRunViewFromState(state, run.id);
     });
   }
 
-  async listRunViews(): Promise<WorkflowRunView[]> {
+  async listRunViews(): Promise<MissionRunView[]> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       const companyId = this.getCurrentCompanyId(state);
       if (!companyId) return [];
-      return state.workflowRuns
+      return state.missionRuns
         .filter((run) => run.companyId === companyId)
         .slice()
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
         .map((run) => this.getRunViewFromState(state, run.id))
-        .filter((view): view is WorkflowRunView => Boolean(view));
+        .filter((view): view is MissionRunView => Boolean(view));
     });
   }
 
@@ -314,15 +313,15 @@ export class FileCuiStore {
       return state.nodeRuns
         .filter((nodeRun) => nodeRun.status === "waiting_approval")
         .flatMap((nodeRun) => {
-          const run = state.workflowRuns.find((candidate) => candidate.id === nodeRun.workflowRunId);
-          const workflow = state.workflows.find((candidate) => candidate.id === nodeRun.workflowId);
-          if (!run || !workflow || run.companyId !== companyId || workflow.companyId !== companyId) return [];
+          const run = state.missionRuns.find((candidate) => candidate.id === nodeRun.missionRunId);
+          const mission = state.missions.find((candidate) => candidate.id === nodeRun.missionId);
+          if (!run || !mission || run.companyId !== companyId || mission.companyId !== companyId) return [];
 
           const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
           const item: PendingApprovalItem = {
-            workflowId: workflow.id,
-            workflowName: workflow.name,
-            workflowRunId: run.id,
+            missionId: mission.id,
+            missionName: mission.name,
+            missionRunId: run.id,
             nodeRunId: nodeRun.id,
             nodeId: nodeRun.nodeId,
             nodeLabel: nodeRun.nodeLabel,
@@ -376,12 +375,12 @@ export class FileCuiStore {
     });
   }
 
-  private async readStateUnlocked(): Promise<CUIStoreState> {
+  private async readStateUnlocked(): Promise<HivewardStoreState> {
     const raw = await readFile(this.filePath, "utf8");
-    return this.normalizeState(JSON.parse(raw) as RawCUIStoreState);
+    return this.normalizeState(JSON.parse(raw) as RawHivewardStoreState);
   }
 
-  private async writeStateUnlocked(state: CUIStoreState): Promise<void> {
+  private async writeStateUnlocked(state: HivewardStoreState): Promise<void> {
     await writeFile(this.filePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }
 
@@ -394,40 +393,36 @@ export class FileCuiStore {
     return next;
   }
 
-  private normalizeState(state: RawCUIStoreState): CUIStoreState {
+  private normalizeState(state: RawHivewardStoreState): HivewardStoreState {
     const now = new Date().toISOString();
     const companies = Array.isArray(state.companies) && state.companies.length > 0 ? state.companies.map((company) => normalizeCompany(company, now)) : createDefaultCompanies(now);
     const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
     const selectedCompanyId = normalizeSelectedCompanyId(state.selectedCompanyId, companies, primaryCompanyId);
-    const normalizedWorkflows = Array.isArray(state.workflows)
-      ? state.workflows.map((workflow) => ({
-          ...workflow,
-          companyId: readScopedCompanyId(workflow.companyId, primaryCompanyId)
+    const normalizedMissions = Array.isArray(state.missions)
+      ? state.missions.map((mission) => ({
+          ...mission,
+          companyId: readScopedCompanyId(mission.companyId, primaryCompanyId)
         }))
-      : createDefaultWorkflows(now, primaryCompanyId, this.defaultSdkWorkingDirectory());
-    const workflowCompanyIds = new Map(normalizedWorkflows.map((workflow) => [workflow.id, workflow.companyId]));
-    const normalizedRuns = Array.isArray(state.workflowRuns)
-      ? state.workflowRuns.map((run) => ({
+      : createDefaultMissions(now, primaryCompanyId);
+    const missionCompanyIds = new Map(normalizedMissions.map((mission) => [mission.id, mission.companyId]));
+    const normalizedRuns = Array.isArray(state.missionRuns)
+      ? state.missionRuns.map((run) => ({
           ...run,
-          companyId: readScopedCompanyId(run.companyId ?? workflowCompanyIds.get(run.workflowId), primaryCompanyId)
+          companyId: readScopedCompanyId(run.companyId ?? missionCompanyIds.get(run.missionId), primaryCompanyId)
         }))
       : [];
 
     const companyDashboards: Record<string, WorkspaceDashboard> = {};
     for (const company of companies) {
       const rawDashboard = isRecord(state.companyDashboards) ? state.companyDashboards[company.id] : undefined;
-      const legacyDashboard = company.id === primaryCompanyId ? state.workspaceDashboard : undefined;
-      companyDashboards[company.id] = normalizeWorkspaceDashboard(
-        (rawDashboard as Partial<WorkspaceDashboard> | undefined) ?? legacyDashboard,
-        now
-      );
+      companyDashboards[company.id] = normalizeWorkspaceDashboard(rawDashboard as Partial<WorkspaceDashboard> | undefined, now);
     }
 
     return {
       companies,
       selectedCompanyId,
-      workflows: normalizedWorkflows,
-      workflowRuns: normalizedRuns,
+      missions: normalizedMissions,
+      missionRuns: normalizedRuns,
       nodeRuns: Array.isArray(state.nodeRuns) ? state.nodeRuns : [],
       events: Array.isArray(state.events) ? state.events : [],
       catalogSnapshot: state.catalogSnapshot,
@@ -435,46 +430,42 @@ export class FileCuiStore {
     };
   }
 
-  private getRunViewFromState(state: CUIStoreState, workflowRunId: string): WorkflowRunView | undefined {
-    const run = state.workflowRuns.find((item) => item.id === workflowRunId);
+  private getRunViewFromState(state: HivewardStoreState, missionRunId: string): MissionRunView | undefined {
+    const run = state.missionRuns.find((item) => item.id === missionRunId);
     if (!run) return undefined;
     return {
       run,
-      nodeRuns: state.nodeRuns.filter((item) => item.workflowRunId === workflowRunId),
-      events: state.events.filter((item) => item.workflowRunId === workflowRunId)
+      nodeRuns: state.nodeRuns.filter((item) => item.missionRunId === missionRunId),
+      events: state.events.filter((item) => item.missionRunId === missionRunId)
     };
   }
 
-  private defaultSdkWorkingDirectory(): string {
-    return resolve(dirname(this.filePath), "..");
-  }
-
-  private buildCompanyOverviews(state: CUIStoreState): CompanyOverview[] {
+  private buildCompanyOverviews(state: HivewardStoreState): CompanyOverview[] {
     return state.companies.map((company) => {
-      const workflows = state.workflows.filter((workflow) => workflow.companyId === company.id);
-      const runs = state.workflowRuns.filter((run) => run.companyId === company.id);
+      const missions = state.missions.filter((mission) => mission.companyId === company.id);
+      const runs = state.missionRuns.filter((run) => run.companyId === company.id);
       const runIds = new Set(runs.map((run) => run.id));
       const dashboard = state.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
       return {
         ...company,
-        workflowCount: workflows.length,
+        missionCount: missions.length,
         runCount: runs.length,
         totalTokens: runs.reduce((sum, run) => sum + run.totalInputTokens + run.totalOutputTokens, 0),
         totalCostUsd: Number(runs.reduce((sum, run) => sum + run.totalCostUsd, 0).toFixed(6)),
         dashboardWidgetCount: dashboard.dashboardWidgets.length,
         savedViewCount: dashboard.savedViews.length,
         noteCount: dashboard.notes.length,
-        activeApprovalCount: state.nodeRuns.filter((nodeRun) => nodeRun.status === "waiting_approval" && runIds.has(nodeRun.workflowRunId)).length,
+        activeApprovalCount: state.nodeRuns.filter((nodeRun) => nodeRun.status === "waiting_approval" && runIds.has(nodeRun.missionRunId)).length,
         latestRunAt: maxTimestamp(runs.map((run) => run.endedAt ?? run.startedAt))
       };
     });
   }
 
-  private getCurrentCompanyId(state: CUIStoreState): string | undefined {
+  private getCurrentCompanyId(state: HivewardStoreState): string | undefined {
     return state.selectedCompanyId ?? undefined;
   }
 
-  private requireSelectedCompanyId(state: CUIStoreState): string {
+  private requireSelectedCompanyId(state: HivewardStoreState): string {
     const companyId = this.getCurrentCompanyId(state);
     if (!companyId) {
       throw new Error("No company selected.");
@@ -525,18 +516,18 @@ function maxTimestamp(values: Array<string | undefined>): string | undefined {
   return normalized.sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
 }
 
-function nextWorkflowId(workflows: WorkflowDefinition[]): string {
-  const used = new Set(workflows.map((workflow) => workflow.id));
-  let id = `workflow-${nanoid(8)}`;
+function nextMissionId(missions: MissionDefinition[]): string {
+  const used = new Set(missions.map((mission) => mission.id));
+  let id = `mission-${nanoid(8)}`;
   while (used.has(id)) {
-    id = `workflow-${nanoid(8)}`;
+    id = `mission-${nanoid(8)}`;
   }
   return id;
 }
 
-function nextImportedWorkflowName(workflows: WorkflowDefinition[], baseName: string): string {
-  const normalizedBase = baseName.trim() || "Imported workflow";
-  const used = new Set(workflows.map((workflow) => workflow.name));
+function nextImportedMissionName(missions: MissionDefinition[], baseName: string): string {
+  const normalizedBase = baseName.trim() || "Imported mission";
+  const used = new Set(missions.map((mission) => mission.name));
   if (!used.has(normalizedBase)) return normalizedBase;
 
   let index = 2;

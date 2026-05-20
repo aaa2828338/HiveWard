@@ -271,7 +271,7 @@ export class GatewaySession {
         : "";
     const client = {
       id: "openclaw-control-ui",
-      version: "openclaw-cui",
+      version: "hiveward",
       platform: process.platform,
       mode: "backend",
     };
@@ -309,7 +309,7 @@ export class GatewaySession {
                 password: this.config.password,
               }
             : undefined,
-        userAgent: "openclaw-cui-adapter",
+        userAgent: "hiveward-adapter",
         locale: this.config.locale,
       });
       this.connected = true;

@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-cui",
+  "name": "hiveward",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev -w @openclaw-cui/web",
-    "build": "npm run build -w @openclaw-cui/web && npm run typecheck -w @openclaw-cui/api && npm run typecheck -w @openclaw-cui/shared && npm run typecheck -w @openclaw-cui/adapter",
+    "dev": "npm run dev -w @hiveward/web",
+    "build": "npm run build -w @hiveward/web && npm run typecheck -w @hiveward/api && npm run typecheck -w @hiveward/shared && npm run typecheck -w @hiveward/adapter",
     "check": "npm run check:boundaries && npm run typecheck -ws --if-present",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "test": "vitest run"

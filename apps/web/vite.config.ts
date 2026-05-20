@@ -3,17 +3,17 @@ import react from "@vitejs/plugin-react";
 
 type DevApiApp = (req: unknown, res: unknown, next: (error?: unknown) => void) => void;
 type ApiAppModule = {
-  createCuiApiApp: () => Promise<DevApiApp>;
+  createHivewardApiApp: () => Promise<DevApiApp>;
 };
 
 export default defineConfig({
   plugins: [
     react(),
     {
-      name: "openclaw-cui-single-port-api",
+      name: "hiveward-single-port-api",
       configureServer: async (server) => {
-        const { createCuiApiApp } = await server.ssrLoadModule("../api/src/app.ts") as ApiAppModule;
-        const apiApp = await createCuiApiApp();
+        const { createHivewardApiApp } = await server.ssrLoadModule("../api/src/app.ts") as ApiAppModule;
+        const apiApp = await createHivewardApiApp();
         server.middlewares.use((req, res, next) => {
           const url = req.url ?? "";
           if (url.startsWith("/api/") || url === "/healthz" || url === "/readyz") {

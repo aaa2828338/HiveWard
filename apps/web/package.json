@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw-cui/web",
+  "name": "@hiveward/web",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@openclaw-cui/shared": "0.1.0"
+    "@hiveward/shared": "0.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

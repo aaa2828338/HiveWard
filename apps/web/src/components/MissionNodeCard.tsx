@@ -15,13 +15,13 @@ import {
   Terminal,
   XCircle
 } from "lucide-react";
-import type { CanvasSize, WorkflowNodeRunStatus, WorkflowNodeType } from "@openclaw-cui/shared";
+import type { CanvasSize, MissionNodeRunStatus, MissionNodeType } from "@hiveward/shared";
 
-export interface WorkflowNodeCardData extends Record<string, unknown> {
+export interface MissionNodeCardData extends Record<string, unknown> {
   label: string;
-  type: WorkflowNodeType;
+  type: MissionNodeType;
   kindLabel: string;
-  status?: WorkflowNodeRunStatus;
+  status?: MissionNodeRunStatus;
   statusLabel: string;
   disabled?: boolean;
   isStartNode?: boolean;
@@ -30,7 +30,7 @@ export interface WorkflowNodeCardData extends Record<string, unknown> {
   managerSlotSize?: CanvasSize;
 }
 
-const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
+const typeIcon: Record<MissionNodeType, typeof Bot> = {
   openclaw_agent: Bot,
   codex_agent: Code2,
   claude_code_agent: Terminal,
@@ -48,8 +48,8 @@ const typeIcon: Record<WorkflowNodeType, typeof Bot> = {
 
 const managerPortStart = 122;
 const managerPortGap = 34;
-const managerWorkflowInputTop = 38;
-const managerWorkflowOutputTop = 58;
+const managerMissionInputTop = 38;
+const managerMissionOutputTop = 58;
 export const MANAGER_SLOT_DEFAULT_SIZE: CanvasSize = { width: 560, height: 300 };
 export const MANAGER_SLOT_MIN_SIZE: CanvasSize = { width: 420, height: 260 };
 export const MANAGER_SLOT_FRAME = {
@@ -58,7 +58,7 @@ export const MANAGER_SLOT_FRAME = {
   bottom: 28
 } as const;
 
-function statusIcon(status?: WorkflowNodeRunStatus) {
+function statusIcon(status?: MissionNodeRunStatus) {
   if (status === "succeeded") return CheckCircle2;
   if (status === "failed" || status === "cancelled") return XCircle;
   if (status === "running") return CircleDashed;
@@ -66,7 +66,7 @@ function statusIcon(status?: WorkflowNodeRunStatus) {
   return CircleDashed;
 }
 
-function statusClass(status?: WorkflowNodeRunStatus) {
+function statusClass(status?: MissionNodeRunStatus) {
   if (status === "succeeded") return "status-success";
   if (status === "failed" || status === "cancelled") return "status-danger";
   if (status === "running") return "status-running";
@@ -74,8 +74,8 @@ function statusClass(status?: WorkflowNodeRunStatus) {
   return "status-idle";
 }
 
-export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected, width, height }: NodeProps) {
-  const nodeData = data as WorkflowNodeCardData;
+export const MissionNodeCard = memo(function MissionNodeCard({ data, selected, width, height }: NodeProps) {
+  const nodeData = data as MissionNodeCardData;
   const TypeIcon = typeIcon[nodeData.type];
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
@@ -89,7 +89,7 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
 
   return (
     <div
-      className={`workflow-node workflow-node-${nodeData.type} ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}
+      className={`mission-node mission-node-${nodeData.type} ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}
       style={nodeStyle}
     >
       {nodeData.type === "manager_slot" ? (
@@ -134,10 +134,10 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
       ) : nodeData.type === "manager" ? (
         <>
           <Handle
-            className="node-handle input-handle manager-workflow-handle manager-workflow-input-handle"
+            className="node-handle input-handle manager-mission-handle manager-mission-input-handle"
             type="target"
             position={Position.Left}
-            style={{ top: managerWorkflowInputTop }}
+            style={{ top: managerMissionInputTop }}
           />
           {managerSlots.map((slot, index) => (
             <Handle
@@ -187,10 +187,10 @@ export const WorkflowNodeCard = memo(function WorkflowNodeCard({ data, selected,
       {nodeData.type === "manager_slot" ? null : nodeData.type === "manager" ? (
         <>
           <Handle
-            className="node-handle output-handle manager-workflow-handle manager-workflow-output-handle"
+            className="node-handle output-handle manager-mission-handle manager-mission-output-handle"
             type="source"
             position={Position.Left}
-            style={{ top: managerWorkflowOutputTop }}
+            style={{ top: managerMissionOutputTop }}
           />
           {managerSlots.map((slot, index) => (
             <Handle

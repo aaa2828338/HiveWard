@@ -17,7 +17,7 @@ import {
   type OnNodesChange
 } from "@xyflow/react";
 import { Bot, Check, Code2, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Terminal, Upload, X } from "lucide-react";
-import { isAgentWorkflowNodeType, resolveAgentNodeSource } from "@openclaw-cui/shared";
+import { isAgentMissionNodeType, resolveAgentNodeSource } from "@hiveward/shared";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -33,27 +33,27 @@ import type {
   ParallelAgentsNodeConfig,
   SendNodeConfig,
   SummaryNodeConfig,
-  WorkflowDefinition,
-  WorkflowEdge,
-  WorkflowNode,
-  WorkflowNodeRun,
-  WorkflowNodeType,
-  WorkflowRunView
-} from "@openclaw-cui/shared";
+  MissionDefinition,
+  MissionEdge,
+  MissionNode,
+  MissionNodeRun,
+  MissionNodeType,
+  MissionRunView
+} from "@hiveward/shared";
 import {
   MANAGER_SLOT_DEFAULT_SIZE,
   MANAGER_SLOT_FRAME,
   MANAGER_SLOT_MIN_SIZE,
-  WorkflowNodeCard,
-  type WorkflowNodeCardData
-} from "./WorkflowNodeCard";
+  MissionNodeCard,
+  type MissionNodeCardData
+} from "./MissionNodeCard";
 import { type Messages } from "../lib/i18n";
 
 const nodeTypes = {
-  workflowNode: WorkflowNodeCard
+  missionNode: MissionNodeCard
 };
 
-const palette: Array<{ type: WorkflowNodeType; icon: typeof Plus }> = [
+const palette: Array<{ type: MissionNodeType; icon: typeof Plus }> = [
   { type: "openclaw_agent", icon: Bot },
   { type: "codex_agent", icon: Code2 },
   { type: "claude_code_agent", icon: Terminal },
@@ -73,7 +73,7 @@ const managerSlotOutHandle = "manager-slot-out";
 const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
-const workflowStepTypes = new Set<WorkflowNodeType>([
+const missionStepTypes = new Set<MissionNodeType>([
   "openclaw_agent",
   "codex_agent",
   "claude_code_agent",
@@ -89,9 +89,9 @@ const workflowStepTypes = new Set<WorkflowNodeType>([
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 
-export function WorkflowStudioPage({
-  workflow,
-  workflows,
+export function MissionStudioPage({
+  mission,
+  missions,
   catalog,
   configuredAgents,
   runView,
@@ -99,43 +99,43 @@ export function WorkflowStudioPage({
   selectedCompanyId,
   busy,
   busyAction,
-  onSelectWorkflow,
-  onCreateWorkflow,
+  onSelectMission,
+  onCreateMission,
   onRefreshWorkspace,
-  onOpenWorkflowImport,
-  onExportWorkflow,
-  onSaveWorkflow,
-  onRunWorkflow,
+  onOpenMissionImport,
+  onExportMission,
+  onSaveMission,
+  onRunMission,
   onSelectNode,
-  onUpdateWorkflow,
+  onUpdateMission,
   onApproveRun,
   t
 }: {
-  workflow?: WorkflowDefinition;
-  workflows: WorkflowDefinition[];
+  mission?: MissionDefinition;
+  missions: MissionDefinition[];
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
-  runView?: WorkflowRunView;
+  runView?: MissionRunView;
   selectedNodeId?: string;
   selectedCompanyId?: string;
   busy: boolean;
   busyAction?: string;
-  onSelectWorkflow: (workflowId: string) => void;
-  onCreateWorkflow: () => void;
+  onSelectMission: (missionId: string) => void;
+  onCreateMission: () => void;
   onRefreshWorkspace: () => void;
-  onOpenWorkflowImport: () => void;
-  onExportWorkflow: () => void;
-  onSaveWorkflow: () => void;
-  onRunWorkflow: () => void;
+  onOpenMissionImport: () => void;
+  onExportMission: () => void;
+  onSaveMission: () => void;
+  onRunMission: () => void;
   onSelectNode: (nodeId?: string) => void;
-  onUpdateWorkflow: (updater: (current: WorkflowDefinition) => WorkflowDefinition) => void;
+  onUpdateMission: (updater: (current: MissionDefinition) => MissionDefinition) => void;
   onApproveRun: () => void;
   t: Messages;
 }) {
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
-  const inspectedNode = workflow?.nodes.find((node) => node.id === inspectedNodeId);
+  const inspectedNode = mission?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
-  const [localNodes, setLocalNodes] = useState<Node<WorkflowNodeCardData>[]>([]);
+  const [localNodes, setLocalNodes] = useState<Node<MissionNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number }>({ x: 88, y: 252 });
@@ -157,7 +157,7 @@ export function WorkflowStudioPage({
   }, []);
 
   const statusByNode = useMemo(() => {
-    const map = new Map<string, WorkflowNodeRun>();
+    const map = new Map<string, MissionNodeRun>();
     for (const nodeRun of runView?.nodeRuns ?? []) {
       map.set(nodeRun.nodeId, nodeRun);
     }
@@ -165,24 +165,24 @@ export function WorkflowStudioPage({
   }, [runView]);
 
   useEffect(() => {
-    setLocalNodes(buildFlowNodes(workflow, statusByNode, t));
-  }, [statusByNode, t, workflow]);
+    setLocalNodes(buildFlowNodes(mission, statusByNode, t));
+  }, [statusByNode, t, mission]);
 
   useEffect(() => {
-    setLocalEdges(buildFlowEdges(workflow, runView?.run.status));
-  }, [runView?.run.status, workflow]);
+    setLocalEdges(buildFlowEdges(mission, runView?.run.status));
+  }, [runView?.run.status, mission]);
 
   useEffect(() => {
-    if (!workflow) return;
-    if (hasDuplicateNodeIds(workflow)) {
-      onUpdateWorkflow((current) => (current.id === workflow.id ? ensureUniqueWorkflowNodeIds(current) : current));
+    if (!mission) return;
+    if (hasDuplicateNodeIds(mission)) {
+      onUpdateMission((current) => (current.id === mission.id ? ensureUniqueMissionNodeIds(current) : current));
       return;
     }
-  }, [onUpdateWorkflow, workflow]);
+  }, [onUpdateMission, mission]);
 
   const patchNodeConfig = useCallback(
-    (nodeId: string, patch: Partial<WorkflowNode["config"]>) => {
-      onUpdateWorkflow((current) => {
+    (nodeId: string, patch: Partial<MissionNode["config"]>) => {
+      onUpdateMission((current) => {
         const next = {
           ...current,
           nodes: current.nodes.map((node) =>
@@ -192,7 +192,7 @@ export function WorkflowStudioPage({
                   config: {
                     ...node.config,
                     ...patch
-                  } as WorkflowNode["config"]
+                  } as MissionNode["config"]
                 }
               : node
           )
@@ -200,62 +200,62 @@ export function WorkflowStudioPage({
         return next;
       });
     },
-    [onUpdateWorkflow]
+    [onUpdateMission]
   );
 
-  const onNodesChange: OnNodesChange<Node<WorkflowNodeCardData>> = useCallback(
+  const onNodesChange: OnNodesChange<Node<MissionNodeCardData>> = useCallback(
     (changes) => {
       setLocalNodes((current) => applyNodeChanges(changes, current));
-      const positionChanges = collectWorkflowNodePositionChanges(changes);
+      const positionChanges = collectMissionNodePositionChanges(changes);
       const sizeChanges = collectManagerSlotSizeChanges(changes);
       if (positionChanges.size === 0 && sizeChanges.size === 0) return;
-      onUpdateWorkflow((current) => {
-        const workflowWithPositions = updateWorkflowNodePositions(current, positionChanges);
-        return resizeManagerSlotNodes(workflowWithPositions, sizeChanges);
+      onUpdateMission((current) => {
+        const missionWithPositions = updateMissionNodePositions(current, positionChanges);
+        return resizeManagerSlotNodes(missionWithPositions, sizeChanges);
       });
     },
-    [onUpdateWorkflow]
+    [onUpdateMission]
   );
 
   const onConnect = useCallback(
     (connection: Connection) => {
       if (!connection.source || !connection.target) return;
-      onUpdateWorkflow((current) => {
-        return connectWorkflowNodes(current, connection, t);
+      onUpdateMission((current) => {
+        return connectMissionNodes(current, connection, t);
       });
     },
-    [onUpdateWorkflow, t]
+    [onUpdateMission, t]
   );
 
   const addNode = useCallback(
-    (type: WorkflowNodeType) => {
-      onUpdateWorkflow((current) => {
-        const workflowWithUniqueIds = ensureUniqueWorkflowNodeIds(current);
+    (type: MissionNodeType) => {
+      onUpdateMission((current) => {
+        const missionWithUniqueIds = ensureUniqueMissionNodeIds(current);
         const selectedSlot =
-          selectedNodeId ? workflowWithUniqueIds.nodes.find((node) => node.id === selectedNodeId && node.type === "manager_slot") : undefined;
+          selectedNodeId ? missionWithUniqueIds.nodes.find((node) => node.id === selectedNodeId && node.type === "manager_slot") : undefined;
         if (type === "manager_slot") {
-          return addManagerSlotFromMenu(workflowWithUniqueIds, selectedNodeId, t);
+          return addManagerSlotFromMenu(missionWithUniqueIds, selectedNodeId, t);
         }
         const shouldNest = Boolean(selectedSlot && type !== "manager");
-        const id = nextWorkflowNodeId(workflowWithUniqueIds, type, shouldNest ? selectedSlot?.id : undefined);
-        const node: WorkflowNode = {
+        const id = nextMissionNodeId(missionWithUniqueIds, type, shouldNest ? selectedSlot?.id : undefined);
+        const node: MissionNode = {
           id,
           type,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
-            ? managerSlotChildInitialPosition(selectedSlot!, workflowWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
-            : { x: 180 + workflowWithUniqueIds.nodes.length * 42, y: 188 + workflowWithUniqueIds.nodes.length * 22 },
+            ? managerSlotChildInitialPosition(selectedSlot!, missionWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
+            : { x: 180 + missionWithUniqueIds.nodes.length * 42, y: 188 + missionWithUniqueIds.nodes.length * 22 },
           config: defaultConfig(type, t)
         };
         const next = {
-          ...workflowWithUniqueIds,
-          nodes: [...workflowWithUniqueIds.nodes, node]
+          ...missionWithUniqueIds,
+          nodes: [...missionWithUniqueIds.nodes, node]
         };
         return next;
       });
       setNodeMenuOpen(false);
     },
-    [onUpdateWorkflow, selectedNodeId, t]
+    [onUpdateMission, selectedNodeId, t]
   );
 
   const openNodeMenuAt = useCallback((x: number, y: number) => {
@@ -274,7 +274,7 @@ export function WorkflowStudioPage({
 
   const deleteNodeById = useCallback(
     (nodeId: string) => {
-      onUpdateWorkflow((current) => {
+      onUpdateMission((current) => {
         const deleteIds = collectDeletedNodeIds(current, new Set([nodeId]));
         return {
           ...current,
@@ -292,18 +292,18 @@ export function WorkflowStudioPage({
       setSelectedCanvasNodeIdsIfChanged([]);
       closeNodeContextMenu();
     },
-    [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateWorkflow, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
+    [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateMission, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
   );
 
   const toggleNodeDisabled = useCallback(
     (nodeId: string) => {
-      onUpdateWorkflow((current) => ({
+      onUpdateMission((current) => ({
         ...current,
         nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, disabled: !node.disabled } : node))
       }));
       closeNodeContextMenu();
     },
-    [closeNodeContextMenu, onUpdateWorkflow]
+    [closeNodeContextMenu, onUpdateMission]
   );
 
   useEffect(() => {
@@ -324,7 +324,7 @@ export function WorkflowStudioPage({
       event.preventDefault();
       const selectedSet = new Set(selectedCanvasNodeIds);
 
-      onUpdateWorkflow((current) => {
+      onUpdateMission((current) => {
         const deleteIds = collectDeletedNodeIds(current, selectedSet);
         return {
           ...current,
@@ -346,9 +346,9 @@ export function WorkflowStudioPage({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateWorkflow, selectedCanvasNodeIds, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]);
+  }, [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateMission, selectedCanvasNodeIds, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]);
 
-  const onNodeClick: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
+  const onNodeClick: NodeMouseHandler<Node<MissionNodeCardData>> = useCallback(
     (event, node) => {
       closeNodeMenu();
       closeNodeContextMenu();
@@ -371,7 +371,7 @@ export function WorkflowStudioPage({
     [closeNodeContextMenu, closeNodeMenu, onSelectNode, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
   );
 
-  const onNodeContextMenu: NodeMouseHandler<Node<WorkflowNodeCardData>> = useCallback(
+  const onNodeContextMenu: NodeMouseHandler<Node<MissionNodeCardData>> = useCallback(
     (event, node) => {
       event.preventDefault();
       event.stopPropagation();
@@ -402,19 +402,19 @@ export function WorkflowStudioPage({
       event.preventDefault();
       event.stopPropagation();
       setLocalEdges((current) => current.filter((item) => item.id !== edge.id));
-      onUpdateWorkflow((current) => ({
+      onUpdateMission((current) => ({
         ...current,
         edges: current.edges.filter((item) => item.id !== edge.id)
       }));
     },
-    [onUpdateWorkflow]
+    [onUpdateMission]
   );
 
   return (
     <ReactFlowProvider>
-      <section className="workflow-shell compact-workflow-shell">
+      <section className="mission-shell compact-mission-shell">
         <section
-          className="workflow-canvas-panel expanded-workflow-panel"
+          className="mission-canvas-panel expanded-mission-panel"
           onPointerDownCapture={(event) => {
             if (event.button !== 2) return;
             rightDragStateRef.current = {
@@ -460,13 +460,13 @@ export function WorkflowStudioPage({
               const rect = event.currentTarget.getBoundingClientRect();
               openNodeMenuAt(rect.right + 8, rect.top);
             }}
-            disabled={!workflow || busy}
+            disabled={!mission || busy}
           >
             <Plus size={18} />
           </button>
 
           {runView && (
-            <div className="workflow-overlay workflow-overlay-right">
+            <div className="mission-overlay mission-overlay-right">
               <div className="floating-run-pill">
                 <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
                 <span>{t.metrics.nodes(runView.nodeRuns.length)}</span>
@@ -481,11 +481,11 @@ export function WorkflowStudioPage({
           )}
 
           <ReactFlow
-            key={workflow?.id ?? "empty-workflow"}
+            key={mission?.id ?? "empty-mission"}
             nodes={localNodes}
             edges={localEdges}
             nodeTypes={nodeTypes}
-            defaultViewport={workflow?.display.viewport ?? { x: 0, y: 0, zoom: 1 }}
+            defaultViewport={mission?.display.viewport ?? { x: 0, y: 0, zoom: 1 }}
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
@@ -526,33 +526,33 @@ export function WorkflowStudioPage({
             <Controls position="bottom-right" />
           </ReactFlow>
 
-          <div className="workflow-action-dock" aria-label={t.navigation.workflow}>
+          <div className="mission-action-dock" aria-label={t.navigation.mission}>
             <select
-              value={workflow?.id ?? ""}
-              onChange={(event) => onSelectWorkflow(event.target.value)}
-              disabled={busy || workflows.length === 0}
+              value={mission?.id ?? ""}
+              onChange={(event) => onSelectMission(event.target.value)}
+              disabled={busy || missions.length === 0}
             >
-              {workflows.map((item) => (
+              {missions.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
                 </option>
               ))}
             </select>
-            <button type="button" title={t.actions.createWorkflow} onClick={onCreateWorkflow} disabled={!selectedCompanyId || busy}>
-              {busyAction === "createWorkflow" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-              {t.actions.createWorkflow}
+            <button type="button" title={t.actions.createMission} onClick={onCreateMission} disabled={!selectedCompanyId || busy}>
+              {busyAction === "createMission" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+              {t.actions.createMission}
             </button>
             <button type="button" title={t.actions.refreshWorkspace} onClick={onRefreshWorkspace} disabled={busy}>
               {busyAction === "refreshWorkspace" || busyAction === "load" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
               {t.actions.refreshWorkspace}
             </button>
-            <button type="button" title={t.actions.importWorkflow} onClick={onOpenWorkflowImport} disabled={!selectedCompanyId || busy}>
-              {busyAction === "importWorkflow" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
-              {t.actions.importWorkflow}
+            <button type="button" title={t.actions.importMission} onClick={onOpenMissionImport} disabled={!selectedCompanyId || busy}>
+              {busyAction === "importMission" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
+              {t.actions.importMission}
             </button>
-            <button type="button" title={t.actions.exportWorkflow} onClick={onExportWorkflow} disabled={!workflow || busy}>
-              {busyAction === "exportWorkflow" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
-              {t.actions.exportWorkflow}
+            <button type="button" title={t.actions.exportMission} onClick={onExportMission} disabled={!mission || busy}>
+              {busyAction === "exportMission" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
+              {t.actions.exportMission}
             </button>
             {runView?.run.status === "waiting_approval" && (
               <button type="button" title={t.actions.approve} onClick={onApproveRun} disabled={busy}>
@@ -560,17 +560,17 @@ export function WorkflowStudioPage({
                 {t.actions.approve}
               </button>
             )}
-            <button type="button" title={t.actions.saveWorkflow} onClick={onSaveWorkflow} disabled={!workflow || busy}>
-              {busyAction === "saveWorkflow" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+            <button type="button" title={t.actions.saveMission} onClick={onSaveMission} disabled={!mission || busy}>
+              {busyAction === "saveMission" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
               {t.actions.save}
             </button>
-            <button className="primary-action" type="button" title={t.actions.runWorkflow} onClick={onRunWorkflow} disabled={!workflow || busy}>
-              {busyAction === "runWorkflow" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
+            <button className="primary-action" type="button" title={t.actions.runMission} onClick={onRunMission} disabled={!mission || busy}>
+              {busyAction === "runMission" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
               {t.actions.run}
             </button>
           </div>
 
-          {nodeMenuOpen && workflow && (
+          {nodeMenuOpen && mission && (
             <div
               className="node-menu-popover"
               style={{
@@ -610,7 +610,7 @@ export function WorkflowStudioPage({
               }}
             >
               <button type="button" className="node-context-item" onClick={() => toggleNodeDisabled(nodeContextMenu.nodeId!)}>
-                {workflow?.nodes.find((node) => node.id === nodeContextMenu.nodeId)?.disabled ? t.actions.enableNode : t.actions.disableNode}
+                {mission?.nodes.find((node) => node.id === nodeContextMenu.nodeId)?.disabled ? t.actions.enableNode : t.actions.disableNode}
               </button>
               <button type="button" className="node-context-item danger" onClick={() => deleteNodeById(nodeContextMenu.nodeId!)}>
                 {t.actions.deleteNode}
@@ -619,7 +619,7 @@ export function WorkflowStudioPage({
           )}
         </section>
 
-        {inspectedNode && workflow && (
+        {inspectedNode && mission && (
           <NodeDetailModal
             catalog={catalog}
             configuredAgents={configuredAgents}
@@ -644,10 +644,10 @@ function NodeDetailModal({
 }: {
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
-  node: WorkflowNode;
+  node: MissionNode;
   t: Messages;
   onClose: () => void;
-  onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
+  onPatchConfig: (patch: Partial<MissionNode["config"]>) => void;
 }) {
   const models = catalog?.models ?? [];
   const channels = catalog?.channels ?? [];
@@ -703,21 +703,21 @@ function NodeConfigForm({
   t
 }: {
   catalog?: CatalogSnapshot;
-  node: WorkflowNode;
+  node: MissionNode;
   configuredAgents?: OpenClawConfiguredAgent[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
-  onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
+  onPatchConfig: (patch: Partial<MissionNode["config"]>) => void;
   t: Messages;
 }) {
-  const agentOutputSchema = isAgentWorkflowNodeType(node.type) ? (node.config as AgentNodeConfig).outputSchema : undefined;
+  const agentOutputSchema = isAgentMissionNodeType(node.type) ? (node.config as AgentNodeConfig).outputSchema : undefined;
   const [schemaText, setSchemaText] = useState("");
 
   useEffect(() => {
     setSchemaText(formatOutputSchema(agentOutputSchema));
   }, [agentOutputSchema, node.id, node.type]);
 
-  if (isAgentWorkflowNodeType(node.type)) {
+  if (isAgentMissionNodeType(node.type)) {
     const config = node.config as AgentNodeConfig;
     const source = resolveAgentNodeSource(node.type);
     const isSdkProvider = source === "claude" || source === "codex";
@@ -1137,10 +1137,10 @@ function AgentSkillPanel({
   t,
   onPatchConfig
 }: {
-  node: WorkflowNode;
+  node: MissionNode;
   skills: NonNullable<CatalogSnapshot["tools"]>;
   t: Messages;
-  onPatchConfig: (patch: Partial<WorkflowNode["config"]>) => void;
+  onPatchConfig: (patch: Partial<MissionNode["config"]>) => void;
 }) {
   const config = node.config as AgentNodeConfig;
   const [selectedSkillId, setSelectedSkillId] = useState("");
@@ -1207,11 +1207,11 @@ function clampNumberInput(value: string, min: number, max: number, fallback: num
   return Math.min(max, Math.max(min, parsed));
 }
 
-function nextWorkflowNodeId(workflow: WorkflowDefinition, type: WorkflowNodeType, parentId?: string): string {
-  return nextAvailableWorkflowNodeId(new Set(workflow.nodes.map((node) => node.id)), type, parentId);
+function nextMissionNodeId(mission: MissionDefinition, type: MissionNodeType, parentId?: string): string {
+  return nextAvailableMissionNodeId(new Set(mission.nodes.map((node) => node.id)), type, parentId);
 }
 
-function nextAvailableWorkflowNodeId(existingIds: Set<string>, type: WorkflowNodeType, parentId?: string): string {
+function nextAvailableMissionNodeId(existingIds: Set<string>, type: MissionNodeType, parentId?: string): string {
   const baseId = parentId ? `${parentId}-${type}` : type;
   let index = 1;
   let id = `${baseId}-${index}`;
@@ -1222,24 +1222,24 @@ function nextAvailableWorkflowNodeId(existingIds: Set<string>, type: WorkflowNod
   return id;
 }
 
-function hasDuplicateNodeIds(workflow: WorkflowDefinition): boolean {
+function hasDuplicateNodeIds(mission: MissionDefinition): boolean {
   const seen = new Set<string>();
-  for (const node of workflow.nodes) {
+  for (const node of mission.nodes) {
     if (seen.has(node.id)) return true;
     seen.add(node.id);
   }
   return false;
 }
 
-function ensureUniqueWorkflowNodeIds(workflow: WorkflowDefinition): WorkflowDefinition {
+function ensureUniqueMissionNodeIds(mission: MissionDefinition): MissionDefinition {
   const usedIds = new Set<string>();
   let changed = false;
-  const nodes = workflow.nodes.map((node) => {
+  const nodes = mission.nodes.map((node) => {
     if (!usedIds.has(node.id)) {
       usedIds.add(node.id);
       return node;
     }
-    const nextId = nextAvailableWorkflowNodeId(usedIds, node.type, node.parentId);
+    const nextId = nextAvailableMissionNodeId(usedIds, node.type, node.parentId);
     usedIds.add(nextId);
     changed = true;
     return {
@@ -1248,7 +1248,7 @@ function ensureUniqueWorkflowNodeIds(workflow: WorkflowDefinition): WorkflowDefi
     };
   });
 
-  return changed ? { ...workflow, nodes } : workflow;
+  return changed ? { ...mission, nodes } : mission;
 }
 
 function isPaneAddMenuTarget(target: EventTarget | null): boolean {
@@ -1278,7 +1278,7 @@ function getMenuPoint(event: { clientX: number; clientY: number }): { x: number;
   };
 }
 
-function collectWorkflowNodePositionChanges(changes: NodeChange<Node<WorkflowNodeCardData>>[]): Map<string, CanvasPosition> {
+function collectMissionNodePositionChanges(changes: NodeChange<Node<MissionNodeCardData>>[]): Map<string, CanvasPosition> {
   const positions = new Map<string, CanvasPosition>();
   for (const change of changes) {
     if (change.type !== "position" || !change.position) continue;
@@ -1288,7 +1288,7 @@ function collectWorkflowNodePositionChanges(changes: NodeChange<Node<WorkflowNod
   return positions;
 }
 
-function collectManagerSlotSizeChanges(changes: NodeChange<Node<WorkflowNodeCardData>>[]): Map<string, CanvasSize> {
+function collectManagerSlotSizeChanges(changes: NodeChange<Node<MissionNodeCardData>>[]): Map<string, CanvasSize> {
   const sizes = new Map<string, CanvasSize>();
   for (const change of changes) {
     if (change.type !== "dimensions" || !change.dimensions) continue;
@@ -1298,12 +1298,12 @@ function collectManagerSlotSizeChanges(changes: NodeChange<Node<WorkflowNodeCard
   return sizes;
 }
 
-function updateWorkflowNodePositions(workflow: WorkflowDefinition, positionsById: Map<string, CanvasPosition>): WorkflowDefinition {
-  if (positionsById.size === 0) return workflow;
+function updateMissionNodePositions(mission: MissionDefinition, positionsById: Map<string, CanvasPosition>): MissionDefinition {
+  if (positionsById.size === 0) return mission;
 
   let changed = false;
-  const nodesById = new Map(workflow.nodes.map((node) => [node.id, node]));
-  const nodes = workflow.nodes.map((node) => {
+  const nodesById = new Map(mission.nodes.map((node) => [node.id, node]));
+  const nodes = mission.nodes.map((node) => {
     const nextPosition = positionsById.get(node.id);
     if (!nextPosition) return node;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
@@ -1314,14 +1314,14 @@ function updateWorkflowNodePositions(workflow: WorkflowDefinition, positionsById
     return { ...node, position };
   });
 
-  return changed ? { ...workflow, nodes } : workflow;
+  return changed ? { ...mission, nodes } : mission;
 }
 
-function resizeManagerSlotNodes(workflow: WorkflowDefinition, sizesById: Map<string, CanvasSize>): WorkflowDefinition {
-  if (sizesById.size === 0) return workflow;
+function resizeManagerSlotNodes(mission: MissionDefinition, sizesById: Map<string, CanvasSize>): MissionDefinition {
+  if (sizesById.size === 0) return mission;
 
   let changed = false;
-  const resizedNodes = workflow.nodes.map((node) => {
+  const resizedNodes = mission.nodes.map((node) => {
     const nextSize = sizesById.get(node.id);
     if (!nextSize || node.type !== "manager_slot") return node;
     const currentSize = normalizeManagerSlotSize(node.size);
@@ -1330,7 +1330,7 @@ function resizeManagerSlotNodes(workflow: WorkflowDefinition, sizesById: Map<str
     return { ...node, size: nextSize };
   });
 
-  if (!changed) return workflow;
+  if (!changed) return mission;
 
   const resizedNodesById = new Map(resizedNodes.map((node) => [node.id, node]));
   const nodes = resizedNodes.map((node) => {
@@ -1343,7 +1343,7 @@ function resizeManagerSlotNodes(workflow: WorkflowDefinition, sizesById: Map<str
   });
 
   return {
-    ...workflow,
+    ...mission,
     nodes
   };
 }
@@ -1360,7 +1360,7 @@ function normalizeDimension(value: unknown, fallback: number, min: number): numb
   return Math.max(min, Math.round(value));
 }
 
-function managerSlotChildExtent(slotNode: WorkflowNode): CoordinateExtent {
+function managerSlotChildExtent(slotNode: MissionNode): CoordinateExtent {
   const size = normalizeManagerSlotSize(slotNode.size);
   return [
     [MANAGER_SLOT_FRAME.side, MANAGER_SLOT_FRAME.top],
@@ -1368,7 +1368,7 @@ function managerSlotChildExtent(slotNode: WorkflowNode): CoordinateExtent {
   ];
 }
 
-function managerSlotChildInitialPosition(slotNode: WorkflowNode, childIndex: number): CanvasPosition {
+function managerSlotChildInitialPosition(slotNode: MissionNode, childIndex: number): CanvasPosition {
   const extent = managerSlotChildExtent(slotNode);
   const position = {
     x: MANAGER_SLOT_FRAME.side + 48 + childIndex * 28,
@@ -1377,7 +1377,7 @@ function managerSlotChildInitialPosition(slotNode: WorkflowNode, childIndex: num
   return clampPositionToExtent(position, extent, defaultChildNodeSize);
 }
 
-function clampPositionToManagerSlotFrame(position: CanvasPosition, slotNode: WorkflowNode, childSize: CanvasSize): CanvasPosition {
+function clampPositionToManagerSlotFrame(position: CanvasPosition, slotNode: MissionNode, childSize: CanvasSize): CanvasPosition {
   return clampPositionToExtent(position, managerSlotChildExtent(slotNode), childSize);
 }
 
@@ -1388,24 +1388,24 @@ function clampPositionToExtent(position: CanvasPosition, extent: CoordinateExten
   };
 }
 
-function addManagerSlotFromMenu(workflow: WorkflowDefinition, selectedNodeId: string | undefined, t: Messages): WorkflowDefinition {
-  const selectedNode = selectedNodeId ? workflow.nodes.find((node) => node.id === selectedNodeId) : undefined;
+function addManagerSlotFromMenu(mission: MissionDefinition, selectedNodeId: string | undefined, t: Messages): MissionDefinition {
+  const selectedNode = selectedNodeId ? mission.nodes.find((node) => node.id === selectedNodeId) : undefined;
   const selectedSlot = selectedNode?.type === "manager_slot" ? selectedNode : undefined;
   const selectedManager =
     selectedNode?.type === "manager"
       ? selectedNode
       : selectedSlot
-        ? workflow.nodes.find((node) => node.id === (selectedSlot.config as ManagerSlotNodeConfig).managerNodeId && node.type === "manager")
+        ? mission.nodes.find((node) => node.id === (selectedSlot.config as ManagerSlotNodeConfig).managerNodeId && node.type === "manager")
         : undefined;
-  const assignableSlot = selectedManager ? nextAvailableManagerSlot(workflow, selectedManager) : undefined;
-  const slot = assignableSlot ?? nextManagerSlotNumber(workflow);
+  const assignableSlot = selectedManager ? nextAvailableManagerSlot(mission, selectedManager) : undefined;
+  const slot = assignableSlot ?? nextManagerSlotNumber(mission);
   const position = selectedSlot
     ? { x: selectedSlot.position.x + 44, y: selectedSlot.position.y + 44 }
     : selectedManager
       ? { x: selectedManager.position.x + 360, y: selectedManager.position.y + (slot - 1) * 340 }
-      : { x: 180 + workflow.nodes.length * 42, y: 188 + workflow.nodes.length * 22 };
-  const node: WorkflowNode = {
-    id: nextWorkflowNodeId(workflow, "manager_slot"),
+      : { x: 180 + mission.nodes.length * 42, y: 188 + mission.nodes.length * 22 };
+  const node: MissionNode = {
+    id: nextMissionNodeId(mission, "manager_slot"),
     type: "manager_slot",
     position,
     size: MANAGER_SLOT_DEFAULT_SIZE,
@@ -1414,31 +1414,31 @@ function addManagerSlotFromMenu(workflow: WorkflowDefinition, selectedNodeId: st
       label: `${t.defaults.managerSlotLabel} ${slot}`,
       managerNodeId: selectedManager?.id ?? "",
       slot
-    } as WorkflowNode["config"]
+    } as MissionNode["config"]
   };
-  const workflowWithSlot = {
-    ...workflow,
-    nodes: [...workflow.nodes, node]
+  const missionWithSlot = {
+    ...mission,
+    nodes: [...mission.nodes, node]
   };
-  if (!selectedManager || assignableSlot === undefined) return workflowWithSlot;
-  return applyManagerSlotAssignment(workflowWithSlot, {
+  if (!selectedManager || assignableSlot === undefined) return missionWithSlot;
+  return applyManagerSlotAssignment(missionWithSlot, {
     managerNode: selectedManager,
     slotNode: node,
     slot: assignableSlot
   }, t);
 }
 
-function nextManagerSlotNumber(workflow: WorkflowDefinition): number {
-  return workflow.nodes
+function nextManagerSlotNumber(mission: MissionDefinition): number {
+  return mission.nodes
     .filter((node) => node.type === "manager_slot")
     .reduce((highest, node) => Math.max(highest, (node.config as ManagerSlotNodeConfig).slot), 0) + 1;
 }
 
-function nextAvailableManagerSlot(workflow: WorkflowDefinition, managerNode: WorkflowNode): number | undefined {
+function nextAvailableManagerSlot(mission: MissionDefinition, managerNode: MissionNode): number | undefined {
   const occupied = new Set<number>();
   const managerId = managerNode.id;
 
-  for (const edge of workflow.edges) {
+  for (const edge of mission.edges) {
     if (edge.source === managerId) {
       const slot = parseManagerPortHandle(edge.sourceHandle, managerOutHandlePrefix);
       if (slot !== undefined) occupied.add(slot);
@@ -1449,7 +1449,7 @@ function nextAvailableManagerSlot(workflow: WorkflowDefinition, managerNode: Wor
     }
   }
 
-  for (const node of workflow.nodes) {
+  for (const node of mission.nodes) {
     if (node.type !== "manager_slot") continue;
     const config = node.config as ManagerSlotNodeConfig;
     if (config.managerNodeId === managerId && config.slot >= 1 && config.slot <= maxManagerPortCount) {
@@ -1463,13 +1463,13 @@ function nextAvailableManagerSlot(workflow: WorkflowDefinition, managerNode: Wor
   return undefined;
 }
 
-function connectWorkflowNodes(workflow: WorkflowDefinition, connection: Connection, t: Messages): WorkflowDefinition {
-  const assignment = readManagerSlotConnection(workflow, connection);
+function connectMissionNodes(mission: MissionDefinition, connection: Connection, t: Messages): MissionDefinition {
+  const assignment = readManagerSlotConnection(mission, connection);
   if (assignment) {
-    return applyManagerSlotAssignment(workflow, assignment, t);
+    return applyManagerSlotAssignment(mission, assignment, t);
   }
   if (
-    workflow.edges.some(
+    mission.edges.some(
       (edge) =>
         edge.source === connection.source &&
         edge.target === connection.target &&
@@ -1477,22 +1477,22 @@ function connectWorkflowNodes(workflow: WorkflowDefinition, connection: Connecti
         edge.targetHandle === connection.targetHandle
     )
   ) {
-    return workflow;
+    return mission;
   }
 
   return {
-    ...workflow,
-    edges: [...workflow.edges, createWorkflowEdge(workflow, connection)]
+    ...mission,
+    edges: [...mission.edges, createMissionEdge(mission, connection)]
   };
 }
 
 function readManagerSlotConnection(
-  workflow: WorkflowDefinition,
+  mission: MissionDefinition,
   connection: Connection
-): { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number } | undefined {
+): { managerNode: MissionNode; slotNode: MissionNode; slot: number } | undefined {
   if (!connection.source || !connection.target) return undefined;
-  const source = workflow.nodes.find((node) => node.id === connection.source);
-  const target = workflow.nodes.find((node) => node.id === connection.target);
+  const source = mission.nodes.find((node) => node.id === connection.source);
+  const target = mission.nodes.find((node) => node.id === connection.target);
 
   if (source?.type === "manager" && target?.type === "manager_slot" && connection.targetHandle === managerSlotInHandle) {
     const slot = parseManagerPortHandle(connection.sourceHandle, managerOutHandlePrefix);
@@ -1508,23 +1508,23 @@ function readManagerSlotConnection(
 }
 
 function applyManagerSlotAssignment(
-  workflow: WorkflowDefinition,
-  assignment: { managerNode: WorkflowNode; slotNode: WorkflowNode; slot: number },
+  mission: MissionDefinition,
+  assignment: { managerNode: MissionNode; slotNode: MissionNode; slot: number },
   t?: Messages
-): WorkflowDefinition {
+): MissionDefinition {
   const { managerNode, slotNode, slot } = assignment;
   const boundedSlot = Math.min(maxManagerPortCount, Math.max(1, Math.round(slot)));
   const outHandle = `${managerOutHandlePrefix}${boundedSlot}`;
   const inHandle = `${managerInHandlePrefix}${boundedSlot}`;
-  const edges = workflow.edges.filter(
+  const edges = mission.edges.filter(
     (edge) =>
       !isManagerSlotAssignmentEdge(edge, slotNode.id) &&
       !(edge.source === managerNode.id && edge.sourceHandle === outHandle) &&
       !(edge.target === managerNode.id && edge.targetHandle === inHandle)
   );
-  const nextEdges = appendWorkflowEdge(
-    appendWorkflowEdge(edges, {
-      id: nextWorkflowEdgeId(edges, `edge-${managerNode.id}-${slotNode.id}-slot-${boundedSlot}-out`),
+  const nextEdges = appendMissionEdge(
+    appendMissionEdge(edges, {
+      id: nextMissionEdgeId(edges, `edge-${managerNode.id}-${slotNode.id}-slot-${boundedSlot}-out`),
       source: managerNode.id,
       sourceHandle: outHandle,
       target: slotNode.id,
@@ -1532,7 +1532,7 @@ function applyManagerSlotAssignment(
       condition: "success"
     }),
     {
-      id: nextWorkflowEdgeId(edges, `edge-${slotNode.id}-${managerNode.id}-slot-${boundedSlot}-return`),
+      id: nextMissionEdgeId(edges, `edge-${slotNode.id}-${managerNode.id}-slot-${boundedSlot}-return`),
       source: slotNode.id,
       sourceHandle: managerSlotOutHandle,
       target: managerNode.id,
@@ -1542,8 +1542,8 @@ function applyManagerSlotAssignment(
   );
 
   return {
-    ...workflow,
-    nodes: workflow.nodes.map((node) => {
+    ...mission,
+    nodes: mission.nodes.map((node) => {
       if (node.id === managerNode.id && node.type === "manager") {
         const config = node.config as ManagerNodeConfig;
         const portCount = typeof config.portCount === "number" && Number.isFinite(config.portCount) ? config.portCount : 3;
@@ -1571,7 +1571,7 @@ function applyManagerSlotAssignment(
   };
 }
 
-function appendWorkflowEdge(edges: WorkflowEdge[], edge: WorkflowEdge): WorkflowEdge[] {
+function appendMissionEdge(edges: MissionEdge[], edge: MissionEdge): MissionEdge[] {
   if (
     edges.some(
       (item) =>
@@ -1586,7 +1586,7 @@ function appendWorkflowEdge(edges: WorkflowEdge[], edge: WorkflowEdge): Workflow
   return [...edges, edge];
 }
 
-function isManagerSlotAssignmentEdge(edge: WorkflowEdge, slotNodeId: string): boolean {
+function isManagerSlotAssignmentEdge(edge: MissionEdge, slotNodeId: string): boolean {
   if (edge.target === slotNodeId && edge.targetHandle === managerSlotInHandle && edge.sourceHandle?.startsWith(managerOutHandlePrefix)) {
     return true;
   }
@@ -1604,7 +1604,7 @@ function shouldRenameManagerSlot(label: string | undefined): boolean {
   return !label || label === "Slot" || label === "槽位" || /^Slot \d+$/i.test(label) || /^槽位 \d+$/i.test(label);
 }
 
-function nextWorkflowEdgeId(edges: WorkflowEdge[], baseId: string): string {
+function nextMissionEdgeId(edges: MissionEdge[], baseId: string): string {
   const used = new Set(edges.map((edge) => edge.id));
   if (!used.has(baseId)) return baseId;
   let index = 2;
@@ -1616,12 +1616,12 @@ function nextWorkflowEdgeId(edges: WorkflowEdge[], baseId: string): string {
   return id;
 }
 
-function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string>): Set<string> {
+function collectDeletedNodeIds(mission: MissionDefinition, seedIds: Set<string>): Set<string> {
   const deleteIds = new Set(seedIds);
-  for (const node of workflow.nodes) {
+  for (const node of mission.nodes) {
     if (!deleteIds.has(node.id)) continue;
     if (node.type !== "manager") continue;
-    for (const candidate of workflow.nodes) {
+    for (const candidate of mission.nodes) {
       if (candidate.type === "manager_slot" && (candidate.config as ManagerSlotNodeConfig).managerNodeId === node.id) {
         deleteIds.add(candidate.id);
       }
@@ -1631,7 +1631,7 @@ function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string
   let changed = true;
   while (changed) {
     changed = false;
-    for (const node of workflow.nodes) {
+    for (const node of mission.nodes) {
       if (node.parentId && deleteIds.has(node.parentId) && !deleteIds.has(node.id)) {
         deleteIds.add(node.id);
         changed = true;
@@ -1642,19 +1642,19 @@ function collectDeletedNodeIds(workflow: WorkflowDefinition, seedIds: Set<string
 }
 
 function buildFlowNodes(
-  workflow: WorkflowDefinition | undefined,
-  statusByNode: Map<string, WorkflowNodeRun>,
+  mission: MissionDefinition | undefined,
+  statusByNode: Map<string, MissionNodeRun>,
   t: Messages
-): Node<WorkflowNodeCardData>[] {
-  const nodesById = new Map((workflow?.nodes ?? []).map((node) => [node.id, node]));
-  return (workflow?.nodes ?? []).map((node) => {
+): Node<MissionNodeCardData>[] {
+  const nodesById = new Map((mission?.nodes ?? []).map((node) => [node.id, node]));
+  return (mission?.nodes ?? []).map((node) => {
     const status = statusByNode.get(node.id)?.status;
     const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     return {
       id: node.id,
-      type: "workflowNode",
+      type: "missionNode",
       position: node.position,
       style: managerSlotSize ? { width: managerSlotSize.width, height: managerSlotSize.height } : undefined,
       initialWidth: managerSlotSize?.width,
@@ -1668,7 +1668,7 @@ function buildFlowNodes(
         status,
         statusLabel: t.status[status ?? "idle"],
         disabled: node.disabled,
-        isStartNode: isWorkflowStartNode(workflow, node, nodesById),
+        isStartNode: isMissionStartNode(mission, node, nodesById),
         managerPortCount:
           node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
         managerSlot: node.type === "manager_slot" ? (node.config as ManagerSlotNodeConfig).slot : undefined,
@@ -1678,66 +1678,66 @@ function buildFlowNodes(
   });
 }
 
-function isWorkflowStartNode(
-  workflow: WorkflowDefinition | undefined,
-  node: WorkflowNode,
-  nodesById: Map<string, WorkflowNode>
+function isMissionStartNode(
+  mission: MissionDefinition | undefined,
+  node: MissionNode,
+  nodesById: Map<string, MissionNode>
 ): boolean {
-  if (!workflow || !isGlobalSchedulingNode(workflow, node, nodesById)) return false;
-  return getSchedulingIncomingEdges(workflow, node, nodesById).length === 0;
+  if (!mission || !isGlobalSchedulingNode(mission, node, nodesById)) return false;
+  return getSchedulingIncomingEdges(mission, node, nodesById).length === 0;
 }
 
 function isGlobalSchedulingNode(
-  workflow: WorkflowDefinition,
-  node: WorkflowNode,
-  nodesById: Map<string, WorkflowNode>
+  mission: MissionDefinition,
+  node: MissionNode,
+  nodesById: Map<string, MissionNode>
 ): boolean {
-  return workflowStepTypes.has(node.type) && node.type !== "manager_slot" && !node.parentId && !isManagedParticipantNode(workflow, node, nodesById);
+  return missionStepTypes.has(node.type) && node.type !== "manager_slot" && !node.parentId && !isManagedParticipantNode(mission, node, nodesById);
 }
 
 function isManagedParticipantNode(
-  workflow: WorkflowDefinition,
-  node: WorkflowNode,
-  nodesById: Map<string, WorkflowNode>
+  mission: MissionDefinition,
+  node: MissionNode,
+  nodesById: Map<string, MissionNode>
 ): boolean {
-  return workflow.edges.some((edge) => {
+  return mission.edges.some((edge) => {
     if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
     return nodesById.get(edge.source)?.type === "manager";
   });
 }
 
 function getSchedulingIncomingEdges(
-  workflow: WorkflowDefinition,
-  node: WorkflowNode,
-  nodesById: Map<string, WorkflowNode>
-): WorkflowEdge[] {
-  return workflow.edges.filter((edge) => {
+  mission: MissionDefinition,
+  node: MissionNode,
+  nodesById: Map<string, MissionNode>
+): MissionEdge[] {
+  return mission.edges.filter((edge) => {
     if (edge.target !== node.id) return false;
     if (node.type === "manager" && edge.targetHandle?.startsWith(managerInHandlePrefix)) return false;
     return nodesById.get(edge.source)?.type !== "loop";
   });
 }
 
-function buildFlowEdges(workflow: WorkflowDefinition | undefined, runStatus?: WorkflowRunView["run"]["status"]): Edge[] {
-  return (workflow?.edges ?? []).map((edge) => ({
+function buildFlowEdges(mission: MissionDefinition | undefined, runStatus?: MissionRunView["run"]["status"]): Edge[] {
+  return (mission?.edges ?? []).map((edge) => ({
     id: edge.id,
-    type: workflowEdgeType(edge),
+    type: missionEdgeType(edge),
     source: edge.source,
     target: edge.target,
     sourceHandle: edge.sourceHandle,
     targetHandle: edge.targetHandle,
     label: edge.label ?? defaultVisibleEdgeLabel(edge.condition),
     animated: runStatus === "running",
-    className: "workflow-edge"
+    className: "mission-edge"
   }));
 }
 
-function workflowEdgeType(edge: WorkflowEdge): Edge["type"] | undefined {
+function missionEdgeType(edge: MissionEdge): Edge["type"] | undefined {
   if (edge.sourceHandle === managerSlotInnerOutHandle || edge.targetHandle === managerSlotInnerInHandle) return "straight";
   return undefined;
 }
 
-export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode["config"] {
+export function defaultConfig(type: MissionNodeType, t: Messages): MissionNode["config"] {
   if (type === "openclaw_agent") {
     return {
       label: t.defaults.openClawAgentLabel,
@@ -1834,8 +1834,8 @@ export function defaultConfig(type: WorkflowNodeType, t: Messages): WorkflowNode
   };
 }
 
-function createWorkflowEdge(workflow: WorkflowDefinition, connection: Connection): WorkflowEdge {
-  const condition = pickDefaultEdgeCondition(workflow, connection.source!);
+function createMissionEdge(mission: MissionDefinition, connection: Connection): MissionEdge {
+  const condition = pickDefaultEdgeCondition(mission, connection.source!);
   return {
     id: `edge-${connection.source}-${connection.target}-${Math.random().toString(36).slice(2, 8)}`,
     source: connection.source!,
@@ -1848,15 +1848,15 @@ function createWorkflowEdge(workflow: WorkflowDefinition, connection: Connection
 }
 
 function pickDefaultEdgeCondition(
-  workflow: WorkflowDefinition,
+  mission: MissionDefinition,
   sourceId: string
-): WorkflowEdge["condition"] {
-  const source = workflow.nodes.find((node) => node.id === sourceId);
+): MissionEdge["condition"] {
+  const source = mission.nodes.find((node) => node.id === sourceId);
   if (source?.type !== "condition") {
     return "success";
   }
 
-  const outgoing = workflow.edges.filter((edge) => edge.source === sourceId);
+  const outgoing = mission.edges.filter((edge) => edge.source === sourceId);
   const hasTrue = outgoing.some((edge) => edge.condition === "true");
   const hasFalse = outgoing.some((edge) => edge.condition === "false");
   if (!hasTrue) return "true";
@@ -1864,7 +1864,7 @@ function pickDefaultEdgeCondition(
   return "true";
 }
 
-function defaultVisibleEdgeLabel(condition?: WorkflowEdge["condition"]): string | undefined {
+function defaultVisibleEdgeLabel(condition?: MissionEdge["condition"]): string | undefined {
   if (condition === "true" || condition === "false" || condition === "failure") {
     return condition;
   }

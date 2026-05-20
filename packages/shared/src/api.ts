@@ -7,56 +7,56 @@ import type {
   OpenClawTaskSummary,
   OpenClawVersionInfo
 } from "./openclaw";
-import type { PortableWorkflowPackage, WorkflowDefinition, WorkflowRunView } from "./workflow";
+import type { PortableMissionPackage, MissionDefinition, MissionRunView } from "./mission";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
-export interface ListWorkflowsResponse {
-  workflows: WorkflowDefinition[];
+export interface ListMissionsResponse {
+  missions: MissionDefinition[];
 }
 
-export interface CreateWorkflowRequest {
+export interface CreateMissionRequest {
   name?: string;
   description?: string;
 }
 
-export interface WorkflowResponse {
-  workflow: WorkflowDefinition;
+export interface MissionResponse {
+  mission: MissionDefinition;
 }
 
-export interface SaveWorkflowRequest {
-  workflow: WorkflowDefinition;
+export interface SaveMissionRequest {
+  mission: MissionDefinition;
 }
 
-export interface ExportWorkflowResponse {
-  workflowPackage: PortableWorkflowPackage;
+export interface ExportMissionResponse {
+  missionPackage: PortableMissionPackage;
 }
 
-export interface ImportWorkflowPackageRequest {
-  workflowPackage: PortableWorkflowPackage;
+export interface ImportMissionPackageRequest {
+  missionPackage: PortableMissionPackage;
 }
 
-export interface ImportWorkflowPackageResponse {
-  workflows: WorkflowDefinition[];
+export interface ImportMissionPackageResponse {
+  missions: MissionDefinition[];
 }
 
-export interface StartWorkflowRunRequest {
+export interface StartMissionRunRequest {
   startedBy?: string;
 }
 
-export interface StartWorkflowRunResponse {
-  run: WorkflowRunView;
+export interface StartMissionRunResponse {
+  run: MissionRunView;
 }
 
-export interface LatestWorkflowRunResponse {
-  run: WorkflowRunView | null;
+export interface LatestMissionRunResponse {
+  run: MissionRunView | null;
 }
 
-export interface WorkflowRunResponse {
-  run: WorkflowRunView;
+export interface MissionRunResponse {
+  run: MissionRunView;
 }
 
-export interface ListWorkflowRunViewsResponse {
-  runs: WorkflowRunView[];
+export interface ListMissionRunViewsResponse {
+  runs: MissionRunView[];
 }
 
 export interface ListPendingApprovalsResponse {

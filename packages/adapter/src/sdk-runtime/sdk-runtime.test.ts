@@ -13,7 +13,7 @@ import { AgentSdkTaskRegistry } from "./task-registry";
 describe("agent SDK runtime", () => {
   it("builds a stable prompt envelope without secret values", () => {
     const envelope = buildPromptEnvelope({
-      workflowRunId: "run-1",
+      missionRunId: "run-1",
       nodeRunId: "node-run-1",
       source: "claude",
       agentName: "reviewer",
@@ -28,7 +28,7 @@ describe("agent SDK runtime", () => {
       tools: []
     });
 
-    expect(envelope).toContain("Workflow run: run-1");
+    expect(envelope).toContain("Mission run: run-1");
     expect(envelope).toContain('"a"');
     expect(envelope).toContain('"z"');
     expect(envelope).toContain("<redacted>");
@@ -272,7 +272,7 @@ function createStartInput(
   overrides: Partial<Parameters<ClaudeAgentSdkRuntime["startTask"]>[0]> = {}
 ): Parameters<ClaudeAgentSdkRuntime["startTask"]>[0] {
   return {
-    workflowRunId: "workflow-run-1",
+    missionRunId: "mission-run-1",
     nodeRunId: "node-run-1",
     source: "claude",
     agentName: "agent",
@@ -288,7 +288,7 @@ function createStartInput(
 }
 
 function createWorkspace(options: { git?: boolean } = {}): string {
-  const workspace = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-sdk-"));
+  const workspace = mkdtempSync(path.join(os.tmpdir(), "hiveward-sdk-"));
   if (options.git) {
     mkdirSync(path.join(workspace, ".git"));
   }

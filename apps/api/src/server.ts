@@ -1,8 +1,8 @@
-import { createCuiApiApp } from "./app";
+import { createHivewardApiApp } from "./app";
 
 const port = Number(process.env.PORT ?? 8787);
-const app = await createCuiApiApp();
+const app = await createHivewardApiApp();
 
 app.listen(port, () => {
-  console.log(`CUI Companion API listening on http://localhost:${port}`);
+  console.log(`Hiveward API listening on http://localhost:${port}`);
 });

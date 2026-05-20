@@ -1,11 +1,11 @@
 # Claude and Codex SDK Runtime Plan
 
-This document defines the single engineering path for Claude and Codex workflow execution.
+This document defines the single engineering path for Claude and Codex mission execution.
 
 ## Formal Path
 
 ```text
-WorkflowWorker -> AgentSdkRuntime -> official TypeScript SDK -> normalized node result
+MissionWorker -> AgentSdkRuntime -> official TypeScript SDK -> normalized node result
 ```
 
 Supported providers:
@@ -13,7 +13,7 @@ Supported providers:
 - `claude`: `@anthropic-ai/claude-agent-sdk`
 - `codex`: `@openai/codex-sdk`
 
-CUI owns workflow execution:
+Hiveward owns mission execution:
 
 - Node scheduling
 - Upstream input routing
@@ -27,7 +27,7 @@ CUI owns workflow execution:
 
 The provider SDK owns only the agent loop for the selected node task.
 
-Workflow node types:
+Mission node types:
 
 - `openclaw_agent`: existing OpenClaw execution
 - `codex_agent`: Codex SDK execution
@@ -50,7 +50,7 @@ Reference docs:
 ```ts
 export type AgentSdkProvider = "claude" | "codex";
 
-export type AgentSdkWorkflowNodeType = "codex_agent" | "claude_code_agent";
+export type AgentSdkMissionNodeType = "codex_agent" | "claude_code_agent";
 
 export type AgentPermissionProfile = "read_only" | "workspace_write";
 
@@ -67,7 +67,7 @@ export interface AgentSdkNodeConfig {
 }
 
 export interface StartAgentSdkTaskInput {
-  workflowRunId: string;
+  missionRunId: string;
   nodeRunId: string;
   source: AgentSdkProvider;
   agentName: string;
@@ -145,7 +145,7 @@ Only `packages/adapter` imports SDK packages.
 
 ## Runtime Source
 
-Workflow nodes select runtime by node type:
+Mission nodes select runtime by node type:
 
 ```ts
 type: "openclaw_agent" | "codex_agent" | "claude_code_agent"
@@ -157,16 +157,16 @@ Mapping:
 - `codex_agent`: Codex SDK runtime
 - `claude_code_agent`: Claude Code SDK runtime
 
-`source` is runtime input derived by `WorkflowWorker`; it is not stored in node config.
+`source` is runtime input derived by `MissionWorker`; it is not stored in node config.
 
 ## Prompt Envelope
 
 All SDK providers receive the same envelope:
 
 ```text
-You are executing one CUI workflow node.
+You are executing one Hiveward mission node.
 
-Workflow run: <workflowRunId>
+Mission run: <missionRunId>
 Node run: <nodeRunId>
 Agent name: <agentName>
 
@@ -241,7 +241,7 @@ Validation:
 Dependency:
 
 ```bash
-npm install -w @openclaw-cui/adapter @anthropic-ai/claude-agent-sdk
+npm install -w @hiveward/adapter @anthropic-ai/claude-agent-sdk
 ```
 
 Required behavior:
@@ -276,7 +276,7 @@ for await (const message of query({
 Dependency:
 
 ```bash
-npm install -w @openclaw-cui/adapter @openai/codex-sdk
+npm install -w @hiveward/adapter @openai/codex-sdk
 ```
 
 Required behavior:
@@ -315,7 +315,7 @@ interface AgentSdkTaskRecord {
   taskId: string;
   provider: AgentSdkProvider;
   nodeRunId: string;
-  workflowRunId: string;
+  missionRunId: string;
   sessionKey: string;
   startedAt: string;
   abortController: AbortController;
@@ -339,7 +339,7 @@ Rules:
 | `workspace_not_allowed` | Invalid working directory. |
 | `permission_denied` | Requested action exceeds `permissionProfile`. |
 | `timeout` | Task exceeded `timeoutMs`. |
-| `cancelled` | CUI cancelled the task. |
+| `cancelled` | Hiveward cancelled the task. |
 | `provider_error` | SDK execution error. |
 | `invalid_output` | Final output failed schema validation. |
 
@@ -348,8 +348,8 @@ Node run errors store concise messages. Detailed SDK events stay in bounded tran
 ## Configuration
 
 ```text
-CUI_AGENT_SDK_TASK_TIMEOUT_MS=600000
-CUI_AGENT_SDK_MAX_CONCURRENCY=2
+Hiveward_AGENT_SDK_TASK_TIMEOUT_MS=600000
+Hiveward_AGENT_SDK_MAX_CONCURRENCY=2
 ```
 
 Rules:
@@ -363,7 +363,7 @@ Rules:
 Limits:
 
 - Global SDK task concurrency: `2`
-- Per workflow run mutating SDK concurrency: `1`
+- Per mission run mutating SDK concurrency: `1`
 
 Rules:
 
@@ -471,10 +471,10 @@ Required commands:
 ```bash
 npm run check
 npm test
-npm run typecheck -w @openclaw-cui/adapter
-npm run typecheck -w @openclaw-cui/api
-npm run typecheck -w @openclaw-cui/shared
-npm run typecheck -w @openclaw-cui/web
+npm run typecheck -w @hiveward/adapter
+npm run typecheck -w @hiveward/api
+npm run typecheck -w @hiveward/shared
+npm run typecheck -w @hiveward/web
 ```
 
 Required tests:
@@ -496,9 +496,9 @@ Required tests:
 
 ## Acceptance Criteria
 
-- Claude workflow nodes execute through `@anthropic-ai/claude-agent-sdk`.
-- Codex workflow nodes execute through `@openai/codex-sdk`.
-- Workflow scheduling remains owned by CUI.
+- Claude mission nodes execute through `@anthropic-ai/claude-agent-sdk`.
+- Codex mission nodes execute through `@openai/codex-sdk`.
+- Mission scheduling remains owned by Hiveward.
 - Provider code exists only under `packages/adapter`.
 - SDK nodes produce normalized node results.
 - Timeout, cancellation, invalid workspace, provider error, and invalid output are represented in node runs.

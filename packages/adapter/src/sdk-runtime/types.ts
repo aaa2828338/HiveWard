@@ -4,7 +4,7 @@ import type {
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import { resolve } from "node:path";
 
 export interface AgentSdkRuntime {
@@ -18,7 +18,7 @@ export interface AgentSdkTaskRecord {
   runId: string;
   provider: AgentSdkProvider;
   nodeRunId: string;
-  workflowRunId: string;
+  missionRunId: string;
   sessionKey: string;
   startedAt: string;
   abortController: AbortController;
@@ -38,8 +38,8 @@ export function isAgentSdkProvider(value: unknown): value is AgentSdkProvider {
 
 export function readAgentSdkRuntimeOptions(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): AgentSdkRuntimeOptions {
   return {
-    defaultTimeoutMs: readPositiveInteger(env.CUI_AGENT_SDK_TASK_TIMEOUT_MS, 600_000),
-    maxConcurrency: readPositiveInteger(env.CUI_AGENT_SDK_MAX_CONCURRENCY, 2),
+    defaultTimeoutMs: readPositiveInteger(env.HIVEWARD_AGENT_SDK_TASK_TIMEOUT_MS, 600_000),
+    maxConcurrency: readPositiveInteger(env.HIVEWARD_AGENT_SDK_MAX_CONCURRENCY, 2),
     workspaceRoot: resolve(workspaceRoot)
   };
 }

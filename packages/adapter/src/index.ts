@@ -13,7 +13,7 @@ import type {
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import { GatewayOpenClawAdapter } from "./gateway-adapter";
 import { resolveGatewayAdapterConfig } from "./gateway-config";
 import { createAgentSdkRuntime, isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkRuntime } from "./sdk-runtime";
@@ -134,10 +134,10 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
     this.agentResults.set(taskId, {
       taskId,
       runId,
-      sessionKey: `oc-session-${input.workflowRunId}`,
+      sessionKey: `oc-session-${input.missionRunId}`,
       source: "openclaw",
       status: "succeeded",
-      output: `${input.agentName} completed through OpenClaw adapter. Prompt boundary stayed outside CUI runtime.`,
+      output: `${input.agentName} completed through OpenClaw adapter. Prompt boundary stayed outside Hiveward runtime.`,
       error: undefined,
       usage: {
         id: `usage-${nanoid(8)}`,
@@ -153,7 +153,7 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
     return {
       taskId,
       runId,
-      sessionKey: `oc-session-${input.workflowRunId}`,
+      sessionKey: `oc-session-${input.missionRunId}`,
       source: "openclaw",
       status: "running",
       updatedAt: now

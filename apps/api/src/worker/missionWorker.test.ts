@@ -2,21 +2,21 @@ import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { OpenClawAdapter } from "@openclaw-cui/adapter";
+import type { OpenClawAdapter } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
-  createManagerDrivenHtmlWorkflow,
-  createRealThreeAgentWorkflow,
+  createManagerDrivenHtmlMission,
+  createRealThreeAgentMission,
   type SendChannelResult,
   type StartAgentTaskInput,
   type StartedAgentTaskResult,
   type WaitForAgentTaskInput,
-  type WorkflowDefinition,
-  type WorkflowEdge,
-  type WorkflowNode
-} from "@openclaw-cui/shared";
-import { FileCuiStore } from "../store/fileCuiStore";
-import { WorkflowWorker } from "./workflowWorker";
+  type MissionDefinition,
+  type MissionEdge,
+  type MissionNode
+} from "@hiveward/shared";
+import { FileHivewardStore } from "../store/fileHivewardStore";
+import { MissionWorker } from "./missionWorker";
 
 class ScriptedAdapter implements OpenClawAdapter {
   readonly calls: StartAgentTaskInput[] = [];
@@ -85,29 +85,29 @@ class ScriptedAdapter implements OpenClawAdapter {
   }
 }
 
-describe("WorkflowWorker", () => {
-  it("persists a newly-created blank workflow for the selected company", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-store-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+describe("MissionWorker", () => {
+  it("persists a newly-created blank mission for the selected company", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = await store.createWorkflow({ name: "Launch review" });
-    const workflows = await store.listWorkflows();
+    const mission = await store.createMission({ name: "Launch review" });
+    const missions = await store.listMissions();
 
-    expect(workflow.id).toMatch(/^workflow-/);
-    expect(workflow.companyId).toBe("company-openclaw-studio");
-    expect(workflow.name).toBe("Launch review");
-    expect(workflow.nodes).toEqual([]);
-    expect(workflows.some((item) => item.id === workflow.id)).toBe(true);
+    expect(mission.id).toMatch(/^mission-/);
+    expect(mission.companyId).toBe("company-hiveward-studio");
+    expect(mission.name).toBe("Launch review");
+    expect(mission.nodes).toEqual([]);
+    expect(missions.some((item) => item.id === mission.id)).toBe(true);
   });
 
   it("marks the run failed and stops downstream execution when an agent result fails", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createRealThreeAgentWorkflow(new Date().toISOString(), "company-openclaw-studio");
-    const worker = new WorkflowWorker(
+    const mission = createRealThreeAgentMission(new Date().toISOString(), "company-hiveward-studio");
+    const worker = new MissionWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -118,7 +118,7 @@ describe("WorkflowWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -126,15 +126,15 @@ describe("WorkflowWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "plan")?.status).toBe("failed");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "verify")?.status).toBe("skipped");
-    expect(view?.events.some((event) => event.type === "workflow.run.failed")).toBe(true);
+    expect(view?.events.some((event) => event.type === "mission.run.failed")).toBe(true);
   });
 
   it("skips the branch that does not match a condition result", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -155,7 +155,7 @@ describe("WorkflowWorker", () => {
         { id: "edge-3", source: "gate", target: "no", condition: "false" }
       ]
     );
-    const worker = new WorkflowWorker(
+    const worker = new MissionWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -166,7 +166,7 @@ describe("WorkflowWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -177,11 +177,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("runs sibling agent branches in parallel after a shared upstream node succeeds", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         createAgentNode("brief", "Brief"),
         createAgentNode("alpha", "Alpha", { x: 460, y: 120 }),
@@ -201,9 +201,9 @@ describe("WorkflowWorker", () => {
       createCompletedAgentTask("task-2", "succeeded", "alpha ready"),
       createCompletedAgentTask("task-3", "succeeded", "beta ready")
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -216,11 +216,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("passes SDK node configuration to the adapter and persists provider refs", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         {
           ...createAgentNode("sdk-node", "SDK Node"),
@@ -253,9 +253,9 @@ describe("WorkflowWorker", () => {
         sessionKey: "codex-session-final"
       }
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(adapter.calls[0]).toMatchObject({
@@ -279,11 +279,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("lets a manager node route numbered slots and return to an earlier agent slot", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         {
           id: "manager",
@@ -322,9 +322,9 @@ describe("WorkflowWorker", () => {
       createCompletedAgentTask("task-4", "succeeded", "app fixed"),
       createCompletedAgentTask("task-5", "succeeded", JSON.stringify({ status: "pass" }))
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -335,11 +335,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("lets a manager route work to a nested manager", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         {
           id: "parent-manager",
@@ -397,9 +397,9 @@ describe("WorkflowWorker", () => {
       createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "complete", result: "implemented" })),
       createCompletedAgentTask("task-2", "succeeded", JSON.stringify({ status: "complete", result: "parent followup complete" }))
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -413,12 +413,12 @@ describe("WorkflowWorker", () => {
     expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("parent-slot-2");
   });
 
-  it("executes a manager slot box as a nested workflow and returns its output to the manager", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+  it("executes a manager slot box as a nested mission and returns its output to the manager", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         {
           id: "manager",
@@ -428,7 +428,7 @@ describe("WorkflowWorker", () => {
             label: "Manager",
             portCount: 1,
             maxHandoffs: 3,
-            instructions: "Run the slot workflow."
+            instructions: "Run the slot mission."
           }
         },
         {
@@ -458,9 +458,9 @@ describe("WorkflowWorker", () => {
     ], [
       createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "complete", result: "slot done" }))
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -479,11 +479,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("does not treat unassigned manager slot boxes as global start nodes", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -504,9 +504,9 @@ describe("WorkflowWorker", () => {
     ], [
       createCompletedAgentTask("task-1", "succeeded", "brief ready")
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -515,11 +515,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("runs the manager-driven HTML delivery example through all slot boxes", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createManagerDrivenHtmlWorkflow(new Date().toISOString(), "company-openclaw-studio");
+    const mission = createManagerDrivenHtmlMission(new Date().toISOString(), "company-hiveward-studio");
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-1"),
       createStartedAgentTask("task-2"),
@@ -547,9 +547,9 @@ describe("WorkflowWorker", () => {
       ),
       createCompletedAgentTask("task-4", "succeeded", JSON.stringify({ status: "complete", verified: true, result: "passed" }))
     ]);
-    const worker = new WorkflowWorker(store, adapter);
+    const worker = new MissionWorker(store, adapter);
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -568,11 +568,11 @@ describe("WorkflowWorker", () => {
   });
 
   it("reruns the loop output branch until the loop reaches max iterations", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-cui-worker-"));
-    const store = new FileCuiStore(path.join(tempDir, "cui-store.json"));
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const workflow = createWorkflow(
+    const mission = createMission(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -590,7 +590,7 @@ describe("WorkflowWorker", () => {
         { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
       ]
     );
-    const worker = new WorkflowWorker(
+    const worker = new MissionWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -601,7 +601,7 @@ describe("WorkflowWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(workflow, "test-user");
+    const run = await worker.startRun(mission, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -649,7 +649,7 @@ function createCompletedAgentTask(
   };
 }
 
-async function waitForRunTerminal(store: FileCuiStore, runId: string): Promise<Awaited<ReturnType<FileCuiStore["getRunView"]>>> {
+async function waitForRunTerminal(store: FileHivewardStore, runId: string): Promise<Awaited<ReturnType<FileHivewardStore["getRunView"]>>> {
   const deadline = Date.now() + 2_000;
 
   while (Date.now() < deadline) {
@@ -660,15 +660,15 @@ async function waitForRunTerminal(store: FileCuiStore, runId: string): Promise<A
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  throw new Error(`Workflow run did not reach a terminal state in time: ${runId}`);
+  throw new Error(`Mission run did not reach a terminal state in time: ${runId}`);
 }
 
-function createWorkflow(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowDefinition {
+function createMission(nodes: MissionNode[], edges: MissionEdge[]): MissionDefinition {
   const now = new Date().toISOString();
   return {
-    id: "test-workflow",
-    companyId: "company-openclaw-studio",
-    name: "Test workflow",
+    id: "test-mission",
+    companyId: "company-hiveward-studio",
+    name: "Test mission",
     version: 1,
     nodes,
     edges,
@@ -681,7 +681,7 @@ function createWorkflow(nodes: WorkflowNode[], edges: WorkflowEdge[]): WorkflowD
   };
 }
 
-function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): WorkflowNode {
+function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): MissionNode {
   return {
     id,
     type: "openclaw_agent",

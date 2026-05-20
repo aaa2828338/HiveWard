@@ -1,4 +1,4 @@
-import type { AgentPermissionProfile } from "@openclaw-cui/shared";
+import type { AgentPermissionProfile } from "@hiveward/shared";
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { SandboxMode } from "@openai/codex-sdk";
 

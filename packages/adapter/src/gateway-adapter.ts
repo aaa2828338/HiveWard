@@ -13,7 +13,7 @@ import type {
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput,
-} from "@openclaw-cui/shared";
+} from "@hiveward/shared";
 import type { OpenClawAdapter } from "./index";
 import type { GatewayAdapterConfig } from "./gateway-config";
 import { GatewaySession } from "./gateway-client";
@@ -253,8 +253,8 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
 
 function formatAgentMessage(input: StartAgentTaskInput): string {
   return [
-    `CUI workflow run: ${input.workflowRunId}`,
-    `CUI node run: ${input.nodeRunId}`,
+    `Hiveward mission run: ${input.missionRunId}`,
+    `Hiveward node run: ${input.nodeRunId}`,
     "",
     input.prompt,
     "",
@@ -374,7 +374,7 @@ async function readAgentTranscriptResult(
     const userIndex = findLastMessageIndex(messages, (message) => {
       if (!isRecord(message)) return false;
       const role = readString(message.role);
-      return role === "user" && extractMessageText(message).includes(`CUI node run: ${nodeRunId}`);
+      return role === "user" && extractMessageText(message).includes(`Hiveward node run: ${nodeRunId}`);
     });
     if (userIndex < 0) return undefined;
 

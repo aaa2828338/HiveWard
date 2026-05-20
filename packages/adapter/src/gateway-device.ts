@@ -29,10 +29,10 @@ export interface GatewayDeviceSignInput {
   nonce: string;
 }
 
-const defaultIdentityPath = resolve(homedir(), ".openclaw-cui", "device-identity.json");
+const defaultIdentityPath = resolve(homedir(), ".hiveward", "device-identity.json");
 
 export async function loadOrCreateGatewayDeviceIdentity(
-  filePath = process.env.OPENCLAW_CUI_DEVICE_IDENTITY_FILE ?? defaultIdentityPath,
+  filePath = process.env.HIVEWARD_DEVICE_IDENTITY_FILE ?? defaultIdentityPath,
 ): Promise<GatewayDeviceIdentity> {
   const existing = await readIdentity(filePath);
   if (existing) return existing;

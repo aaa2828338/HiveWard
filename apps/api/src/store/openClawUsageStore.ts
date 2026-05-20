@@ -1,7 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { OpenClawModelUsageDay, OpenClawModelUsageSummary } from "@openclaw-cui/shared";
+import type { OpenClawModelUsageDay, OpenClawModelUsageSummary } from "@hiveward/shared";
 
 type JsonObject = Record<string, unknown>;
 

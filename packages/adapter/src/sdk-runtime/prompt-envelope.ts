@@ -1,4 +1,4 @@
-import type { StartAgentTaskInput } from "@openclaw-cui/shared";
+import type { StartAgentTaskInput } from "@hiveward/shared";
 
 const secretKeyPattern = /(api[_-]?key|auth|credential|password|secret|token)/i;
 
@@ -14,9 +14,9 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
     : "";
 
   return [
-    "You are executing one CUI workflow node.",
+    "You are executing one Hiveward mission node.",
     "",
-    `Workflow run: ${input.workflowRunId}`,
+    `Mission run: ${input.missionRunId}`,
     `Node run: ${input.nodeRunId}`,
     `Agent name: ${input.agentName}`,
     "",

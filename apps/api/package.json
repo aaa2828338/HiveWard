@@ -1,5 +1,5 @@
 {
-  "name": "@openclaw-cui/api",
+  "name": "@hiveward/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@openclaw-cui/adapter": "0.1.0",
-    "@openclaw-cui/shared": "0.1.0"
+    "@hiveward/adapter": "0.1.0",
+    "@hiveward/shared": "0.1.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
