@@ -836,7 +836,11 @@ export function App() {
             <img src="/brand/hiveward-hive.png" alt="" />
           </div>
           <div>
-            <h1>Hiveward</h1>
+            <img
+              className="brand-wordmark"
+              src={theme === "dark" ? "/brand/hiveward-wordmark-on-dark.png" : "/brand/hiveward-wordmark.png"}
+              alt="Hiveward"
+            />
           </div>
         </div>
         <nav className="sidebar-nav">
