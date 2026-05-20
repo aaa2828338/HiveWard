@@ -1,6 +1,6 @@
 export type AppSectionId =
   | "company"
-  | "mission"
+  | "blueprint"
   | "runs"
   | "approvals"
   | "models"
@@ -10,7 +10,7 @@ export type AppSectionId =
   | "openclaw";
 
 export const appSections: Array<Exclude<AppSectionId, "company" | "openclaw">> = [
-  "mission",
+  "blueprint",
   "runs",
   "approvals",
   "models",

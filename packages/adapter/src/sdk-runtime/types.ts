@@ -18,7 +18,7 @@ export interface AgentSdkTaskRecord {
   runId: string;
   provider: AgentSdkProvider;
   nodeRunId: string;
-  missionRunId: string;
+  blueprintRunId: string;
   sessionKey: string;
   startedAt: string;
   abortController: AbortController;

@@ -6,8 +6,8 @@
 
 | Area | Owner |
 | --- | --- |
-| Mission canvas, graph, layout, versions | Hiveward |
-| Mission runs, node runs, approval state | Hiveward |
+| Blueprint canvas, graph, layout, versions | Hiveward |
+| Blueprint runs, node runs, approval state | Hiveward |
 | Dashboard widgets, saved views, tags, notes | Hiveward |
 | Agents, tasks, tools, model routing, channel delivery | OpenClaw |
 | Provider usage facts and execution transcripts | OpenClaw |
@@ -19,7 +19,7 @@ graph LR
   Web[hiveward Web]
   API[Hiveward API]
   DB[(Hiveward Store)]
-  Worker[Hiveward Mission Worker]
+  Worker[Hiveward Blueprint Worker]
   Adapter[OpenClaw Adapter]
   OC[OpenClaw Gateway / Runtime]
 
@@ -34,9 +34,9 @@ graph LR
 
 ## MVP Scope
 
-- Web canvas for mission editing and run observation.
+- Web canvas for blueprint editing and run observation.
 - Companion API for Hiveward-owned state.
-- Embedded mission worker for orchestration.
+- Embedded blueprint worker for orchestration.
 - Adapter interface with both mock and OpenClaw Gateway implementations.
 - Boundary check script for CI.
 

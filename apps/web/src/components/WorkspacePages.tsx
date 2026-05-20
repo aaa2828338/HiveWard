@@ -31,13 +31,13 @@ import type {
   PendingApprovalItem,
   RuntimeOverview,
   WorkspaceDashboard,
-  MissionDefinition,
-  MissionNode,
-  MissionNodeEvent,
-  MissionNodeRun,
-  MissionNodeRunStatus,
-  MissionRunStatus,
-  MissionRunView
+  BlueprintDefinition,
+  BlueprintNode,
+  BlueprintNodeEvent,
+  BlueprintNodeRun,
+  BlueprintNodeRunStatus,
+  BlueprintRunStatus,
+  BlueprintRunView
 } from "@hiveward/shared";
 import type { Language, Messages } from "../lib/i18n";
 
@@ -151,13 +151,13 @@ type TraceIssue = {
   label: string;
   kind: "node" | "slot_input" | "slot_output";
   depth: number;
-  node?: MissionNode;
-  nodeRun?: MissionNodeRun;
+  node?: BlueprintNode;
+  nodeRun?: BlueprintNodeRun;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   outputPreview: string;
   outputBody?: string;
-  events: MissionNodeEvent[];
+  events: BlueprintNodeEvent[];
 };
 
 export function CompanyPage({
@@ -178,7 +178,7 @@ export function CompanyPage({
           noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u4ECE\u4E0B\u65B9\u5217\u8868\u4E2D\u5207\u6362\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
-          missions: "Mission",
+          blueprints: "Blueprint",
           runs: "\u4EFB\u52A1",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
@@ -196,7 +196,7 @@ export function CompanyPage({
           noSelection: "No company is selected yet. Choose one from the list below.",
           noCompanies: "No companies are available.",
           goal: "Business goal",
-          missions: "Missions",
+          blueprints: "Blueprints",
           runs: "Tasks",
           tokens: "Tokens",
           approvals: "Pending approvals",
@@ -238,7 +238,7 @@ export function CompanyPage({
             </div>
 
             <div className="company-stat-grid">
-              <CompanyStatCard label={copy.missions} value={selectedCompany.missionCount.toLocaleString(language)} />
+              <CompanyStatCard label={copy.blueprints} value={selectedCompany.blueprintCount.toLocaleString(language)} />
               <CompanyStatCard label={copy.runs} value={selectedCompany.runCount.toLocaleString(language)} />
               <CompanyStatCard label={copy.tokens} value={selectedCompany.totalTokens.toLocaleString(language)} />
               <CompanyStatCard label={copy.approvals} value={selectedCompany.activeApprovalCount.toLocaleString(language)} />
@@ -281,7 +281,7 @@ export function CompanyPage({
                   </div>
                 </div>
                 <div className="company-list-card-metrics">
-                  <span>{`${copy.missions}: ${company.missionCount}`}</span>
+                  <span>{`${copy.blueprints}: ${company.blueprintCount}`}</span>
                   <span>{`${copy.tokens}: ${company.totalTokens}`}</span>
                   <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
                 </div>
@@ -303,36 +303,36 @@ export function CompanyPage({
 
 export function RunsPage({
   runs,
-  missions,
-  mission,
+  blueprints,
+  blueprint,
   selectedRunId,
   language,
   t,
-  onSelectMission,
+  onSelectBlueprint,
   onSelectRun
 }: {
-  runs: MissionRunView[];
-  missions: MissionDefinition[];
-  mission?: MissionDefinition;
+  runs: BlueprintRunView[];
+  blueprints: BlueprintDefinition[];
+  blueprint?: BlueprintDefinition;
   selectedRunId?: string;
   language: Language;
   t: Messages;
-  onSelectMission: (missionId: string) => void;
+  onSelectBlueprint: (blueprintId: string) => void;
   onSelectRun: (runId: string) => void;
 }) {
-  const missionRuns = useMemo(
-    () => (mission ? runs.filter((runView) => runView.run.missionId === mission.id) : []),
-    [runs, mission]
+  const blueprintRuns = useMemo(
+    () => (blueprint ? runs.filter((runView) => runView.run.blueprintId === blueprint.id) : []),
+    [runs, blueprint]
   );
-  const currentTasks = useMemo(() => missionRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [missionRuns]);
-  const taskOptions = currentTasks.length > 0 ? currentTasks : missionRuns;
+  const currentTasks = useMemo(() => blueprintRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [blueprintRuns]);
+  const taskOptions = currentTasks.length > 0 ? currentTasks : blueprintRuns;
   const activeRun = taskOptions.find((runView) => runView.run.id === selectedRunId) ?? taskOptions[0];
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
-  const orderedNodes = useMemo(() => getMissionNodeOrder(mission), [mission]);
+  const orderedNodes = useMemo(() => getBlueprintNodeOrder(blueprint), [blueprint]);
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, mission, orderedNodes, t);
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, mission?.nodes]);
+    return buildTraceIssues(activeRun, blueprint, orderedNodes, t);
+  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, blueprint?.nodes]);
 
   const activeIssue =
     issues.find((issue) => issue.key === activeIssueKey) ??
@@ -353,8 +353,8 @@ export function RunsPage({
             <p>{currentTasks.length > 0 ? t.metrics.runs(currentTasks.length) : t.trace.description}</p>
           </div>
           <div className="toolbar-cluster trace-toolbar">
-            <select value={mission?.id ?? ""} onChange={(event) => onSelectMission(event.target.value)}>
-              {missions.map((item) => (
+            <select value={blueprint?.id ?? ""} onChange={(event) => onSelectBlueprint(event.target.value)}>
+              {blueprints.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.name}
                 </option>
@@ -382,8 +382,8 @@ export function RunsPage({
             {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
           </div>
           <div className="trace-issue-list">
-            {!mission ? (
-              <div className="empty-state page-empty">{t.empty.selectMission}</div>
+            {!blueprint ? (
+              <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
             ) : issues.length === 0 ? (
               <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
             ) : (
@@ -448,7 +448,7 @@ export function ApprovalsPage({
   approvals: PendingApprovalItem[];
   language: Language;
   t: Messages;
-  onApprove: (missionRunId: string) => void;
+  onApprove: (blueprintRunId: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
 
@@ -470,22 +470,22 @@ export function ApprovalsPage({
                 <div className="feature-card-header">
                   <div>
                     <strong>{approval.nodeLabel}</strong>
-                    <p>{approval.missionName}</p>
+                    <p>{approval.blueprintName}</p>
                   </div>
                   <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
                 </div>
                 <dl className="meta-grid">
-                  <dt>{t.fields.relatedMission}</dt>
-                  <dd>{approval.missionName}</dd>
+                  <dt>{t.fields.relatedBlueprint}</dt>
+                  <dd>{approval.blueprintName}</dd>
                   <dt>{t.fields.relatedRun}</dt>
-                  <dd>{approval.missionRunId}</dd>
+                  <dd>{approval.blueprintRunId}</dd>
                   <dt>{t.fields.updatedAt}</dt>
                   <dd>{formatDateTime(approval.requestedAt, language)}</dd>
                 </dl>
                 {approval.approverHint && <p className="supporting-copy">{approval.approverHint}</p>}
                 {approval.instructions && <pre className="inline-note">{approval.instructions}</pre>}
                 <div className="card-actions">
-                  <button type="button" className="primary-action" onClick={() => onApprove(approval.missionRunId)}>
+                  <button type="button" className="primary-action" onClick={() => onApprove(approval.blueprintRunId)}>
                     <BadgeCheck size={16} />
                     {t.actions.approve}
                   </button>
@@ -501,7 +501,7 @@ export function ApprovalsPage({
 
 export function DashboardPage({
   dashboard,
-  missions,
+  blueprints,
   runs,
   approvals,
   catalog,
@@ -512,8 +512,8 @@ export function DashboardPage({
   onRemoveWidget
 }: {
   dashboard?: WorkspaceDashboard;
-  missions: MissionDefinition[];
-  runs: MissionRunView[];
+  blueprints: BlueprintDefinition[];
+  runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
   catalog?: CatalogSnapshot;
   runtime?: RuntimeOverview;
@@ -524,7 +524,7 @@ export function DashboardPage({
 }) {
   const widgets = (dashboard?.dashboardWidgets ?? []).filter((widget) => widget.type !== "notes");
   const summary = [
-    { icon: FolderKanban, label: t.metrics.missions(missions.length) },
+    { icon: FolderKanban, label: t.metrics.blueprints(blueprints.length) },
     { icon: Activity, label: t.metrics.runs(runs.length) },
     { icon: Clock3, label: t.metrics.approvals(approvals.length) },
     { icon: Database, label: t.metrics.models(catalog?.models.length ?? 0) }
@@ -607,7 +607,7 @@ export function ModelsPage({
   t: Messages;
   busy: boolean;
   busyAction?: string;
-  runs: MissionRunView[];
+  runs: BlueprintRunView[];
   openClawModelUsage: OpenClawModelUsageSummary[];
   onRefreshCatalog: () => void;
   onConfigureModelAuth: (input: ConfigureOpenClawModelAuthRequest) => void;
@@ -1015,14 +1015,14 @@ export function SchedulePage({
   runtime,
   runs,
   approvals,
-  missions,
+  blueprints,
   language,
   t
 }: {
   runtime?: RuntimeOverview;
-  runs: MissionRunView[];
+  runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
-  missions: MissionDefinition[];
+  blueprints: BlueprintDefinition[];
   language: Language;
   t: Messages;
 }) {
@@ -1032,7 +1032,7 @@ export function SchedulePage({
           calendar: "\u65e5\u5386",
           records: "\u5f53\u5929\u8bb0\u5f55",
           active: "\u8fdb\u884c\u4e2d",
-          missionTasks: "Mission \u4efb\u52a1",
+          blueprintTasks: "Blueprint \u4efb\u52a1",
           inbox: "\u6536\u4ef6\u7bb1",
           selectedDate: "\u9009\u62e9\u65e5\u671f",
           noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
@@ -1042,7 +1042,7 @@ export function SchedulePage({
           calendar: "Calendar",
           records: "Records for the day",
           active: "In progress",
-          missionTasks: "Mission tasks",
+          blueprintTasks: "Blueprint tasks",
           inbox: "Inbox",
           selectedDate: "Selected date",
           noRecords: "No records for this date.",
@@ -1057,7 +1057,7 @@ export function SchedulePage({
     () => (runtime?.sessions ?? []).filter((session) => isSameLocalDate(session.updatedAt, selectedDate)),
     [runtime?.sessions, selectedDate]
   );
-  const missionTasksForDay = useMemo(
+  const blueprintTasksForDay = useMemo(
     () =>
       runs.filter(
         (runView) =>
@@ -1072,8 +1072,8 @@ export function SchedulePage({
   );
   const activeTasks =
     runtimeTasksForDay.filter((task) => task.status === "queued" || task.status === "running").length +
-    missionTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
-  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + missionTasksForDay.length + inboxForDay.length;
+    blueprintTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
+  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + blueprintTasksForDay.length + inboxForDay.length;
 
   return (
     <section className="page-grid">
@@ -1105,12 +1105,12 @@ export function SchedulePage({
       </div>
 
       <section className="card-grid data-card-grid">
-        <TableCard title={copy.missionTasks} rows={missionTasksForDay.length}>
-          {missionTasksForDay.length ? (
-            missionTasksForDay.map((runView) => (
+        <TableCard title={copy.blueprintTasks} rows={blueprintTasksForDay.length}>
+          {blueprintTasksForDay.length ? (
+            blueprintTasksForDay.map((runView) => (
               <div key={runView.run.id} className="table-row">
                 <div>
-                  <strong>{missionNameFor(missions, runView.run.missionId)}</strong>
+                  <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
                   <p>{runView.run.id}</p>
                 </div>
                 <div className="table-meta">
@@ -1149,7 +1149,7 @@ export function SchedulePage({
               <div key={approval.nodeRunId} className="table-row">
                 <div>
                   <strong>{approval.nodeLabel}</strong>
-                  <p>{approval.missionName}</p>
+                  <p>{approval.blueprintName}</p>
                 </div>
                 <div className="table-meta">
                   <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
@@ -1405,7 +1405,7 @@ function WidgetCard({
 }: {
   widget: DashboardWidget;
   dashboard?: WorkspaceDashboard;
-  runs: MissionRunView[];
+  runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
   catalog?: CatalogSnapshot;
   runtime?: RuntimeOverview;
@@ -1442,7 +1442,7 @@ function WidgetCard({
           </div>
           {approvals.slice(0, 3).map((approval) => (
             <div key={approval.nodeRunId} className="mini-row">
-              <span>{approval.missionName}</span>
+              <span>{approval.blueprintName}</span>
               <code>{approval.nodeLabel}</code>
             </div>
           ))}
@@ -1801,18 +1801,18 @@ function TraceBubble({
 }
 
 function buildTraceIssues(
-  activeRun: MissionRunView | undefined,
-  mission: MissionDefinition | undefined,
-  orderedNodes: MissionNode[],
+  activeRun: BlueprintRunView | undefined,
+  blueprint: BlueprintDefinition | undefined,
+  orderedNodes: BlueprintNode[],
   t: Messages
 ): TraceIssue[] {
   if (!activeRun?.nodeRuns.length) {
-    return buildPendingTraceIssues(mission, orderedNodes, t);
+    return buildPendingTraceIssues(blueprint, orderedNodes, t);
   }
 
-  const nodesById = new Map((mission?.nodes ?? []).map((node) => [node.id, node]));
+  const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
   const childrenBySlotId = new Map<string, Set<string>>();
-  for (const node of mission?.nodes ?? []) {
+  for (const node of blueprint?.nodes ?? []) {
     if (!node.parentId) continue;
     const parent = nodesById.get(node.parentId);
     if (parent?.type !== "manager_slot") continue;
@@ -1881,13 +1881,13 @@ function buildTraceIssues(
   return issues;
 }
 
-function buildPendingTraceIssues(mission: MissionDefinition | undefined, orderedNodes: MissionNode[], t: Messages): TraceIssue[] {
-  if (!mission) return [];
+function buildPendingTraceIssues(blueprint: BlueprintDefinition | undefined, orderedNodes: BlueprintNode[], t: Messages): TraceIssue[] {
+  if (!blueprint) return [];
 
-  const childrenBySlotId = new Map<string, MissionNode[]>();
-  for (const node of mission.nodes) {
+  const childrenBySlotId = new Map<string, BlueprintNode[]>();
+  for (const node of blueprint.nodes) {
     if (!node.parentId) continue;
-    const parent = mission.nodes.find((candidate) => candidate.id === node.parentId);
+    const parent = blueprint.nodes.find((candidate) => candidate.id === node.parentId);
     if (parent?.type !== "manager_slot") continue;
     childrenBySlotId.set(node.parentId, [...(childrenBySlotId.get(node.parentId) ?? []), node]);
   }
@@ -1918,9 +1918,9 @@ function buildPendingTraceIssues(mission: MissionDefinition | undefined, ordered
 }
 
 function createNodeTraceIssue(
-  activeRun: MissionRunView,
-  nodeRun: MissionNodeRun,
-  node: MissionNode | undefined,
+  activeRun: BlueprintRunView,
+  nodeRun: BlueprintNodeRun,
+  node: BlueprintNode | undefined,
   index: number,
   depth: number,
   t: Messages
@@ -1941,7 +1941,7 @@ function createNodeTraceIssue(
   };
 }
 
-function createPendingTraceIssue(node: MissionNode, index: number, depth: number, t: Messages): TraceIssue {
+function createPendingTraceIssue(node: BlueprintNode, index: number, depth: number, t: Messages): TraceIssue {
   return {
     key: `node:${node.id}`,
     index,
@@ -1956,7 +1956,7 @@ function createPendingTraceIssue(node: MissionNode, index: number, depth: number
   };
 }
 
-function createPendingSlotBoundaryIssue(node: MissionNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
+function createPendingSlotBoundaryIssue(node: BlueprintNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
   const isInput = kind === "slot_input";
   return {
     key: `node:${node.id}:${kind}`,
@@ -1972,14 +1972,14 @@ function createPendingSlotBoundaryIssue(node: MissionNode, index: number, kind: 
   };
 }
 
-function toIssueStatus(status?: MissionNodeRunStatus): TraceIssueStatus {
+function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
   if (status === "queued" || status === "running" || status === "waiting_approval") return "in_progress";
   if (status === "succeeded" || status === "skipped") return "completed";
   if (status === "failed" || status === "cancelled") return "failed";
   return "pending";
 }
 
-function toSlotOutputIssueStatus(nodeRun: MissionNodeRun): TraceIssueStatus {
+function toSlotOutputIssueStatus(nodeRun: BlueprintNodeRun): TraceIssueStatus {
   if (nodeRun.status === "failed" || nodeRun.status === "cancelled") return "failed";
   if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
   if (nodeRun.status === "queued" || nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "in_progress";
@@ -2003,7 +2003,7 @@ function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
   return t.trace.pending;
 }
 
-function statusLabelForNodeRun(status: MissionNodeRunStatus | undefined, t: Messages): string {
+function statusLabelForNodeRun(status: BlueprintNodeRunStatus | undefined, t: Messages): string {
   return status ? t.status[status] : t.trace.pending;
 }
 
@@ -2014,20 +2014,20 @@ function summarizeOutput(output: unknown, t: Messages): string {
   return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
 }
 
-function getMissionNodeOrder(mission?: MissionDefinition): MissionNode[] {
-  if (!mission) return [];
+function getBlueprintNodeOrder(blueprint?: BlueprintDefinition): BlueprintNode[] {
+  if (!blueprint) return [];
 
-  const nodesById = new Map(mission.nodes.map((node) => [node.id, node]));
-  const indegree = new Map<string, number>(mission.nodes.map((node) => [node.id, 0]));
+  const nodesById = new Map(blueprint.nodes.map((node) => [node.id, node]));
+  const indegree = new Map<string, number>(blueprint.nodes.map((node) => [node.id, 0]));
   const outgoing = new Map<string, string[]>();
 
-  for (const edge of mission.edges) {
+  for (const edge of blueprint.edges) {
     indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
     outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
   }
 
-  const queue = mission.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
-  const ordered: MissionNode[] = [];
+  const queue = blueprint.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
+  const ordered: BlueprintNode[] = [];
   const visited = new Set<string>();
 
   while (queue.length > 0) {
@@ -2044,7 +2044,7 @@ function getMissionNodeOrder(mission?: MissionDefinition): MissionNode[] {
     }
   }
 
-  for (const node of mission.nodes) {
+  for (const node of blueprint.nodes) {
     if (!visited.has(node.id)) ordered.push(node);
   }
 
@@ -2059,8 +2059,8 @@ function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {
   return t.widgetTypes.notes;
 }
 
-function missionNameFor(missions: MissionDefinition[], missionId: string): string {
-  return missions.find((mission) => mission.id === missionId)?.name ?? missionId;
+function blueprintNameFor(blueprints: BlueprintDefinition[], blueprintId: string): string {
+  return blueprints.find((blueprint) => blueprint.id === blueprintId)?.name ?? blueprintId;
 }
 
 type ModelUsageSummary = {
@@ -2096,7 +2096,7 @@ function createEmptyModelUsageSummary(): ModelUsageSummary {
 }
 
 function buildModelUsageIndex(
-  runs: MissionRunView[],
+  runs: BlueprintRunView[],
   openClawUsage: OpenClawModelUsageSummary[],
   fallbackModelId?: string
 ): Map<string, ModelUsageSummary> {
@@ -2286,7 +2286,7 @@ function lastModelPathSegment(modelId: string): string {
   return modelId.split("/").pop() ?? modelId;
 }
 
-function isActiveRunStatus(status: MissionRunStatus): boolean {
+function isActiveRunStatus(status: BlueprintRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
 }
 

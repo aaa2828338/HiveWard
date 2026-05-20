@@ -1,7 +1,7 @@
-import type { MissionNodeEvent, MissionNodeRunStatus, MissionNodeType, MissionRunStatus } from "@hiveward/shared";
+import type { BlueprintNodeEvent, BlueprintNodeRunStatus, BlueprintNodeType, BlueprintRunStatus } from "@hiveward/shared";
 
 export type Language = "en" | "zh-CN";
-export type StatusKey = MissionNodeRunStatus | MissionRunStatus | "idle";
+export type StatusKey = BlueprintNodeRunStatus | BlueprintRunStatus | "idle";
 
 export interface Messages {
   actions: {
@@ -17,26 +17,26 @@ export interface Messages {
     addWidget: string;
     approve: string;
     catalog: string;
-    createMission: string;
+    createBlueprint: string;
     deleteNode: string;
     disableNode: string;
     enableNode: string;
-    exportMission: string;
-    importMission: string;
+    exportBlueprint: string;
+    importBlueprint: string;
     refreshCatalog: string;
     refreshWorkspace: string;
     remove: string;
     run: string;
-    runMission: string;
+    runBlueprint: string;
     save: string;
     saveModel: string;
-    saveMission: string;
+    saveBlueprint: string;
     saveWorkspace: string;
     switchLanguage: string;
   };
   common: {
     allStatuses: string;
-    allMissions: string;
+    allBlueprints: string;
     defaultModel: string;
     defaultOption: string;
     dirtyWorkspace: string;
@@ -95,7 +95,7 @@ export interface Messages {
     selectNode: string;
     selectRun: string;
     selectSkill: string;
-    selectMission: string;
+    selectBlueprint: string;
   };
   errors: {
     approve: string;
@@ -131,7 +131,7 @@ export interface Messages {
     prompt: string;
     provider: string;
     relatedRun: string;
-    relatedMission: string;
+    relatedBlueprint: string;
     runLabel: string;
     section: string;
     settings: string;
@@ -145,7 +145,7 @@ export interface Messages {
     title: string;
     updatedAt: string;
     waitFor: string;
-    mission: string;
+    blueprint: string;
     workspace: string;
   };
   metrics: {
@@ -162,10 +162,10 @@ export interface Messages {
     tokens: (count: number) => string;
     tools: (count: number) => string;
     widgets: (count: number) => string;
-    missions: (count: number) => string;
+    blueprints: (count: number) => string;
   };
   navigation: Record<string, string>;
-  nodeTypes: Record<MissionNodeType, string>;
+  nodeTypes: Record<BlueprintNodeType, string>;
   pages: Record<
     string,
     {
@@ -226,7 +226,7 @@ export interface Messages {
     widgets: string;
   };
   widgetTypes: Record<"approvals" | "catalog" | "notes" | "runs", string>;
-  events: Record<MissionNodeEvent["type"], string>;
+  events: Record<BlueprintNodeEvent["type"], string>;
 }
 
 export const messages: Record<Language, Messages> = {
@@ -244,26 +244,26 @@ export const messages: Record<Language, Messages> = {
       addWidget: "Add widget",
       approve: "Approve",
       catalog: "Catalog",
-      createMission: "新建 Mission",
+      createBlueprint: "新建 Blueprint",
       deleteNode: "Delete node",
       disableNode: "Disable node",
       enableNode: "Enable node",
-      exportMission: "导出 Mission",
-      importMission: "导入 Mission",
+      exportBlueprint: "导出 Blueprint",
+      importBlueprint: "导入 Blueprint",
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
       run: "Start task",
-      runMission: "启动 Mission",
+      runBlueprint: "启动 Blueprint",
       save: "Save",
       saveModel: "Save model",
-      saveMission: "保存 Mission",
+      saveBlueprint: "保存 Blueprint",
       saveWorkspace: "Save workspace",
       switchLanguage: "Switch language"
     },
     common: {
       allStatuses: "All statuses",
-      allMissions: "全部 Mission",
+      allBlueprints: "全部 Blueprint",
       defaultModel: "OpenClaw default",
       defaultOption: "default",
       dirtyWorkspace: "Unsaved workspace state",
@@ -279,11 +279,11 @@ export const messages: Record<Language, Messages> = {
     defaults: {
       agentName: "agent",
       openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "Execute this Hiveward mission node through the selected OpenClaw agent.",
+      openClawAgentPrompt: "Execute this Hiveward blueprint node through the selected OpenClaw agent.",
       codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "Execute this Hiveward mission node through Codex SDK.",
+      codexAgentPrompt: "Execute this Hiveward blueprint node through Codex SDK.",
       claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "Execute this Hiveward mission node through Claude Code SDK.",
+      claudeCodeAgentPrompt: "Execute this Hiveward blueprint node through Claude Code SDK.",
       approvalInstructions: "Review the merged output.",
       approvalLabel: "Approval",
       approvalOwner: "Owner",
@@ -298,7 +298,7 @@ export const messages: Record<Language, Messages> = {
       noteLabel: "Note",
       parallelAgentsLabel: "Parallel agents",
       savedViewName: "New saved view",
-      sendBody: "Mission {{mission.name}} completed. Summary: {{summary}}",
+      sendBody: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}",
       sendLabel: "Send",
       summaryLabel: "Summary",
       tagColor: "#0f766e",
@@ -312,8 +312,8 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
       noRun: "No task yet",
-      noRunHistory: "这个 Mission 还没有运行记录。",
-      noRuns: "还没有 Mission 运行",
+      noRunHistory: "这个 Blueprint 还没有运行记录。",
+      noRuns: "还没有 Blueprint 运行",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
       noSkills: "No skills added",
@@ -323,14 +323,14 @@ export const messages: Record<Language, Messages> = {
       selectNode: "Select a node",
       selectRun: "Select a task",
       selectSkill: "Select a skill",
-      selectMission: "尚未选择 Mission。"
+      selectBlueprint: "尚未选择 Blueprint。"
     },
     errors: {
       approve: "Failed to approve run.",
       catalog: "Failed to refresh config data.",
       load: "Failed to load workspace.",
       run: "Failed to start task.",
-      save: "Failed to save mission.",
+      save: "Failed to save blueprint.",
       workspace: "Failed to save workspace state."
     },
     fields: {
@@ -359,7 +359,7 @@ export const messages: Record<Language, Messages> = {
       prompt: "提示词",
       provider: "Provider",
       relatedRun: "Related task",
-      relatedMission: "Related mission",
+      relatedBlueprint: "Related blueprint",
       runLabel: "Task label",
       section: "Section",
       settings: "Settings",
@@ -373,7 +373,7 @@ export const messages: Record<Language, Messages> = {
       title: "Title",
       updatedAt: "Updated",
       waitFor: "Wait for",
-      mission: "Mission",
+      blueprint: "Blueprint",
       workspace: "Workspace"
     },
     metrics: {
@@ -390,11 +390,11 @@ export const messages: Record<Language, Messages> = {
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} tools`,
       widgets: (count) => `${count} overview widgets`,
-      missions: (count) => `${count} missions`
+      blueprints: (count) => `${count} blueprints`
     },
     navigation: {
       company: "Company",
-      mission: "Mission",
+      blueprint: "Blueprint",
       runs: "Tasks",
       approvals: "Inbox",
       models: "Models",
@@ -420,19 +420,19 @@ export const messages: Record<Language, Messages> = {
     pages: {
       company: {
         title: "Company Context",
-        description: "Switch the active company, inspect company-level usage, and keep mission data scoped to a single operator context."
+        description: "Switch the active company, inspect company-level usage, and keep blueprint data scoped to a single operator context."
       },
-      mission: {
-        title: "Mission Studio",
-        description: "Command agent teams through mission structure, handoffs, gates, and run evidence."
+      blueprint: {
+        title: "Blueprint Studio",
+        description: "Command agent teams through blueprint structure, handoffs, gates, and run evidence."
       },
       runs: {
         title: "Tasks",
-        description: "Track mission runs, agent outputs, and execution evidence."
+        description: "Track blueprint runs, agent outputs, and execution evidence."
       },
       approvals: {
         title: "Inbox",
-        description: "Handle mission pauses that are waiting on a human decision."
+        description: "Handle blueprint pauses that are waiting on a human decision."
       },
       models: {
         title: "Models",
@@ -440,7 +440,7 @@ export const messages: Record<Language, Messages> = {
       },
       agents: {
         title: "Agents",
-        description: "Create configured OpenClaw agents and inspect available agents separately from missions."
+        description: "Create configured OpenClaw agents and inspect available agents separately from blueprints."
       },
       schedule: {
         title: "Schedule",
@@ -473,9 +473,9 @@ export const messages: Record<Language, Messages> = {
     trace: {
       completed: "Completed",
       currentIssue: (label) => `Current step: ${label}`,
-      description: "Review mission progress on the left, and read agent output on the right.",
-      flowFinished: "Mission finished",
-      flowStarted: "Mission started",
+      description: "Review blueprint progress on the left, and read agent output on the right.",
+      flowFinished: "Blueprint finished",
+      flowStarted: "Blueprint started",
       inProgress: "In progress",
       issueList: "Task steps",
       managerInputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
@@ -525,9 +525,9 @@ export const messages: Record<Language, Messages> = {
       "node.run.queued": "Node queued",
       "node.run.started": "Node started",
       "node.run.waiting_approval": "Waiting for inbox",
-      "mission.run.completed": "Mission completed",
-      "mission.run.failed": "Mission failed",
-      "mission.run.started": "Mission started"
+      "blueprint.run.completed": "Blueprint completed",
+      "blueprint.run.failed": "Blueprint failed",
+      "blueprint.run.started": "Blueprint started"
     }
   },
   "zh-CN": {
@@ -544,26 +544,26 @@ export const messages: Record<Language, Messages> = {
       addWidget: "添加卡片",
       approve: "批准",
       catalog: "目录",
-      createMission: "New mission",
+      createBlueprint: "New blueprint",
       deleteNode: "删除节点",
       disableNode: "禁用节点",
       enableNode: "启用节点",
-      exportMission: "Export mission",
-      importMission: "Import mission",
+      exportBlueprint: "Export blueprint",
+      importBlueprint: "Import blueprint",
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
       run: "启动任务",
-      runMission: "Start mission",
+      runBlueprint: "Start blueprint",
       save: "保存",
       saveModel: "保存模型",
-      saveMission: "Save mission",
+      saveBlueprint: "Save blueprint",
       saveWorkspace: "保存工作区",
       switchLanguage: "切换语言"
     },
     common: {
       allStatuses: "全部状态",
-      allMissions: "All missions",
+      allBlueprints: "All blueprints",
       defaultModel: "OpenClaw 默认",
       defaultOption: "默认",
       dirtyWorkspace: "工作区状态未保存",
@@ -579,11 +579,11 @@ export const messages: Record<Language, Messages> = {
     defaults: {
       agentName: "agent",
       openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "Execute this Hiveward mission node through the selected OpenClaw agent.",
+      openClawAgentPrompt: "Execute this Hiveward blueprint node through the selected OpenClaw agent.",
       codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "Execute this Hiveward mission node through Codex SDK.",
+      codexAgentPrompt: "Execute this Hiveward blueprint node through Codex SDK.",
       claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "Execute this Hiveward mission node through Claude Code SDK.",
+      claudeCodeAgentPrompt: "Execute this Hiveward blueprint node through Claude Code SDK.",
       approvalInstructions: "审核汇总后的输出。",
       approvalLabel: "人工审批",
       approvalOwner: "负责人",
@@ -597,7 +597,7 @@ export const messages: Record<Language, Messages> = {
       noteLabel: "备注",
       parallelAgentsLabel: "并行代理",
       savedViewName: "新建视图",
-      sendBody: "Mission {{mission.name}} completed. Summary: {{summary}}",
+      sendBody: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}",
       sendLabel: "发送",
       summaryLabel: "汇总",
       tagColor: "#0f766e",
@@ -611,8 +611,8 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
       noRun: "还没有任务",
-      noRunHistory: "This mission has no run activity yet.",
-      noRuns: "No mission runs yet",
+      noRunHistory: "This blueprint has no run activity yet.",
+      noRuns: "No blueprint runs yet",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
       noSkills: "还没有添加 Skill",
@@ -622,14 +622,14 @@ export const messages: Record<Language, Messages> = {
       selectNode: "请选择一个节点",
       selectRun: "请选择一个任务",
       selectSkill: "选择一个 Skill",
-      selectMission: "No mission is selected."
+      selectBlueprint: "No blueprint is selected."
     },
     errors: {
       approve: "批准运行失败。",
       catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
       run: "启动任务失败。",
-      save: "保存 Mission 失败。",
+      save: "保存 Blueprint 失败。",
       workspace: "保存工作区状态失败。"
     },
     fields: {
@@ -658,7 +658,7 @@ export const messages: Record<Language, Messages> = {
       prompt: "Prompt",
       provider: "提供方",
       relatedRun: "关联任务",
-      relatedMission: "关联 Mission",
+      relatedBlueprint: "关联 Blueprint",
       runLabel: "任务标签",
       section: "页面",
       settings: "设置",
@@ -672,7 +672,7 @@ export const messages: Record<Language, Messages> = {
       title: "标题",
       updatedAt: "更新时间",
       waitFor: "等待条件",
-      mission: "Mission",
+      blueprint: "Blueprint",
       workspace: "工作区"
     },
     metrics: {
@@ -689,11 +689,11 @@ export const messages: Record<Language, Messages> = {
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} 个工具`,
       widgets: (count) => `${count} 张总览卡片`,
-      missions: (count) => `${count} 个 Mission`
+      blueprints: (count) => `${count} 个 Blueprint`
     },
     navigation: {
       company: "公司",
-      mission: "Mission",
+      blueprint: "Blueprint",
       runs: "任务",
       approvals: "收件箱",
       models: "模型",
@@ -721,9 +721,9 @@ export const messages: Record<Language, Messages> = {
         title: "公司上下文",
         description: "切换当前公司、查看公司级用量，并在同一页面维护总览卡片。"
       },
-      mission: {
-        title: "Mission 指挥台",
-        description: "组织多 Agent Mission 结构、交接和审查关，并查看最近一次运行证据。"
+      blueprint: {
+        title: "Blueprint 指挥台",
+        description: "组织多 Agent Blueprint 结构、交接和审查关，并查看最近一次运行证据。"
       },
       runs: {
         title: "任务",
@@ -731,7 +731,7 @@ export const messages: Record<Language, Messages> = {
       },
       approvals: {
         title: "收件箱",
-        description: "处理因为人工决策而暂停的 Mission。"
+        description: "处理因为人工决策而暂停的 Blueprint。"
       },
       models: {
         title: "模型",
@@ -739,7 +739,7 @@ export const messages: Record<Language, Messages> = {
       },
       agents: {
         title: "Agent",
-        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与 Mission 配置分开查看。"
+        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与 Blueprint 配置分开查看。"
       },
       schedule: {
         title: "日程",
@@ -824,9 +824,9 @@ export const messages: Record<Language, Messages> = {
       "node.run.queued": "节点已排队",
       "node.run.started": "节点已启动",
       "node.run.waiting_approval": "等待收件箱处理",
-      "mission.run.completed": "Mission 已完成",
-      "mission.run.failed": "Mission 失败",
-      "mission.run.started": "Mission 已启动"
+      "blueprint.run.completed": "Blueprint 已完成",
+      "blueprint.run.failed": "Blueprint 失败",
+      "blueprint.run.started": "Blueprint 已启动"
     }
   }
 };

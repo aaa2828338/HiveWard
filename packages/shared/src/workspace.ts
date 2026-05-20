@@ -23,7 +23,7 @@ export interface DashboardWidget {
 export interface SavedView {
   id: string;
   name: string;
-  missionId?: string;
+  blueprintId?: string;
   filters: Record<string, string>;
   createdAt: string;
   updatedAt: string;
@@ -41,7 +41,7 @@ export interface WorkspaceNote {
   id: string;
   title: string;
   body: string;
-  relatedMissionId?: string;
+  relatedBlueprintId?: string;
   relatedRunId?: string;
   tagIds: string[];
   createdAt: string;
@@ -49,9 +49,9 @@ export interface WorkspaceNote {
 }
 
 export interface PendingApprovalItem {
-  missionId: string;
-  missionName: string;
-  missionRunId: string;
+  blueprintId: string;
+  blueprintName: string;
+  blueprintRunId: string;
   nodeRunId: string;
   nodeId: string;
   nodeLabel: string;

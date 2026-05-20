@@ -76,7 +76,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       provider: "codex",
       nodeRunId: input.nodeRunId,
-      missionRunId: input.missionRunId,
+      blueprintRunId: input.blueprintRunId,
       sessionKey,
       startedAt: now,
       abortController,

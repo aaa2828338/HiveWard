@@ -1,22 +1,23 @@
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { OpenClawAdapter } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
-  createManagerDrivenHtmlMission,
-  createRealThreeAgentMission,
+  blueprintRunArchiveSchema,
+  createManagerDrivenHtmlBlueprint,
+  createRealThreeAgentBlueprint,
   type SendChannelResult,
   type StartAgentTaskInput,
   type StartedAgentTaskResult,
   type WaitForAgentTaskInput,
-  type MissionDefinition,
-  type MissionEdge,
-  type MissionNode
+  type BlueprintDefinition,
+  type BlueprintEdge,
+  type BlueprintNode
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
-import { MissionWorker } from "./missionWorker";
+import { BlueprintWorker } from "./blueprintWorker";
 
 class ScriptedAdapter implements OpenClawAdapter {
   readonly calls: StartAgentTaskInput[] = [];
@@ -85,29 +86,53 @@ class ScriptedAdapter implements OpenClawAdapter {
   }
 }
 
-describe("MissionWorker", () => {
-  it("persists a newly-created blank mission for the selected company", async () => {
+describe("BlueprintWorker", () => {
+  it("persists a newly-created blank blueprint for the selected company", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-store-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    const storePath = path.join(tempDir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
     await store.init();
 
-    const mission = await store.createMission({ name: "Launch review" });
-    const missions = await store.listMissions();
+    const blueprint = await store.createBlueprint({ name: "Launch review" });
+    const blueprints = await store.listBlueprints();
+    const index = JSON.parse(readFileSync(storePath, "utf8")) as {
+      schema: string;
+      blueprints?: unknown[];
+      blueprintIndex?: Array<{ id: string; name: string }>;
+    };
+    const blueprintPath = path.join(tempDir, "blueprints", `${blueprint.id}.json`);
 
-    expect(mission.id).toMatch(/^mission-/);
-    expect(mission.companyId).toBe("company-hiveward-studio");
-    expect(mission.name).toBe("Launch review");
-    expect(mission.nodes).toEqual([]);
-    expect(missions.some((item) => item.id === mission.id)).toBe(true);
+    expect(blueprint.id).toMatch(/^blueprint-/);
+    expect(blueprint.companyId).toBe("company-hiveward-studio");
+    expect(blueprint.name).toBe("Launch review");
+    expect(blueprint.nodes).toEqual([]);
+    expect(blueprints.some((item) => item.id === blueprint.id)).toBe(true);
+    expect(existsSync(blueprintPath)).toBe(true);
+    expect(index.schema).toBe("hiveward.store-index/v1");
+    expect(index.blueprints).toBeUndefined();
+    expect(index.blueprintIndex?.some((item) => item.id === blueprint.id && item.name === "Launch review")).toBe(true);
+
+    const saved = await store.saveBlueprint({ ...blueprint, name: "Launch review v2" });
+    const savedIndex = JSON.parse(readFileSync(storePath, "utf8")) as {
+      blueprintIndex?: Array<{ id: string; name: string; version: number }>;
+    };
+    const savedBlueprint = JSON.parse(readFileSync(blueprintPath, "utf8")) as { name: string; version: number };
+    expect(saved.name).toBe("Launch review v2");
+    expect(savedBlueprint).toMatchObject({ name: "Launch review v2", version: 2 });
+    expect(savedIndex.blueprintIndex?.find((item) => item.id === blueprint.id)).toMatchObject({
+      name: "Launch review v2",
+      version: 2
+    });
   });
 
   it("marks the run failed and stops downstream execution when an agent result fails", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    const storePath = path.join(tempDir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
     await store.init();
 
-    const mission = createRealThreeAgentMission(new Date().toISOString(), "company-hiveward-studio");
-    const worker = new MissionWorker(
+    const blueprint = createRealThreeAgentBlueprint(new Date().toISOString(), "company-hiveward-studio");
+    const worker = new BlueprintWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -118,7 +143,7 @@ describe("MissionWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -131,7 +156,28 @@ describe("MissionWorker", () => {
       upstream: [{ nodeId: "brief", nodeLabel: "1. Brief", output: "brief ok" }]
     });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "verify")?.status).toBe("skipped");
-    expect(view?.events.some((event) => event.type === "mission.run.failed")).toBe(true);
+    expect(view?.events.some((event) => event.type === "blueprint.run.failed")).toBe(true);
+
+    const archive = JSON.parse(readFileSync(path.join(tempDir, "runs", `${run.id}.json`), "utf8")) as {
+      schema: string;
+      run: { id: string; status: string };
+      blueprintSnapshot: { id: string };
+      nodeRuns: unknown[];
+      events: unknown[];
+    };
+    const index = JSON.parse(readFileSync(storePath, "utf8")) as {
+      nodeRuns?: unknown[];
+      events?: unknown[];
+      runIndex?: Array<{ id: string; status: string }>;
+    };
+    expect(archive.schema).toBe(blueprintRunArchiveSchema);
+    expect(archive.run).toMatchObject({ id: run.id, status: "failed" });
+    expect(archive.blueprintSnapshot.id).toBe(blueprint.id);
+    expect(archive.nodeRuns.length).toBeGreaterThan(0);
+    expect(archive.events.length).toBeGreaterThan(0);
+    expect(index.nodeRuns).toBeUndefined();
+    expect(index.events).toBeUndefined();
+    expect(index.runIndex?.find((item) => item.id === run.id)?.status).toBe("failed");
   });
 
   it("skips the branch that does not match a condition result", async () => {
@@ -139,7 +185,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -160,7 +206,7 @@ describe("MissionWorker", () => {
         { id: "edge-3", source: "gate", target: "no", condition: "false" }
       ]
     );
-    const worker = new MissionWorker(
+    const worker = new BlueprintWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -171,7 +217,7 @@ describe("MissionWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -186,7 +232,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         createAgentNode("brief", "Brief"),
         createAgentNode("alpha", "Alpha", { x: 460, y: 120 }),
@@ -206,9 +252,9 @@ describe("MissionWorker", () => {
       createCompletedAgentTask("task-2", "succeeded", "alpha ready"),
       createCompletedAgentTask("task-3", "succeeded", "beta ready")
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(run.status).toBe("running");
@@ -225,7 +271,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         {
           ...createAgentNode("sdk-node", "SDK Node"),
@@ -258,9 +304,9 @@ describe("MissionWorker", () => {
         sessionKey: "codex-session-final"
       }
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(adapter.calls[0]).toMatchObject({
@@ -288,7 +334,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         {
           id: "manager",
@@ -327,9 +373,9 @@ describe("MissionWorker", () => {
       createCompletedAgentTask("task-4", "succeeded", "app fixed"),
       createCompletedAgentTask("task-5", "succeeded", JSON.stringify({ status: "pass" }))
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -344,7 +390,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         {
           id: "parent-manager",
@@ -402,9 +448,9 @@ describe("MissionWorker", () => {
       createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "complete", result: "implemented" })),
       createCompletedAgentTask("task-2", "succeeded", JSON.stringify({ status: "complete", result: "parent followup complete" }))
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -418,12 +464,12 @@ describe("MissionWorker", () => {
     expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("parent-slot-2");
   });
 
-  it("executes a manager slot box as a nested mission and returns its output to the manager", async () => {
+  it("executes a manager slot box as a nested blueprint and returns its output to the manager", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         {
           id: "manager",
@@ -433,7 +479,7 @@ describe("MissionWorker", () => {
             label: "Manager",
             portCount: 1,
             maxHandoffs: 3,
-            instructions: "Run the slot mission."
+            instructions: "Run the slot blueprint."
           }
         },
         {
@@ -463,9 +509,9 @@ describe("MissionWorker", () => {
     ], [
       createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "complete", result: "slot done" }))
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -488,7 +534,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -509,9 +555,9 @@ describe("MissionWorker", () => {
     ], [
       createCompletedAgentTask("task-1", "succeeded", "brief ready")
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -524,7 +570,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createManagerDrivenHtmlMission(new Date().toISOString(), "company-hiveward-studio");
+    const blueprint = createManagerDrivenHtmlBlueprint(new Date().toISOString(), "company-hiveward-studio");
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-1"),
       createStartedAgentTask("task-2"),
@@ -569,9 +615,9 @@ describe("MissionWorker", () => {
         })
       )
     ]);
-    const worker = new MissionWorker(store, adapter);
+    const worker = new BlueprintWorker(store, adapter);
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -600,7 +646,7 @@ describe("MissionWorker", () => {
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const mission = createMission(
+    const blueprint = createBlueprint(
       [
         createAgentNode("brief", "Brief"),
         {
@@ -618,7 +664,7 @@ describe("MissionWorker", () => {
         { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
       ]
     );
-    const worker = new MissionWorker(
+    const worker = new BlueprintWorker(
       store,
       new ScriptedAdapter([
         createStartedAgentTask("task-1"),
@@ -629,7 +675,7 @@ describe("MissionWorker", () => {
       ])
     );
 
-    const run = await worker.startRun(mission, "test-user");
+    const run = await worker.startRun(blueprint, "test-user");
     const view = await waitForRunTerminal(store, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -688,15 +734,15 @@ async function waitForRunTerminal(store: FileHivewardStore, runId: string): Prom
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  throw new Error(`Mission run did not reach a terminal state in time: ${runId}`);
+  throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}`);
 }
 
-function createMission(nodes: MissionNode[], edges: MissionEdge[]): MissionDefinition {
+function createBlueprint(nodes: BlueprintNode[], edges: BlueprintEdge[]): BlueprintDefinition {
   const now = new Date().toISOString();
   return {
-    id: "test-mission",
+    id: "test-blueprint",
     companyId: "company-hiveward-studio",
-    name: "Test mission",
+    name: "Test blueprint",
     version: 1,
     nodes,
     edges,
@@ -709,7 +755,7 @@ function createMission(nodes: MissionNode[], edges: MissionEdge[]): MissionDefin
   };
 }
 
-function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): MissionNode {
+function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): BlueprintNode {
   return {
     id,
     type: "openclaw_agent",

@@ -3,7 +3,11 @@ dist/
 .vite/
 coverage/
 data/*.json
+data/blueprints/*.json
+data/runs/*.json
 !.gitkeep
+!data/blueprints/.gitkeep
+!data/runs/.gitkeep
 .env
 .env.*
 *.log

@@ -5,15 +5,15 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawAgentRequest,
-  CreateMissionRequest,
+  CreateBlueprintRequest,
   DashboardStateResponse,
-  ExportMissionResponse,
-  ImportMissionPackageRequest,
-  ImportMissionPackageResponse,
-  LatestMissionRunResponse,
+  ExportBlueprintResponse,
+  ImportBlueprintPackageRequest,
+  ImportBlueprintPackageResponse,
+  LatestBlueprintRunResponse,
   ListPendingApprovalsResponse,
-  ListMissionRunViewsResponse,
-  ListMissionsResponse,
+  ListBlueprintRunViewsResponse,
+  ListBlueprintsResponse,
   OpenClawConfigResponse,
   OpenClawConfigWizardMetadata,
   OpenClawConfigWizardResponse,
@@ -23,17 +23,17 @@ import type {
   OpenClawVersionResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
-  SaveMissionRequest,
+  SaveBlueprintRequest,
   SelectCompanyRequest,
-  StartMissionRunResponse,
+  StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
   OpenClawConfigState,
-  PortableMissionPackage,
+  PortableBlueprintPackage,
   WorkspaceDashboard,
-  MissionDefinition,
-  MissionResponse,
-  MissionRunResponse
+  BlueprintDefinition,
+  BlueprintResponse,
+  BlueprintRunResponse
 } from "@hiveward/shared";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -120,26 +120,26 @@ export const api = {
     });
   },
 
-  async listMissions(): Promise<MissionDefinition[]> {
-    const response = await request<ListMissionsResponse>("/api/missions");
-    return response.missions;
+  async listBlueprints(): Promise<BlueprintDefinition[]> {
+    const response = await request<ListBlueprintsResponse>("/api/blueprints");
+    return response.blueprints;
   },
 
-  async createMission(input: CreateMissionRequest): Promise<MissionDefinition> {
-    const response = await request<MissionResponse>("/api/missions", {
+  async createBlueprint(input: CreateBlueprintRequest): Promise<BlueprintDefinition> {
+    const response = await request<BlueprintResponse>("/api/blueprints", {
       method: "POST",
-      body: JSON.stringify(input satisfies CreateMissionRequest)
+      body: JSON.stringify(input satisfies CreateBlueprintRequest)
     });
-    return response.mission;
+    return response.blueprint;
   },
 
-  async getMission(id: string): Promise<MissionDefinition> {
-    const response = await request<MissionResponse>(`/api/missions/${id}`);
-    return response.mission;
+  async getBlueprint(id: string): Promise<BlueprintDefinition> {
+    const response = await request<BlueprintResponse>(`/api/blueprints/${id}`);
+    return response.blueprint;
   },
 
-  async listMissionRuns(): Promise<ListMissionRunViewsResponse["runs"]> {
-    const response = await request<ListMissionRunViewsResponse>("/api/mission-runs");
+  async listBlueprintRuns(): Promise<ListBlueprintRunViewsResponse["runs"]> {
+    const response = await request<ListBlueprintRunViewsResponse>("/api/blueprint-runs");
     return response.runs;
   },
 
@@ -148,42 +148,42 @@ export const api = {
     return response.approvals;
   },
 
-  async saveMission(mission: MissionDefinition): Promise<MissionDefinition> {
-    const response = await request<MissionResponse>(`/api/missions/${mission.id}`, {
+  async saveBlueprint(blueprint: BlueprintDefinition): Promise<BlueprintDefinition> {
+    const response = await request<BlueprintResponse>(`/api/blueprints/${blueprint.id}`, {
       method: "PUT",
-      body: JSON.stringify({ mission } satisfies SaveMissionRequest)
+      body: JSON.stringify({ blueprint } satisfies SaveBlueprintRequest)
     });
-    return response.mission;
+    return response.blueprint;
   },
 
-  async exportMission(missionId: string): Promise<PortableMissionPackage> {
-    const response = await request<ExportMissionResponse>(`/api/missions/${missionId}/export`);
-    return response.missionPackage;
+  async exportBlueprint(blueprintId: string): Promise<PortableBlueprintPackage> {
+    const response = await request<ExportBlueprintResponse>(`/api/blueprints/${blueprintId}/export`);
+    return response.blueprintPackage;
   },
 
-  async importMissionPackage(missionPackage: PortableMissionPackage): Promise<MissionDefinition[]> {
-    const response = await request<ImportMissionPackageResponse>("/api/missions/import", {
+  async importBlueprintPackage(blueprintPackage: PortableBlueprintPackage): Promise<BlueprintDefinition[]> {
+    const response = await request<ImportBlueprintPackageResponse>("/api/blueprints/import", {
       method: "POST",
-      body: JSON.stringify({ missionPackage } satisfies ImportMissionPackageRequest)
+      body: JSON.stringify({ blueprintPackage } satisfies ImportBlueprintPackageRequest)
     });
-    return response.missions;
+    return response.blueprints;
   },
 
-  async startMissionRun(missionId: string): Promise<StartMissionRunResponse["run"]> {
-    const response = await request<StartMissionRunResponse>(`/api/missions/${missionId}/runs`, {
+  async startBlueprintRun(blueprintId: string): Promise<StartBlueprintRunResponse["run"]> {
+    const response = await request<StartBlueprintRunResponse>(`/api/blueprints/${blueprintId}/runs`, {
       method: "POST",
       body: JSON.stringify({ startedBy: "local-user" })
     });
     return response.run;
   },
 
-  async getLatestMissionRun(missionId: string): Promise<StartMissionRunResponse["run"] | undefined> {
-    const response = await request<LatestMissionRunResponse>(`/api/missions/${missionId}/runs/latest`);
+  async getLatestBlueprintRun(blueprintId: string): Promise<StartBlueprintRunResponse["run"] | undefined> {
+    const response = await request<LatestBlueprintRunResponse>(`/api/blueprints/${blueprintId}/runs/latest`);
     return response.run ?? undefined;
   },
 
-  async approveMissionRun(runId: string): Promise<MissionRunResponse["run"]> {
-    const response = await request<MissionRunResponse>(`/api/mission-runs/${runId}/approve`, {
+  async approveBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
       method: "POST",
       body: JSON.stringify({})
     });

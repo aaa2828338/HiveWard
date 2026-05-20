@@ -253,7 +253,7 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
 
 function formatAgentMessage(input: StartAgentTaskInput): string {
   return [
-    `Hiveward mission run: ${input.missionRunId}`,
+    `Hiveward blueprint run: ${input.blueprintRunId}`,
     `Hiveward node run: ${input.nodeRunId}`,
     "",
     input.prompt,

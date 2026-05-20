@@ -67,7 +67,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       provider: "claude",
       nodeRunId: input.nodeRunId,
-      missionRunId: input.missionRunId,
+      blueprintRunId: input.blueprintRunId,
       sessionKey,
       startedAt: now,
       abortController,
