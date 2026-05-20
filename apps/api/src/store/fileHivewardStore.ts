@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
@@ -7,201 +7,248 @@ import type {
   CompanyOverview,
   CompanyProfile,
   PendingApprovalItem,
-  PortableMissionPackage,
+  PortableBlueprintPackage,
   WorkspaceDashboard,
-  MissionDefinition,
-  MissionImportDefaults,
-  MissionNodeEvent,
-  MissionNodeRun,
-  MissionRun,
-  MissionRunView
+  BlueprintDefinition,
+  BlueprintImportDefaults,
+  BlueprintNodeEvent,
+  BlueprintNodeRun,
+  BlueprintRun,
+  BlueprintRunArchive,
+  BlueprintRunSummary,
+  BlueprintRunView
 } from "@hiveward/shared";
 import {
-  createBlankMission,
+  blueprintRunArchiveSchema,
+  createBlankBlueprint,
   createDefaultCompanies,
-  createDefaultMissions,
+  createDefaultBlueprints,
   createDefaultWorkspaceDashboard,
   defaultCompanyId,
-  hydrateImportedMission,
-  normalizeWorkspaceDashboard
+  hydrateImportedBlueprint,
+  normalizeWorkspaceDashboard,
+  resolveFinalRunResult
 } from "@hiveward/shared";
 
-interface HivewardStoreState {
+const storeIndexSchema = "hiveward.store-index/v1";
+
+interface BlueprintIndexEntry {
+  id: string;
+  companyId: string;
+  name: string;
+  description?: string;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface HivewardStoreIndex {
+  schema: typeof storeIndexSchema;
   companies: CompanyProfile[];
   selectedCompanyId: string | null;
-  missions: MissionDefinition[];
-  missionRuns: MissionRun[];
-  nodeRuns: MissionNodeRun[];
-  events: MissionNodeEvent[];
+  blueprintIndex: BlueprintIndexEntry[];
+  runIndex: BlueprintRunSummary[];
   catalogSnapshot?: CatalogSnapshot;
   companyDashboards: Record<string, WorkspaceDashboard>;
 }
 
-type RawHivewardStoreState = Partial<HivewardStoreState> & {
+type RawHivewardStoreIndex = Partial<HivewardStoreIndex> & {
   companyDashboards?: Record<string, Partial<WorkspaceDashboard>>;
+};
+
+type LegacyHivewardStoreState = Partial<RawHivewardStoreIndex> & {
+  blueprints?: BlueprintDefinition[];
+  blueprintRuns?: BlueprintRun[];
+  nodeRuns?: BlueprintNodeRun[];
+  events?: BlueprintNodeEvent[];
 };
 
 export class FileHivewardStore {
   private readonly filePath: string;
+  private readonly dataDir: string;
+  private readonly blueprintsDir: string;
+  private readonly runsDir: string;
   private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/hiveward-store.json")) {
     this.filePath = filePath;
+    this.dataDir = dirname(filePath);
+    this.blueprintsDir = join(this.dataDir, "blueprints");
+    this.runsDir = join(this.dataDir, "runs");
   }
 
   async init(): Promise<void> {
     await this.enqueue(async () => {
-      await mkdir(dirname(this.filePath), { recursive: true });
+      await mkdir(this.dataDir, { recursive: true });
+      await mkdir(this.blueprintsDir, { recursive: true });
+      await mkdir(this.runsDir, { recursive: true });
       try {
-        const state = await this.readStateUnlocked();
-        await this.writeStateUnlocked(state);
-      } catch {
+        const index = await this.readIndexUnlocked();
+        await this.writeIndexUnlocked(index);
+      } catch (error) {
+        if (!isFileNotFoundError(error)) {
+          throw error;
+        }
         const now = new Date().toISOString();
         const companies = createDefaultCompanies(now);
         const seededCompanyId = companies[0]?.id ?? defaultCompanyId;
-        await this.writeStateUnlocked({
+        const blueprints = createDefaultBlueprints(now, seededCompanyId);
+        const index: HivewardStoreIndex = {
+          schema: storeIndexSchema,
           companies,
           selectedCompanyId: seededCompanyId,
-          missions: createDefaultMissions(now, seededCompanyId),
-          missionRuns: [],
-          nodeRuns: [],
-          events: [],
+          blueprintIndex: blueprints.map(toBlueprintIndexEntry),
+          runIndex: [],
           companyDashboards: {
             [seededCompanyId]: createDefaultWorkspaceDashboard(now)
           }
-        });
+        };
+        await Promise.all(blueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
+        await this.writeIndexUnlocked(index);
       }
     });
   }
 
   async listCompanies(): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string }> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
+      const index = await this.readIndexUnlocked();
       return {
-        companies: this.buildCompanyOverviews(state),
-        selectedCompanyId: state.selectedCompanyId ?? undefined
+        companies: this.buildCompanyOverviews(index),
+        selectedCompanyId: index.selectedCompanyId ?? undefined
       };
     });
   }
 
   async selectCompany(companyId?: string): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string }> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
+      const index = await this.readIndexUnlocked();
       if (!companyId) {
-        state.selectedCompanyId = null;
-      } else if (state.companies.some((company) => company.id === companyId)) {
-        state.selectedCompanyId = companyId;
+        index.selectedCompanyId = null;
+      } else if (index.companies.some((company) => company.id === companyId)) {
+        index.selectedCompanyId = companyId;
       } else {
         throw new Error(`Company not found: ${companyId}`);
       }
 
-      await this.writeStateUnlocked(state);
+      await this.writeIndexUnlocked(index);
       return {
-        companies: this.buildCompanyOverviews(state),
-        selectedCompanyId: state.selectedCompanyId ?? undefined
+        companies: this.buildCompanyOverviews(index),
+        selectedCompanyId: index.selectedCompanyId ?? undefined
       };
     });
   }
 
-  async listMissions(): Promise<MissionDefinition[]> {
+  async listBlueprints(): Promise<BlueprintDefinition[]> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      return state.missions.filter((mission) => mission.companyId === companyId);
+      return Promise.all(
+        index.blueprintIndex
+          .filter((blueprint) => blueprint.companyId === companyId)
+          .map((blueprint) => this.readBlueprintUnlocked(blueprint.id))
+      );
     });
   }
 
-  async getMission(id: string): Promise<MissionDefinition | undefined> {
+  async getBlueprint(id: string): Promise<BlueprintDefinition | undefined> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return undefined;
-      return state.missions.find((mission) => mission.id === id && mission.companyId === companyId);
+      const indexed = index.blueprintIndex.find((blueprint) => blueprint.id === id && blueprint.companyId === companyId);
+      return indexed ? this.readBlueprintUnlocked(indexed.id) : undefined;
     });
   }
 
-  async saveMission(mission: MissionDefinition): Promise<MissionDefinition> {
+  async saveBlueprint(blueprint: BlueprintDefinition): Promise<BlueprintDefinition> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.requireSelectedCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
       const now = new Date().toISOString();
-      const existingIndex = state.missions.findIndex((item) => item.id === mission.id && item.companyId === companyId);
-      const currentVersion = existingIndex >= 0 ? state.missions[existingIndex]!.version : mission.version;
-      const currentCreatedAt = existingIndex >= 0 ? state.missions[existingIndex]!.createdAt : now;
-      const nextMission: MissionDefinition = {
-        ...mission,
+      const existingIndex = index.blueprintIndex.findIndex((item) => item.id === blueprint.id && item.companyId === companyId);
+      const currentVersion = existingIndex >= 0 ? index.blueprintIndex[existingIndex]!.version : blueprint.version;
+      const currentCreatedAt = existingIndex >= 0 ? index.blueprintIndex[existingIndex]!.createdAt : now;
+      const nextBlueprint: BlueprintDefinition = {
+        ...blueprint,
         companyId,
-        version: existingIndex >= 0 ? currentVersion + 1 : mission.version,
+        version: existingIndex >= 0 ? currentVersion + 1 : blueprint.version,
         updatedAt: now,
         createdAt: currentCreatedAt
       };
 
+      await this.writeBlueprintUnlocked(nextBlueprint);
       if (existingIndex >= 0) {
-        state.missions[existingIndex] = nextMission;
+        index.blueprintIndex[existingIndex] = toBlueprintIndexEntry(nextBlueprint);
       } else {
-        state.missions.push(nextMission);
+        index.blueprintIndex.push(toBlueprintIndexEntry(nextBlueprint));
       }
 
-      await this.writeStateUnlocked(state);
-      return nextMission;
+      await this.writeIndexUnlocked(index);
+      return nextBlueprint;
     });
   }
 
-  async createMission(input: { name?: string; description?: string } = {}): Promise<MissionDefinition> {
+  async createBlueprint(input: { name?: string; description?: string } = {}): Promise<BlueprintDefinition> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.requireSelectedCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
       const now = new Date().toISOString();
-      const mission = createBlankMission({
-        id: nextMissionId(state.missions),
+      const blueprint = createBlankBlueprint({
+        id: nextBlueprintId(index.blueprintIndex),
         companyId,
         now,
         name: input.name,
         description: input.description
       });
 
-      state.missions.push(mission);
-      await this.writeStateUnlocked(state);
-      return mission;
+      await this.writeBlueprintUnlocked(blueprint);
+      index.blueprintIndex.push(toBlueprintIndexEntry(blueprint));
+      await this.writeIndexUnlocked(index);
+      return blueprint;
     });
   }
 
-  async importMissionPackage(
-    missionPackage: PortableMissionPackage,
-    defaults: MissionImportDefaults = {}
-  ): Promise<MissionDefinition[]> {
+  async importBlueprintPackage(
+    blueprintPackage: PortableBlueprintPackage,
+    defaults: BlueprintImportDefaults = {}
+  ): Promise<BlueprintDefinition[]> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.requireSelectedCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
       const now = new Date().toISOString();
-      const imported: MissionDefinition[] = [];
+      const imported: BlueprintDefinition[] = [];
+      const knownBlueprints = [...index.blueprintIndex];
 
-      for (const portableMission of missionPackage.missions) {
-        const mission = hydrateImportedMission(portableMission, {
-          id: nextMissionId(state.missions),
+      for (const portableBlueprint of blueprintPackage.blueprints) {
+        const blueprint = hydrateImportedBlueprint(portableBlueprint, {
+          id: nextBlueprintId(knownBlueprints),
           companyId,
           now,
           defaults,
-          name: nextImportedMissionName(state.missions, portableMission.name)
+          name: nextImportedBlueprintName(knownBlueprints, portableBlueprint.name)
         });
-        state.missions.push(mission);
-        imported.push(mission);
+        const entry = toBlueprintIndexEntry(blueprint);
+        knownBlueprints.push(entry);
+        await this.writeBlueprintUnlocked(blueprint);
+        index.blueprintIndex.push(entry);
+        imported.push(blueprint);
       }
 
-      await this.writeStateUnlocked(state);
+      await this.writeIndexUnlocked(index);
       return imported;
     });
   }
 
-  async createMissionRun(mission: MissionDefinition, startedBy: string): Promise<MissionRun> {
+  async createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const run: MissionRun = {
+      const index = await this.readIndexUnlocked();
+      const run: BlueprintRun = {
         id: `run-${nanoid(10)}`,
-        companyId: mission.companyId,
-        missionId: mission.id,
-        missionVersion: mission.version,
+        companyId: blueprint.companyId,
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: blueprint.version,
         status: "queued",
         startedBy,
         startedAt: new Date().toISOString(),
@@ -210,123 +257,150 @@ export class FileHivewardStore {
         totalCostUsd: 0,
         openclawRefs: []
       };
-      state.missionRuns.push(run);
-      await this.writeStateUnlocked(state);
+      const summary = toBlueprintRunSummary(run, blueprint);
+      const archive: BlueprintRunArchive = {
+        schema: blueprintRunArchiveSchema,
+        run: summary,
+        blueprintSnapshot: blueprint,
+        nodeRuns: [],
+        events: [],
+        finalResult: null
+      };
+      await this.writeRunArchiveUnlocked(archive);
+      index.runIndex.push(summary);
+      await this.writeIndexUnlocked(index);
       return run;
     });
   }
 
-  async updateMissionRun(run: MissionRun): Promise<void> {
+  async updateBlueprintRun(run: BlueprintRun): Promise<void> {
     await this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const index = state.missionRuns.findIndex((item) => item.id === run.id);
-      if (index < 0) {
-        throw new Error(`Mission run not found: ${run.id}`);
+      const index = await this.readIndexUnlocked();
+      const runIndex = index.runIndex.findIndex((item) => item.id === run.id);
+      if (runIndex < 0) {
+        throw new Error(`Blueprint run not found: ${run.id}`);
       }
-      state.missionRuns[index] = run;
-      await this.writeStateUnlocked(state);
+      const archive = await this.readRunArchiveUnlocked(run.id);
+      const nextRun = toBlueprintRunSummary({ ...archive.run, ...run }, archive.blueprintSnapshot);
+      const nextArchive: BlueprintRunArchive = {
+        ...archive,
+        run: nextRun,
+        finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, nextRun.status)
+      };
+      index.runIndex[runIndex] = nextRun;
+      await this.writeRunArchiveUnlocked(nextArchive);
+      await this.writeIndexUnlocked(index);
     });
   }
 
-  async getMissionRun(id: string): Promise<MissionRun | undefined> {
+  async getBlueprintRun(id: string): Promise<BlueprintRun | undefined> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
-      const run = state.missionRuns.find((candidate) => candidate.id === id);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      const run = index.runIndex.find((candidate) => candidate.id === id);
       if (!run) return undefined;
       if (!companyId || run.companyId !== companyId) return undefined;
       return run;
     });
   }
 
-  async upsertNodeRun(nodeRun: MissionNodeRun): Promise<void> {
+  async upsertNodeRun(nodeRun: BlueprintNodeRun): Promise<void> {
     await this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const index = state.nodeRuns.findIndex((item) => item.id === nodeRun.id);
+      const archive = await this.readRunArchiveUnlocked(nodeRun.blueprintRunId);
+      const index = archive.nodeRuns.findIndex((item) => item.id === nodeRun.id);
       if (index >= 0) {
-        state.nodeRuns[index] = nodeRun;
+        archive.nodeRuns[index] = nodeRun;
       } else {
-        state.nodeRuns.push(nodeRun);
+        archive.nodeRuns.push(nodeRun);
       }
-      await this.writeStateUnlocked(state);
+      await this.writeRunArchiveUnlocked({
+        ...archive,
+        finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, archive.run.status)
+      });
     });
   }
 
-  async listNodeRuns(missionRunId: string): Promise<MissionNodeRun[]> {
+  async listNodeRuns(blueprintRunId: string): Promise<BlueprintNodeRun[]> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      return state.nodeRuns.filter((run) => run.missionRunId === missionRunId);
+      const archive = await this.readRunArchiveUnlocked(blueprintRunId);
+      return archive.nodeRuns;
     });
   }
 
-  async appendEvent(event: MissionNodeEvent): Promise<void> {
+  async appendEvent(event: BlueprintNodeEvent): Promise<void> {
     await this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      state.events.push(event);
-      await this.writeStateUnlocked(state);
+      const archive = await this.readRunArchiveUnlocked(event.blueprintRunId);
+      archive.events.push(event);
+      await this.writeRunArchiveUnlocked(archive);
     });
   }
 
-  async getRunView(missionRunId: string): Promise<MissionRunView | undefined> {
+  async getRunView(blueprintRunId: string): Promise<BlueprintRunView | undefined> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
-      const view = this.getRunViewFromState(state, missionRunId);
-      if (!view) return undefined;
-      if (!companyId || view.run.companyId !== companyId) return undefined;
-      return view;
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      const run = index.runIndex.find((item) => item.id === blueprintRunId);
+      if (!run || !companyId || run.companyId !== companyId) return undefined;
+      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(blueprintRunId));
     });
   }
 
-  async getLatestRunViewForMission(missionId: string): Promise<MissionRunView | undefined> {
+  async getLatestRunViewForBlueprint(blueprintId: string): Promise<BlueprintRunView | undefined> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return undefined;
-      const run = state.missionRuns
-        .filter((item) => item.companyId === companyId && item.missionId === missionId)
+      const run = index.runIndex
+        .filter((item) => item.companyId === companyId && item.blueprintId === blueprintId)
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
       if (!run) return undefined;
-      return this.getRunViewFromState(state, run.id);
+      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(run.id));
     });
   }
 
-  async listRunViews(): Promise<MissionRunView[]> {
+  async listRunViews(): Promise<BlueprintRunView[]> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      return state.missionRuns
+      const archives = await Promise.all(
+        index.runIndex
         .filter((run) => run.companyId === companyId)
         .slice()
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
-        .map((run) => this.getRunViewFromState(state, run.id))
-        .filter((view): view is MissionRunView => Boolean(view));
+          .map((run) => this.readRunArchiveUnlocked(run.id))
+      );
+      return archives.map((archive) => this.getRunViewFromArchive(archive));
     });
   }
 
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      return state.nodeRuns
-        .filter((nodeRun) => nodeRun.status === "waiting_approval")
-        .flatMap((nodeRun) => {
-          const run = state.missionRuns.find((candidate) => candidate.id === nodeRun.missionRunId);
-          const mission = state.missions.find((candidate) => candidate.id === nodeRun.missionId);
-          if (!run || !mission || run.companyId !== companyId || mission.companyId !== companyId) return [];
+      const archives = await Promise.all(
+        index.runIndex
+          .filter((run) => run.companyId === companyId)
+          .map((run) => this.readRunArchiveUnlocked(run.id))
+      );
+      return archives
+        .flatMap((archive) => archive.nodeRuns
+          .filter((nodeRun) => nodeRun.status === "waiting_approval")
+          .map((nodeRun) => ({ archive, nodeRun })))
+        .flatMap(({ archive, nodeRun }) => {
+          if (archive.run.companyId !== companyId || archive.blueprintSnapshot.companyId !== companyId) return [];
 
           const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
           const item: PendingApprovalItem = {
-            missionId: mission.id,
-            missionName: mission.name,
-            missionRunId: run.id,
+            blueprintId: archive.blueprintSnapshot.id,
+            blueprintName: archive.blueprintSnapshot.name,
+            blueprintRunId: archive.run.id,
             nodeRunId: nodeRun.id,
             nodeId: nodeRun.nodeId,
             nodeLabel: nodeRun.nodeLabel,
-            startedBy: run.startedBy,
-            startedAt: run.startedAt,
+            startedBy: archive.run.startedBy,
+            startedAt: archive.run.startedAt,
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
             approverHint: readString(output?.approverHint),
             instructions: readString(output?.instructions)
@@ -339,49 +413,40 @@ export class FileHivewardStore {
 
   async getDashboardState(): Promise<WorkspaceDashboard> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.getCurrentCompanyId(state);
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
       if (!companyId) {
         return createDefaultWorkspaceDashboard(new Date().toISOString());
       }
-      return state.companyDashboards[companyId] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
+      return index.companyDashboards[companyId] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
     });
   }
 
   async saveDashboardState(dashboard: WorkspaceDashboard): Promise<WorkspaceDashboard> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const companyId = this.requireSelectedCompanyId(state);
-      state.companyDashboards[companyId] = normalizeWorkspaceDashboard(dashboard, new Date().toISOString());
-      state.companyDashboards[companyId].updatedAt = new Date().toISOString();
-      await this.writeStateUnlocked(state);
-      return state.companyDashboards[companyId];
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      index.companyDashboards[companyId] = normalizeWorkspaceDashboard(dashboard, new Date().toISOString());
+      index.companyDashboards[companyId].updatedAt = new Date().toISOString();
+      await this.writeIndexUnlocked(index);
+      return index.companyDashboards[companyId];
     });
   }
 
   async saveCatalogSnapshot(snapshot: CatalogSnapshot): Promise<CatalogSnapshot> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      state.catalogSnapshot = snapshot;
-      await this.writeStateUnlocked(state);
+      const index = await this.readIndexUnlocked();
+      index.catalogSnapshot = snapshot;
+      await this.writeIndexUnlocked(index);
       return snapshot;
     });
   }
 
   async getCatalogSnapshot(): Promise<CatalogSnapshot | undefined> {
     return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      return state.catalogSnapshot;
+      const index = await this.readIndexUnlocked();
+      return index.catalogSnapshot;
     });
-  }
-
-  private async readStateUnlocked(): Promise<HivewardStoreState> {
-    const raw = await readFile(this.filePath, "utf8");
-    return this.normalizeState(JSON.parse(raw) as RawHivewardStoreState);
-  }
-
-  private async writeStateUnlocked(state: HivewardStoreState): Promise<void> {
-    await writeFile(this.filePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -393,85 +458,253 @@ export class FileHivewardStore {
     return next;
   }
 
-  private normalizeState(state: RawHivewardStoreState): HivewardStoreState {
-    const now = new Date().toISOString();
-    const companies = Array.isArray(state.companies) && state.companies.length > 0 ? state.companies.map((company) => normalizeCompany(company, now)) : createDefaultCompanies(now);
-    const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
-    const selectedCompanyId = normalizeSelectedCompanyId(state.selectedCompanyId, companies, primaryCompanyId);
-    const normalizedMissions = Array.isArray(state.missions)
-      ? state.missions.map((mission) => ({
-          ...mission,
-          companyId: readScopedCompanyId(mission.companyId, primaryCompanyId)
-        }))
-      : createDefaultMissions(now, primaryCompanyId);
-    const missionCompanyIds = new Map(normalizedMissions.map((mission) => [mission.id, mission.companyId]));
-    const normalizedRuns = Array.isArray(state.missionRuns)
-      ? state.missionRuns.map((run) => ({
-          ...run,
-          companyId: readScopedCompanyId(run.companyId ?? missionCompanyIds.get(run.missionId), primaryCompanyId)
-        }))
-      : [];
-
-    const companyDashboards: Record<string, WorkspaceDashboard> = {};
-    for (const company of companies) {
-      const rawDashboard = isRecord(state.companyDashboards) ? state.companyDashboards[company.id] : undefined;
-      companyDashboards[company.id] = normalizeWorkspaceDashboard(rawDashboard as Partial<WorkspaceDashboard> | undefined, now);
+  private async readIndexUnlocked(): Promise<HivewardStoreIndex> {
+    const raw = await readFile(this.filePath, "utf8");
+    const parsed = JSON.parse(raw) as LegacyHivewardStoreState;
+    if (parsed.schema === storeIndexSchema) {
+      return this.normalizeIndex(parsed as RawHivewardStoreIndex);
     }
+    return this.migrateLegacyStateUnlocked(parsed);
+  }
+
+  private async writeIndexUnlocked(index: HivewardStoreIndex): Promise<void> {
+    await safeWriteJson(this.filePath, index);
+  }
+
+  private async readBlueprintUnlocked(id: string): Promise<BlueprintDefinition> {
+    return JSON.parse(await readFile(this.blueprintPath(id), "utf8")) as BlueprintDefinition;
+  }
+
+  private async writeBlueprintUnlocked(blueprint: BlueprintDefinition): Promise<void> {
+    await safeWriteJson(this.blueprintPath(blueprint.id), blueprint);
+  }
+
+  private async readRunArchiveUnlocked(id: string): Promise<BlueprintRunArchive> {
+    const rawArchive = JSON.parse(await readFile(this.runArchivePath(id), "utf8")) as Partial<BlueprintRunArchive>;
+    const archive = rawArchive as BlueprintRunArchive;
+    return {
+      schema: blueprintRunArchiveSchema,
+      run: archive.run,
+      blueprintSnapshot: archive.blueprintSnapshot,
+      nodeRuns: Array.isArray(archive.nodeRuns) ? archive.nodeRuns : [],
+      events: Array.isArray(archive.events) ? archive.events : [],
+      finalResult: archive.finalResult ?? null
+    };
+  }
+
+  private async writeRunArchiveUnlocked(archive: BlueprintRunArchive): Promise<void> {
+    await safeWriteJson(this.runArchivePath(archive.run.id), archive);
+  }
+
+  private blueprintPath(id: string): string {
+    return join(this.blueprintsDir, `${id}.json`);
+  }
+
+  private runArchivePath(id: string): string {
+    return join(this.runsDir, `${id}.json`);
+  }
+
+  private normalizeIndex(rawIndex: RawHivewardStoreIndex): HivewardStoreIndex {
+    const now = new Date().toISOString();
+    const companies = normalizeCompanies(rawIndex.companies, now);
+    const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
+    const selectedCompanyId = normalizeSelectedCompanyId(rawIndex.selectedCompanyId, companies, primaryCompanyId);
+    const companyDashboards = normalizeCompanyDashboards(rawIndex.companyDashboards, companies, now);
 
     return {
+      schema: storeIndexSchema,
       companies,
       selectedCompanyId,
-      missions: normalizedMissions,
-      missionRuns: normalizedRuns,
-      nodeRuns: Array.isArray(state.nodeRuns) ? state.nodeRuns : [],
-      events: Array.isArray(state.events) ? state.events : [],
-      catalogSnapshot: state.catalogSnapshot,
+      blueprintIndex: Array.isArray(rawIndex.blueprintIndex)
+        ? rawIndex.blueprintIndex.map((entry) => normalizeBlueprintIndexEntry(entry, primaryCompanyId, now))
+        : [],
+      runIndex: Array.isArray(rawIndex.runIndex)
+        ? rawIndex.runIndex.map((run) => normalizeRunSummary(run, primaryCompanyId))
+        : [],
+      catalogSnapshot: rawIndex.catalogSnapshot,
       companyDashboards
     };
   }
 
-  private getRunViewFromState(state: HivewardStoreState, missionRunId: string): MissionRunView | undefined {
-    const run = state.missionRuns.find((item) => item.id === missionRunId);
-    if (!run) return undefined;
+  private async migrateLegacyStateUnlocked(state: LegacyHivewardStoreState): Promise<HivewardStoreIndex> {
+    const now = new Date().toISOString();
+    const companies = normalizeCompanies(state.companies, now);
+    const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
+    const selectedCompanyId = normalizeSelectedCompanyId(state.selectedCompanyId, companies, primaryCompanyId);
+    const normalizedBlueprints = Array.isArray(state.blueprints)
+      ? state.blueprints.map((blueprint) => ({
+          ...blueprint,
+          companyId: readScopedCompanyId(blueprint.companyId, primaryCompanyId)
+        }))
+      : createDefaultBlueprints(now, primaryCompanyId);
+    const blueprintCompanyIds = new Map(normalizedBlueprints.map((blueprint) => [blueprint.id, blueprint.companyId]));
+    const normalizedRuns = Array.isArray(state.blueprintRuns)
+      ? state.blueprintRuns.map((run) => ({
+          ...run,
+          companyId: readScopedCompanyId(run.companyId ?? blueprintCompanyIds.get(run.blueprintId), primaryCompanyId)
+        }))
+      : [];
+    const nodeRuns = Array.isArray(state.nodeRuns) ? state.nodeRuns : [];
+    const events = Array.isArray(state.events) ? state.events : [];
+    const index: HivewardStoreIndex = {
+      schema: storeIndexSchema,
+      companies,
+      selectedCompanyId,
+      blueprintIndex: normalizedBlueprints.map(toBlueprintIndexEntry),
+      runIndex: normalizedRuns.map((run) => {
+        const blueprint = normalizedBlueprints.find((candidate) => candidate.id === run.blueprintId);
+        return toBlueprintRunSummary(run, blueprint);
+      }),
+      catalogSnapshot: state.catalogSnapshot,
+      companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now)
+    };
+
+    await Promise.all(normalizedBlueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
+    for (const run of index.runIndex) {
+      const blueprint = normalizedBlueprints.find((candidate) => candidate.id === run.blueprintId) ?? createArchivePlaceholderBlueprint(run, now);
+      const archiveNodeRuns = nodeRuns.filter((nodeRun) => nodeRun.blueprintRunId === run.id);
+      const archive: BlueprintRunArchive = {
+        schema: blueprintRunArchiveSchema,
+        run,
+        blueprintSnapshot: blueprint,
+        nodeRuns: archiveNodeRuns,
+        events: events.filter((event) => event.blueprintRunId === run.id),
+        finalResult: resolveFinalRunResult(blueprint, archiveNodeRuns, run.status)
+      };
+      await this.writeRunArchiveUnlocked(archive);
+    }
+    await this.writeIndexUnlocked(index);
+    return index;
+  }
+
+  private getRunViewFromArchive(archive: BlueprintRunArchive): BlueprintRunView {
     return {
-      run,
-      nodeRuns: state.nodeRuns.filter((item) => item.missionRunId === missionRunId),
-      events: state.events.filter((item) => item.missionRunId === missionRunId)
+      run: archive.run,
+      nodeRuns: archive.nodeRuns,
+      events: archive.events,
+      finalResult: archive.finalResult
     };
   }
 
-  private buildCompanyOverviews(state: HivewardStoreState): CompanyOverview[] {
-    return state.companies.map((company) => {
-      const missions = state.missions.filter((mission) => mission.companyId === company.id);
-      const runs = state.missionRuns.filter((run) => run.companyId === company.id);
-      const runIds = new Set(runs.map((run) => run.id));
-      const dashboard = state.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
+  private buildCompanyOverviews(index: HivewardStoreIndex): CompanyOverview[] {
+    return index.companies.map((company) => {
+      const blueprints = index.blueprintIndex.filter((blueprint) => blueprint.companyId === company.id);
+      const runs = index.runIndex.filter((run) => run.companyId === company.id);
+      const dashboard = index.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
       return {
         ...company,
-        missionCount: missions.length,
+        blueprintCount: blueprints.length,
         runCount: runs.length,
         totalTokens: runs.reduce((sum, run) => sum + run.totalInputTokens + run.totalOutputTokens, 0),
         totalCostUsd: Number(runs.reduce((sum, run) => sum + run.totalCostUsd, 0).toFixed(6)),
         dashboardWidgetCount: dashboard.dashboardWidgets.length,
         savedViewCount: dashboard.savedViews.length,
         noteCount: dashboard.notes.length,
-        activeApprovalCount: state.nodeRuns.filter((nodeRun) => nodeRun.status === "waiting_approval" && runIds.has(nodeRun.missionRunId)).length,
+        activeApprovalCount: runs.filter((run) => run.status === "waiting_approval").length,
         latestRunAt: maxTimestamp(runs.map((run) => run.endedAt ?? run.startedAt))
       };
     });
   }
 
-  private getCurrentCompanyId(state: HivewardStoreState): string | undefined {
-    return state.selectedCompanyId ?? undefined;
+  private getCurrentCompanyId(index: HivewardStoreIndex): string | undefined {
+    return index.selectedCompanyId ?? undefined;
   }
 
-  private requireSelectedCompanyId(state: HivewardStoreState): string {
-    const companyId = this.getCurrentCompanyId(state);
+  private requireSelectedCompanyId(index: HivewardStoreIndex): string {
+    const companyId = this.getCurrentCompanyId(index);
     if (!companyId) {
       throw new Error("No company selected.");
     }
     return companyId;
   }
+}
+
+async function safeWriteJson(filePath: string, value: unknown): Promise<void> {
+  await mkdir(dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${nanoid(8)}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(tempPath, filePath);
+}
+
+function normalizeCompanies(value: unknown, now: string): CompanyProfile[] {
+  return Array.isArray(value) && value.length > 0
+    ? (value as CompanyProfile[]).map((company) => normalizeCompany(company, now))
+    : createDefaultCompanies(now);
+}
+
+function normalizeCompanyDashboards(
+  value: unknown,
+  companies: CompanyProfile[],
+  now: string
+): Record<string, WorkspaceDashboard> {
+  const companyDashboards: Record<string, WorkspaceDashboard> = {};
+  for (const company of companies) {
+    const rawDashboard = isRecord(value) ? value[company.id] : undefined;
+    companyDashboards[company.id] = normalizeWorkspaceDashboard(rawDashboard as Partial<WorkspaceDashboard> | undefined, now);
+  }
+  return companyDashboards;
+}
+
+function normalizeBlueprintIndexEntry(
+  entry: BlueprintIndexEntry,
+  fallbackCompanyId: string,
+  now: string
+): BlueprintIndexEntry {
+  return {
+    id: entry.id,
+    companyId: readScopedCompanyId(entry.companyId, fallbackCompanyId),
+    name: entry.name,
+    description: entry.description,
+    version: entry.version,
+    createdAt: entry.createdAt || now,
+    updatedAt: entry.updatedAt || now
+  };
+}
+
+function normalizeRunSummary(run: BlueprintRunSummary, fallbackCompanyId: string): BlueprintRunSummary {
+  return {
+    ...run,
+    companyId: readScopedCompanyId(run.companyId, fallbackCompanyId),
+    blueprintName: run.blueprintName || run.blueprintId
+  };
+}
+
+function toBlueprintIndexEntry(blueprint: BlueprintDefinition): BlueprintIndexEntry {
+  return {
+    id: blueprint.id,
+    companyId: blueprint.companyId,
+    name: blueprint.name,
+    description: blueprint.description,
+    version: blueprint.version,
+    createdAt: blueprint.createdAt,
+    updatedAt: blueprint.updatedAt
+  };
+}
+
+function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDefinition): BlueprintRunSummary {
+  return {
+    ...run,
+    blueprintName: run.blueprintName ?? blueprint?.name ?? run.blueprintId
+  };
+}
+
+function createArchivePlaceholderBlueprint(run: BlueprintRunSummary, now: string): BlueprintDefinition {
+  return {
+    id: run.blueprintId,
+    companyId: run.companyId,
+    name: run.blueprintName,
+    version: run.blueprintVersion,
+    nodes: [],
+    edges: [],
+    variables: {},
+    display: {},
+    createdAt: run.startedAt || now,
+    updatedAt: run.endedAt ?? run.startedAt ?? now
+  };
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return isRecord(error) && error.code === "ENOENT";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -516,18 +749,18 @@ function maxTimestamp(values: Array<string | undefined>): string | undefined {
   return normalized.sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0];
 }
 
-function nextMissionId(missions: MissionDefinition[]): string {
-  const used = new Set(missions.map((mission) => mission.id));
-  let id = `mission-${nanoid(8)}`;
+function nextBlueprintId(blueprints: Array<{ id: string }>): string {
+  const used = new Set(blueprints.map((blueprint) => blueprint.id));
+  let id = `blueprint-${nanoid(8)}`;
   while (used.has(id)) {
-    id = `mission-${nanoid(8)}`;
+    id = `blueprint-${nanoid(8)}`;
   }
   return id;
 }
 
-function nextImportedMissionName(missions: MissionDefinition[], baseName: string): string {
-  const normalizedBase = baseName.trim() || "Imported mission";
-  const used = new Set(missions.map((mission) => mission.name));
+function nextImportedBlueprintName(blueprints: Array<{ name: string }>, baseName: string): string {
+  const normalizedBase = baseName.trim() || "Imported blueprint";
+  const used = new Set(blueprints.map((blueprint) => blueprint.name));
   if (!used.has(normalizedBase)) return normalizedBase;
 
   let index = 2;

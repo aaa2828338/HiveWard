@@ -1,12 +1,12 @@
 import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
 
-export type AgentMissionNodeType =
+export type AgentBlueprintNodeType =
   | "openclaw_agent"
   | "codex_agent"
   | "claude_code_agent";
 
-export type MissionNodeType =
-  | AgentMissionNodeType
+export type BlueprintNodeType =
+  | AgentBlueprintNodeType
   | "parallel_agents"
   | "manager"
   | "manager_slot"
@@ -18,7 +18,7 @@ export type MissionNodeType =
   | "note"
   | "group";
 
-export type MissionRunStatus =
+export type BlueprintRunStatus =
   | "queued"
   | "running"
   | "succeeded"
@@ -26,7 +26,7 @@ export type MissionRunStatus =
   | "cancelled"
   | "waiting_approval";
 
-export type MissionNodeRunStatus =
+export type BlueprintNodeRunStatus =
   | "queued"
   | "running"
   | "succeeded"
@@ -35,7 +35,7 @@ export type MissionNodeRunStatus =
   | "skipped"
   | "waiting_approval";
 
-export type MissionNodeResultRole = "auto" | "final" | "ignore";
+export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
 
 export interface CanvasPosition {
   x: number;
@@ -47,13 +47,13 @@ export interface CanvasSize {
   height: number;
 }
 
-export interface MissionNodeBaseConfig {
+export interface BlueprintNodeBaseConfig {
   label: string;
   description?: string;
-  resultRole?: MissionNodeResultRole;
+  resultRole?: BlueprintNodeResultRole;
 }
 
-export interface AgentNodeConfig extends MissionNodeBaseConfig {
+export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
   agentId?: string;
   agentName: string;
   prompt: string;
@@ -65,56 +65,56 @@ export interface AgentNodeConfig extends MissionNodeBaseConfig {
   tools: string[];
 }
 
-export interface ParallelAgentsNodeConfig extends MissionNodeBaseConfig {
+export interface ParallelAgentsNodeConfig extends BlueprintNodeBaseConfig {
   agents: AgentNodeConfig[];
   waitFor: "all" | "first_success";
 }
 
-export interface ManagerNodeConfig extends MissionNodeBaseConfig {
+export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   portCount: number;
   maxHandoffs: number;
   instructions?: string;
 }
 
-export interface ManagerSlotNodeConfig extends MissionNodeBaseConfig {
+export interface ManagerSlotNodeConfig extends BlueprintNodeBaseConfig {
   managerNodeId: string;
   slot: number;
 }
 
-export interface LoopNodeConfig extends MissionNodeBaseConfig {
+export interface LoopNodeConfig extends BlueprintNodeBaseConfig {
   maxIterations: number;
 }
 
-export interface ConditionNodeConfig extends MissionNodeBaseConfig {
+export interface ConditionNodeConfig extends BlueprintNodeBaseConfig {
   expression: string;
 }
 
-export interface SummaryNodeConfig extends MissionNodeBaseConfig {
+export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
   mode: "structured_merge" | "openclaw_agent";
   prompt?: string;
   modelId?: string;
 }
 
-export interface ApprovalNodeConfig extends MissionNodeBaseConfig {
+export interface ApprovalNodeConfig extends BlueprintNodeBaseConfig {
   approverHint?: string;
   instructions?: string;
 }
 
-export interface SendNodeConfig extends MissionNodeBaseConfig {
+export interface SendNodeConfig extends BlueprintNodeBaseConfig {
   channelId: string;
   target: string;
   bodyTemplate: string;
 }
 
-export interface NoteNodeConfig extends MissionNodeBaseConfig {
+export interface NoteNodeConfig extends BlueprintNodeBaseConfig {
   body: string;
 }
 
-export interface GroupNodeConfig extends MissionNodeBaseConfig {
+export interface GroupNodeConfig extends BlueprintNodeBaseConfig {
   color: string;
 }
 
-export type MissionNodeConfig =
+export type BlueprintNodeConfig =
   | AgentNodeConfig
   | ParallelAgentsNodeConfig
   | ManagerNodeConfig
@@ -127,27 +127,27 @@ export type MissionNodeConfig =
   | NoteNodeConfig
   | GroupNodeConfig;
 
-export function isAgentMissionNodeType(type: MissionNodeType): type is AgentMissionNodeType {
+export function isAgentBlueprintNodeType(type: BlueprintNodeType): type is AgentBlueprintNodeType {
   return type === "openclaw_agent" || type === "codex_agent" || type === "claude_code_agent";
 }
 
-export function resolveAgentNodeSource(type: AgentMissionNodeType): OpenClawObjectSource {
+export function resolveAgentNodeSource(type: AgentBlueprintNodeType): OpenClawObjectSource {
   if (type === "codex_agent") return "codex";
   if (type === "claude_code_agent") return "claude";
   return "openclaw";
 }
 
-export interface MissionNode {
+export interface BlueprintNode {
   id: string;
-  type: MissionNodeType;
+  type: BlueprintNodeType;
   position: CanvasPosition;
   size?: CanvasSize;
-  config: MissionNodeConfig;
+  config: BlueprintNodeConfig;
   parentId?: string;
   disabled?: boolean;
 }
 
-export interface MissionEdge {
+export interface BlueprintEdge {
   id: string;
   source: string;
   target: string;
@@ -157,14 +157,14 @@ export interface MissionEdge {
   condition?: "true" | "false" | "success" | "failure";
 }
 
-export interface MissionDefinition {
+export interface BlueprintDefinition {
   id: string;
   companyId: string;
   name: string;
   description?: string;
   version: number;
-  nodes: MissionNode[];
-  edges: MissionEdge[];
+  nodes: BlueprintNode[];
+  edges: BlueprintEdge[];
   variables: Record<string, string>;
   display: {
     viewport?: {
@@ -177,32 +177,32 @@ export interface MissionDefinition {
   updatedAt: string;
 }
 
-export const portableMissionPackageSchema = "hiveward.mission-package/v1";
+export const portableBlueprintPackageSchema = "hiveward.blueprint-package/v1";
 
-export type PortableMissionDefinition = Pick<
-  MissionDefinition,
+export type PortableBlueprintDefinition = Pick<
+  BlueprintDefinition,
   "id" | "name" | "description" | "version" | "nodes" | "edges" | "variables" | "display"
 >;
 
-export interface PortableMissionPackage {
-  schema: typeof portableMissionPackageSchema;
+export interface PortableBlueprintPackage {
+  schema: typeof portableBlueprintPackageSchema;
   exportedAt: string;
-  missions: PortableMissionDefinition[];
+  blueprints: PortableBlueprintDefinition[];
 }
 
-export interface MissionImportDefaults {
+export interface BlueprintImportDefaults {
   agentId?: string;
   modelId?: string;
   channelId?: string;
 }
 
-export interface MissionRun {
+export interface BlueprintRun {
   id: string;
   companyId: string;
-  missionId: string;
-  missionName?: string;
-  missionVersion: number;
-  status: MissionRunStatus;
+  blueprintId: string;
+  blueprintName?: string;
+  blueprintVersion: number;
+  status: BlueprintRunStatus;
   startedBy: string;
   startedAt: string;
   endedAt?: string;
@@ -213,14 +213,14 @@ export interface MissionRun {
   openclawRefs: OpenClawObjectRef[];
 }
 
-export interface MissionNodeRun {
+export interface BlueprintNodeRun {
   id: string;
-  missionRunId: string;
-  missionId: string;
+  blueprintRunId: string;
+  blueprintId: string;
   nodeId: string;
   nodeLabel: string;
-  nodeType: MissionNodeType;
-  status: MissionNodeRunStatus;
+  nodeType: BlueprintNodeType;
+  status: BlueprintNodeRunStatus;
   queuedAt: string;
   startedAt?: string;
   endedAt?: string;
@@ -231,44 +231,44 @@ export interface MissionNodeRun {
   openclawRef?: OpenClawObjectRef;
 }
 
-export interface MissionNodeEvent {
+export interface BlueprintNodeEvent {
   id: string;
-  missionRunId: string;
+  blueprintRunId: string;
   nodeRunId?: string;
   type:
-    | "mission.run.started"
+    | "blueprint.run.started"
     | "node.run.queued"
     | "node.run.started"
     | "node.run.waiting_approval"
     | "node.run.completed"
     | "node.run.failed"
     | "node.run.cancelled"
-    | "mission.run.completed"
-    | "mission.run.failed";
+    | "blueprint.run.completed"
+    | "blueprint.run.failed";
   message: string;
   createdAt: string;
   openclawRef?: OpenClawObjectRef;
 }
 
-export interface MissionRunView {
-  run: MissionRun;
-  nodeRuns: MissionNodeRun[];
-  events: MissionNodeEvent[];
+export interface BlueprintRunView {
+  run: BlueprintRun;
+  nodeRuns: BlueprintNodeRun[];
+  events: BlueprintNodeEvent[];
   finalResult?: FinalRunResult | null;
 }
 
-export interface MissionRunSummary extends MissionRun {
-  missionName: string;
+export interface BlueprintRunSummary extends BlueprintRun {
+  blueprintName: string;
 }
 
-export const missionRunArchiveSchema = "hiveward.run-archive/v1";
+export const blueprintRunArchiveSchema = "hiveward.run-archive/v1";
 
-export interface MissionRunArchive {
-  schema: typeof missionRunArchiveSchema;
-  run: MissionRunSummary;
-  missionSnapshot: MissionDefinition;
-  nodeRuns: MissionNodeRun[];
-  events: MissionNodeEvent[];
+export interface BlueprintRunArchive {
+  schema: typeof blueprintRunArchiveSchema;
+  run: BlueprintRunSummary;
+  blueprintSnapshot: BlueprintDefinition;
+  nodeRuns: BlueprintNodeRun[];
+  events: BlueprintNodeEvent[];
   finalResult: FinalRunResult | null;
 }
 
@@ -281,12 +281,12 @@ export type FinalRunResultSelectionReason =
 
 export interface FinalRunResultCandidate {
   nodeRunId: string;
-  missionRunId: string;
-  missionId: string;
+  blueprintRunId: string;
+  blueprintId: string;
   nodeId: string;
   nodeLabel: string;
-  nodeType: MissionNodeType;
-  resultRole: MissionNodeResultRole;
+  nodeType: BlueprintNodeType;
+  resultRole: BlueprintNodeResultRole;
   selectionReason: FinalRunResultSelectionReason;
   output: unknown;
   endedAt?: string;
@@ -295,12 +295,12 @@ export interface FinalRunResultCandidate {
 
 export interface FinalRunNodeContext {
   nodeRunId: string;
-  missionRunId: string;
-  missionId: string;
+  blueprintRunId: string;
+  blueprintId: string;
   nodeId: string;
   nodeLabel: string;
-  nodeType: MissionNodeType;
-  status: MissionNodeRunStatus;
+  nodeType: BlueprintNodeType;
+  status: BlueprintNodeRunStatus;
   input?: unknown;
   output?: unknown;
   error?: string;
@@ -315,7 +315,7 @@ export interface FinalRunResult {
   waitingApprovalNode?: FinalRunNodeContext;
 }
 
-const resultProducingNodeTypes = new Set<MissionNodeType>([
+const resultProducingNodeTypes = new Set<BlueprintNodeType>([
   "openclaw_agent",
   "codex_agent",
   "claude_code_agent",
@@ -327,11 +327,11 @@ const resultProducingNodeTypes = new Set<MissionNodeType>([
 const managerOutHandlePrefix = "manager-out-";
 
 export function resolveFinalRunResult(
-  mission: MissionDefinition,
-  nodeRuns: MissionNodeRun[],
-  runStatus?: MissionRunStatus
+  blueprint: BlueprintDefinition,
+  nodeRuns: BlueprintNodeRun[],
+  runStatus?: BlueprintRunStatus
 ): FinalRunResult | null {
-  const nodesById = new Map(mission.nodes.map((node) => [node.id, node]));
+  const nodesById = new Map(blueprint.nodes.map((node) => [node.id, node]));
   const indexedCandidates = nodeRuns
     .map((nodeRun, index) => {
       const node = nodesById.get(nodeRun.nodeId);
@@ -348,7 +348,7 @@ export function resolveFinalRunResult(
   const explicitFinals = indexedCandidates.filter((candidate) => candidate.resultRole === "final");
   const selectedCandidates = explicitFinals.length > 0
     ? explicitFinals.map((candidate) => toFinalRunResultCandidate(candidate, "explicit_final"))
-    : resolveAutomaticFinalCandidates(mission, indexedCandidates)
+    : resolveAutomaticFinalCandidates(blueprint, indexedCandidates)
         .map(({ candidate, reason }) => toFinalRunResultCandidate(candidate, reason));
 
   const failedNode = [...nodeRuns]
@@ -373,23 +373,23 @@ export function resolveFinalRunResult(
 
 interface IndexedFinalCandidate {
   index: number;
-  nodeRun: MissionNodeRun;
-  node?: MissionNode;
-  nodeType: MissionNodeType;
-  resultRole: MissionNodeResultRole;
+  nodeRun: BlueprintNodeRun;
+  node?: BlueprintNode;
+  nodeType: BlueprintNodeType;
+  resultRole: BlueprintNodeResultRole;
 }
 
 function resolveAutomaticFinalCandidates(
-  mission: MissionDefinition,
+  blueprint: BlueprintDefinition,
   candidates: IndexedFinalCandidate[]
 ): Array<{ candidate: IndexedFinalCandidate; reason: FinalRunResultSelectionReason }> {
   const automaticCandidates = candidates.filter(
-    (candidate) => candidate.resultRole !== "final" && !isManagerInternalAutoCandidate(mission, candidate.node)
+    (candidate) => candidate.resultRole !== "final" && !isManagerInternalAutoCandidate(blueprint, candidate.node)
   );
   const terminalCandidates = automaticCandidates.filter(
     (candidate) =>
       !hasLaterSameNodeCandidate(candidate, automaticCandidates) &&
-      !hasLaterDownstreamResultCandidate(mission, candidate, automaticCandidates)
+      !hasLaterDownstreamResultCandidate(blueprint, candidate, automaticCandidates)
   );
 
   if (terminalCandidates.length > 0) {
@@ -401,9 +401,9 @@ function resolveAutomaticFinalCandidates(
 }
 
 function isSuccessfulResultCandidate(
-  nodeType: MissionNodeType,
-  nodeRun: MissionNodeRun,
-  resultRole: MissionNodeResultRole
+  nodeType: BlueprintNodeType,
+  nodeRun: BlueprintNodeRun,
+  resultRole: BlueprintNodeResultRole
 ): boolean {
   return (
     resultRole !== "ignore" &&
@@ -413,13 +413,13 @@ function isSuccessfulResultCandidate(
   );
 }
 
-function isManagerInternalAutoCandidate(mission: MissionDefinition, node: MissionNode | undefined): boolean {
+function isManagerInternalAutoCandidate(blueprint: BlueprintDefinition, node: BlueprintNode | undefined): boolean {
   if (!node) return false;
   if (node.parentId) return true;
 
-  return mission.edges.some((edge) => {
+  return blueprint.edges.some((edge) => {
     if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
-    const source = mission.nodes.find((candidate) => candidate.id === edge.source);
+    const source = blueprint.nodes.find((candidate) => candidate.id === edge.source);
     return source?.type === "manager";
   });
 }
@@ -432,7 +432,7 @@ function hasLaterSameNodeCandidate(
 }
 
 function hasLaterDownstreamResultCandidate(
-  mission: MissionDefinition,
+  blueprint: BlueprintDefinition,
   candidate: IndexedFinalCandidate,
   candidates: IndexedFinalCandidate[]
 ): boolean {
@@ -440,13 +440,13 @@ function hasLaterDownstreamResultCandidate(
     (item) =>
       item.index > candidate.index &&
       item.nodeRun.id !== candidate.nodeRun.id &&
-      isDownstreamNode(mission, candidate.nodeRun.nodeId, item.nodeRun.nodeId)
+      isDownstreamNode(blueprint, candidate.nodeRun.nodeId, item.nodeRun.nodeId)
   );
 }
 
-function isDownstreamNode(mission: MissionDefinition, sourceNodeId: string, targetNodeId: string): boolean {
+function isDownstreamNode(blueprint: BlueprintDefinition, sourceNodeId: string, targetNodeId: string): boolean {
   const visited = new Set<string>();
-  const queue = mission.edges.filter((edge) => edge.source === sourceNodeId).map((edge) => edge.target);
+  const queue = blueprint.edges.filter((edge) => edge.source === sourceNodeId).map((edge) => edge.target);
 
   while (queue.length > 0) {
     const nextNodeId = queue.shift()!;
@@ -454,7 +454,7 @@ function isDownstreamNode(mission: MissionDefinition, sourceNodeId: string, targ
     if (visited.has(nextNodeId)) continue;
 
     visited.add(nextNodeId);
-    queue.push(...mission.edges.filter((edge) => edge.source === nextNodeId).map((edge) => edge.target));
+    queue.push(...blueprint.edges.filter((edge) => edge.source === nextNodeId).map((edge) => edge.target));
   }
 
   return false;
@@ -466,8 +466,8 @@ function toFinalRunResultCandidate(
 ): FinalRunResultCandidate {
   return {
     nodeRunId: candidate.nodeRun.id,
-    missionRunId: candidate.nodeRun.missionRunId,
-    missionId: candidate.nodeRun.missionId,
+    blueprintRunId: candidate.nodeRun.blueprintRunId,
+    blueprintId: candidate.nodeRun.blueprintId,
     nodeId: candidate.nodeRun.nodeId,
     nodeLabel: candidate.nodeRun.nodeLabel,
     nodeType: candidate.nodeType,
@@ -479,11 +479,11 @@ function toFinalRunResultCandidate(
   };
 }
 
-function toFinalRunNodeContext(nodeRun: MissionNodeRun): FinalRunNodeContext {
+function toFinalRunNodeContext(nodeRun: BlueprintNodeRun): FinalRunNodeContext {
   return {
     nodeRunId: nodeRun.id,
-    missionRunId: nodeRun.missionRunId,
-    missionId: nodeRun.missionId,
+    blueprintRunId: nodeRun.blueprintRunId,
+    blueprintId: nodeRun.blueprintId,
     nodeId: nodeRun.nodeId,
     nodeLabel: nodeRun.nodeLabel,
     nodeType: nodeRun.nodeType,
@@ -497,23 +497,23 @@ function toFinalRunNodeContext(nodeRun: MissionNodeRun): FinalRunNodeContext {
 }
 
 function resolveFinalRunResultState(
-  runStatus: MissionRunStatus | undefined,
+  runStatus: BlueprintRunStatus | undefined,
   candidates: FinalRunResultCandidate[],
-  failedNode: MissionNodeRun | undefined,
-  waitingApprovalNode: MissionNodeRun | undefined
+  failedNode: BlueprintNodeRun | undefined,
+  waitingApprovalNode: BlueprintNodeRun | undefined
 ): FinalRunResultState {
   if (runStatus === "failed" || failedNode) return "failed";
   if (runStatus === "waiting_approval" || waitingApprovalNode) return "waiting_approval";
   return candidates.length > 0 ? "available" : "empty";
 }
 
-export function createStarterMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
+export function createStarterBlueprint(now: string, companyId = "company-hiveward-studio"): BlueprintDefinition {
   return {
-    id: "starter-mission",
+    id: "starter-blueprint",
     companyId,
     name: "Multi-agent delivery review",
     description:
-      "A governed Hiveward mission for requirements, architecture, test review, approval, and delivery through full agent harnesses.",
+      "A governed Hiveward blueprint for requirements, architecture, test review, approval, and delivery through full agent harnesses.",
     version: 1,
     nodes: [
       {
@@ -580,7 +580,7 @@ export function createStarterMission(now: string, companyId = "company-hiveward-
           label: "Send to Slack",
           channelId: "slack",
           target: "#engineering",
-          bodyTemplate: "Mission {{mission.name}} completed. Summary: {{summary}}"
+          bodyTemplate: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}"
         }
       }
     ],
@@ -601,13 +601,13 @@ export function createStarterMission(now: string, companyId = "company-hiveward-
   };
 }
 
-export function createRealThreeAgentMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
+export function createRealThreeAgentBlueprint(now: string, companyId = "company-hiveward-studio"): BlueprintDefinition {
   return {
-    id: "real-three-agent-mission",
+    id: "real-three-agent-blueprint",
     companyId,
     name: "Real 3-node OpenClaw agent chain",
     description:
-      "A minimal executable Hiveward mission that calls the real OpenClaw agent configured as main. Each node receives upstream output from the previous node.",
+      "A minimal executable Hiveward blueprint that calls the real OpenClaw agent configured as main. Each node receives upstream output from the previous node.",
     version: 1,
     nodes: [
       {
@@ -663,19 +663,19 @@ export function createRealThreeAgentMission(now: string, companyId = "company-hi
   };
 }
 
-export function createMultiAgentCompatibilityMission(
+export function createMultiAgentCompatibilityBlueprint(
   now: string,
   companyId = "company-hiveward-studio",
   workingDirectory = ""
-): MissionDefinition {
+): BlueprintDefinition {
   const workspaceConfig = workingDirectory ? { workingDirectory } : {};
 
   return {
-    id: "multi-agent-compatibility-mission",
+    id: "multi-agent-compatibility-blueprint",
     companyId,
     name: "Multi-agent compatibility smoke test",
     description:
-      "A focused mission that validates OpenClaw, Codex, and Claude Code agent nodes through one shared upstream payload and one merged result.",
+      "A focused blueprint that validates OpenClaw, Codex, and Claude Code agent nodes through one shared upstream payload and one merged result.",
     version: 1,
     nodes: [
       {
@@ -687,7 +687,7 @@ export function createMultiAgentCompatibilityMission(
           agentId: "main",
           agentName: "openclaw-compat-brief",
           prompt:
-            "Create a concise JSON compatibility brief for this Hiveward mission. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
+            "Create a concise JSON compatibility brief for this Hiveward blueprint. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
           tools: []
         }
       },
@@ -781,13 +781,13 @@ export function createMultiAgentCompatibilityMission(
   };
 }
 
-export function createManagerDrivenHtmlMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
+export function createManagerDrivenHtmlBlueprint(now: string, companyId = "company-hiveward-studio"): BlueprintDefinition {
   return {
-    id: "manager-driven-html-mission",
+    id: "manager-driven-html-blueprint",
     companyId,
     name: "Manager-driven HTML delivery",
     description:
-      "A manager coordinates two mission slots: news research plus an HTML execution document, then standalone HTML implementation.",
+      "A manager coordinates two blueprint slots: news research plus an HTML execution document, then standalone HTML implementation.",
     version: 1,
     nodes: [
       {
@@ -947,20 +947,20 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
   };
 }
 
-export function createDefaultMissions(
+export function createDefaultBlueprints(
   now: string,
   companyId = "company-hiveward-studio",
   workingDirectory = ""
-): MissionDefinition[] {
+): BlueprintDefinition[] {
   return [
-    createStarterMission(now, companyId),
-    createRealThreeAgentMission(now, companyId),
-    createMultiAgentCompatibilityMission(now, companyId, workingDirectory),
-    createManagerDrivenHtmlMission(now, companyId)
+    createStarterBlueprint(now, companyId),
+    createRealThreeAgentBlueprint(now, companyId),
+    createMultiAgentCompatibilityBlueprint(now, companyId, workingDirectory),
+    createManagerDrivenHtmlBlueprint(now, companyId)
   ];
 }
 
-export function createBlankMission({
+export function createBlankBlueprint({
   id,
   now,
   companyId = "company-hiveward-studio",
@@ -972,12 +972,12 @@ export function createBlankMission({
   companyId?: string;
   name?: string;
   description?: string;
-}): MissionDefinition {
+}): BlueprintDefinition {
   return {
     id,
     companyId,
-    name: normalizeMissionText(name, "Untitled mission"),
-    description: normalizeMissionText(description, "Start with an empty command canvas and add Hiveward mission nodes."),
+    name: normalizeBlueprintText(name, "Untitled blueprint"),
+    description: normalizeBlueprintText(description, "Start with an empty command canvas and add Hiveward blueprint nodes."),
     version: 1,
     nodes: [],
     edges: [],
@@ -990,93 +990,93 @@ export function createBlankMission({
   };
 }
 
-export function createPortableMissionPackage(
-  missions: MissionDefinition[],
+export function createPortableBlueprintPackage(
+  blueprints: BlueprintDefinition[],
   exportedAt: string
-): PortableMissionPackage {
+): PortableBlueprintPackage {
   return {
-    schema: portableMissionPackageSchema,
+    schema: portableBlueprintPackageSchema,
     exportedAt,
-    missions: missions.map(toPortableMissionDefinition)
+    blueprints: blueprints.map(toPortableBlueprintDefinition)
   };
 }
 
-export function toPortableMissionDefinition(mission: MissionDefinition): PortableMissionDefinition {
+export function toPortableBlueprintDefinition(blueprint: BlueprintDefinition): PortableBlueprintDefinition {
   return {
-    id: mission.id,
-    name: mission.name,
-    description: mission.description,
-    version: mission.version,
-    nodes: mission.nodes.map(toPortableMissionNode),
-    edges: mission.edges.map((edge) => ({ ...edge })),
-    variables: { ...mission.variables },
+    id: blueprint.id,
+    name: blueprint.name,
+    description: blueprint.description,
+    version: blueprint.version,
+    nodes: blueprint.nodes.map(toPortableBlueprintNode),
+    edges: blueprint.edges.map((edge) => ({ ...edge })),
+    variables: { ...blueprint.variables },
     display: {
-      viewport: mission.display.viewport ? { ...mission.display.viewport } : undefined
+      viewport: blueprint.display.viewport ? { ...blueprint.display.viewport } : undefined
     }
   };
 }
 
-export function readPortableMissionPackage(value: unknown): PortableMissionPackage {
+export function readPortableBlueprintPackage(value: unknown): PortableBlueprintPackage {
   if (!isRecord(value)) {
-    throw new Error("Mission package must be a JSON object.");
+    throw new Error("Blueprint package must be a JSON object.");
   }
-  if (value.schema !== portableMissionPackageSchema) {
-    throw new Error(`Unsupported mission package schema: ${String(value.schema ?? "missing")}`);
+  if (value.schema !== portableBlueprintPackageSchema) {
+    throw new Error(`Unsupported blueprint package schema: ${String(value.schema ?? "missing")}`);
   }
-  if (!Array.isArray(value.missions) || value.missions.length === 0) {
-    throw new Error("Mission package does not contain any missions.");
+  if (!Array.isArray(value.blueprints) || value.blueprints.length === 0) {
+    throw new Error("Blueprint package does not contain any blueprints.");
   }
 
   return {
-    schema: portableMissionPackageSchema,
+    schema: portableBlueprintPackageSchema,
     exportedAt: readRequiredString(value.exportedAt, "exportedAt"),
-    missions: value.missions.map(readPortableMissionDefinition)
+    blueprints: value.blueprints.map(readPortableBlueprintDefinition)
   };
 }
 
-export function hydrateImportedMission(
-  portableMission: PortableMissionDefinition,
+export function hydrateImportedBlueprint(
+  portableBlueprint: PortableBlueprintDefinition,
   options: {
     id: string;
     companyId: string;
     now: string;
-    defaults?: MissionImportDefaults;
+    defaults?: BlueprintImportDefaults;
     name?: string;
   }
-): MissionDefinition {
+): BlueprintDefinition {
   return {
     id: options.id,
     companyId: options.companyId,
-    name: normalizeMissionText(options.name ?? portableMission.name, "Imported mission"),
-    description: portableMission.description,
+    name: normalizeBlueprintText(options.name ?? portableBlueprint.name, "Imported blueprint"),
+    description: portableBlueprint.description,
     version: 1,
-    nodes: portableMission.nodes.map((node) => applyImportDefaultsToNode(toPortableMissionNode(node), options.defaults)),
-    edges: portableMission.edges.map((edge) => ({ ...edge })),
-    variables: { ...portableMission.variables },
+    nodes: portableBlueprint.nodes.map((node) => applyImportDefaultsToNode(toPortableBlueprintNode(node), options.defaults)),
+    edges: portableBlueprint.edges.map((edge) => ({ ...edge })),
+    variables: { ...portableBlueprint.variables },
     display: {
-      viewport: portableMission.display.viewport ? { ...portableMission.display.viewport } : { x: 0, y: 0, zoom: 1 }
+      viewport: portableBlueprint.display.viewport ? { ...portableBlueprint.display.viewport } : { x: 0, y: 0, zoom: 1 }
     },
     createdAt: options.now,
     updatedAt: options.now
   };
 }
 
-function normalizeMissionText(value: string | undefined, fallback: string): string {
+function normalizeBlueprintText(value: string | undefined, fallback: string): string {
   const trimmed = value?.trim();
   return trimmed ? trimmed : fallback;
 }
 
-function toPortableMissionNode(node: MissionNode): MissionNode {
+function toPortableBlueprintNode(node: BlueprintNode): BlueprintNode {
   return {
     ...node,
     position: { ...node.position },
     size: node.size ? { ...node.size } : undefined,
-    config: toPortableMissionNodeConfig(node.type, node.config)
+    config: toPortableBlueprintNodeConfig(node.type, node.config)
   };
 }
 
-function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeConfig): MissionNodeConfig {
-  if (isAgentMissionNodeType(type)) {
+function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: BlueprintNodeConfig): BlueprintNodeConfig {
+  if (isAgentBlueprintNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       label: agentConfig.label,
@@ -1096,7 +1096,7 @@ function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeC
       label: parallelConfig.label,
       description: parallelConfig.description,
       resultRole: parallelConfig.resultRole,
-      agents: parallelConfig.agents.map((agent) => toPortableMissionNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
+      agents: parallelConfig.agents.map((agent) => toPortableBlueprintNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
       waitFor: parallelConfig.waitFor
     };
   }
@@ -1128,7 +1128,7 @@ function cloneJsonObject(value: Record<string, unknown> | undefined): Record<str
   return value ? JSON.parse(JSON.stringify(value)) as Record<string, unknown> : undefined;
 }
 
-function applyImportDefaultsToNode(node: MissionNode, defaults: MissionImportDefaults = {}): MissionNode {
+function applyImportDefaultsToNode(node: BlueprintNode, defaults: BlueprintImportDefaults = {}): BlueprintNode {
   return {
     ...node,
     disabled: node.type === "send" ? true : node.disabled,
@@ -1137,11 +1137,11 @@ function applyImportDefaultsToNode(node: MissionNode, defaults: MissionImportDef
 }
 
 function applyImportDefaultsToConfig(
-  type: MissionNodeType,
-  config: MissionNodeConfig,
-  defaults: MissionImportDefaults
-): MissionNodeConfig {
-  if (isAgentMissionNodeType(type)) {
+  type: BlueprintNodeType,
+  config: BlueprintNodeConfig,
+  defaults: BlueprintImportDefaults
+): BlueprintNodeConfig {
+  if (isAgentBlueprintNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
     return {
       ...agentConfig,
@@ -1175,9 +1175,9 @@ function applyImportDefaultsToConfig(
   return config;
 }
 
-function readPortableMissionDefinition(value: unknown): PortableMissionDefinition {
+function readPortableBlueprintDefinition(value: unknown): PortableBlueprintDefinition {
   if (!isRecord(value)) {
-    throw new Error("Mission entry must be an object.");
+    throw new Error("Blueprint entry must be an object.");
   }
   const display = isRecord(value.display) ? value.display : {};
   const viewport = isRecord(display.viewport)
@@ -1189,12 +1189,12 @@ function readPortableMissionDefinition(value: unknown): PortableMissionDefinitio
     : undefined;
 
   return {
-    id: readRequiredString(value.id, "mission.id"),
-    name: readRequiredString(value.name, "mission.name"),
+    id: readRequiredString(value.id, "blueprint.id"),
+    name: readRequiredString(value.name, "blueprint.name"),
     description: readOptionalString(value.description),
     version: readNumber(value.version, 1),
-    nodes: readArray(value.nodes, "mission.nodes") as MissionNode[],
-    edges: readArray(value.edges, "mission.edges") as MissionEdge[],
+    nodes: readArray(value.nodes, "blueprint.nodes") as BlueprintNode[],
+    edges: readArray(value.edges, "blueprint.edges") as BlueprintEdge[],
     variables: isRecord(value.variables) ? readStringRecord(value.variables) : {},
     display: {
       viewport

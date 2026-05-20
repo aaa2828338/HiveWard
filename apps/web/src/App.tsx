@@ -26,20 +26,20 @@ import type {
   OpenClawModelUsageSummary,
   OpenClawVersionInfo,
   PendingApprovalItem,
-  PortableMissionPackage,
+  PortableBlueprintPackage,
   RuntimeOverview,
   WorkspaceDashboard,
-  MissionDefinition,
-  MissionRunView
+  BlueprintDefinition,
+  BlueprintRunView
 } from "@hiveward/shared";
 import { api } from "./lib/api";
 import { appSections, type AppSectionId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
-import { MissionStudioPage } from "./components/MissionStudioPage";
+import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
 
 const sidebarIcons = {
-  mission: LayoutTemplate,
+  blueprint: LayoutTemplate,
   runs: ListChecks,
   approvals: Inbox,
   models: Database,
@@ -87,18 +87,18 @@ type OpenClawPanelCopy = {
 export function App() {
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
   const [theme, setTheme] = useState<AppTheme>(() => getInitialTheme());
-  const [section, setSection] = useState<AppSectionId>("mission");
+  const [section, setSection] = useState<AppSectionId>("blueprint");
   const [companies, setCompanies] = useState<CompanyOverview[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
-  const [missions, setMissions] = useState<MissionDefinition[]>([]);
-  const [mission, setMission] = useState<MissionDefinition | undefined>();
+  const [blueprints, setBlueprints] = useState<BlueprintDefinition[]>([]);
+  const [blueprint, setBlueprint] = useState<BlueprintDefinition | undefined>();
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
-  const [runs, setRuns] = useState<MissionRunView[]>([]);
+  const [runs, setRuns] = useState<BlueprintRunView[]>([]);
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
@@ -110,19 +110,19 @@ export function App() {
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const t = messages[language];
   const messageRef = useRef(t);
-  const selectedMissionIdRef = useRef<string | undefined>(undefined);
+  const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const companySwitcherRef = useRef<HTMLDivElement | null>(null);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
-  const missionImportInputRef = useRef<HTMLInputElement | null>(null);
+  const blueprintImportInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     messageRef.current = t;
   }, [t]);
 
   useEffect(() => {
-    selectedMissionIdRef.current = mission?.id;
-  }, [mission?.id]);
+    selectedBlueprintIdRef.current = blueprint?.id;
+  }, [blueprint?.id]);
 
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
@@ -167,10 +167,10 @@ export function App() {
   }, []);
 
   const hydrateWorkspace = useCallback(
-    async (options?: { missionId?: string; runId?: string }) => {
+    async (options?: { blueprintId?: string; runId?: string }) => {
       const [
         companyDirectory,
-        nextMissions,
+        nextBlueprints,
         nextCatalog,
         nextOpenClawConfig,
         nextOpenClawWizard,
@@ -181,12 +181,12 @@ export function App() {
         nextRuntime
       ] = await Promise.all([
         api.listCompanies(),
-        api.listMissions(),
+        api.listBlueprints(),
         api.getCatalogSnapshot(),
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
-        api.listMissionRuns(),
+        api.listBlueprintRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
@@ -194,7 +194,7 @@ export function App() {
 
       setCompanies(companyDirectory.companies);
       setSelectedCompanyId(companyDirectory.selectedCompanyId);
-      setMissions(nextMissions);
+      setBlueprints(nextBlueprints);
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
@@ -205,9 +205,9 @@ export function App() {
       setRuntime(nextRuntime);
       setDashboardDirty(false);
 
-      const preferredMissionId = options?.missionId ?? selectedMissionIdRef.current ?? nextMissions[0]?.id;
-      const nextMission = nextMissions.find((item) => item.id === preferredMissionId) ?? nextMissions[0];
-      setMission(nextMission);
+      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? nextBlueprints[0]?.id;
+      const nextBlueprint = nextBlueprints.find((item) => item.id === preferredBlueprintId) ?? nextBlueprints[0];
+      setBlueprint(nextBlueprint);
       setSelectedNodeId(undefined);
 
       const preferredRunId = options?.runId ?? selectedRunIdRef.current ?? nextRuns[0]?.run.id;
@@ -351,14 +351,14 @@ export function App() {
             menuTitle: "\u5207\u6362\u516C\u53F8",
             noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u9009\u516C\u53F8",
             clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-            missionCount: (count: number) => `${count} \u4E2A Mission`
+            blueprintCount: (count: number) => `${count} \u4E2A Blueprint`
           }
         : {
             placeholder: "Choose company",
             menuTitle: "Switch company",
             noCompanies: "No companies available",
             clear: "Clear selection",
-            missionCount: (count: number) => `${count} missions`
+            blueprintCount: (count: number) => `${count} blueprints`
           },
     [language]
   );
@@ -375,30 +375,30 @@ export function App() {
       });
   }, [hydrateWorkspace]);
 
-  const latestRunForMission = useMemo(
-    () => (mission ? runs.find((runView) => runView.run.missionId === mission.id) : undefined),
-    [runs, mission]
+  const latestRunForBlueprint = useMemo(
+    () => (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined),
+    [runs, blueprint]
   );
   const activeTaskCount = useMemo(
     () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
     [runs]
   );
 
-  const selectMission = useCallback(
-    (missionId: string) => {
-      const next = missions.find((item) => item.id === missionId);
+  const selectBlueprint = useCallback(
+    (blueprintId: string) => {
+      const next = blueprints.find((item) => item.id === blueprintId);
       if (!next) return;
-      setMission(next);
+      setBlueprint(next);
       setSelectedNodeId(undefined);
-      const latestRunForNextMission = runs.find((runView) => runView.run.missionId === next.id);
-      setSelectedRunId(latestRunForNextMission?.run.id);
+      const latestRunForNextBlueprint = runs.find((runView) => runView.run.blueprintId === next.id);
+      setSelectedRunId(latestRunForNextBlueprint?.run.id);
     },
-    [runs, missions]
+    [runs, blueprints]
   );
 
   const sidebarMeta = useMemo(
     () => ({
-      mission: missions.length,
+      blueprint: blueprints.length,
       runs: activeTaskCount,
       approvals: approvals.length,
       models: openClawConfig?.configuredModels.length ?? 0,
@@ -414,7 +414,7 @@ export function App() {
       openClawConfig?.configuredChannels.length,
       runtime?.tasks.length,
       runs.length,
-      missions.length
+      blueprints.length
     ]
   );
 
@@ -445,8 +445,8 @@ export function App() {
     void loadOpenClawVersion();
   }, [loadOpenClawVersion]);
 
-  const updateMission = useCallback((updater: (current: MissionDefinition) => MissionDefinition) => {
-    setMission((current) => (current ? updater(current) : current));
+  const updateBlueprint = useCallback((updater: (current: BlueprintDefinition) => BlueprintDefinition) => {
+    setBlueprint((current) => (current ? updater(current) : current));
   }, []);
 
   const mutateDashboard = useCallback((updater: (current: WorkspaceDashboard) => WorkspaceDashboard) => {
@@ -546,69 +546,69 @@ export function App() {
     [withBusy]
   );
 
-  const saveMission = useCallback(() => {
-    if (!mission) return;
-    void withBusy("saveMission", async () => {
-      const saved = await api.saveMission(mission);
-      await hydrateWorkspace({ missionId: saved.id });
+  const saveBlueprint = useCallback(() => {
+    if (!blueprint) return;
+    void withBusy("saveBlueprint", async () => {
+      const saved = await api.saveBlueprint(blueprint);
+      await hydrateWorkspace({ blueprintId: saved.id });
     });
-  }, [hydrateWorkspace, withBusy, mission]);
+  }, [hydrateWorkspace, withBusy, blueprint]);
 
-  const exportMission = useCallback(() => {
-    if (!mission) return;
-    void withBusy("exportMission", async () => {
-      const missionPackage = await api.exportMission(mission.id);
-      downloadMissionPackage(missionPackage, mission.name);
+  const exportBlueprint = useCallback(() => {
+    if (!blueprint) return;
+    void withBusy("exportBlueprint", async () => {
+      const blueprintPackage = await api.exportBlueprint(blueprint.id);
+      downloadBlueprintPackage(blueprintPackage, blueprint.name);
     });
-  }, [withBusy, mission]);
+  }, [withBusy, blueprint]);
 
-  const openMissionImport = useCallback(() => {
-    missionImportInputRef.current?.click();
+  const openBlueprintImport = useCallback(() => {
+    blueprintImportInputRef.current?.click();
   }, []);
 
-  const importMissionFile = useCallback(
+  const importBlueprintFile = useCallback(
     (file?: File) => {
       if (!file) return;
-      void withBusy("importMission", async () => {
-        const missionPackage = JSON.parse(await file.text());
-        const imported = await api.importMissionPackage(missionPackage);
-        await hydrateWorkspace({ missionId: imported[0]?.id });
-        setSection("mission");
+      void withBusy("importBlueprint", async () => {
+        const blueprintPackage = JSON.parse(await file.text());
+        const imported = await api.importBlueprintPackage(blueprintPackage);
+        await hydrateWorkspace({ blueprintId: imported[0]?.id });
+        setSection("blueprint");
       });
     },
     [hydrateWorkspace, withBusy]
   );
 
-  const createMission = useCallback(() => {
-    void withBusy("createMission", async () => {
-      const created = await api.createMission({
-        name: defaultNewMissionName(missions.length + 1, language)
+  const createBlueprint = useCallback(() => {
+    void withBusy("createBlueprint", async () => {
+      const created = await api.createBlueprint({
+        name: defaultNewBlueprintName(blueprints.length + 1, language)
       });
-      await hydrateWorkspace({ missionId: created.id });
-      setSection("mission");
+      await hydrateWorkspace({ blueprintId: created.id });
+      setSection("blueprint");
     });
-  }, [hydrateWorkspace, language, withBusy, missions.length]);
+  }, [hydrateWorkspace, language, withBusy, blueprints.length]);
 
-  const runMission = useCallback(() => {
-    if (!mission) return;
-    void withBusy("runMission", async () => {
-      const saved = await api.saveMission(mission);
-      const runView = await api.startMissionRun(saved.id);
-      await hydrateWorkspace({ missionId: saved.id, runId: runView.run.id });
+  const runBlueprint = useCallback(() => {
+    if (!blueprint) return;
+    void withBusy("runBlueprint", async () => {
+      const saved = await api.saveBlueprint(blueprint);
+      const runView = await api.startBlueprintRun(saved.id);
+      await hydrateWorkspace({ blueprintId: saved.id, runId: runView.run.id });
       setSection("runs");
     });
-  }, [hydrateWorkspace, withBusy, mission]);
+  }, [hydrateWorkspace, withBusy, blueprint]);
 
   const approveRun = useCallback(
-    (missionRunId?: string) => {
-      const targetRunId = missionRunId ?? latestRunForMission?.run.id;
+    (blueprintRunId?: string) => {
+      const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveMissionRun(targetRunId);
-        await hydrateWorkspace({ missionId: updated.run.missionId, runId: updated.run.id });
+        const updated = await api.approveBlueprintRun(targetRunId);
+        await hydrateWorkspace({ blueprintId: updated.run.blueprintId, runId: updated.run.id });
       });
     },
-    [hydrateWorkspace, latestRunForMission?.run.id, withBusy]
+    [hydrateWorkspace, latestRunForBlueprint?.run.id, withBusy]
   );
 
   const addWidget = useCallback(
@@ -678,7 +678,7 @@ export function App() {
     const activeRun =
       section === "runs"
         ? runs.find((runView) => runView.run.id === selectedRunId)
-        : latestRunForMission;
+        : latestRunForBlueprint;
 
     if (!activeRun || !["queued", "running", "waiting_approval"].includes(activeRun.run.status)) {
       return;
@@ -686,13 +686,13 @@ export function App() {
 
     const timer = window.setTimeout(() => {
       void hydrateWorkspace({
-        missionId: selectedMissionIdRef.current,
+        blueprintId: selectedBlueprintIdRef.current,
         runId: section === "runs" ? selectedRunIdRef.current : activeRun.run.id
       }).catch(() => undefined);
     }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [hydrateWorkspace, latestRunForMission, runs, section, selectedRunId]);
+  }, [hydrateWorkspace, latestRunForBlueprint, runs, section, selectedRunId]);
 
   const renderSection = () => {
     if (section === "company") {
@@ -706,7 +706,7 @@ export function App() {
           />
           <DashboardPage
             dashboard={dashboard}
-            missions={missions}
+            blueprints={blueprints}
             runs={runs}
             approvals={approvals}
             catalog={catalog}
@@ -739,27 +739,27 @@ export function App() {
         />
       );
     }
-    if (section === "mission") {
+    if (section === "blueprint") {
       return (
-        <MissionStudioPage
-          mission={mission}
-          missions={missions}
+        <BlueprintStudioPage
+          blueprint={blueprint}
+          blueprints={blueprints}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
-          runView={latestRunForMission}
+          runView={latestRunForBlueprint}
           selectedNodeId={selectedNodeId}
           selectedCompanyId={selectedCompanyId}
           busy={Boolean(busyAction)}
           busyAction={busyAction}
-          onSelectMission={selectMission}
-          onCreateMission={createMission}
+          onSelectBlueprint={selectBlueprint}
+          onCreateBlueprint={createBlueprint}
           onRefreshWorkspace={refreshWorkspace}
-          onOpenMissionImport={openMissionImport}
-          onExportMission={exportMission}
-          onSaveMission={saveMission}
-          onRunMission={runMission}
+          onOpenBlueprintImport={openBlueprintImport}
+          onExportBlueprint={exportBlueprint}
+          onSaveBlueprint={saveBlueprint}
+          onRunBlueprint={runBlueprint}
           onSelectNode={setSelectedNodeId}
-          onUpdateMission={updateMission}
+          onUpdateBlueprint={updateBlueprint}
           onApproveRun={() => approveRun()}
           t={t}
         />
@@ -769,12 +769,12 @@ export function App() {
       return (
         <RunsPage
           runs={runs}
-          missions={missions}
-          mission={mission}
+          blueprints={blueprints}
+          blueprint={blueprint}
           selectedRunId={selectedRunId}
           language={language}
           t={t}
-          onSelectMission={selectMission}
+          onSelectBlueprint={selectBlueprint}
           onSelectRun={setSelectedRunId}
         />
       );
@@ -813,7 +813,7 @@ export function App() {
       );
     }
     if (section === "schedule") {
-      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} missions={missions} language={language} t={t} />;
+      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} blueprints={blueprints} language={language} t={t} />;
     }
     return (
       <ChannelsPage
@@ -907,7 +907,7 @@ export function App() {
                         </span>
                         <span className="company-menu-copy">
                           <strong>{company.name}</strong>
-                          <span>{companyUi.missionCount(company.missionCount)}</span>
+                          <span>{companyUi.blueprintCount(company.blueprintCount)}</span>
                         </span>
                       </button>
                     ))
@@ -967,12 +967,12 @@ export function App() {
 
       <section className="main-shell">
         <input
-          ref={missionImportInputRef}
+          ref={blueprintImportInputRef}
           type="file"
           accept="application/json,.json"
           hidden
           onChange={(event) => {
-            importMissionFile(event.target.files?.[0]);
+            importBlueprintFile(event.target.files?.[0]);
             event.currentTarget.value = "";
           }}
         />
@@ -1163,27 +1163,27 @@ function defaultWidgetLayout(index: number) {
   };
 }
 
-function defaultNewMissionName(index: number, language: Language): string {
-  return language === "zh-CN" ? `新建 Mission ${index}` : `New mission ${index}`;
+function defaultNewBlueprintName(index: number, language: Language): string {
+  return language === "zh-CN" ? `新建 Blueprint ${index}` : `New blueprint ${index}`;
 }
 
-function downloadMissionPackage(missionPackage: PortableMissionPackage, missionName: string): void {
-  const blob = new Blob([`${JSON.stringify(missionPackage, null, 2)}\n`], { type: "application/json" });
+function downloadBlueprintPackage(blueprintPackage: PortableBlueprintPackage, blueprintName: string): void {
+  const blob = new Blob([`${JSON.stringify(blueprintPackage, null, 2)}\n`], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${safeMissionFileName(missionName)}.mission.json`;
+  link.download = `${safeBlueprintFileName(blueprintName)}.blueprint.json`;
   link.click();
   URL.revokeObjectURL(url);
 }
 
-function safeMissionFileName(value: string): string {
+function safeBlueprintFileName(value: string): string {
   return value
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "mission";
+    .slice(0, 80) || "blueprint";
 }
 
 function makeClientId(prefix: string): string {
@@ -1194,11 +1194,11 @@ function makeClientId(prefix: string): string {
 }
 
 function errorMessageForAction(action: string, t: Messages): string {
-  if (action === "createMission") return t.errors.save;
-  if (action === "saveMission") return t.errors.save;
-  if (action === "exportMission") return t.errors.save;
-  if (action === "importMission") return t.errors.save;
-  if (action === "runMission") return t.errors.run;
+  if (action === "createBlueprint") return t.errors.save;
+  if (action === "saveBlueprint") return t.errors.save;
+  if (action === "exportBlueprint") return t.errors.save;
+  if (action === "importBlueprint") return t.errors.save;
+  if (action === "runBlueprint") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

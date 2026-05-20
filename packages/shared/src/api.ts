@@ -7,56 +7,56 @@ import type {
   OpenClawTaskSummary,
   OpenClawVersionInfo
 } from "./openclaw";
-import type { PortableMissionPackage, MissionDefinition, MissionRunView } from "./mission";
+import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
-export interface ListMissionsResponse {
-  missions: MissionDefinition[];
+export interface ListBlueprintsResponse {
+  blueprints: BlueprintDefinition[];
 }
 
-export interface CreateMissionRequest {
+export interface CreateBlueprintRequest {
   name?: string;
   description?: string;
 }
 
-export interface MissionResponse {
-  mission: MissionDefinition;
+export interface BlueprintResponse {
+  blueprint: BlueprintDefinition;
 }
 
-export interface SaveMissionRequest {
-  mission: MissionDefinition;
+export interface SaveBlueprintRequest {
+  blueprint: BlueprintDefinition;
 }
 
-export interface ExportMissionResponse {
-  missionPackage: PortableMissionPackage;
+export interface ExportBlueprintResponse {
+  blueprintPackage: PortableBlueprintPackage;
 }
 
-export interface ImportMissionPackageRequest {
-  missionPackage: PortableMissionPackage;
+export interface ImportBlueprintPackageRequest {
+  blueprintPackage: PortableBlueprintPackage;
 }
 
-export interface ImportMissionPackageResponse {
-  missions: MissionDefinition[];
+export interface ImportBlueprintPackageResponse {
+  blueprints: BlueprintDefinition[];
 }
 
-export interface StartMissionRunRequest {
+export interface StartBlueprintRunRequest {
   startedBy?: string;
 }
 
-export interface StartMissionRunResponse {
-  run: MissionRunView;
+export interface StartBlueprintRunResponse {
+  run: BlueprintRunView;
 }
 
-export interface LatestMissionRunResponse {
-  run: MissionRunView | null;
+export interface LatestBlueprintRunResponse {
+  run: BlueprintRunView | null;
 }
 
-export interface MissionRunResponse {
-  run: MissionRunView;
+export interface BlueprintRunResponse {
+  run: BlueprintRunView;
 }
 
-export interface ListMissionRunViewsResponse {
-  runs: MissionRunView[];
+export interface ListBlueprintRunViewsResponse {
+  runs: BlueprintRunView[];
 }
 
 export interface ListPendingApprovalsResponse {

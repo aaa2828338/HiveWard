@@ -13,7 +13,7 @@ import { AgentSdkTaskRegistry } from "./task-registry";
 describe("agent SDK runtime", () => {
   it("builds a stable prompt envelope without secret values", () => {
     const envelope = buildPromptEnvelope({
-      missionRunId: "run-1",
+      blueprintRunId: "run-1",
       nodeRunId: "node-run-1",
       source: "claude",
       agentName: "reviewer",
@@ -28,7 +28,7 @@ describe("agent SDK runtime", () => {
       tools: []
     });
 
-    expect(envelope).toContain("Mission run: run-1");
+    expect(envelope).toContain("Blueprint run: run-1");
     expect(envelope).toContain('"a"');
     expect(envelope).toContain('"z"');
     expect(envelope).toContain("<redacted>");
@@ -272,7 +272,7 @@ function createStartInput(
   overrides: Partial<Parameters<ClaudeAgentSdkRuntime["startTask"]>[0]> = {}
 ): Parameters<ClaudeAgentSdkRuntime["startTask"]>[0] {
   return {
-    missionRunId: "mission-run-1",
+    blueprintRunId: "blueprint-run-1",
     nodeRunId: "node-run-1",
     source: "claude",
     agentName: "agent",

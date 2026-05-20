@@ -9,7 +9,7 @@ export interface CompanyProfile {
 }
 
 export interface CompanyOverview extends CompanyProfile {
-  missionCount: number;
+  blueprintCount: number;
   runCount: number;
   totalTokens: number;
   totalCostUsd: number;
@@ -30,7 +30,7 @@ export function createDefaultCompanies(now: string): CompanyProfile[] {
       logoLabel: "HW",
       logoUrl: "/brand/hiveward-hive.png",
       businessGoal:
-        "Command autonomous agent teams through structured missions, governed handoffs, review gates, and auditable runs.",
+        "Command autonomous agent teams through structured blueprints, governed handoffs, review gates, and auditable runs.",
       createdAt: now,
       updatedAt: now
     }

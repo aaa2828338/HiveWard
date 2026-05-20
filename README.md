@@ -1,8 +1,8 @@
 # Hiveward
 
-Hiveward is a command layer for autonomous agent teams. It gives one operator a structured way to command Codex, Claude Code, OpenClaw, and other full agent harnesses through missions, handoffs, review gates, and auditable runs.
+Hiveward is a command layer for autonomous agent teams. It gives one operator a structured way to command Codex, Claude Code, OpenClaw, and other full agent harnesses through blueprints, handoffs, review gates, and auditable runs.
 
-OpenClaw remains the execution runtime. Hiveward owns mission definitions, canvas state, node configuration, run views, approvals, and local display state.
+OpenClaw remains the execution runtime. Hiveward owns blueprint definitions, canvas state, node configuration, run views, approvals, and local display state.
 
 ## Run
 
@@ -32,11 +32,11 @@ Available environment variables:
 
 1. Open `http://localhost:5173`.
 2. Use the OpenClaw panel to refresh real models, agents, tools, and channels.
-3. Select an agent node on the mission canvas.
+3. Select an agent node on the blueprint canvas.
 4. Choose a real `OpenClaw agent`; the local default is usually `main`.
 5. Choose a model, or keep `OpenClaw default`.
 6. Edit the prompt.
-7. Run the mission. Hiveward saves the mission, calls OpenClaw through the adapter, and records runtime evidence.
+7. Run the blueprint. Hiveward saves the blueprint, calls OpenClaw through the adapter, and records runtime evidence.
 
 Node labels such as `Requirements Agent` are Hiveward display labels. Real execution identity comes from explicit fields such as `agentId`, `modelId`, `taskId`, `runId`, and `sessionKey`.
 
@@ -46,7 +46,7 @@ Node labels such as `Requirements Agent` are Hiveward display labels. Real execu
 Web -> Hiveward API -> OpenClaw Adapter -> OpenClaw Gateway / Runtime
 ```
 
-- Mission graph, node coordinates, protocols, labels, and dashboard aggregation belong to Hiveward.
+- Blueprint graph, node coordinates, protocols, labels, and dashboard aggregation belong to Hiveward.
 - Agent/tool/model/channel execution facts belong to OpenClaw.
 - Gateway/RPC details belong inside `packages/adapter`.
 

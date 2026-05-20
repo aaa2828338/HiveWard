@@ -1,11 +1,11 @@
 # Claude and Codex SDK Runtime Plan
 
-This document defines the single engineering path for Claude and Codex mission execution.
+This document defines the single engineering path for Claude and Codex blueprint execution.
 
 ## Formal Path
 
 ```text
-MissionWorker -> AgentSdkRuntime -> official TypeScript SDK -> normalized node result
+BlueprintWorker -> AgentSdkRuntime -> official TypeScript SDK -> normalized node result
 ```
 
 Supported providers:
@@ -13,7 +13,7 @@ Supported providers:
 - `claude`: `@anthropic-ai/claude-agent-sdk`
 - `codex`: `@openai/codex-sdk`
 
-Hiveward owns mission execution:
+Hiveward owns blueprint execution:
 
 - Node scheduling
 - Upstream input routing
@@ -27,7 +27,7 @@ Hiveward owns mission execution:
 
 The provider SDK owns only the agent loop for the selected node task.
 
-Mission node types:
+Blueprint node types:
 
 - `openclaw_agent`: existing OpenClaw execution
 - `codex_agent`: Codex SDK execution
@@ -50,7 +50,7 @@ Reference docs:
 ```ts
 export type AgentSdkProvider = "claude" | "codex";
 
-export type AgentSdkMissionNodeType = "codex_agent" | "claude_code_agent";
+export type AgentSdkBlueprintNodeType = "codex_agent" | "claude_code_agent";
 
 export type AgentPermissionProfile = "read_only" | "workspace_write";
 
@@ -67,7 +67,7 @@ export interface AgentSdkNodeConfig {
 }
 
 export interface StartAgentSdkTaskInput {
-  missionRunId: string;
+  blueprintRunId: string;
   nodeRunId: string;
   source: AgentSdkProvider;
   agentName: string;
@@ -145,7 +145,7 @@ Only `packages/adapter` imports SDK packages.
 
 ## Runtime Source
 
-Mission nodes select runtime by node type:
+Blueprint nodes select runtime by node type:
 
 ```ts
 type: "openclaw_agent" | "codex_agent" | "claude_code_agent"
@@ -157,16 +157,16 @@ Mapping:
 - `codex_agent`: Codex SDK runtime
 - `claude_code_agent`: Claude Code SDK runtime
 
-`source` is runtime input derived by `MissionWorker`; it is not stored in node config.
+`source` is runtime input derived by `BlueprintWorker`; it is not stored in node config.
 
 ## Prompt Envelope
 
 All SDK providers receive the same envelope:
 
 ```text
-You are executing one Hiveward mission node.
+You are executing one Hiveward blueprint node.
 
-Mission run: <missionRunId>
+Blueprint run: <blueprintRunId>
 Node run: <nodeRunId>
 Agent name: <agentName>
 
@@ -315,7 +315,7 @@ interface AgentSdkTaskRecord {
   taskId: string;
   provider: AgentSdkProvider;
   nodeRunId: string;
-  missionRunId: string;
+  blueprintRunId: string;
   sessionKey: string;
   startedAt: string;
   abortController: AbortController;
@@ -363,7 +363,7 @@ Rules:
 Limits:
 
 - Global SDK task concurrency: `2`
-- Per mission run mutating SDK concurrency: `1`
+- Per blueprint run mutating SDK concurrency: `1`
 
 Rules:
 
@@ -496,9 +496,9 @@ Required tests:
 
 ## Acceptance Criteria
 
-- Claude mission nodes execute through `@anthropic-ai/claude-agent-sdk`.
-- Codex mission nodes execute through `@openai/codex-sdk`.
-- Mission scheduling remains owned by Hiveward.
+- Claude blueprint nodes execute through `@anthropic-ai/claude-agent-sdk`.
+- Codex blueprint nodes execute through `@openai/codex-sdk`.
+- Blueprint scheduling remains owned by Hiveward.
 - Provider code exists only under `packages/adapter`.
 - SDK nodes produce normalized node results.
 - Timeout, cancellation, invalid workspace, provider error, and invalid output are represented in node runs.

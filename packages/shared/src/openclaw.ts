@@ -155,7 +155,7 @@ export interface OpenClawModelUsageSummary {
 }
 
 export interface StartAgentTaskInput {
-  missionRunId: string;
+  blueprintRunId: string;
   nodeRunId: string;
   source: OpenClawObjectSource;
   agentId?: string;
@@ -199,7 +199,7 @@ export interface SendChannelInput {
   channelId: string;
   target: string;
   body: string;
-  missionRunId: string;
+  blueprintRunId: string;
   nodeRunId: string;
 }
 

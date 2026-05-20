@@ -14,9 +14,9 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
     : "";
 
   return [
-    "You are executing one Hiveward mission node.",
+    "You are executing one Hiveward blueprint node.",
     "",
-    `Mission run: ${input.missionRunId}`,
+    `Blueprint run: ${input.blueprintRunId}`,
     `Node run: ${input.nodeRunId}`,
     `Agent name: ${input.agentName}`,
     "",

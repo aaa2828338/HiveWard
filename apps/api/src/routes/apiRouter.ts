@@ -6,10 +6,10 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawChannelRequest,
-  CreateMissionRequest,
+  CreateBlueprintRequest,
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
-  ImportMissionPackageRequest,
+  ImportBlueprintPackageRequest,
   RuntimeOverview,
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
@@ -18,22 +18,22 @@ import type {
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
-  SaveMissionRequest,
-  MissionDefinition,
-  StartMissionRunRequest
+  SaveBlueprintRequest,
+  BlueprintDefinition,
+  StartBlueprintRunRequest
 } from "@hiveward/shared";
-import { createPortableMissionPackage, readPortableMissionPackage } from "@hiveward/shared";
+import { createPortableBlueprintPackage, readPortableBlueprintPackage } from "@hiveward/shared";
 import type { OpenClawAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
-import type { MissionWorker } from "../worker/missionWorker";
+import type { BlueprintWorker } from "../worker/blueprintWorker";
 
 interface ApiRouterDeps {
   store: FileHivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: OpenClawAdapter;
-  worker: MissionWorker;
+  worker: BlueprintWorker;
 }
 
 export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
@@ -150,105 +150,105 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/missions", async (_req, res, next) => {
+  router.get("/api/blueprints", async (_req, res, next) => {
     try {
-      res.json({ missions: await store.listMissions() });
+      res.json({ blueprints: await store.listBlueprints() });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/missions", async (req, res, next) => {
+  router.post("/api/blueprints", async (req, res, next) => {
     try {
-      const body = req.body as CreateMissionRequest;
-      const mission = await store.createMission({
+      const body = req.body as CreateBlueprintRequest;
+      const blueprint = await store.createBlueprint({
         name: body.name,
         description: body.description
       });
-      res.status(201).json({ mission });
+      res.status(201).json({ blueprint });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/missions/import", async (req, res, next) => {
+  router.post("/api/blueprints/import", async (req, res, next) => {
     try {
-      const body = req.body as ImportMissionPackageRequest;
-      const missionPackage = readPortableMissionPackage(body.missionPackage);
+      const body = req.body as ImportBlueprintPackageRequest;
+      const blueprintPackage = readPortableBlueprintPackage(body.blueprintPackage);
       const config = await openClawConfigStore.getState();
-      const missions = await store.importMissionPackage(missionPackage, {
+      const blueprints = await store.importBlueprintPackage(blueprintPackage, {
         agentId: selectDefaultAgentId(config.configuredAgents),
         modelId: config.defaultModelId,
         channelId: selectDefaultChannelId(config.configuredChannels)
       });
-      res.status(201).json({ missions });
+      res.status(201).json({ blueprints });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/missions/:missionId", async (req, res, next) => {
+  router.get("/api/blueprints/:blueprintId", async (req, res, next) => {
     try {
-      const missionId = readRouteParam(req.params.missionId, "missionId");
-      const mission = await store.getMission(missionId);
-      if (!mission) {
-        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
+      const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
+      const blueprint = await store.getBlueprint(blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      res.json({ mission });
+      res.json({ blueprint });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/missions/:missionId/export", async (req, res, next) => {
+  router.get("/api/blueprints/:blueprintId/export", async (req, res, next) => {
     try {
-      const missionId = readRouteParam(req.params.missionId, "missionId");
-      const mission = await store.getMission(missionId);
-      if (!mission) {
-        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
+      const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
+      const blueprint = await store.getBlueprint(blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      res.json({ missionPackage: createPortableMissionPackage([mission], new Date().toISOString()) });
+      res.json({ blueprintPackage: createPortableBlueprintPackage([blueprint], new Date().toISOString()) });
     } catch (error) {
       next(error);
     }
   });
 
-  router.put("/api/missions/:missionId", async (req, res, next) => {
+  router.put("/api/blueprints/:blueprintId", async (req, res, next) => {
     try {
-      const body = req.body as SaveMissionRequest;
-      const saved = await store.saveMission({
-        ...body.mission,
-        id: readRouteParam(req.params.missionId, "missionId")
+      const body = req.body as SaveBlueprintRequest;
+      const saved = await store.saveBlueprint({
+        ...body.blueprint,
+        id: readRouteParam(req.params.blueprintId, "blueprintId")
       });
-      res.json({ mission: saved });
+      res.json({ blueprint: saved });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/missions/:missionId/runs", async (req, res, next) => {
+  router.post("/api/blueprints/:blueprintId/runs", async (req, res, next) => {
     try {
-      const missionId = readRouteParam(req.params.missionId, "missionId");
-      const mission = await store.getMission(missionId);
-      if (!mission) {
-        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
+      const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
+      const blueprint = await store.getBlueprint(blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
       const config = await openClawConfigStore.getState();
-      const invalidAgentIds = collectInvalidAgentIds(mission, new Set(config.configuredAgents.map((agent) => agent.id)));
+      const invalidAgentIds = collectInvalidAgentIds(blueprint, new Set(config.configuredAgents.map((agent) => agent.id)));
       if (invalidAgentIds.length > 0) {
         res.status(400).json({
           error: {
-            code: "mission_agent_invalid",
-            message: `Mission references agent ids that are not present in OpenClaw config: ${invalidAgentIds.join(", ")}`
+            code: "blueprint_agent_invalid",
+            message: `Blueprint references agent ids that are not present in OpenClaw config: ${invalidAgentIds.join(", ")}`
           }
         });
         return;
       }
-      const body = req.body as StartMissionRunRequest;
-      const run = await worker.startRun(withRunDefaults(mission, config.defaultModelId), body.startedBy ?? "local-user");
+      const body = req.body as StartBlueprintRunRequest;
+      const run = await worker.startRun(withRunDefaults(blueprint, config.defaultModelId), body.startedBy ?? "local-user");
       const view = await store.getRunView(run.id);
       res.status(201).json({ run: view });
     } catch (error) {
@@ -256,25 +256,25 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/missions/:missionId/runs/latest", async (req, res, next) => {
+  router.get("/api/blueprints/:blueprintId/runs/latest", async (req, res, next) => {
     try {
-      const missionId = readRouteParam(req.params.missionId, "missionId");
-      const mission = await store.getMission(missionId);
-      if (!mission) {
-        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
+      const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
+      const blueprint = await store.getBlueprint(blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      res.json({ run: (await store.getLatestRunViewForMission(missionId)) ?? null });
+      res.json({ run: (await store.getLatestRunViewForBlueprint(blueprintId)) ?? null });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/mission-runs/:runId", async (req, res, next) => {
+  router.get("/api/blueprint-runs/:runId", async (req, res, next) => {
     try {
       const view = await store.getRunView(readRouteParam(req.params.runId, "runId"));
       if (!view) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Mission run not found." } });
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
       res.json({ run: view });
@@ -283,7 +283,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.get("/api/mission-runs", async (_req, res, next) => {
+  router.get("/api/blueprint-runs", async (_req, res, next) => {
     try {
       res.json({ runs: await store.listRunViews() });
     } catch (error) {
@@ -324,19 +324,19 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.post("/api/mission-runs/:runId/approve", async (req, res, next) => {
+  router.post("/api/blueprint-runs/:runId/approve", async (req, res, next) => {
     try {
-      const run = await store.getMissionRun(readRouteParam(req.params.runId, "runId"));
+      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
       if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Mission run not found." } });
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const mission = await store.getMission(run.missionId);
-      if (!mission) {
-        res.status(404).json({ error: { code: "mission_not_found", message: "Mission not found." } });
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      const updated = await worker.approveRun(mission, run);
+      const updated = await worker.approveRun(blueprint, run);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -363,10 +363,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   return router;
 }
 
-function collectInvalidAgentIds(mission: MissionDefinition, configuredAgentIds: Set<string>): string[] {
+function collectInvalidAgentIds(blueprint: BlueprintDefinition, configuredAgentIds: Set<string>): string[] {
   const invalid = new Set<string>();
 
-  for (const node of mission.nodes) {
+  for (const node of blueprint.nodes) {
     if (node.type === "openclaw_agent") {
       const agentId = (node.config as AgentNodeConfig).agentId ?? "main";
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
@@ -392,12 +392,12 @@ function readRouteParam(value: string | string[] | undefined, name: string): str
   throw new Error(`Missing route parameter: ${name}`);
 }
 
-function withRunDefaults(mission: MissionDefinition, defaultModelId?: string): MissionDefinition {
-  if (!defaultModelId) return mission;
+function withRunDefaults(blueprint: BlueprintDefinition, defaultModelId?: string): BlueprintDefinition {
+  if (!defaultModelId) return blueprint;
 
   return {
-    ...mission,
-    nodes: mission.nodes.map((node) => {
+    ...blueprint,
+    nodes: blueprint.nodes.map((node) => {
       if (node.type === "openclaw_agent") {
         const config = node.config as AgentNodeConfig;
         return config.modelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };

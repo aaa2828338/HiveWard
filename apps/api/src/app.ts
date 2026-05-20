@@ -6,7 +6,7 @@ import { createOpenClawAdapter } from "@hiveward/adapter";
 import { createApiRouter } from "./routes/apiRouter";
 import { FileHivewardStore } from "./store/fileHivewardStore";
 import { OpenClawConfigStore } from "./store/openClawConfigStore";
-import { MissionWorker } from "./worker/missionWorker";
+import { BlueprintWorker } from "./worker/blueprintWorker";
 
 export async function createHivewardApiApp(): Promise<ReturnType<typeof express>> {
   const store = new FileHivewardStore();
@@ -14,7 +14,7 @@ export async function createHivewardApiApp(): Promise<ReturnType<typeof express>
 
   const openClawConfigStore = new OpenClawConfigStore();
   const adapter = createOpenClawAdapter({ sdkWorkspaceRoot: projectRoot() });
-  const worker = new MissionWorker(store, adapter);
+  const worker = new BlueprintWorker(store, adapter);
 
   const app = express();
   app.use(cors({ origin: true }));

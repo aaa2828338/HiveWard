@@ -15,13 +15,13 @@ import {
   Terminal,
   XCircle
 } from "lucide-react";
-import type { CanvasSize, MissionNodeRunStatus, MissionNodeType } from "@hiveward/shared";
+import type { CanvasSize, BlueprintNodeRunStatus, BlueprintNodeType } from "@hiveward/shared";
 
-export interface MissionNodeCardData extends Record<string, unknown> {
+export interface BlueprintNodeCardData extends Record<string, unknown> {
   label: string;
-  type: MissionNodeType;
+  type: BlueprintNodeType;
   kindLabel: string;
-  status?: MissionNodeRunStatus;
+  status?: BlueprintNodeRunStatus;
   statusLabel: string;
   disabled?: boolean;
   isStartNode?: boolean;
@@ -30,7 +30,7 @@ export interface MissionNodeCardData extends Record<string, unknown> {
   managerSlotSize?: CanvasSize;
 }
 
-const typeIcon: Record<MissionNodeType, typeof Bot> = {
+const typeIcon: Record<BlueprintNodeType, typeof Bot> = {
   openclaw_agent: Bot,
   codex_agent: Code2,
   claude_code_agent: Terminal,
@@ -48,8 +48,8 @@ const typeIcon: Record<MissionNodeType, typeof Bot> = {
 
 const managerPortStart = 122;
 const managerPortGap = 34;
-const managerMissionInputTop = 38;
-const managerMissionOutputTop = 58;
+const managerBlueprintInputTop = 38;
+const managerBlueprintOutputTop = 58;
 export const MANAGER_SLOT_DEFAULT_SIZE: CanvasSize = { width: 560, height: 300 };
 export const MANAGER_SLOT_MIN_SIZE: CanvasSize = { width: 420, height: 260 };
 export const MANAGER_SLOT_FRAME = {
@@ -58,7 +58,7 @@ export const MANAGER_SLOT_FRAME = {
   bottom: 28
 } as const;
 
-function statusIcon(status?: MissionNodeRunStatus) {
+function statusIcon(status?: BlueprintNodeRunStatus) {
   if (status === "succeeded") return CheckCircle2;
   if (status === "failed" || status === "cancelled") return XCircle;
   if (status === "running") return CircleDashed;
@@ -66,7 +66,7 @@ function statusIcon(status?: MissionNodeRunStatus) {
   return CircleDashed;
 }
 
-function statusClass(status?: MissionNodeRunStatus) {
+function statusClass(status?: BlueprintNodeRunStatus) {
   if (status === "succeeded") return "status-success";
   if (status === "failed" || status === "cancelled") return "status-danger";
   if (status === "running") return "status-running";
@@ -74,8 +74,8 @@ function statusClass(status?: MissionNodeRunStatus) {
   return "status-idle";
 }
 
-export const MissionNodeCard = memo(function MissionNodeCard({ data, selected, width, height }: NodeProps) {
-  const nodeData = data as MissionNodeCardData;
+export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selected, width, height }: NodeProps) {
+  const nodeData = data as BlueprintNodeCardData;
   const TypeIcon = typeIcon[nodeData.type];
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
@@ -89,7 +89,7 @@ export const MissionNodeCard = memo(function MissionNodeCard({ data, selected, w
 
   return (
     <div
-      className={`mission-node mission-node-${nodeData.type} ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}
+      className={`blueprint-node blueprint-node-${nodeData.type} ${selected ? "selected" : ""} ${nodeData.disabled ? "disabled" : ""}`}
       style={nodeStyle}
     >
       {nodeData.type === "manager_slot" ? (
@@ -134,10 +134,10 @@ export const MissionNodeCard = memo(function MissionNodeCard({ data, selected, w
       ) : nodeData.type === "manager" ? (
         <>
           <Handle
-            className="node-handle input-handle manager-mission-handle manager-mission-input-handle"
+            className="node-handle input-handle manager-blueprint-handle manager-blueprint-input-handle"
             type="target"
             position={Position.Left}
-            style={{ top: managerMissionInputTop }}
+            style={{ top: managerBlueprintInputTop }}
           />
           {managerSlots.map((slot, index) => (
             <Handle
@@ -187,10 +187,10 @@ export const MissionNodeCard = memo(function MissionNodeCard({ data, selected, w
       {nodeData.type === "manager_slot" ? null : nodeData.type === "manager" ? (
         <>
           <Handle
-            className="node-handle output-handle manager-mission-handle manager-mission-output-handle"
+            className="node-handle output-handle manager-blueprint-handle manager-blueprint-output-handle"
             type="source"
             position={Position.Left}
-            style={{ top: managerMissionOutputTop }}
+            style={{ top: managerBlueprintOutputTop }}
           />
           {managerSlots.map((slot, index) => (
             <Handle
