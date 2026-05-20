@@ -35,6 +35,8 @@ export type MissionNodeRunStatus =
   | "skipped"
   | "waiting_approval";
 
+export type MissionNodeResultRole = "auto" | "final" | "ignore";
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -48,6 +50,7 @@ export interface CanvasSize {
 export interface MissionNodeBaseConfig {
   label: string;
   description?: string;
+  resultRole?: MissionNodeResultRole;
 }
 
 export interface AgentNodeConfig extends MissionNodeBaseConfig {
@@ -197,6 +200,7 @@ export interface MissionRun {
   id: string;
   companyId: string;
   missionId: string;
+  missionName?: string;
   missionVersion: number;
   status: MissionRunStatus;
   startedBy: string;
@@ -220,6 +224,7 @@ export interface MissionNodeRun {
   queuedAt: string;
   startedAt?: string;
   endedAt?: string;
+  input?: unknown;
   output?: unknown;
   error?: string;
   usage?: OpenClawUsageFact;
@@ -249,6 +254,257 @@ export interface MissionRunView {
   run: MissionRun;
   nodeRuns: MissionNodeRun[];
   events: MissionNodeEvent[];
+  finalResult?: FinalRunResult | null;
+}
+
+export interface MissionRunSummary extends MissionRun {
+  missionName: string;
+}
+
+export const missionRunArchiveSchema = "hiveward.run-archive/v1";
+
+export interface MissionRunArchive {
+  schema: typeof missionRunArchiveSchema;
+  run: MissionRunSummary;
+  missionSnapshot: MissionDefinition;
+  nodeRuns: MissionNodeRun[];
+  events: MissionNodeEvent[];
+  finalResult: FinalRunResult | null;
+}
+
+export type FinalRunResultState = "available" | "failed" | "waiting_approval" | "empty";
+
+export type FinalRunResultSelectionReason =
+  | "explicit_final"
+  | "terminal_result"
+  | "latest_result";
+
+export interface FinalRunResultCandidate {
+  nodeRunId: string;
+  missionRunId: string;
+  missionId: string;
+  nodeId: string;
+  nodeLabel: string;
+  nodeType: MissionNodeType;
+  resultRole: MissionNodeResultRole;
+  selectionReason: FinalRunResultSelectionReason;
+  output: unknown;
+  endedAt?: string;
+  openclawRef?: OpenClawObjectRef;
+}
+
+export interface FinalRunNodeContext {
+  nodeRunId: string;
+  missionRunId: string;
+  missionId: string;
+  nodeId: string;
+  nodeLabel: string;
+  nodeType: MissionNodeType;
+  status: MissionNodeRunStatus;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  endedAt?: string;
+  openclawRef?: OpenClawObjectRef;
+}
+
+export interface FinalRunResult {
+  state: FinalRunResultState;
+  candidates: FinalRunResultCandidate[];
+  failedNode?: FinalRunNodeContext;
+  waitingApprovalNode?: FinalRunNodeContext;
+}
+
+const resultProducingNodeTypes = new Set<MissionNodeType>([
+  "openclaw_agent",
+  "codex_agent",
+  "claude_code_agent",
+  "parallel_agents",
+  "manager",
+  "summary"
+]);
+
+const managerOutHandlePrefix = "manager-out-";
+
+export function resolveFinalRunResult(
+  mission: MissionDefinition,
+  nodeRuns: MissionNodeRun[],
+  runStatus?: MissionRunStatus
+): FinalRunResult | null {
+  const nodesById = new Map(mission.nodes.map((node) => [node.id, node]));
+  const indexedCandidates = nodeRuns
+    .map((nodeRun, index) => {
+      const node = nodesById.get(nodeRun.nodeId);
+      return {
+        index,
+        nodeRun,
+        node,
+        nodeType: node?.type ?? nodeRun.nodeType,
+        resultRole: node?.config.resultRole ?? "auto"
+      };
+    })
+    .filter((candidate) => isSuccessfulResultCandidate(candidate.nodeType, candidate.nodeRun, candidate.resultRole));
+
+  const explicitFinals = indexedCandidates.filter((candidate) => candidate.resultRole === "final");
+  const selectedCandidates = explicitFinals.length > 0
+    ? explicitFinals.map((candidate) => toFinalRunResultCandidate(candidate, "explicit_final"))
+    : resolveAutomaticFinalCandidates(mission, indexedCandidates)
+        .map(({ candidate, reason }) => toFinalRunResultCandidate(candidate, reason));
+
+  const failedNode = [...nodeRuns]
+    .reverse()
+    .find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
+  const waitingApprovalNode = [...nodeRuns]
+    .reverse()
+    .find((nodeRun) => nodeRun.status === "waiting_approval");
+  const finalRunState = resolveFinalRunResultState(runStatus, selectedCandidates, failedNode, waitingApprovalNode);
+
+  if (selectedCandidates.length === 0 && !failedNode && !waitingApprovalNode) {
+    return null;
+  }
+
+  return {
+    state: finalRunState,
+    candidates: selectedCandidates,
+    failedNode: failedNode ? toFinalRunNodeContext(failedNode) : undefined,
+    waitingApprovalNode: waitingApprovalNode ? toFinalRunNodeContext(waitingApprovalNode) : undefined
+  };
+}
+
+interface IndexedFinalCandidate {
+  index: number;
+  nodeRun: MissionNodeRun;
+  node?: MissionNode;
+  nodeType: MissionNodeType;
+  resultRole: MissionNodeResultRole;
+}
+
+function resolveAutomaticFinalCandidates(
+  mission: MissionDefinition,
+  candidates: IndexedFinalCandidate[]
+): Array<{ candidate: IndexedFinalCandidate; reason: FinalRunResultSelectionReason }> {
+  const automaticCandidates = candidates.filter(
+    (candidate) => candidate.resultRole !== "final" && !isManagerInternalAutoCandidate(mission, candidate.node)
+  );
+  const terminalCandidates = automaticCandidates.filter(
+    (candidate) =>
+      !hasLaterSameNodeCandidate(candidate, automaticCandidates) &&
+      !hasLaterDownstreamResultCandidate(mission, candidate, automaticCandidates)
+  );
+
+  if (terminalCandidates.length > 0) {
+    return terminalCandidates.map((candidate) => ({ candidate, reason: "terminal_result" }));
+  }
+
+  const latestCandidate = automaticCandidates[automaticCandidates.length - 1];
+  return latestCandidate ? [{ candidate: latestCandidate, reason: "latest_result" }] : [];
+}
+
+function isSuccessfulResultCandidate(
+  nodeType: MissionNodeType,
+  nodeRun: MissionNodeRun,
+  resultRole: MissionNodeResultRole
+): boolean {
+  return (
+    resultRole !== "ignore" &&
+    resultProducingNodeTypes.has(nodeType) &&
+    nodeRun.status === "succeeded" &&
+    nodeRun.output !== undefined
+  );
+}
+
+function isManagerInternalAutoCandidate(mission: MissionDefinition, node: MissionNode | undefined): boolean {
+  if (!node) return false;
+  if (node.parentId) return true;
+
+  return mission.edges.some((edge) => {
+    if (edge.target !== node.id || !edge.sourceHandle?.startsWith(managerOutHandlePrefix)) return false;
+    const source = mission.nodes.find((candidate) => candidate.id === edge.source);
+    return source?.type === "manager";
+  });
+}
+
+function hasLaterSameNodeCandidate(
+  candidate: IndexedFinalCandidate,
+  candidates: IndexedFinalCandidate[]
+): boolean {
+  return candidates.some((item) => item.nodeRun.nodeId === candidate.nodeRun.nodeId && item.index > candidate.index);
+}
+
+function hasLaterDownstreamResultCandidate(
+  mission: MissionDefinition,
+  candidate: IndexedFinalCandidate,
+  candidates: IndexedFinalCandidate[]
+): boolean {
+  return candidates.some(
+    (item) =>
+      item.index > candidate.index &&
+      item.nodeRun.id !== candidate.nodeRun.id &&
+      isDownstreamNode(mission, candidate.nodeRun.nodeId, item.nodeRun.nodeId)
+  );
+}
+
+function isDownstreamNode(mission: MissionDefinition, sourceNodeId: string, targetNodeId: string): boolean {
+  const visited = new Set<string>();
+  const queue = mission.edges.filter((edge) => edge.source === sourceNodeId).map((edge) => edge.target);
+
+  while (queue.length > 0) {
+    const nextNodeId = queue.shift()!;
+    if (nextNodeId === targetNodeId) return true;
+    if (visited.has(nextNodeId)) continue;
+
+    visited.add(nextNodeId);
+    queue.push(...mission.edges.filter((edge) => edge.source === nextNodeId).map((edge) => edge.target));
+  }
+
+  return false;
+}
+
+function toFinalRunResultCandidate(
+  candidate: IndexedFinalCandidate,
+  selectionReason: FinalRunResultSelectionReason
+): FinalRunResultCandidate {
+  return {
+    nodeRunId: candidate.nodeRun.id,
+    missionRunId: candidate.nodeRun.missionRunId,
+    missionId: candidate.nodeRun.missionId,
+    nodeId: candidate.nodeRun.nodeId,
+    nodeLabel: candidate.nodeRun.nodeLabel,
+    nodeType: candidate.nodeType,
+    resultRole: candidate.resultRole,
+    selectionReason,
+    output: candidate.nodeRun.output,
+    endedAt: candidate.nodeRun.endedAt,
+    openclawRef: candidate.nodeRun.openclawRef
+  };
+}
+
+function toFinalRunNodeContext(nodeRun: MissionNodeRun): FinalRunNodeContext {
+  return {
+    nodeRunId: nodeRun.id,
+    missionRunId: nodeRun.missionRunId,
+    missionId: nodeRun.missionId,
+    nodeId: nodeRun.nodeId,
+    nodeLabel: nodeRun.nodeLabel,
+    nodeType: nodeRun.nodeType,
+    status: nodeRun.status,
+    input: nodeRun.input,
+    output: nodeRun.output,
+    error: nodeRun.error,
+    endedAt: nodeRun.endedAt,
+    openclawRef: nodeRun.openclawRef
+  };
+}
+
+function resolveFinalRunResultState(
+  runStatus: MissionRunStatus | undefined,
+  candidates: FinalRunResultCandidate[],
+  failedNode: MissionNodeRun | undefined,
+  waitingApprovalNode: MissionNodeRun | undefined
+): FinalRunResultState {
+  if (runStatus === "failed" || failedNode) return "failed";
+  if (runStatus === "waiting_approval" || waitingApprovalNode) return "waiting_approval";
+  return candidates.length > 0 ? "available" : "empty";
 }
 
 export function createStarterMission(now: string, companyId = "company-hiveward-studio"): MissionDefinition {
@@ -531,7 +787,7 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
     companyId,
     name: "Manager-driven HTML delivery",
     description:
-      "A manager coordinates three mission slots: inspiration and execution document, HTML implementation, and QA verification.",
+      "A manager coordinates two mission slots: news research plus an HTML execution document, then standalone HTML implementation.",
     version: 1,
     nodes: [
       {
@@ -540,10 +796,10 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         position: { x: 80, y: 420 },
         config: {
           label: "HTML Delivery Manager",
-          portCount: 3,
+          portCount: 2,
           maxHandoffs: 8,
           instructions:
-            "Run Slot 1 first to collect inspiration and write an HTML execution document. Send Slot 1 output to Slot 2 to build a runnable HTML page. Send Slot 2 output to Slot 3 for QA. If Slot 3 returns needs_revision or returnToSlot 2, route back to Slot 2. Complete only after Slot 3 returns pass or complete."
+            "Run Slot 1 first. In Slot 1, Agent 1 collects a concrete news brief and Agent 2 turns that brief into an HTML production execution document. Send Slot 1 output to Slot 2. In Slot 2, Agent 1 writes the final standalone HTML code. Complete when Slot 2 returns status complete with an html field."
         }
       },
       {
@@ -563,11 +819,12 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         parentId: "html-manager-slot-1",
         position: { x: 76, y: 154 },
         config: {
-          label: "1. Inspiration",
+          label: "1. News Research",
+          resultRole: "ignore",
           agentId: "main",
-          agentName: "inspiration-collector",
+          agentName: "news-researcher",
           prompt:
-            "Use the manager input and project goal to collect practical inspiration for an HTML deliverable. Return strict JSON only with keys: status, audience, inspiration, pageSections, interactionIdeas, constraints. Keep the ideas concrete enough for a writer to turn into an execution document.",
+            "Collect a concrete news brief for an HTML page. Use the manager input to determine the topic, audience, region, timeframe, and output goal. If the input does not specify a topic, default to AI agent productivity news for builders and operators. Do not ask for clarification and do not leave placeholders. Return strict JSON only: {\"status\":\"continue\",\"topic\":\"...\",\"audience\":\"...\",\"timeframe\":\"...\",\"sourceStatus\":\"verified_sources\"|\"needs_source_verification\",\"newsItems\":[{\"headline\":\"...\",\"summary\":\"...\",\"whyItMatters\":\"...\",\"pageAngle\":\"...\",\"sourceHint\":\"...\"}],\"pageThesis\":\"...\",\"contentRisks\":[...]}. Include 3 to 5 newsItems with specific, page-ready angles.",
           tools: []
         }
       },
@@ -577,11 +834,12 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         parentId: "html-manager-slot-1",
         position: { x: 424, y: 154 },
         config: {
-          label: "2. Execution Doc",
+          label: "2. HTML Execution Doc",
+          resultRole: "ignore",
           agentId: "main",
           agentName: "execution-doc-writer",
           prompt:
-            "Use the upstream inspiration to write an HTML-formatted execution document for the builder. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":2,\"executionDocumentHtml\":\"<section>...</section>\",\"requirements\":[...],\"acceptanceCriteria\":[...]}. The executionDocumentHtml must describe layout, content, interactions, data, and visual constraints.",
+            "Use the upstream news brief to write a production-ready HTML execution document for the builder. Do not ask for more context. Do not include [fill in], lorem ipsum, placeholder logos, placeholder testimonials, or unresolved <em>placeholder</em> text. If a detail is missing, make a concrete conservative editorial choice and record it in assumptions. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":2,\"executionDocumentHtml\":\"<section>...</section>\",\"pageTitle\":\"...\",\"requirements\":[...],\"acceptanceCriteria\":[...],\"assumptions\":[...]}. The executionDocumentHtml must include the final page thesis, section-by-section copy direction, real headings, CTA copy, visual constraints, responsive behavior, and the exact data from the news brief that the HTML must present.",
           tools: []
         }
       },
@@ -603,38 +861,14 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         position: { x: 264, y: 132 },
         config: {
           label: "3. HTML Builder",
+          resultRole: "final",
           agentId: "main",
           agentName: "html-code-builder",
           prompt:
-            "Use the manager previousResults to find Slot 1 executionDocumentHtml. Build a complete standalone HTML document with inline CSS and any needed inline JavaScript. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":3,\"html\":\"<!doctype html>...\",\"buildNotes\":[...]}. The html value must be directly runnable in a browser.",
+            "Use the manager previousResults to find Slot 1 executionDocumentHtml. Build a complete standalone HTML document with inline CSS and any needed inline JavaScript. Return strict JSON only: {\"status\":\"complete\",\"html\":\"<!doctype html>...\",\"buildNotes\":[...]}. The html value must be directly runnable in a browser and must not contain [fill in], lorem ipsum, placeholder logos, placeholder testimonials, or generic bracketed copy. Preserve the news-driven page thesis, headings, CTA text, and concrete content from the execution document.",
           tools: []
         }
       },
-      {
-        id: "html-manager-slot-3",
-        type: "manager_slot",
-        position: { x: 480, y: 820 },
-        size: { width: 760, height: 320 },
-        config: {
-          label: "Slot 3",
-          managerNodeId: "html-manager",
-          slot: 3
-        }
-      },
-      {
-        id: "html-manager-slot-3-agent-1",
-        type: "openclaw_agent",
-        parentId: "html-manager-slot-3",
-        position: { x: 264, y: 132 },
-        config: {
-          label: "4. HTML QA",
-          agentId: "main",
-          agentName: "html-qa-tester",
-          prompt:
-            "Use the manager previousResults to find Slot 2 html. Verify it is a complete standalone HTML document, has visible body content, can open without external files, and has no obvious display or runtime errors. If it passes, return strict JSON only: {\"status\":\"complete\",\"verified\":true,\"result\":\"passed\",\"checks\":[...]}. If it fails, return strict JSON only: {\"status\":\"needs_revision\",\"returnToSlot\":2,\"verified\":false,\"issues\":[...]}.",
-          tools: []
-        }
-      }
     ],
     edges: [
       {
@@ -670,22 +904,6 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         condition: "success"
       },
       {
-        id: "html-manager-to-slot-3",
-        source: "html-manager",
-        sourceHandle: "manager-out-3",
-        target: "html-manager-slot-3",
-        targetHandle: "manager-slot-in",
-        condition: "success"
-      },
-      {
-        id: "html-slot-3-to-manager",
-        source: "html-manager-slot-3",
-        sourceHandle: "manager-slot-out",
-        target: "html-manager",
-        targetHandle: "manager-in-3",
-        condition: "success"
-      },
-      {
         id: "html-slot-1-start",
         source: "html-manager-slot-1",
         sourceHandle: "manager-slot-inner-out",
@@ -716,20 +934,6 @@ export function createManagerDrivenHtmlMission(now: string, companyId = "company
         id: "html-slot-2-finish",
         source: "html-manager-slot-2-agent-1",
         target: "html-manager-slot-2",
-        targetHandle: "manager-slot-inner-in",
-        condition: "success"
-      },
-      {
-        id: "html-slot-3-start",
-        source: "html-manager-slot-3",
-        sourceHandle: "manager-slot-inner-out",
-        target: "html-manager-slot-3-agent-1",
-        condition: "success"
-      },
-      {
-        id: "html-slot-3-finish",
-        source: "html-manager-slot-3-agent-1",
-        target: "html-manager-slot-3",
         targetHandle: "manager-slot-inner-in",
         condition: "success"
       }
@@ -877,6 +1081,7 @@ function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeC
     return {
       label: agentConfig.label,
       description: agentConfig.description,
+      resultRole: agentConfig.resultRole,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
       permissionProfile: agentConfig.permissionProfile,
@@ -890,6 +1095,7 @@ function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeC
     return {
       label: parallelConfig.label,
       description: parallelConfig.description,
+      resultRole: parallelConfig.resultRole,
       agents: parallelConfig.agents.map((agent) => toPortableMissionNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
       waitFor: parallelConfig.waitFor
     };
@@ -899,6 +1105,7 @@ function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeC
     return {
       label: summaryConfig.label,
       description: summaryConfig.description,
+      resultRole: summaryConfig.resultRole,
       mode: summaryConfig.mode,
       prompt: summaryConfig.prompt
     };
@@ -908,6 +1115,7 @@ function toPortableMissionNodeConfig(type: MissionNodeType, config: MissionNodeC
     return {
       label: sendConfig.label,
       description: sendConfig.description,
+      resultRole: sendConfig.resultRole,
       channelId: "",
       target: "",
       bodyTemplate: sendConfig.bodyTemplate

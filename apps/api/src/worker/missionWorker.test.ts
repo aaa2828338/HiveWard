@@ -124,7 +124,12 @@ describe("MissionWorker", () => {
     expect(run.status).toBe("running");
     expect(view?.run.status).toBe("failed");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("succeeded");
-    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "plan")?.status).toBe("failed");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.input).toEqual({ upstream: [] });
+    const failedPlanRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "plan");
+    expect(failedPlanRun?.status).toBe("failed");
+    expect(failedPlanRun?.input).toEqual({
+      upstream: [{ nodeId: "brief", nodeLabel: "1. Brief", output: "brief ok" }]
+    });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "verify")?.status).toBe("skipped");
     expect(view?.events.some((event) => event.type === "mission.run.failed")).toBe(true);
   });
@@ -514,7 +519,7 @@ describe("MissionWorker", () => {
     expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "unassigned-slot")).toBe(false);
   });
 
-  it("runs the manager-driven HTML delivery example through all slot boxes", async () => {
+  it("runs the manager-driven HTML delivery example through the news, execution-doc, and build agents", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -523,29 +528,46 @@ describe("MissionWorker", () => {
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-1"),
       createStartedAgentTask("task-2"),
-      createStartedAgentTask("task-3"),
-      createStartedAgentTask("task-4")
+      createStartedAgentTask("task-3")
     ], [
-      createCompletedAgentTask("task-1", "succeeded", JSON.stringify({ status: "continue", inspiration: ["clear hero", "dense checklist"] })),
+      createCompletedAgentTask(
+        "task-1",
+        "succeeded",
+        JSON.stringify({
+          status: "continue",
+          topic: "AI agent productivity",
+          newsItems: [
+            {
+              headline: "Agent teams move into production workflows",
+              summary: "Builders are using coordinated AI agents for research and delivery.",
+              whyItMatters: "The page needs a concrete industry hook.",
+              pageAngle: "Make the hero about operational adoption.",
+              sourceHint: "industry briefing"
+            }
+          ],
+          pageThesis: "Agentic workflows are becoming production infrastructure."
+        })
+      ),
       createCompletedAgentTask(
         "task-2",
         "succeeded",
         JSON.stringify({
           status: "continue",
           nextSlot: 2,
-          executionDocumentHtml: "<section><h1>Execution Document</h1></section>"
+          executionDocumentHtml: "<section><h1>Agentic workflows are becoming production infrastructure.</h1></section>",
+          pageTitle: "Agentic Workflow Brief",
+          acceptanceCriteria: ["Standalone HTML", "No placeholders"]
         })
       ),
       createCompletedAgentTask(
         "task-3",
         "succeeded",
         JSON.stringify({
-          status: "continue",
-          nextSlot: 3,
-          html: "<!doctype html><html><body><h1>Execution Plan</h1></body></html>"
+          status: "complete",
+          html: "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>",
+          buildNotes: ["Built from Slot 1 execution document"]
         })
-      ),
-      createCompletedAgentTask("task-4", "succeeded", JSON.stringify({ status: "complete", verified: true, result: "passed" }))
+      )
     ]);
     const worker = new MissionWorker(store, adapter);
 
@@ -554,14 +576,20 @@ describe("MissionWorker", () => {
 
     expect(view?.run.status).toBe("succeeded");
     expect(adapter.calls.map((call) => call.agentName)).toEqual([
-      "inspiration-collector",
+      "news-researcher",
       "execution-doc-writer",
-      "html-code-builder",
-      "html-qa-tester"
+      "html-code-builder"
     ]);
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-1")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2")?.status).toBe("succeeded");
-    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-3")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "html-manager-slot-3")).toBe(false);
+    const builderOutput = JSON.parse(
+      view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2-agent-1")?.output as string
+    ) as { status: string; html: string };
+    expect(builderOutput).toMatchObject({
+      status: "complete",
+      html: expect.stringContaining("<!doctype html>")
+    });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager")?.output).toMatchObject({
       status: "completed"
     });

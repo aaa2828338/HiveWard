@@ -292,6 +292,10 @@ export class MissionWorker {
     input: unknown
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
+    const nodeRunWithInput: MissionNodeRun = {
+      ...nodeRun,
+      input
+    };
     const { result, openclawRef } = await this.runAgentTask({
       missionRunId: run.id,
       nodeRunId: nodeRun.id,
@@ -308,12 +312,12 @@ export class MissionWorker {
       tools: config.tools
     });
     if (result.status !== "succeeded") {
-      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
+      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
       return result;
     }
 
     await this.completeNode(
-      { ...nodeRun, openclawRef, usage: result.usage },
+      { ...nodeRunWithInput, openclawRef, usage: result.usage },
       result.output ?? "",
       openclawRef
     );
