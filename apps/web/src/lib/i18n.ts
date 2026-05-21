@@ -28,6 +28,7 @@ export interface Messages {
     remove: string;
     run: string;
     runBlueprint: string;
+    stopRun: string;
     save: string;
     saveModel: string;
     saveBlueprint: string;
@@ -251,6 +252,7 @@ export const messages: Record<Language, Messages> = {
       remove: "Remove",
       run: "Start run",
       runBlueprint: "Start blueprint",
+      stopRun: "Stop run",
       save: "Save",
       saveModel: "Save model",
       saveBlueprint: "Save blueprint",
@@ -536,6 +538,7 @@ export const messages: Record<Language, Messages> = {
       "node.run.started": "Node started",
       "node.run.waiting_approval": "Waiting for inbox",
       "blueprint.run.completed": "Blueprint completed",
+      "blueprint.run.cancelled": "Blueprint stopped",
       "blueprint.run.failed": "Blueprint failed",
       "blueprint.run.started": "Blueprint started"
     }
@@ -565,6 +568,7 @@ export const messages: Record<Language, Messages> = {
       remove: "移除",
       run: "启动运行",
       runBlueprint: "\u542f\u52a8\u84dd\u56fe",
+      stopRun: "\u505c\u6b62\u8fd0\u884c",
       save: "保存",
       saveModel: "保存模型",
       saveBlueprint: "\u4fdd\u5b58\u84dd\u56fe",
@@ -849,6 +853,7 @@ export const messages: Record<Language, Messages> = {
       "node.run.started": "节点已启动",
       "node.run.waiting_approval": "等待收件箱处理",
       "blueprint.run.completed": "\u84dd\u56fe\u5df2\u5b8c\u6210",
+      "blueprint.run.cancelled": "\u84dd\u56fe\u5df2\u505c\u6b62",
       "blueprint.run.failed": "\u84dd\u56fe\u5931\u8d25",
       "blueprint.run.started": "\u84dd\u56fe\u5df2\u542f\u52a8"
     }

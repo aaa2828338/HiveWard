@@ -43,6 +43,7 @@ import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSyst
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
+import hivewardPackage from "../../../package.json";
 import {
   AgentsPage,
   ApprovalsPage,
@@ -80,6 +81,7 @@ const systemLabels: Record<AppSystemId, string> = {
 
 const RUN_POLL_INTERVAL_MS = 2500;
 const companyScopedSections = new Set<AppSectionId>(["company", "blueprint", "runs", "approvals", "schedule"]);
+const hivewardVersionLabel = `v${hivewardPackage.version}`;
 
 type AppTheme = "light" | "dark";
 
@@ -376,9 +378,7 @@ export function App() {
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
   const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
-  const openClawVersionStatusLabel = openClawVersionHealthy
-    ? language === "zh-CN" ? "OpenClaw \u53ef\u7528" : "OpenClaw available"
-    : language === "zh-CN" ? "OpenClaw \u4e0d\u53ef\u7528" : "OpenClaw unavailable";
+  const hivewardVersionTitle = `Hiveward ${hivewardVersionLabel}`;
   const gatewaySettings = openClawConfig?.gateway;
   const gatewayStatusLabel = gatewaySettings?.url ? openClawPanelUi.configured : openClawPanelUi.notConfigured;
   const gatewaySourceLabel =
@@ -635,13 +635,23 @@ export function App() {
     });
   }, [hydrateWorkspace, withBusy, blueprint]);
 
-  const exportBlueprint = useCallback(() => {
-    if (!blueprint) return;
+  const exportBlueprint = useCallback((blueprintId?: string) => {
+    const targetBlueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : blueprint;
+    if (!targetBlueprint) return;
     void withBusy("exportBlueprint", async () => {
-      const blueprintPackage = await api.exportBlueprint(blueprint.id);
-      downloadBlueprintPackage(blueprintPackage, blueprint.name);
+      const blueprintPackage = await api.exportBlueprint(targetBlueprint.id);
+      downloadBlueprintPackage(blueprintPackage, targetBlueprint.name);
     });
-  }, [withBusy, blueprint]);
+  }, [blueprint, blueprints, withBusy]);
+
+  const deleteBlueprint = useCallback((blueprintId: string) => {
+    void withBusy("deleteBlueprint", async () => {
+      await api.deleteBlueprint(blueprintId);
+      const remainingBlueprints = blueprints.filter((item) => item.id !== blueprintId);
+      const nextBlueprintId = blueprint?.id === blueprintId ? remainingBlueprints[0]?.id : blueprint?.id;
+      await hydrateWorkspace({ blueprintId: nextBlueprintId });
+    });
+  }, [blueprint?.id, blueprints, hydrateWorkspace, withBusy]);
 
   const openBlueprintImport = useCallback(() => {
     blueprintImportInputRef.current?.click();
@@ -679,9 +689,18 @@ export function App() {
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
       setSelectedRunId(runView.run.id);
-      setSection("runs");
     });
   }, [applyRunView, withBusy, blueprint]);
+
+  const cancelBlueprintRun = useCallback(() => {
+    const targetRunId = latestRunForBlueprint?.run.id;
+    if (!targetRunId) return;
+    void withBusy("cancelBlueprintRun", async () => {
+      const updated = await api.cancelBlueprintRun(targetRunId);
+      applyRunView(updated);
+      setSelectedRunId(updated.run.id);
+    });
+  }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
   const approveRun = useCallback(
     (blueprintRunId?: string) => {
@@ -792,6 +811,9 @@ export function App() {
   }, [applyRunView, pollingRunId]);
 
   const renderSection = () => {
+    if (section === "hivewardHome") {
+      return <HivewardHomePage />;
+    }
     if (section === "companyDirectory") {
       return (
         <CompanyDirectoryPage
@@ -851,6 +873,7 @@ export function App() {
           blueprints={blueprints}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
+          runSummaries={runSummaries}
           runView={latestRunForBlueprint}
           selectedNodeId={selectedNodeId}
           selectedCompanyId={selectedCompanyId}
@@ -861,8 +884,10 @@ export function App() {
           onRefreshWorkspace={refreshWorkspace}
           onOpenBlueprintImport={openBlueprintImport}
           onExportBlueprint={exportBlueprint}
+          onDeleteBlueprint={deleteBlueprint}
           onSaveBlueprint={saveBlueprint}
           onRunBlueprint={runBlueprint}
+          onCancelBlueprintRun={cancelBlueprintRun}
           onSelectNode={setSelectedNodeId}
           onUpdateBlueprint={updateBlueprint}
           onApproveRun={() => approveRun()}
@@ -1057,16 +1082,16 @@ export function App() {
             <div className="sidebar-system-control">
               <button
                 type="button"
-                className={`sidebar-system-version ${openClawVersionHealthy ? "online" : "offline"} ${section === "openclaw" ? "active" : ""}`}
-                aria-label={`${openClawPanelUi.openPanel}: ${openClawVersionLabel} ${openClawVersionStatusLabel}`}
-                title={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
+                className={`sidebar-system-version online ${section === "hivewardHome" ? "active" : ""}`}
+                aria-label={hivewardVersionTitle}
+                title={hivewardVersionTitle}
                 onClick={() => {
                   setSystemMenuOpen(false);
-                  setSection("openclaw");
+                  setSection("hivewardHome");
                 }}
               >
                 <span className="sidebar-system-dot" aria-hidden="true" />
-                <strong>{openClawVersionLabel}</strong>
+                <strong>{hivewardVersionLabel}</strong>
               </button>
               <button
                 type="button"
@@ -1116,6 +1141,14 @@ export function App() {
         </section>
       </section>
     </main>
+  );
+}
+
+function HivewardHomePage() {
+  return (
+    <section className="hiveward-home-page" aria-label="Hiveward">
+      <img className="hiveward-home-logo" src="/brand/hiveward-hive.png" alt="Hiveward" />
+    </section>
   );
 }
 
@@ -1522,6 +1555,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "exportBlueprint") return t.errors.save;
   if (action === "importBlueprint") return t.errors.save;
   if (action === "runBlueprint") return t.errors.run;
+  if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

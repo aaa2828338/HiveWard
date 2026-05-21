@@ -96,6 +96,30 @@ describe("apiRouter", () => {
     }
   });
 
+  it("deletes a blueprint from the selected company", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const blueprint = (await fixture.store.listBlueprints())[0]!;
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const deleteResponse = await fetch(`${baseUrl}/api/blueprints/${blueprint.id}`, {
+          method: "DELETE"
+        });
+        const deleteBody = await readOkJson<{ blueprintId: string }>(deleteResponse);
+        expect(deleteBody.blueprintId).toBe(blueprint.id);
+
+        const listResponse = await fetch(`${baseUrl}/api/blueprints`);
+        const listBody = await readOkJson<{ blueprints: Array<{ id: string }> }>(listResponse);
+        expect(listBody.blueprints.some((item) => item.id === blueprint.id)).toBe(false);
+
+        const getResponse = await fetch(`${baseUrl}/api/blueprints/${blueprint.id}`);
+        expect(getResponse.status).toBe(404);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("injects runtime default models before starting a blueprint run", async () => {
     const fixture = await createStoreFixture();
     const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;

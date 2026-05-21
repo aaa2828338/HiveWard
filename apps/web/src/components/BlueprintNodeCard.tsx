@@ -44,8 +44,9 @@ const typeIcon: Record<BlueprintNodeType, typeof Bot> = {
 
 const managerPortStart = 122;
 const managerPortGap = 34;
-const managerBlueprintInputTop = 38;
-const managerBlueprintOutputTop = 58;
+const managerBlueprintInputTop = 34;
+const managerBlueprintOutputTop = 62;
+const managerPortLaneOffset = 11;
 export const MANAGER_SLOT_DEFAULT_SIZE: CanvasSize = { width: 560, height: 300 };
 export const MANAGER_SLOT_MIN_SIZE: CanvasSize = { width: 420, height: 260 };
 export const MANAGER_SLOT_FRAME = {
@@ -103,14 +104,14 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
             className="node-handle input-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-in"
             type="target"
             position={Position.Left}
-            style={{ top: 34 }}
+            style={{ top: 30 }}
           />
           <Handle
             id="manager-slot-out"
             className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-out"
             type="source"
             position={Position.Left}
-            style={{ top: 52 }}
+            style={{ top: 58 }}
           />
           <Handle
             id="manager-slot-inner-out"
@@ -245,7 +246,7 @@ function managerHandleStyle(
   lane: "input" | "output"
 ): CSSProperties {
   return {
-    top: `calc(var(--manager-port-start) + ${index * managerPortGap}px ${lane === "input" ? "+ 7px" : "- 7px"})`,
+    top: `calc(var(--manager-port-start) + ${index * managerPortGap}px ${lane === "input" ? `+ ${managerPortLaneOffset}px` : `- ${managerPortLaneOffset}px`})`,
     right: 0
   };
 }

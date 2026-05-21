@@ -12,7 +12,7 @@ export type AppNavSectionId =
   | "claudeCodeConfig"
   | "codexConfig";
 
-export type AppSectionId = AppNavSectionId | "companyDirectory";
+export type AppSectionId = AppNavSectionId | "companyDirectory" | "hivewardHome";
 
 export type AppSystemId = "hiveward" | "openclaw" | "claudeCode" | "codex";
 

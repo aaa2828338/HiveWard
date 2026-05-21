@@ -23,6 +23,10 @@ export interface BlueprintResponse {
   blueprint: BlueprintDefinition;
 }
 
+export interface DeleteBlueprintResponse {
+  blueprintId: string;
+}
+
 export interface SaveBlueprintRequest {
   blueprint: BlueprintDefinition;
 }

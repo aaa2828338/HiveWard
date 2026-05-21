@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
@@ -236,6 +236,22 @@ export class FileHivewardStore {
       index.blueprintIndex.push(toBlueprintIndexEntry(blueprint));
       await this.writeIndexUnlocked(index);
       return blueprint;
+    });
+  }
+
+  async deleteBlueprint(id: string): Promise<boolean> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      if (!companyId) return false;
+
+      const existingIndex = index.blueprintIndex.findIndex((item) => item.id === id && item.companyId === companyId);
+      if (existingIndex < 0) return false;
+
+      index.blueprintIndex.splice(existingIndex, 1);
+      await this.writeIndexUnlocked(index);
+      await rm(this.blueprintPath(id), { force: true });
+      return true;
     });
   }
 

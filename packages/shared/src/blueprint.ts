@@ -251,6 +251,7 @@ export interface BlueprintNodeEvent {
     | "node.run.failed"
     | "node.run.cancelled"
     | "blueprint.run.completed"
+    | "blueprint.run.cancelled"
     | "blueprint.run.failed";
   message: string;
   createdAt: string;

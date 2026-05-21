@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   applyNodeChanges,
   Background,
   Controls,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   SelectionMode,
@@ -14,9 +13,31 @@ import {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
-  type OnNodesChange
+  type OnNodesChange,
+  useReactFlow,
+  useStore
 } from "@xyflow/react";
-import { Bot, Check, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Upload, X } from "lucide-react";
+import {
+  ArrowUpDown,
+  Bot,
+  Check,
+  Download,
+  GitBranch,
+  LayoutTemplate,
+  Loader2,
+  MessagesSquare,
+  Network,
+  Play,
+  Plus,
+  Repeat2,
+  Search,
+  Send,
+  ShieldCheck,
+  Square,
+  Trash2,
+  Upload,
+  X
+} from "lucide-react";
 import { isAgentBlueprintNode, type AgentRuntimeId } from "@hiveward/shared";
 import type {
   AgentNodeConfig,
@@ -38,6 +59,7 @@ import type {
   BlueprintNode,
   BlueprintNodeRun,
   BlueprintNodeType,
+  BlueprintRunSummary,
   BlueprintRunView
 } from "@hiveward/shared";
 import {
@@ -52,6 +74,21 @@ import { type Messages } from "../lib/i18n";
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard
 };
+
+type BlueprintCanvasWorld = {
+  extent: CoordinateExtent;
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+};
+
+const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
+const canvasWorldScreenScale = 3;
 
 const palette: Array<{ type: BlueprintNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
@@ -84,12 +121,15 @@ const blueprintStepTypes = new Set<BlueprintNodeType>([
 ]);
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
+type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
+type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
 
 export function BlueprintStudioPage({
   blueprint,
   blueprints,
   catalog,
   configuredAgents,
+  runSummaries,
   runView,
   selectedNodeId,
   selectedCompanyId,
@@ -97,11 +137,11 @@ export function BlueprintStudioPage({
   busyAction,
   onSelectBlueprint,
   onCreateBlueprint,
-  onRefreshWorkspace,
   onOpenBlueprintImport,
   onExportBlueprint,
-  onSaveBlueprint,
+  onDeleteBlueprint,
   onRunBlueprint,
+  onCancelBlueprintRun,
   onSelectNode,
   onUpdateBlueprint,
   onApproveRun,
@@ -111,6 +151,7 @@ export function BlueprintStudioPage({
   blueprints: BlueprintDefinition[];
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
+  runSummaries: BlueprintRunSummary[];
   runView?: BlueprintRunView;
   selectedNodeId?: string;
   selectedCompanyId?: string;
@@ -120,9 +161,11 @@ export function BlueprintStudioPage({
   onCreateBlueprint: () => void;
   onRefreshWorkspace: () => void;
   onOpenBlueprintImport: () => void;
-  onExportBlueprint: () => void;
+  onExportBlueprint: (blueprintId?: string) => void;
+  onDeleteBlueprint: (blueprintId: string) => void;
   onSaveBlueprint: () => void;
   onRunBlueprint: () => void;
+  onCancelBlueprintRun: () => void;
   onSelectNode: (nodeId?: string) => void;
   onUpdateBlueprint: (updater: (current: BlueprintDefinition) => BlueprintDefinition) => void;
   onApproveRun: () => void;
@@ -134,13 +177,22 @@ export function BlueprintStudioPage({
   const [localNodes, setLocalNodes] = useState<Node<BlueprintNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
-  const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number }>({ x: 88, y: 252 });
+  const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number; placement?: "above" }>({ x: 88, y: 252 });
+  const [blueprintDrawerOpen, setBlueprintDrawerOpen] = useState(false);
+  const [drawerSelectedBlueprintId, setDrawerSelectedBlueprintId] = useState<string | undefined>(blueprint?.id);
+  const [blueprintSearch, setBlueprintSearch] = useState("");
+  const [blueprintSortMode, setBlueprintSortMode] = useState<BlueprintSortMode>("recent");
+  const [blueprintCardContextMenu, setBlueprintCardContextMenu] = useState<{ x: number; y: number; blueprintId: string }>();
+  const [deleteCandidateBlueprintId, setDeleteCandidateBlueprintId] = useState<string | undefined>();
+  const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() => new Set());
   const [nodeContextMenu, setNodeContextMenu] = useState<{ open: boolean; x: number; y: number; nodeId?: string }>({
     open: false,
     x: 0,
     y: 0,
     nodeId: undefined
   });
+  const [canvasViewportSize, setCanvasViewportSize] = useState(fallbackCanvasViewportSize);
+  const canvasPanelRef = useRef<HTMLElement | null>(null);
   const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean; openedMenu: boolean } | undefined>(undefined);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
@@ -169,6 +221,127 @@ export function BlueprintStudioPage({
   }, [runView?.run.status, blueprint]);
 
   useEffect(() => {
+    setDrawerSelectedBlueprintId(blueprint?.id);
+  }, [blueprint?.id]);
+
+  const selectedDrawerBlueprint = useMemo(
+    () => blueprints.find((item) => item.id === drawerSelectedBlueprintId),
+    [blueprints, drawerSelectedBlueprintId]
+  );
+  const deleteCandidateBlueprint = useMemo(
+    () => blueprints.find((item) => item.id === deleteCandidateBlueprintId),
+    [blueprints, deleteCandidateBlueprintId]
+  );
+  const blueprintDrawerCopy = useMemo(() => {
+    const english = t.navigation.blueprint === "Blueprint";
+    return english
+      ? {
+          createAction: "New",
+          importAction: "Import",
+          exportAction: "Export",
+          search: "Search blueprints",
+          sort: "Sort",
+          recent: "Recently used",
+          usage: "Use count",
+          created: "Newest created",
+          nodes: "Node count",
+          name: "A-Z",
+          delete: "Delete blueprint",
+          deleteTitle: "Delete blueprint?",
+          deleteBody: (name: string) => `Delete "${name}"? This cannot be undone.`,
+          cancel: "Cancel",
+          confirmDelete: "Delete"
+        }
+      : {
+          createAction: "新建",
+          importAction: "导入",
+          exportAction: "导出",
+          search: "搜索蓝图",
+          sort: "排序",
+          recent: "最近使用",
+          usage: "使用次数",
+          created: "最新创建",
+          nodes: "节点数量",
+          name: "首字母",
+          delete: "删除蓝图",
+          deleteTitle: "删除蓝图？",
+          deleteBody: (name: string) => `确定删除「${name}」吗？此操作无法撤销。`,
+          cancel: "取消",
+          confirmDelete: "删除"
+        };
+  }, [t.navigation.blueprint]);
+  const blueprintRunStats = useMemo(() => {
+    const stats = new Map<string, { lastUsedAt: number; latestRunId?: string; latestStatus?: BlueprintRunSummary["status"]; usageCount: number }>();
+    for (const run of runSummaries) {
+      const current = stats.get(run.blueprintId) ?? { lastUsedAt: 0, usageCount: 0 };
+      const startedAt = toTimestamp(run.startedAt);
+      const isLatestRun = startedAt >= current.lastUsedAt;
+      stats.set(run.blueprintId, {
+        lastUsedAt: Math.max(current.lastUsedAt, startedAt),
+        latestRunId: isLatestRun ? run.id : current.latestRunId,
+        latestStatus: isLatestRun ? run.status : current.latestStatus,
+        usageCount: current.usageCount + 1
+      });
+    }
+    return stats;
+  }, [runSummaries]);
+  const visibleBlueprints = useMemo(() => {
+    const query = blueprintSearch.trim().toLocaleLowerCase();
+    const filtered = query
+      ? blueprints.filter((item) => item.name.toLocaleLowerCase().includes(query))
+      : blueprints;
+
+    return filtered.slice().sort((left, right) => {
+      const leftStats = blueprintRunStats.get(left.id);
+      const rightStats = blueprintRunStats.get(right.id);
+      if (blueprintSortMode === "recent") {
+        return compareDescending(leftStats?.lastUsedAt ?? 0, rightStats?.lastUsedAt ?? 0) || compareBlueprintNames(left, right);
+      }
+      if (blueprintSortMode === "usage") {
+        return compareDescending(leftStats?.usageCount ?? 0, rightStats?.usageCount ?? 0) || compareBlueprintNames(left, right);
+      }
+      if (blueprintSortMode === "created") {
+        return compareDescending(toTimestamp(left.createdAt), toTimestamp(right.createdAt)) || compareBlueprintNames(left, right);
+      }
+      if (blueprintSortMode === "nodes") {
+        return compareDescending(left.nodes.length, right.nodes.length) || compareBlueprintNames(left, right);
+      }
+      return compareBlueprintNames(left, right);
+    });
+  }, [blueprintRunStats, blueprintSearch, blueprintSortMode, blueprints]);
+  const selectedSortLabel = useMemo(() => {
+    if (blueprintSortMode === "recent") return blueprintDrawerCopy.recent;
+    if (blueprintSortMode === "usage") return blueprintDrawerCopy.usage;
+    if (blueprintSortMode === "created") return blueprintDrawerCopy.created;
+    if (blueprintSortMode === "nodes") return blueprintDrawerCopy.nodes;
+    return blueprintDrawerCopy.name;
+  }, [blueprintDrawerCopy, blueprintSortMode]);
+  const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
+  const currentBlueprintActivity = currentBlueprintRunStats
+    ? resolveBlueprintActivityState(currentBlueprintRunStats.latestStatus, isTerminalBlueprintRunStatus(currentBlueprintRunStats.latestStatus))
+    : "idle";
+  const isBlueprintInteractionLocked = currentBlueprintActivity === "running";
+  const isRunButtonBusy = busyAction === "runBlueprint" || busyAction === "cancelBlueprintRun";
+  const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
+  const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
+  const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
+  const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+
+  const acknowledgeTerminalRun = useCallback(
+    (blueprintId: string) => {
+      const stats = blueprintRunStats.get(blueprintId);
+      if (!stats?.latestRunId || !isTerminalBlueprintRunStatus(stats.latestStatus)) return;
+      setAcknowledgedTerminalRunIds((current) => {
+        if (current.has(stats.latestRunId!)) return current;
+        const next = new Set(current);
+        next.add(stats.latestRunId!);
+        return next;
+      });
+    },
+    [blueprintRunStats]
+  );
+
+  useEffect(() => {
     if (!blueprint) return;
     if (hasDuplicateNodeIds(blueprint)) {
       onUpdateBlueprint((current) => (current.id === blueprint.id ? ensureUniqueBlueprintNodeIds(current) : current));
@@ -176,8 +349,40 @@ export function BlueprintStudioPage({
     }
   }, [onUpdateBlueprint, blueprint]);
 
+  useEffect(() => {
+    if (!blueprint?.id) return;
+    acknowledgeTerminalRun(blueprint.id);
+  }, [acknowledgeTerminalRun, blueprint?.id, currentBlueprintRunStats?.latestRunId, currentBlueprintRunStats?.latestStatus]);
+
+  useEffect(() => {
+    const runIds = new Set(runSummaries.map((run) => run.id));
+    setAcknowledgedTerminalRunIds((current) => {
+      const next = new Set([...current].filter((runId) => runIds.has(runId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [runSummaries]);
+
+  useEffect(() => {
+    const element = canvasPanelRef.current;
+    if (!element) return;
+
+    const updateCanvasViewportSize = () => {
+      const rect = element.getBoundingClientRect();
+      const width = Math.round(rect.width);
+      const height = Math.round(rect.height);
+      if (width <= 0 || height <= 0) return;
+      setCanvasViewportSize((current) => (current.width === width && current.height === height ? current : { width, height }));
+    };
+
+    updateCanvasViewportSize();
+    const observer = new ResizeObserver(updateCanvasViewportSize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   const patchNodeConfig = useCallback(
     (nodeId: string, patch: Partial<BlueprintNode["config"]>) => {
+      if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
         const next = {
           ...current,
@@ -196,22 +401,26 @@ export function BlueprintStudioPage({
         return next;
       });
     },
-    [onUpdateBlueprint]
+    [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const patchNode = useCallback(
     (nodeId: string, patch: Partial<BlueprintNode>) => {
+      if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => ({
         ...current,
         nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node))
       }));
     },
-    [onUpdateBlueprint]
+    [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const onNodesChange: OnNodesChange<Node<BlueprintNodeCardData>> = useCallback(
     (changes) => {
-      setLocalNodes((current) => applyNodeChanges(changes, current));
+      const allowedChanges = isBlueprintInteractionLocked ? changes.filter((change) => change.type === "select") : changes;
+      if (allowedChanges.length === 0) return;
+      setLocalNodes((current) => applyNodeChanges(allowedChanges, current));
+      if (isBlueprintInteractionLocked) return;
       const positionChanges = collectBlueprintNodePositionChanges(changes);
       const sizeChanges = collectManagerSlotSizeChanges(changes);
       if (positionChanges.size === 0 && sizeChanges.size === 0) return;
@@ -220,21 +429,23 @@ export function BlueprintStudioPage({
         return resizeManagerSlotNodes(blueprintWithPositions, sizeChanges);
       });
     },
-    [onUpdateBlueprint]
+    [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const onConnect = useCallback(
     (connection: Connection) => {
+      if (isBlueprintInteractionLocked) return;
       if (!connection.source || !connection.target) return;
       onUpdateBlueprint((current) => {
         return connectBlueprintNodes(current, connection, t);
       });
     },
-    [onUpdateBlueprint, t]
+    [isBlueprintInteractionLocked, onUpdateBlueprint, t]
   );
 
   const addNode = useCallback(
     (type: BlueprintNodeType) => {
+      if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
         const blueprintWithUniqueIds = ensureUniqueBlueprintNodeIds(current);
         const selectedSlot =
@@ -262,14 +473,18 @@ export function BlueprintStudioPage({
       });
       setNodeMenuOpen(false);
     },
-    [onUpdateBlueprint, selectedNodeId, t]
+    [isBlueprintInteractionLocked, onUpdateBlueprint, selectedNodeId, t]
   );
 
-  const openNodeMenuAt = useCallback((x: number, y: number) => {
-    setNodeMenuAnchor({ x, y });
-    setNodeContextMenu((current) => (current.open ? { ...current, open: false } : current));
-    setNodeMenuOpen(true);
-  }, []);
+  const openNodeMenuAt = useCallback(
+    (x: number, y: number, placement?: "above") => {
+      if (isBlueprintInteractionLocked) return;
+      setNodeMenuAnchor({ x, y, placement });
+      setNodeContextMenu((current) => (current.open ? { ...current, open: false } : current));
+      setNodeMenuOpen(true);
+    },
+    [isBlueprintInteractionLocked]
+  );
 
   const closeNodeMenu = useCallback(() => {
     setNodeMenuOpen(false);
@@ -279,8 +494,75 @@ export function BlueprintStudioPage({
     setNodeContextMenu({ open: false, x: 0, y: 0, nodeId: undefined });
   }, []);
 
+  useEffect(() => {
+    if (!isBlueprintInteractionLocked) return;
+    setInspectedNodeId(undefined);
+    closeNodeMenu();
+    closeNodeContextMenu();
+    rightDragStateRef.current = undefined;
+  }, [closeNodeContextMenu, closeNodeMenu, isBlueprintInteractionLocked]);
+
+  const openDockNodeMenu = useCallback(
+    (button: HTMLButtonElement) => {
+      const rect = button.getBoundingClientRect();
+      const dockRect = button.closest(".blueprint-action-dock")?.getBoundingClientRect();
+      const x = Math.max(12, Math.min(rect.left, window.innerWidth - 244));
+      openNodeMenuAt(x, (dockRect?.top ?? rect.top) - 8, "above");
+    },
+    [openNodeMenuAt]
+  );
+
+  const toggleBlueprintDrawer = useCallback(() => {
+    setDrawerSelectedBlueprintId(blueprint?.id ?? blueprints[0]?.id);
+    setBlueprintDrawerOpen((current) => !current);
+    setBlueprintCardContextMenu(undefined);
+    closeNodeMenu();
+    closeNodeContextMenu();
+  }, [blueprint?.id, blueprints, closeNodeContextMenu, closeNodeMenu]);
+
+  const selectBlueprintCard = useCallback(
+    (blueprintId: string) => {
+      acknowledgeTerminalRun(blueprintId);
+      setDrawerSelectedBlueprintId(blueprintId);
+      setBlueprintCardContextMenu(undefined);
+      onSelectBlueprint(blueprintId);
+      closeNodeMenu();
+      closeNodeContextMenu();
+    },
+    [acknowledgeTerminalRun, closeNodeContextMenu, closeNodeMenu, onSelectBlueprint]
+  );
+
+  const openBlueprintCardContextMenu = useCallback(
+    (event: MouseEvent<HTMLButtonElement>, blueprintId: string) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setDrawerSelectedBlueprintId(blueprintId);
+      setBlueprintCardContextMenu({ x: event.clientX + 4, y: event.clientY + 4, blueprintId });
+      closeNodeMenu();
+      closeNodeContextMenu();
+    },
+    [closeNodeContextMenu, closeNodeMenu]
+  );
+
+  const exportSelectedBlueprint = useCallback(() => {
+    if (!selectedDrawerBlueprint) return;
+    setBlueprintCardContextMenu(undefined);
+    onExportBlueprint(selectedDrawerBlueprint.id);
+  }, [onExportBlueprint, selectedDrawerBlueprint]);
+
+  const confirmDeleteBlueprint = useCallback(() => {
+    if (!deleteCandidateBlueprint) return;
+    onDeleteBlueprint(deleteCandidateBlueprint.id);
+    setDeleteCandidateBlueprintId(undefined);
+    setBlueprintCardContextMenu(undefined);
+    if (drawerSelectedBlueprintId === deleteCandidateBlueprint.id) {
+      setDrawerSelectedBlueprintId(undefined);
+    }
+  }, [deleteCandidateBlueprint, drawerSelectedBlueprintId, onDeleteBlueprint]);
+
   const deleteNodeById = useCallback(
     (nodeId: string) => {
+      if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
         const deleteIds = collectDeletedNodeIds(current, new Set([nodeId]));
         return {
@@ -299,23 +581,25 @@ export function BlueprintStudioPage({
       setSelectedCanvasNodeIdsIfChanged([]);
       closeNodeContextMenu();
     },
-    [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateBlueprint, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
+    [closeNodeContextMenu, inspectedNodeId, isBlueprintInteractionLocked, onSelectNode, onUpdateBlueprint, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
   );
 
   const toggleNodeDisabled = useCallback(
     (nodeId: string) => {
+      if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => ({
         ...current,
         nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, disabled: !node.disabled } : node))
       }));
       closeNodeContextMenu();
     },
-    [closeNodeContextMenu, onUpdateBlueprint]
+    [closeNodeContextMenu, isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Delete" && event.key !== "Backspace") return;
+      if (isBlueprintInteractionLocked) return;
       if (selectedCanvasNodeIds.length === 0) return;
 
       const target = event.target;
@@ -353,7 +637,16 @@ export function BlueprintStudioPage({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeNodeContextMenu, inspectedNodeId, onSelectNode, onUpdateBlueprint, selectedCanvasNodeIds, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]);
+  }, [
+    closeNodeContextMenu,
+    inspectedNodeId,
+    isBlueprintInteractionLocked,
+    onSelectNode,
+    onUpdateBlueprint,
+    selectedCanvasNodeIds,
+    selectedNodeId,
+    setSelectedCanvasNodeIdsIfChanged
+  ]);
 
   const onNodeClick: NodeMouseHandler<Node<BlueprintNodeCardData>> = useCallback(
     (event, node) => {
@@ -368,6 +661,7 @@ export function BlueprintStudioPage({
         return;
       }
       if (selectedNodeId === node.id) {
+        if (isBlueprintInteractionLocked) return;
         setInspectedNodeId(node.id);
         return;
       }
@@ -375,7 +669,7 @@ export function BlueprintStudioPage({
       onSelectNode(node.id);
       setInspectedNodeId(undefined);
     },
-    [closeNodeContextMenu, closeNodeMenu, onSelectNode, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
+    [closeNodeContextMenu, closeNodeMenu, isBlueprintInteractionLocked, onSelectNode, selectedNodeId, setSelectedCanvasNodeIdsIfChanged]
   );
 
   const onNodeContextMenu: NodeMouseHandler<Node<BlueprintNodeCardData>> = useCallback(
@@ -387,6 +681,11 @@ export function BlueprintStudioPage({
       setSelectedCanvasNodeIdsIfChanged([node.id]);
       onSelectNode(node.id);
       setInspectedNodeId(undefined);
+      if (isBlueprintInteractionLocked) {
+        closeNodeContextMenu();
+        closeNodeMenu();
+        return;
+      }
       if (node.data.type === "manager_slot" && isManagerSlotInnerFrameContext(event)) {
         closeNodeContextMenu();
         openNodeMenuAt(x, y);
@@ -400,11 +699,12 @@ export function BlueprintStudioPage({
         nodeId: node.id
       });
     },
-    [closeNodeContextMenu, closeNodeMenu, onSelectNode, openNodeMenuAt, setSelectedCanvasNodeIdsIfChanged]
+    [closeNodeContextMenu, closeNodeMenu, isBlueprintInteractionLocked, onSelectNode, openNodeMenuAt, setSelectedCanvasNodeIdsIfChanged]
   );
 
   const onEdgeClick: EdgeMouseHandler<Edge> = useCallback(
     (event, edge) => {
+      if (isBlueprintInteractionLocked) return;
       if (!event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
@@ -414,15 +714,17 @@ export function BlueprintStudioPage({
         edges: current.edges.filter((item) => item.id !== edge.id)
       }));
     },
-    [onUpdateBlueprint]
+    [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   return (
     <ReactFlowProvider>
       <section className="blueprint-shell compact-blueprint-shell">
         <section
-          className="blueprint-canvas-panel expanded-blueprint-panel"
+          ref={canvasPanelRef}
+          className={`blueprint-canvas-panel expanded-blueprint-panel blueprint-canvas-state-${currentBlueprintActivity}`}
           onPointerDownCapture={(event) => {
+            if (isBlueprintInteractionLocked) return;
             if (event.button !== 2) return;
             rightDragStateRef.current = {
               x: event.clientX,
@@ -432,6 +734,7 @@ export function BlueprintStudioPage({
             };
           }}
           onPointerMoveCapture={(event) => {
+            if (isBlueprintInteractionLocked) return;
             const state = rightDragStateRef.current;
             if (!state || (event.buttons & 2) !== 2) return;
             if (Math.hypot(event.clientX - state.x, event.clientY - state.y) > rightButtonDragThreshold) {
@@ -439,6 +742,7 @@ export function BlueprintStudioPage({
             }
           }}
           onPointerUpCapture={(event) => {
+            if (isBlueprintInteractionLocked) return;
             if (event.button !== 2) return;
             const state = rightDragStateRef.current;
             if (!state || state.moved || state.openedMenu || !isPaneAddMenuTarget(event.target)) return;
@@ -450,6 +754,14 @@ export function BlueprintStudioPage({
           }}
           onContextMenuCapture={(event) => {
             event.preventDefault();
+            if (isBlueprintInteractionLocked) {
+              event.stopPropagation();
+              rightDragStateRef.current = undefined;
+              closeNodeContextMenu();
+              closeNodeMenu();
+              setInspectedNodeId(undefined);
+              return;
+            }
             if (rightDragStateRef.current?.moved) {
               event.stopPropagation();
               rightDragStateRef.current = undefined;
@@ -459,40 +771,14 @@ export function BlueprintStudioPage({
             }
           }}
         >
-          <button
-            type="button"
-            className="node-menu-trigger"
-            title={t.actions.add}
-            onClick={(event) => {
-              const rect = event.currentTarget.getBoundingClientRect();
-              openNodeMenuAt(rect.right + 8, rect.top);
-            }}
-            disabled={!blueprint || busy}
-          >
-            <Plus size={18} />
-          </button>
-
-          {runView && (
-            <div className="blueprint-overlay blueprint-overlay-right">
-              <div className="floating-run-pill">
-                <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-                <span>{t.metrics.nodes(runView.nodeRuns.length)}</span>
-                {runView.run.status === "waiting_approval" && (
-                  <button type="button" className="primary-action inline-action" onClick={onApproveRun} disabled={busy}>
-                    <Check size={14} />
-                    {t.actions.approve}
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-
           <ReactFlow
             key={blueprint?.id ?? "empty-blueprint"}
             nodes={localNodes}
             edges={localEdges}
             nodeTypes={nodeTypes}
             defaultViewport={blueprint?.display.viewport ?? { x: 0, y: 0, zoom: 1 }}
+            translateExtent={blueprintCanvasWorld.extent}
+            nodeExtent={blueprintCanvasWorld.extent}
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
@@ -507,6 +793,12 @@ export function BlueprintStudioPage({
               event.preventDefault();
               const rightDragState = rightDragStateRef.current;
               rightDragStateRef.current = undefined;
+              if (isBlueprintInteractionLocked) {
+                closeNodeContextMenu();
+                closeNodeMenu();
+                setInspectedNodeId(undefined);
+                return;
+              }
               if (rightDragState?.moved) {
                 closeNodeContextMenu();
                 closeNodeMenu();
@@ -521,6 +813,8 @@ export function BlueprintStudioPage({
             onSelectionChange={({ nodes }) => setSelectedCanvasNodeIdsIfChanged(nodes.map((node) => node.id))}
             onNodesChange={onNodesChange}
             onConnect={onConnect}
+            nodesDraggable={!isBlueprintInteractionLocked}
+            nodesConnectable={!isBlueprintInteractionLocked}
             selectionOnDrag
             selectionMode={SelectionMode.Partial}
             panOnDrag={[1, 2]}
@@ -529,60 +823,176 @@ export function BlueprintStudioPage({
             maxZoom={1.5}
           >
             <Background gap={24} size={2} />
-            <MiniMap pannable zoomable />
-            <Controls position="bottom-right" />
+            <BlueprintCanvasMiniMap canvasWorld={blueprintCanvasWorld} nodes={localNodes} />
+            <Controls position="top-right" />
           </ReactFlow>
 
           <div className="blueprint-action-dock" aria-label={t.navigation.blueprint}>
-            <select
-              value={blueprint?.id ?? ""}
-              onChange={(event) => onSelectBlueprint(event.target.value)}
+            <button
+              className="primary-action blueprint-run-button"
+              type="button"
+              title={runButtonTitle}
+              onClick={isRunButtonStopMode ? onCancelBlueprintRun : onRunBlueprint}
+              disabled={!blueprint || busy}
+            >
+              {isRunButtonBusy ? <Loader2 className="spin" size={16} /> : isRunButtonStopMode ? <Square size={16} /> : <Play size={16} />}
+              {runButtonLabel}
+            </button>
+            <button
+              type="button"
+              className="blueprint-dock-add"
+              title={t.actions.add}
+              onClick={(event) => openDockNodeMenu(event.currentTarget)}
+              disabled={!blueprint || busy || isBlueprintInteractionLocked}
+            >
+              <Plus size={18} />
+            </button>
+            <button
+              type="button"
+              className="blueprint-selector-button"
+              title={t.fields.blueprint}
+              onClick={toggleBlueprintDrawer}
               disabled={busy || blueprints.length === 0}
             >
-              {blueprints.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            <button type="button" title={t.actions.createBlueprint} onClick={onCreateBlueprint} disabled={!selectedCompanyId || busy}>
-              {busyAction === "createBlueprint" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-              {t.actions.createBlueprint}
-            </button>
-            <button type="button" title={t.actions.refreshWorkspace} onClick={onRefreshWorkspace} disabled={busy}>
-              {busyAction === "refreshWorkspace" || busyAction === "load" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
-              {t.actions.refreshWorkspace}
-            </button>
-            <button type="button" title={t.actions.importBlueprint} onClick={onOpenBlueprintImport} disabled={!selectedCompanyId || busy}>
-              {busyAction === "importBlueprint" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
-              {t.actions.importBlueprint}
-            </button>
-            <button type="button" title={t.actions.exportBlueprint} onClick={onExportBlueprint} disabled={!blueprint || busy}>
-              {busyAction === "exportBlueprint" ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
-              {t.actions.exportBlueprint}
-            </button>
-            {runView?.run.status === "waiting_approval" && (
-              <button type="button" title={t.actions.approve} onClick={onApproveRun} disabled={busy}>
-                {busyAction === "approveRun" ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
-                {t.actions.approve}
-              </button>
-            )}
-            <button type="button" title={t.actions.saveBlueprint} onClick={onSaveBlueprint} disabled={!blueprint || busy}>
-              {busyAction === "saveBlueprint" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
-              {t.actions.save}
-            </button>
-            <button className="primary-action" type="button" title={t.actions.runBlueprint} onClick={onRunBlueprint} disabled={!blueprint || busy}>
-              {busyAction === "runBlueprint" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-              {t.actions.run}
+              <LayoutTemplate size={16} />
+              <span>{blueprint?.name ?? t.empty.selectBlueprint}</span>
             </button>
           </div>
+
+          {blueprintDrawerOpen && (
+            <aside className="blueprint-side-panel" aria-label={t.navigation.blueprint}>
+              <div className="blueprint-side-panel-header">
+                <div className="blueprint-side-panel-title">
+                  <strong>{t.navigation.blueprint}</strong>
+                </div>
+                <div className="blueprint-side-panel-actions">
+                  <button type="button" title={t.actions.createBlueprint} onClick={onCreateBlueprint} disabled={!selectedCompanyId || busy}>
+                    {busyAction === "createBlueprint" ? <Loader2 className="spin" size={14} /> : <Plus size={14} />}
+                    <span>{blueprintDrawerCopy.createAction}</span>
+                  </button>
+                  <button type="button" title={t.actions.importBlueprint} onClick={onOpenBlueprintImport} disabled={!selectedCompanyId || busy}>
+                    {busyAction === "importBlueprint" ? <Loader2 className="spin" size={14} /> : <Upload size={14} />}
+                    <span>{blueprintDrawerCopy.importAction}</span>
+                  </button>
+                  <button
+                    type="button"
+                    title={t.actions.exportBlueprint}
+                    onClick={exportSelectedBlueprint}
+                    disabled={!selectedDrawerBlueprint || busy}
+                  >
+                    {busyAction === "exportBlueprint" ? <Loader2 className="spin" size={14} /> : <Download size={14} />}
+                    <span>{blueprintDrawerCopy.exportAction}</span>
+                  </button>
+                </div>
+              </div>
+              <div className="blueprint-side-panel-tools">
+                <label className="blueprint-search-field">
+                  <Search size={14} />
+                  <input
+                    type="search"
+                    value={blueprintSearch}
+                    onChange={(event) => setBlueprintSearch(event.target.value)}
+                    placeholder={blueprintDrawerCopy.search}
+                  />
+                </label>
+                <label className="blueprint-sort-button" title={`${blueprintDrawerCopy.sort}: ${selectedSortLabel}`}>
+                  <ArrowUpDown size={15} />
+                  <select
+                    aria-label={blueprintDrawerCopy.sort}
+                    value={blueprintSortMode}
+                    onChange={(event) => setBlueprintSortMode(event.target.value as BlueprintSortMode)}
+                  >
+                    <option value="recent">{blueprintDrawerCopy.recent}</option>
+                    <option value="usage">{blueprintDrawerCopy.usage}</option>
+                    <option value="created">{blueprintDrawerCopy.created}</option>
+                    <option value="nodes">{blueprintDrawerCopy.nodes}</option>
+                    <option value="name">{blueprintDrawerCopy.name}</option>
+                  </select>
+                </label>
+              </div>
+              <div className="blueprint-card-list">
+                {visibleBlueprints.length === 0 ? (
+                  <div className="empty-state compact-empty-state">{t.empty.selectBlueprint}</div>
+                ) : (
+                  visibleBlueprints.map((item) => {
+                    const selected = item.id === drawerSelectedBlueprintId;
+                    const stats = blueprintRunStats.get(item.id);
+                    const terminalStatusSeen =
+                      item.id === blueprint?.id || (stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false);
+                    const activity = resolveBlueprintActivityState(stats?.latestStatus, terminalStatusSeen);
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
+                        onClick={() => selectBlueprintCard(item.id)}
+                        onContextMenu={(event) => openBlueprintCardContextMenu(event, item.id)}
+                      >
+                        <span className="blueprint-card-icon">
+                          <LayoutTemplate size={17} />
+                        </span>
+                        <strong>{item.name}</strong>
+                        {selected && <Check className="blueprint-card-check" size={14} />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </aside>
+          )}
+
+          {blueprintCardContextMenu && (
+            <div
+              className="blueprint-card-context-menu"
+              style={{
+                left: blueprintCardContextMenu.x,
+                top: blueprintCardContextMenu.y
+              }}
+            >
+              <button
+                type="button"
+                className="node-context-item danger"
+                onClick={() => {
+                  setDeleteCandidateBlueprintId(blueprintCardContextMenu.blueprintId);
+                  setBlueprintCardContextMenu(undefined);
+                }}
+              >
+                <Trash2 size={14} />
+                {blueprintDrawerCopy.delete}
+              </button>
+            </div>
+          )}
+
+          {deleteCandidateBlueprint && (
+            <div className="blueprint-delete-backdrop" role="dialog" aria-modal="true" aria-labelledby="blueprint-delete-title">
+              <div className="blueprint-delete-dialog">
+                <div className="blueprint-delete-icon">
+                  <Trash2 size={18} />
+                </div>
+                <div className="blueprint-delete-copy">
+                  <strong id="blueprint-delete-title">{blueprintDrawerCopy.deleteTitle}</strong>
+                  <p>{blueprintDrawerCopy.deleteBody(deleteCandidateBlueprint.name)}</p>
+                </div>
+                <div className="blueprint-delete-actions">
+                  <button type="button" onClick={() => setDeleteCandidateBlueprintId(undefined)} disabled={busy}>
+                    {blueprintDrawerCopy.cancel}
+                  </button>
+                  <button type="button" className="danger-action" onClick={confirmDeleteBlueprint} disabled={busy}>
+                    {busyAction === "deleteBlueprint" ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+                    {blueprintDrawerCopy.confirmDelete}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {nodeMenuOpen && blueprint && (
             <div
               className="node-menu-popover"
               style={{
                 left: nodeMenuAnchor.x,
-                top: nodeMenuAnchor.y
+                top: nodeMenuAnchor.y,
+                transform: nodeMenuAnchor.placement === "above" ? "translateY(-100%)" : undefined
               }}
             >
               <div className="node-menu-title">{t.panels.nodes}</div>
@@ -626,7 +1036,7 @@ export function BlueprintStudioPage({
           )}
         </section>
 
-        {inspectedNode && blueprint && (
+        {inspectedNode && blueprint && !isBlueprintInteractionLocked && (
           <NodeDetailModal
             catalog={catalog}
             configuredAgents={configuredAgents}
@@ -1228,6 +1638,31 @@ function clampNumberInput(value: string, min: number, max: number, fallback: num
   return Math.min(max, Math.max(min, parsed));
 }
 
+function compareDescending(left: number, right: number): number {
+  return right - left;
+}
+
+function compareBlueprintNames(left: BlueprintDefinition, right: BlueprintDefinition): number {
+  return left.name.localeCompare(right.name, undefined, { sensitivity: "base", numeric: true });
+}
+
+function toTimestamp(value: string): number {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function resolveBlueprintActivityState(status?: BlueprintRunSummary["status"], terminalStatusSeen = false): BlueprintActivityState {
+  if (status === "queued" || status === "running" || status === "waiting_approval") return "running";
+  if (terminalStatusSeen) return "idle";
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed" || status === "cancelled") return "failed";
+  return "idle";
+}
+
+function isTerminalBlueprintRunStatus(status?: BlueprintRunSummary["status"]): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
 function nextBlueprintNodeId(blueprint: BlueprintDefinition, type: BlueprintNodeType, parentId?: string): string {
   return nextAvailableBlueprintNodeId(new Set(blueprint.nodes.map((node) => node.id)), type, parentId);
 }
@@ -1276,7 +1711,7 @@ function isPaneAddMenuTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   if (
     target.closest(
-      ".react-flow__node, .react-flow__handle, .react-flow__controls, .react-flow__minimap, .node-menu-popover, .node-context-menu, .node-menu-trigger"
+      ".react-flow__node, .react-flow__handle, .react-flow__controls, .react-flow__minimap, .node-menu-popover, .node-context-menu, .blueprint-action-dock, .blueprint-side-panel"
     )
   ) {
     return false;
@@ -1699,6 +2134,211 @@ function buildFlowNodes(
   });
 }
 
+function BlueprintCanvasMiniMap({
+  canvasWorld,
+  nodes
+}: {
+  canvasWorld: BlueprintCanvasWorld;
+  nodes: Node<BlueprintNodeCardData>[];
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const { setCenter } = useReactFlow();
+  const viewport = useStore((store) => {
+    const zoom = store.transform[2] || 1;
+    return {
+      x: -store.transform[0] / zoom,
+      y: -store.transform[1] / zoom,
+      width: store.width / zoom,
+      height: store.height / zoom,
+      zoom
+    };
+  });
+  const miniMapNodes = useMemo(() => buildMiniMapNodeBoxes(nodes), [nodes]);
+  const viewportRect = useMemo(() => clampViewportToCanvasWorld(viewport, canvasWorld), [canvasWorld, viewport]);
+  const maskPath = `M${canvasWorld.minX},${canvasWorld.minY}h${canvasWorld.width}v${canvasWorld.height}h${-canvasWorld.width}z M${viewportRect.x},${viewportRect.y}h${viewportRect.width}v${viewportRect.height}h${-viewportRect.width}z`;
+
+  const centerViewportAtPointer = useCallback(
+    (event: ReactPointerEvent<SVGSVGElement>) => {
+      const position = getMiniMapPointerPosition(event.currentTarget, event);
+      if (!position) return;
+      const halfWidth = viewportRect.width / 2;
+      const halfHeight = viewportRect.height / 2;
+      const x = clampNumber(position.x, canvasWorld.minX + halfWidth, canvasWorld.maxX - halfWidth);
+      const y = clampNumber(position.y, canvasWorld.minY + halfHeight, canvasWorld.maxY - halfHeight);
+      void setCenter(x, y, { zoom: viewport.zoom, duration: event.type === "pointerdown" ? 120 : 0 });
+    },
+    [canvasWorld.maxX, canvasWorld.maxY, canvasWorld.minX, canvasWorld.minY, setCenter, viewport.zoom, viewportRect.height, viewportRect.width]
+  );
+
+  return (
+    <div className="react-flow__panel top left blueprint-world-minimap">
+      <svg
+        ref={svgRef}
+        className="blueprint-world-minimap-svg"
+        viewBox={`${canvasWorld.minX} ${canvasWorld.minY} ${canvasWorld.width} ${canvasWorld.height}`}
+        role="img"
+        aria-label="Blueprint map"
+        preserveAspectRatio="xMidYMid meet"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          centerViewportAtPointer(event);
+        }}
+        onPointerMove={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+          centerViewportAtPointer(event);
+        }}
+        onPointerUp={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }
+        }}
+      >
+        <rect className="blueprint-world-minimap-surface" x={canvasWorld.minX} y={canvasWorld.minY} width={canvasWorld.width} height={canvasWorld.height} />
+        {miniMapNodes.map((node) => (
+          <rect
+            key={node.id}
+            className={`blueprint-world-minimap-node${node.selected ? " selected" : ""}`}
+            x={node.x}
+            y={node.y}
+            width={node.width}
+            height={node.height}
+            rx={16}
+            ry={16}
+          />
+        ))}
+        <path className="blueprint-world-minimap-mask" d={maskPath} fillRule="evenodd" pointerEvents="none" />
+        <rect
+          className="blueprint-world-minimap-viewport"
+          x={viewportRect.x}
+          y={viewportRect.y}
+          width={viewportRect.width}
+          height={viewportRect.height}
+          pointerEvents="none"
+        />
+      </svg>
+    </div>
+  );
+}
+
+function createBlueprintCanvasWorld(viewportSize: CanvasSize): BlueprintCanvasWorld {
+  const viewportWidth = Math.max(960, Math.round(viewportSize.width));
+  const viewportHeight = Math.max(720, Math.round(viewportSize.height));
+  const minX = -viewportWidth;
+  const minY = -viewportHeight;
+  const width = viewportWidth * canvasWorldScreenScale;
+  const height = viewportHeight * canvasWorldScreenScale;
+  const maxX = minX + width;
+  const maxY = minY + height;
+  return {
+    extent: [
+      [minX, minY],
+      [maxX, maxY]
+    ],
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    viewportWidth,
+    viewportHeight
+  };
+}
+
+type MiniMapNodeBox = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  selected: boolean;
+};
+
+function buildMiniMapNodeBoxes(nodes: Node<BlueprintNodeCardData>[]): MiniMapNodeBox[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const absolutePositions = new Map<string, CanvasPosition>();
+  return nodes
+    .filter((node) => !node.hidden)
+    .map((node) => {
+      const position = resolveFlowNodeAbsolutePosition(node, nodesById, absolutePositions);
+      const size = resolveFlowNodeSize(node);
+      return {
+        id: node.id,
+        x: position.x,
+        y: position.y,
+        width: size.width,
+        height: size.height,
+        selected: Boolean(node.selected)
+      };
+    });
+}
+
+function resolveFlowNodeAbsolutePosition(
+  node: Node<BlueprintNodeCardData>,
+  nodesById: Map<string, Node<BlueprintNodeCardData>>,
+  cache: Map<string, CanvasPosition>
+): CanvasPosition {
+  const cached = cache.get(node.id);
+  if (cached) return cached;
+  const parent = node.parentId ? nodesById.get(node.parentId) : undefined;
+  const parentPosition = parent ? resolveFlowNodeAbsolutePosition(parent, nodesById, cache) : { x: 0, y: 0 };
+  const position = {
+    x: parentPosition.x + node.position.x,
+    y: parentPosition.y + node.position.y
+  };
+  cache.set(node.id, position);
+  return position;
+}
+
+function resolveFlowNodeSize(node: Node<BlueprintNodeCardData>): CanvasSize {
+  return {
+    width: node.width ?? node.measured?.width ?? node.initialWidth ?? readCssPixelValue(node.style?.width) ?? defaultChildNodeSize.width,
+    height: node.height ?? node.measured?.height ?? node.initialHeight ?? readCssPixelValue(node.style?.height) ?? defaultChildNodeSize.height
+  };
+}
+
+function readCssPixelValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function clampViewportToCanvasWorld(
+  viewport: { x: number; y: number; width: number; height: number },
+  canvasWorld: BlueprintCanvasWorld
+): { x: number; y: number; width: number; height: number } {
+  const width = Math.min(Math.max(viewport.width, 1), canvasWorld.width);
+  const height = Math.min(Math.max(viewport.height, 1), canvasWorld.height);
+  return {
+    x: clampNumber(viewport.x, canvasWorld.minX, canvasWorld.maxX - width),
+    y: clampNumber(viewport.y, canvasWorld.minY, canvasWorld.maxY - height),
+    width,
+    height
+  };
+}
+
+function getMiniMapPointerPosition(svg: SVGSVGElement, event: ReactPointerEvent<SVGSVGElement>): CanvasPosition | undefined {
+  const matrix = svg.getScreenCTM();
+  if (!matrix) return undefined;
+  const point = svg.createSVGPoint();
+  point.x = event.clientX;
+  point.y = event.clientY;
+  const mapped = point.matrixTransform(matrix.inverse());
+  return { x: mapped.x, y: mapped.y };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  if (max < min) return (min + max) / 2;
+  return Math.min(Math.max(value, min), max);
+}
+
 function isBlueprintStartNode(
   blueprint: BlueprintDefinition | undefined,
   node: BlueprintNode,
@@ -1749,7 +2389,8 @@ function buildFlowEdges(blueprint: BlueprintDefinition | undefined, runStatus?: 
     targetHandle: edge.targetHandle,
     label: edge.label ?? defaultVisibleEdgeLabel(edge.condition),
     animated: runStatus === "running",
-    className: "blueprint-edge"
+    className: "blueprint-edge",
+    style: { strokeWidth: 3.5 }
   }));
 }
 

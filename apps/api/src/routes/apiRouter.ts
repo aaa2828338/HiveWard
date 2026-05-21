@@ -262,6 +262,20 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.delete("/api/blueprints/:blueprintId", async (req, res, next) => {
+    try {
+      const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
+      const deleted = await store.deleteBlueprint(blueprintId);
+      if (!deleted) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
+        return;
+      }
+      res.json({ blueprintId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/api/blueprints/:blueprintId/runs", async (req, res, next) => {
     try {
       const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
@@ -326,6 +340,25 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.get("/api/blueprint-runs", async (_req, res, next) => {
     try {
       res.json({ runs: await store.listRunSummaries() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/blueprint-runs/:runId/cancel", async (req, res, next) => {
+    try {
+      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
+      if (!run) {
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
+        return;
+      }
+      const updated = await worker.cancelRun(run);
+      const view = await store.getRunView(updated.id);
+      if (!view) {
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
+        return;
+      }
+      res.json({ run: view });
     } catch (error) {
       next(error);
     }

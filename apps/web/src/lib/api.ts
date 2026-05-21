@@ -8,6 +8,7 @@ import type {
   CreateOpenClawAgentRequest,
   CreateBlueprintRequest,
   DashboardStateResponse,
+  DeleteBlueprintResponse,
   ExportBlueprintResponse,
   HarnessStatus,
   HarnessStatusResponse,
@@ -176,6 +177,13 @@ export const api = {
     return response.blueprint;
   },
 
+  async deleteBlueprint(blueprintId: string): Promise<string> {
+    const response = await request<DeleteBlueprintResponse>(`/api/blueprints/${blueprintId}`, {
+      method: "DELETE"
+    });
+    return response.blueprintId;
+  },
+
   async exportBlueprint(blueprintId: string): Promise<PortableBlueprintPackage> {
     const response = await request<ExportBlueprintResponse>(`/api/blueprints/${blueprintId}/export`);
     return response.blueprintPackage;
@@ -204,6 +212,14 @@ export const api = {
 
   async approveBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
     const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+    return response.run;
+  },
+
+  async cancelBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/cancel`, {
       method: "POST",
       body: JSON.stringify({})
     });

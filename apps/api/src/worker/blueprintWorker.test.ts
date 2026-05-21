@@ -278,6 +278,35 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("succeeded");
   });
 
+  it("cancels a running blueprint and ignores late agent completion", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new BlockingAdapter(createStartedAgentTask("task-1"));
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    await waitForNodeRun(store, run.id, "brief", (nodeRun) => nodeRun.status === "running");
+
+    const cancelled = await worker.cancelRun(run);
+    expect(cancelled.status).toBe("cancelled");
+
+    const cancelledView = await store.getRunView(run.id);
+    expect(cancelledView?.run.status).toBe("cancelled");
+    expect(cancelledView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
+    expect(cancelledView?.events.some((event) => event.type === "blueprint.run.cancelled")).toBe(true);
+
+    adapter.complete(createCompletedAgentTask("task-1", "succeeded", "brief ok"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const finalView = await store.getRunView(run.id);
+    expect(finalView?.run.status).toBe("cancelled");
+    expect(finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
+    expect(finalView?.nodeRuns.some((nodeRun) => nodeRun.status === "succeeded")).toBe(false);
+  });
+
   it("fails an agent node that finishes without visible output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));

@@ -98,6 +98,7 @@ interface StandardNodeInput {
 
 export class BlueprintWorker {
   private readonly activeRuns = new Map<string, Promise<void>>();
+  private readonly cancelledRunIds = new Set<string>();
 
   constructor(
     private readonly store: FileHivewardStore,
@@ -117,6 +118,10 @@ export class BlueprintWorker {
   }
 
   async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<BlueprintRun> {
+    if (this.isTerminalRunStatus(run.status)) {
+      throw new Error("Run is already finished.");
+    }
+
     const waiting = (await this.store.listNodeRuns(run.id)).find((nodeRun) => nodeRun.status === "waiting_approval");
     if (!waiting) {
       throw new Error("No node is waiting for approval.");
@@ -136,6 +141,26 @@ export class BlueprintWorker {
     return running;
   }
 
+  async cancelRun(run: BlueprintRun): Promise<BlueprintRun> {
+    if (this.isTerminalRunStatus(run.status)) {
+      return run;
+    }
+
+    this.cancelledRunIds.add(run.id);
+    await this.cancelOpenNodeRuns(run.id, "Run stopped by user.");
+
+    const latestRun = await this.store.getBlueprintRun(run.id);
+    const startedAt = new Date((latestRun ?? run).startedAt).getTime();
+    const cancelled = await this.applyRunTotals(latestRun ?? run, startedAt, "cancelled");
+    await this.store.updateBlueprintRun(cancelled);
+    await this.event(run.id, "blueprint.run.cancelled", `Blueprint ${run.blueprintName ?? run.blueprintId} stopped.`);
+
+    if (!this.activeRuns.has(run.id)) {
+      this.cancelledRunIds.delete(run.id);
+    }
+    return cancelled;
+  }
+
   private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun): void {
     if (this.activeRuns.has(run.id)) {
       return;
@@ -145,6 +170,7 @@ export class BlueprintWorker {
       .catch(async (error) => {
         const currentRun = await this.store.getBlueprintRun(run.id);
         if (!currentRun) return;
+        if (currentRun.status === "cancelled" || this.cancelledRunIds.has(run.id)) return;
 
         const failed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "failed");
         const message = error instanceof Error ? error.message : "Blueprint worker crashed unexpectedly.";
@@ -153,6 +179,7 @@ export class BlueprintWorker {
       })
       .finally(() => {
         this.activeRuns.delete(run.id);
+        this.cancelledRunIds.delete(run.id);
       });
 
     this.activeRuns.set(run.id, execution);
@@ -162,6 +189,10 @@ export class BlueprintWorker {
     const startedAt = new Date(run.startedAt).getTime();
 
     while (true) {
+      if (await this.isRunCancelled(run.id)) {
+        return;
+      }
+
       const nodeRuns = await this.store.listNodeRuns(run.id);
       const skippedNodes = this.findSkippableNodes(blueprint, nodeRuns);
       if (skippedNodes.length > 0) {
@@ -241,6 +272,10 @@ export class BlueprintWorker {
   private async executeNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<void> {
     const input = await this.collectStandardNodeInput(blueprint, run.id, node);
     const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
+    if (this.cancelledRunIds.has(run.id)) {
+      await this.cancelNodeRun(nodeRun, "Run stopped by user.");
+      return;
+    }
 
     try {
       if (isAgentBlueprintNode(node)) {
@@ -1158,6 +1193,11 @@ export class BlueprintWorker {
   }
 
   private async completeNode(nodeRun: BlueprintNodeRun, output: unknown, openclawRef?: OpenClawObjectRef): Promise<void> {
+    if (this.cancelledRunIds.has(nodeRun.blueprintRunId)) {
+      await this.cancelNodeRun(nodeRun, "Run stopped by user.", openclawRef);
+      return;
+    }
+
     const completed: BlueprintNodeRun = {
       ...nodeRun,
       status: "succeeded",
@@ -1189,6 +1229,11 @@ export class BlueprintWorker {
   }
 
   private async failNode(nodeRun: BlueprintNodeRun, error: string): Promise<void> {
+    if (this.cancelledRunIds.has(nodeRun.blueprintRunId)) {
+      await this.cancelNodeRun(nodeRun, "Run stopped by user.");
+      return;
+    }
+
     await this.store.upsertNodeRun({
       ...nodeRun,
       status: "failed",
@@ -1220,7 +1265,32 @@ export class BlueprintWorker {
     await this.event(run.id, "node.run.completed", `${node.config.label} skipped (${reason}).`, skipped.id);
   }
 
-  private async applyRunTotals(run: BlueprintRun, startedAt: number, status: "succeeded" | "failed"): Promise<BlueprintRun> {
+  private async cancelOpenNodeRuns(blueprintRunId: string, reason: string): Promise<void> {
+    const now = new Date().toISOString();
+    const nodeRuns = await this.store.listNodeRuns(blueprintRunId);
+    await Promise.all(
+      nodeRuns
+        .filter((nodeRun) => this.isOpenNodeRunStatus(nodeRun.status))
+        .map((nodeRun) => this.cancelNodeRun({ ...nodeRun, endedAt: now }, reason))
+    );
+  }
+
+  private async cancelNodeRun(nodeRun: BlueprintNodeRun, reason: string, openclawRef?: OpenClawObjectRef): Promise<void> {
+    const currentNodeRun = (await this.store.listNodeRuns(nodeRun.blueprintRunId)).find((candidate) => candidate.id === nodeRun.id);
+    if (currentNodeRun?.status === "cancelled") return;
+
+    const cancelled: BlueprintNodeRun = {
+      ...(currentNodeRun ?? nodeRun),
+      status: "cancelled",
+      endedAt: currentNodeRun?.endedAt ?? nodeRun.endedAt ?? new Date().toISOString(),
+      error: reason,
+      openclawRef: openclawRef ?? currentNodeRun?.openclawRef ?? nodeRun.openclawRef
+    };
+    await this.store.upsertNodeRun(cancelled);
+    await this.event(nodeRun.blueprintRunId, "node.run.cancelled", `${nodeRun.nodeLabel} cancelled: ${reason}`, nodeRun.id, cancelled.openclawRef);
+  }
+
+  private async applyRunTotals(run: BlueprintRun, startedAt: number, status: "succeeded" | "failed" | "cancelled"): Promise<BlueprintRun> {
     const endedAt = new Date().toISOString();
     const nodeRuns = await this.store.listNodeRuns(run.id);
     const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
@@ -1235,6 +1305,24 @@ export class BlueprintWorker {
       totalCostUsd: Number(usage.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6)),
       openclawRefs
     };
+  }
+
+  private async isRunCancelled(blueprintRunId: string): Promise<boolean> {
+    if (this.cancelledRunIds.has(blueprintRunId)) return true;
+
+    const currentRun = await this.store.getBlueprintRun(blueprintRunId);
+    if (currentRun?.status !== "cancelled") return false;
+
+    this.cancelledRunIds.add(blueprintRunId);
+    return true;
+  }
+
+  private isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
+    return status === "succeeded" || status === "failed" || status === "cancelled";
+  }
+
+  private isOpenNodeRunStatus(status: BlueprintNodeRun["status"]): boolean {
+    return status === "queued" || status === "running" || status === "waiting_approval";
   }
 
   private hasCurrentNodeRun(blueprint: BlueprintDefinition, node: BlueprintNode, nodeRuns: BlueprintNodeRun[]): boolean {
