@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Bot,
+  Building2,
   CalendarDays,
   ChevronDown,
+  ChevronRight,
   Cloud,
   Database,
   Inbox,
@@ -10,6 +12,7 @@ import {
   LayoutTemplate,
   ListChecks,
   Moon,
+  Puzzle,
   Radio,
   RefreshCw,
   Settings,
@@ -21,6 +24,7 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   DashboardWidgetType,
+  HarnessStatus,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   OpenClawModelUsageSummary,
@@ -34,23 +38,36 @@ import type {
   BlueprintRunView
 } from "@hiveward/shared";
 import { api } from "./lib/api";
-import { appSections, type AppSectionId } from "./lib/app-sections";
+import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
-import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
+import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage, SkillsPage } from "./components/WorkspacePages";
 
 const sidebarIcons = {
+  company: Building2,
   blueprint: LayoutTemplate,
   runs: ListChecks,
   approvals: Inbox,
   models: Database,
   agents: Bot,
+  openclaw: Settings,
+  skills: Puzzle,
   schedule: CalendarDays,
-  channels: Radio
+  channels: Radio,
+  claudeCodeConfig: Settings,
+  codexConfig: Settings
+};
+
+const systemLabels: Record<AppSystemId, string> = {
+  hiveward: "Hiveward",
+  openclaw: "OpenClaw",
+  claudeCode: "Claude code",
+  codex: "Codex"
 };
 
 const RUN_POLL_INTERVAL_MS = 2500;
+const companyScopedSections = new Set<AppSectionId>(["company", "blueprint", "runs", "approvals", "schedule"]);
 
 type AppTheme = "light" | "dark";
 
@@ -101,6 +118,7 @@ export function App() {
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
+  const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
@@ -113,6 +131,12 @@ export function App() {
   const [error, setError] = useState<string | undefined>();
   const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+  const [expandedSystems, setExpandedSystems] = useState<Record<AppSystemId, boolean>>({
+    hiveward: true,
+    openclaw: true,
+    claudeCode: false,
+    codex: false
+  });
   const t = messages[language];
   const messageRef = useRef(t);
   const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
@@ -143,7 +167,7 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (selectedCompanyId || section === "openclaw") return;
+    if (selectedCompanyId || !companyScopedSections.has(section)) return;
     setSection("company");
   }, [section, selectedCompanyId]);
 
@@ -189,6 +213,7 @@ export function App() {
         nextOpenClawConfig,
         nextOpenClawWizard,
         nextOpenClawModelUsage,
+        nextHarnessStatuses,
         nextRunSummaries,
         nextApprovals,
         nextDashboard,
@@ -200,6 +225,7 @@ export function App() {
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
+        api.getHarnessStatus().catch(() => []),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
         api.getDashboardState(),
@@ -217,6 +243,7 @@ export function App() {
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
+      setHarnessStatuses(nextHarnessStatuses);
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
@@ -243,7 +270,7 @@ export function App() {
         ? {
             title: "\u7cfb\u7edf",
             settings: "\u8bbe\u7f6e",
-            theme: "\u989c\u8272",
+            theme: "\u4e3b\u9898",
             language: "\u8bed\u8a00",
             switchToDay: "\u5207\u6362\u5230\u65e5\u95f4\u6a21\u5f0f",
             switchToNight: "\u5207\u6362\u5230\u591c\u95f4\u6a21\u5f0f",
@@ -288,13 +315,13 @@ export function App() {
             source: "\u6765\u6e90",
             auth: "\u8ba4\u8bc1",
             requestTimeout: "\u8bf7\u6c42\u8d85\u65f6",
-            agentStartTimeout: "\u4ee3\u7406\u542f\u52a8\u8d85\u65f6",
+            agentStartTimeout: "Agent \u542f\u52a8\u8d85\u65f6",
             configPath: "\u914d\u7f6e\u6587\u4ef6",
             workspace: "\u9ed8\u8ba4\u5de5\u4f5c\u533a",
             defaultModel: "\u9ed8\u8ba4\u6a21\u578b",
             models: "\u6a21\u578b",
-            agents: "\u4ee3\u7406",
-            channels: "\u6e20\u9053",
+            agents: "Agent",
+            channels: "\u9891\u9053",
             catalogRefreshed: "\u76ee\u5f55\u5237\u65b0",
             lastChecked: "\u6700\u540e\u68c0\u67e5",
             checkUpdates: "\u68c0\u67e5\u66f4\u65b0",
@@ -357,6 +384,9 @@ export function App() {
     .filter(Boolean)
     .join(" / ") || openClawPanelUi.notConfigured;
   const openClawPanelBusy = busyAction === "checkOpenClawUpdates";
+  const openClawHarnessStatus = harnessStatuses.find((status) => status.id === "openclaw");
+  const claudeCodeHarnessStatus = harnessStatuses.find((status) => status.id === "claudeCode");
+  const codexHarnessStatus = harnessStatuses.find((status) => status.id === "codex");
   const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
   const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
   const companyUi = useMemo(
@@ -367,7 +397,7 @@ export function App() {
             menuTitle: "\u5207\u6362\u516C\u53F8",
             noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u9009\u516C\u53F8",
             clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-            blueprintCount: (count: number) => `${count} \u4E2A Blueprint`
+            blueprintCount: (count: number) => `${count} \u4E2A\u84dd\u56fe`
           }
         : {
             placeholder: "Choose company",
@@ -422,27 +452,34 @@ export function App() {
     [runs, blueprints]
   );
 
-  const sidebarMeta = useMemo(
+  const sidebarMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
     () => ({
+      company: companies.length,
       blueprint: blueprints.length,
       runs: activeTaskCount,
       approvals: approvals.length,
       models: openClawConfig?.configuredModels.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? 0,
+      skills: catalog?.tools.length ?? 0,
       schedule: runtime?.tasks.length ?? 0,
       channels: openClawConfig?.configuredChannels.length ?? 0
     }),
     [
+      companies.length,
       approvals.length,
       activeTaskCount,
       openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
+      catalog?.tools.length,
       runtime?.tasks.length,
-      runs.length,
       blueprints.length
     ]
   );
+
+  const toggleSystemGroup = useCallback((systemId: AppSystemId) => {
+    setExpandedSystems((current) => ({ ...current, [systemId]: !current[systemId] }));
+  }, []);
 
   const withBusy = useCallback(async (action: string, work: () => Promise<void>) => {
     setBusyAction(action);
@@ -505,15 +542,17 @@ export function App() {
   const refreshCatalog = useCallback(
     () =>
       withBusy("refreshCatalog", async () => {
-        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextRuntime] = await Promise.all([
+        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextRuntime] = await Promise.all([
           api.refreshCatalog(),
           api.getOpenClawConfig(),
           api.getOpenClawModelUsage().catch(() => []),
+          api.getHarnessStatus().catch(() => []),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
         setOpenClawModelUsage(nextOpenClawModelUsage);
+        setHarnessStatuses(nextHarnessStatuses);
         setRuntime(nextRuntime);
       }),
     [withBusy]
@@ -522,18 +561,28 @@ export function App() {
   const checkOpenClawUpdates = useCallback(
     () =>
       withBusy("checkOpenClawUpdates", async () => {
-        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextRuntime] = await Promise.all([
+        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextRuntime] = await Promise.all([
           api.getOpenClawVersion(),
           api.refreshCatalog(),
           api.getOpenClawConfig(),
           api.getOpenClawModelUsage().catch(() => []),
+          api.getHarnessStatus().catch(() => []),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setOpenClawVersion(nextOpenClawVersion);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
         setOpenClawModelUsage(nextOpenClawModelUsage);
+        setHarnessStatuses(nextHarnessStatuses);
         setRuntime(nextRuntime);
+      }),
+    [withBusy]
+  );
+
+  const refreshHarnessStatus = useCallback(
+    () =>
+      withBusy("refreshHarnessStatus", async () => {
+        setHarnessStatuses(await api.getHarnessStatus());
       }),
     [withBusy]
   );
@@ -794,6 +843,7 @@ export function App() {
           gatewayStatusLabel={gatewayStatusLabel}
           gatewaySourceLabel={gatewaySourceLabel}
           gatewayAuthLabel={gatewayAuthLabel}
+          harnessStatus={openClawHarnessStatus}
           busy={openClawPanelBusy}
           onCheckUpdates={checkOpenClawUpdates}
         />
@@ -872,10 +922,40 @@ export function App() {
         />
       );
     }
+    if (section === "skills") {
+      return <SkillsPage catalog={catalog} language={language} t={t} />;
+    }
+    if (section === "claudeCodeConfig") {
+      return (
+        <HarnessConfigPage
+          title={t.pages.claudeCodeConfig?.title ?? "Claude code Config"}
+          description={t.pages.claudeCodeConfig?.description ?? ""}
+          status={claudeCodeHarnessStatus}
+          fallbackLabel="Claude code"
+          language={language}
+          busy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+        />
+      );
+    }
+    if (section === "codexConfig") {
+      return (
+        <HarnessConfigPage
+          title={t.pages.codexConfig?.title ?? "Codex Config"}
+          description={t.pages.codexConfig?.description ?? ""}
+          status={codexHarnessStatus}
+          fallbackLabel="Codex"
+          language={language}
+          busy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+        />
+      );
+    }
     if (section === "schedule") {
       return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} blueprints={blueprints} language={language} t={t} />;
     }
-    return (
+    if (section === "channels") {
+      return (
       <ChannelsPage
         catalog={catalog}
         openClawConfig={openClawConfig}
@@ -885,7 +965,9 @@ export function App() {
         busy={Boolean(busyAction)}
         onConfigureChannel={configureOpenClawChannel}
       />
-    );
+      );
+    }
+    return null;
   };
 
   return (
@@ -904,21 +986,51 @@ export function App() {
           </div>
         </div>
         <nav className="sidebar-nav">
-          {appSections.map((item) => {
-            const Icon = sidebarIcons[item];
+          {appSectionGroups.map((group) => {
+            const expanded = expandedSystems[group.id];
+            const groupActive = group.sections.some((item) => item === section);
+            const systemChildrenId = `sidebar-system-${group.id}`;
+            const SystemChevron = expanded ? ChevronDown : ChevronRight;
             return (
-              <button
-                key={item}
-                type="button"
-                className={`nav-item ${section === item ? "active" : ""}`}
-                onClick={() => setSection(item)}
-              >
-                <span className="nav-item-main">
-                  <Icon size={16} />
-                  {t.navigation[item] ?? messages.en.navigation[item] ?? item}
-                </span>
-                <span className="nav-count">{sidebarMeta[item]}</span>
-              </button>
+              <section key={group.id} className={`nav-system-group ${groupActive ? "active" : ""}`}>
+                <button
+                  type="button"
+                  className={`nav-system-toggle ${groupActive ? "active" : ""}`}
+                  aria-expanded={expanded}
+                  aria-controls={group.sections.length > 0 ? systemChildrenId : undefined}
+                  onClick={() => toggleSystemGroup(group.id)}
+                >
+                  <span className="nav-system-main">
+                    <SystemChevron size={14} />
+                    <span className="nav-system-label">{systemLabels[group.id]}</span>
+                  </span>
+                </button>
+                {expanded && group.sections.length > 0 && (
+                  <div id={systemChildrenId} className="nav-system-children">
+                    {group.sections.map((item) => {
+                      const Icon = sidebarIcons[item];
+                      return (
+                        <button
+                          key={item}
+                          type="button"
+                          className={`nav-item ${section === item ? "active" : ""}`}
+                          onClick={() => {
+                            setSection(item);
+                            setCompanyMenuOpen(false);
+                            setSystemMenuOpen(false);
+                          }}
+                        >
+                          <span className="nav-item-main">
+                            <Icon size={16} />
+                            <span className="nav-item-label">{t.navigation[item] ?? messages.en.navigation[item] ?? item}</span>
+                          </span>
+                          {sidebarMeta[item] !== undefined && <span className="nav-count">{sidebarMeta[item]}</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             );
           })}
         </nav>
@@ -1058,6 +1170,7 @@ function OpenClawControlPanelPage({
   gatewayStatusLabel,
   gatewaySourceLabel,
   gatewayAuthLabel,
+  harnessStatus,
   busy,
   onCheckUpdates
 }: {
@@ -1073,6 +1186,7 @@ function OpenClawControlPanelPage({
   gatewayStatusLabel: string;
   gatewaySourceLabel: string;
   gatewayAuthLabel: string;
+  harnessStatus?: HarnessStatus;
   busy: boolean;
   onCheckUpdates: () => void;
 }) {
@@ -1106,6 +1220,8 @@ function OpenClawControlPanelPage({
         </div>
       </div>
 
+      <HarnessStatusBlock status={harnessStatus} language={language} fallbackLabel="OpenClaw" />
+
       <div className="openclaw-control-grid">
         <div className="content-card stack-card openclaw-control-section">
           <div className="card-title-block">
@@ -1136,6 +1252,181 @@ function OpenClawControlPanelPage({
       </div>
     </section>
   );
+}
+
+function HarnessConfigPage({
+  title,
+  description,
+  status,
+  fallbackLabel,
+  language,
+  busy,
+  onRefresh
+}: {
+  title: string;
+  description: string;
+  status?: HarnessStatus;
+  fallbackLabel: string;
+  language: Language;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const copy = harnessStatusCopy(language);
+  const connectionState = status?.connectionState ?? "unavailable";
+  const healthy = connectionState === "connected" || connectionState === "available";
+  return (
+    <section className="page-grid openclaw-control-page">
+      <div className="content-card stack-card openclaw-control-hero">
+        <div className="openclaw-page-head">
+          <div className="openclaw-panel-title">
+            <Settings size={18} />
+            <div>
+              <strong>{title}</strong>
+              <span>{description}</span>
+            </div>
+          </div>
+          <div className="openclaw-page-actions">
+            <span className={`openclaw-panel-state ${healthy ? "online" : "offline"}`}>{copy.states[connectionState]}</span>
+            <button type="button" onClick={onRefresh} disabled={busy}>
+              <RefreshCw size={14} className={busy ? "spin" : undefined} />
+              {busy ? copy.checking : copy.check}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <HarnessStatusBlock status={status} language={language} fallbackLabel={fallbackLabel} />
+    </section>
+  );
+}
+
+function HarnessStatusBlock({
+  status,
+  language,
+  fallbackLabel
+}: {
+  status?: HarnessStatus;
+  language: Language;
+  fallbackLabel: string;
+}) {
+  const copy = harnessStatusCopy(language);
+  const label = status?.label ?? fallbackLabel;
+  const connectionState = status?.connectionState ?? "unavailable";
+  return (
+    <div className="harness-status-block">
+      <div className="openclaw-panel-metrics">
+        <OpenClawPanelMetric label={copy.harness} value={label} />
+        <OpenClawPanelMetric label={copy.defaultModel} value={status?.defaultModelId ?? copy.none} />
+        <OpenClawPanelMetric label={copy.installed} value={status?.installed ? copy.yes : copy.no} tone={status?.installed ? "online" : "offline"} />
+        <OpenClawPanelMetric
+          label={copy.environment}
+          value={status?.environmentOk ? copy.matched : copy.needsAttention}
+          tone={status?.environmentOk ? "online" : "offline"}
+        />
+        <OpenClawPanelMetric label={copy.connection} value={copy.states[connectionState]} />
+      </div>
+
+      <div className="openclaw-control-grid">
+        <div className="content-card stack-card openclaw-control-section">
+          <div className="card-title-block">
+            <h3>{copy.summary}</h3>
+            <p>{status?.summary ?? copy.notChecked}</p>
+          </div>
+          <OpenClawPanelRow label={copy.checkedAt} value={formatDateTimeLabel(status?.checkedAt, language, "-")} />
+        </div>
+
+        <div className="content-card stack-card openclaw-control-section">
+          <div className="card-title-block">
+            <h3>{copy.checks}</h3>
+          </div>
+          {status?.checks.length ? (
+            status.checks.map((check) => (
+              <OpenClawPanelRow
+                key={check.id}
+                label={check.label}
+                value={
+                  <span className="harness-check-value">
+                    <span className={`status-pill ${statusClassForHarnessCheck(check.status)}`}>{copy.checkStatus[check.status]}</span>
+                    <span>{check.detail}</span>
+                  </span>
+                }
+              />
+            ))
+          ) : (
+            <div className="empty-state page-empty">{copy.notChecked}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function statusClassForHarnessCheck(status: HarnessStatus["checks"][number]["status"]): string {
+  if (status === "pass") return "status-succeeded";
+  if (status === "warning") return "status-running";
+  return "status-failed";
+}
+
+function harnessStatusCopy(language: Language) {
+  return language === "zh-CN"
+    ? {
+        harness: "Harness",
+        defaultModel: "\u9ed8\u8ba4\u6a21\u578b",
+        installed: "\u5b89\u88c5",
+        environment: "\u73af\u5883",
+        connection: "\u8fde\u63a5\u72b6\u6001",
+        matched: "\u5339\u914d",
+        needsAttention: "\u9700\u5904\u7406",
+        yes: "\u5df2\u5b89\u88c5",
+        no: "\u672a\u5b89\u88c5",
+        none: "-",
+        summary: "\u72b6\u6001\u6458\u8981",
+        checks: "\u68c0\u67e5\u9879",
+        checkedAt: "\u68c0\u67e5\u65f6\u95f4",
+        notChecked: "\u5c1a\u672a\u83b7\u53d6\u72b6\u6001\u3002",
+        check: "\u91cd\u65b0\u68c0\u67e5",
+        checking: "\u68c0\u67e5\u4e2d",
+        states: {
+          connected: "\u5df2\u8fde\u63a5",
+          available: "\u53ef\u7528",
+          needs_config: "\u9700\u8981\u914d\u7f6e",
+          unavailable: "\u4e0d\u53ef\u7528"
+        },
+        checkStatus: {
+          pass: "\u901a\u8fc7",
+          warning: "\u6ce8\u610f",
+          fail: "\u5931\u8d25"
+        }
+      }
+    : {
+        harness: "Harness",
+        defaultModel: "Default model",
+        installed: "Installed",
+        environment: "Environment",
+        connection: "Connection",
+        matched: "Matched",
+        needsAttention: "Needs attention",
+        yes: "Installed",
+        no: "Not installed",
+        none: "-",
+        summary: "Status summary",
+        checks: "Checks",
+        checkedAt: "Checked at",
+        notChecked: "Status has not been loaded.",
+        check: "Check again",
+        checking: "Checking",
+        states: {
+          connected: "Connected",
+          available: "Available",
+          needs_config: "Needs config",
+          unavailable: "Unavailable"
+        },
+        checkStatus: {
+          pass: "Pass",
+          warning: "Warning",
+          fail: "Fail"
+        }
+      };
 }
 
 function OpenClawPanelMetric({
@@ -1234,7 +1525,7 @@ function replaceBlueprint(blueprints: BlueprintDefinition[], blueprint: Blueprin
 }
 
 function defaultNewBlueprintName(index: number, language: Language): string {
-  return language === "zh-CN" ? `新建 Blueprint ${index}` : `New blueprint ${index}`;
+  return language === "zh-CN" ? `\u65b0\u5efa\u84dd\u56fe ${index}` : `New blueprint ${index}`;
 }
 
 function downloadBlueprintPackage(blueprintPackage: PortableBlueprintPackage, blueprintName: string): void {

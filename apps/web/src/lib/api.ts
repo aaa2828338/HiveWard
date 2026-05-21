@@ -8,6 +8,8 @@ import type {
   CreateBlueprintRequest,
   DashboardStateResponse,
   ExportBlueprintResponse,
+  HarnessStatus,
+  HarnessStatusResponse,
   ImportBlueprintPackageRequest,
   ImportBlueprintPackageResponse,
   LatestBlueprintRunResponse,
@@ -70,6 +72,11 @@ export const api = {
   async getOpenClawVersion(): Promise<OpenClawVersionInfo> {
     const response = await request<OpenClawVersionResponse>("/api/openclaw-version");
     return response.version;
+  },
+
+  async getHarnessStatus(): Promise<HarnessStatus[]> {
+    const response = await request<HarnessStatusResponse>("/api/harness-status");
+    return response.statuses;
   },
 
   async getOpenClawModelUsage(): Promise<OpenClawModelUsageSummary[]> {
