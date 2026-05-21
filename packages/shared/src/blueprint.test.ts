@@ -64,6 +64,8 @@ describe("blueprint contracts", () => {
       "html-code-builder"
     ]);
     expect(agentConfigs.map((config) => config.resultRole)).toEqual(["ignore", "ignore", "final"]);
+    expect(agentConfigs.every((config) => !config.prompt.includes("Return strict JSON"))).toBe(true);
+    expect(agentConfigs.every((config) => config.outputSchema === undefined)).toBe(true);
     expect(blueprint.edges.some((edge) => edge.sourceHandle === "manager-slot-inner-out")).toBe(true);
     expect(blueprint.edges.some((edge) => edge.targetHandle === "manager-slot-inner-in")).toBe(true);
     expect(blueprint.companyId).toBe(defaultCompanyId);

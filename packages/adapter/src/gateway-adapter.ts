@@ -156,6 +156,9 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
     const transcriptError = transcriptResult?.error;
     const status = ok && !transcriptError ? "succeeded" : "failed";
     const usage = readUsageFact(result, fallbackModelId, runId) ?? transcriptResult?.usage;
+    const output = status === "succeeded"
+      ? transcriptResult?.output ?? readAgentResultOutput(result)
+      : undefined;
 
     return {
       taskId: input.taskId,
@@ -163,7 +166,7 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
       sessionKey,
       source: "openclaw",
       status,
-      output: status === "succeeded" ? transcriptResult?.output ?? summarizeAgentResult(result) : undefined,
+      output,
       error: transcriptError ?? (ok ? undefined : summarizeAgentResult(result)),
       usage,
       updatedAt: new Date().toISOString(),
@@ -251,16 +254,102 @@ export class GatewayOpenClawAdapter implements OpenClawAdapter {
   }
 }
 
-function formatAgentMessage(input: StartAgentTaskInput): string {
+export function formatAgentMessage(input: StartAgentTaskInput): string {
   return [
     `Hiveward blueprint run: ${input.blueprintRunId}`,
     `Hiveward node run: ${input.nodeRunId}`,
     "",
     input.prompt,
     "",
-    "Input:",
-    JSON.stringify(input.input ?? {}, null, 2),
+    formatAgentInput(input.input),
   ].join("\n");
+}
+
+function formatAgentInput(input: unknown): string {
+  const record = isRecord(input) ? input : undefined;
+  if (!record) {
+    return ["输入上下文:", stringifyVisibleValue(input) ?? ""].join("\n");
+  }
+
+  const sections = ["输入上下文:"];
+  sections.push(...formatManagerContext(record.manager));
+  sections.push(...formatUpstreamSection(record.upstream));
+  sections.push(...formatPreviousResults(record.previousResults));
+
+  const remainingEntries = Object.entries(record).filter(([key]) => !["manager", "upstream", "previousResults"].includes(key));
+  if (remainingEntries.length > 0) {
+    sections.push("", "其他上下文:");
+    for (const [key, value] of remainingEntries) {
+      sections.push(`- ${key}: ${formatInlineValue(value)}`);
+    }
+  }
+
+  return sections.join("\n");
+}
+
+function formatManagerContext(value: unknown): string[] {
+  if (!isRecord(value)) return [];
+  const lines = ["", "管理器交接:"];
+  for (const key of ["nodeLabel", "slot", "handoff", "maxHandoffs", "instructions"]) {
+    if (value[key] !== undefined) lines.push(`- ${key}: ${formatInlineValue(value[key])}`);
+  }
+  return lines;
+}
+
+function formatUpstreamSection(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) return ["", "上游最终输出: 无"];
+  return ["", "上游最终输出（完整原文）:", ...value.flatMap((item, index) => formatUpstreamItem(item, index))];
+}
+
+function formatUpstreamItem(value: unknown, index: number): string[] {
+  if (!isRecord(value)) return [``, `### 上游 ${index + 1}`, formatOutputBlock(value)];
+
+  const label = readString(value.nodeLabel) ?? readString(value.nodeId) ?? `上游 ${index + 1}`;
+  const lines = ["", `### ${index + 1}. ${label}`];
+  for (const key of ["nodeId", "nodeRunId", "status"]) {
+    if (value[key] !== undefined) lines.push(`- ${key}: ${formatInlineValue(value[key])}`);
+  }
+  const ref = formatOpenClawRef(value.openclawRef);
+  if (ref) lines.push(`- openclawRef: ${ref}`);
+  lines.push("输出:");
+  lines.push(formatOutputBlock(value.output));
+  return lines;
+}
+
+function formatPreviousResults(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  return ["", "前序槽位结果（完整原文）:", ...value.flatMap((item, index) => formatPreviousResult(item, index))];
+}
+
+function formatPreviousResult(value: unknown, index: number): string[] {
+  if (!isRecord(value)) return ["", `### 前序结果 ${index + 1}`, formatOutputBlock(value)];
+  const label = readString(value.nodeLabel) ?? readString(value.nodeId) ?? `前序结果 ${index + 1}`;
+  const lines = ["", `### ${index + 1}. ${label}`];
+  for (const key of ["handoff", "slot", "nodeId", "status"]) {
+    if (value[key] !== undefined) lines.push(`- ${key}: ${formatInlineValue(value[key])}`);
+  }
+  if (value.error !== undefined) lines.push(`- error: ${formatInlineValue(value.error)}`);
+  lines.push("输出:");
+  lines.push(formatOutputBlock(value.output));
+  return lines;
+}
+
+function formatOpenClawRef(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  return ["taskId", "runId", "sessionKey"]
+    .flatMap((key) => value[key] === undefined ? [] : [`${key}=${formatInlineValue(value[key])}`])
+    .join(", ") || undefined;
+}
+
+function formatOutputBlock(value: unknown): string {
+  const text = stringifyVisibleValue(value) ?? "";
+  return [`<<<BEGIN OUTPUT>>>`, text, `<<<END OUTPUT>>>`].join("\n");
+}
+
+function formatInlineValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return stringifyVisibleValue(value) ?? "";
 }
 
 function mapModel(value: unknown): OpenClawModel | undefined {
@@ -347,16 +436,29 @@ function mapSessionTask(value: unknown): OpenClawTaskSummary | undefined {
   };
 }
 
-function summarizeAgentResult(result: Record<string, unknown>): string {
-  const status = readString(result.status) ?? "ok";
+function readAgentResultOutput(result: Record<string, unknown>): string | undefined {
   const summary = readString(result.summary);
   const inner = isRecord(result.result) ? result.result : undefined;
-  const text = readString(inner?.text) ?? readString(inner?.message) ?? readString(result.text);
-  const richOutput = [summary, text].filter(Boolean).join("\n\n");
-  if (richOutput && richOutput !== "completed") return richOutput;
+  const text =
+    extractMessageText(inner?.text) ||
+    extractMessageText(inner?.message) ||
+    extractMessageText(result.result) ||
+    extractMessageText(result.text) ||
+    extractMessageText(result.message) ||
+    extractMessageText(result.output);
+  const richOutput = [summary, text].filter(Boolean).join("\n\n").trim();
+  return isMeaningfulTranscriptText(richOutput) ? richOutput : undefined;
+}
+
+function summarizeAgentResult(result: Record<string, unknown>): string {
+  const status = readString(result.status) ?? "ok";
+  const richOutput = readAgentResultOutput(result);
+  if (richOutput) return richOutput;
   const runId = readString(result.runId);
   return [`OpenClaw agent run ${status}.`, runId ? `runId: ${runId}` : undefined].filter(Boolean).join("\n");
 }
+
+const agentTranscriptHistoryMaxChars = 200_000;
 
 async function readAgentTranscriptResult(
   session: GatewaySession,
@@ -368,32 +470,62 @@ async function readAgentTranscriptResult(
     const history = await session.request<{ messages?: unknown[] }>("chat.history", {
       sessionKey,
       limit: 50,
-      maxChars: 24_000,
+      maxChars: agentTranscriptHistoryMaxChars,
     });
     const messages = Array.isArray(history.messages) ? history.messages : [];
-    const userIndex = findLastMessageIndex(messages, (message) => {
-      if (!isRecord(message)) return false;
-      const role = readString(message.role);
-      return role === "user" && extractMessageText(message).includes(`Hiveward node run: ${nodeRunId}`);
-    });
-    if (userIndex < 0) return undefined;
-
-    for (const message of messages.slice(userIndex + 1)) {
-      if (!isRecord(message) || readString(message.role) !== "assistant") continue;
-      const usage = readUsageFact(message, fallbackModelId);
-      const errorMessage = readString(message.errorMessage);
-      if (errorMessage) return { error: errorMessage, usage };
-      const text = extractMessageText(message).trim();
-      if (text && text !== "completed") return { output: text, usage };
-      if (readString(message.stopReason) === "error") {
-        return { error: "OpenClaw assistant stopped with an error before returning visible output.", usage };
-      }
-      if (usage) return { usage };
-    }
+    return readAgentTranscriptMessages(messages, nodeRunId, fallbackModelId);
   } catch {
     return undefined;
   }
-  return undefined;
+}
+
+interface TranscriptOutputCandidate {
+  role?: string;
+  text: string;
+  usage?: OpenClawUsageFact;
+}
+
+export function readAgentTranscriptMessages(
+  messages: unknown[],
+  nodeRunId: string,
+  fallbackModelId?: string,
+): { output?: string; error?: string; usage?: OpenClawUsageFact } | undefined {
+  const userIndex = findLastMessageIndex(messages, (message) => {
+    if (!isRecord(message)) return false;
+    const role = readString(message.role);
+    return role === "user" && extractMessageText(message).includes(`Hiveward node run: ${nodeRunId}`);
+  });
+  if (userIndex < 0) return undefined;
+
+  const visibleCandidates: TranscriptOutputCandidate[] = [];
+  let latestUsage: OpenClawUsageFact | undefined;
+
+  for (const message of messages.slice(userIndex + 1)) {
+    if (!isRecord(message)) continue;
+    const role = readString(message.role);
+    if (role === "user") continue;
+
+    const usage = readUsageFact(message, fallbackModelId);
+    latestUsage = usage ?? latestUsage;
+
+    const errorMessage = readString(message.errorMessage);
+    if (errorMessage) return { error: errorMessage, usage };
+    if (readString(message.stopReason) === "error") {
+      return { error: "OpenClaw assistant stopped with an error before returning visible output.", usage };
+    }
+
+    const text = extractMessageText(message).trim();
+    if (!isMeaningfulTranscriptText(text)) continue;
+
+    visibleCandidates.push({ role, text, usage });
+  }
+
+  const finalVisible = visibleCandidates[visibleCandidates.length - 1];
+  if (finalVisible?.role === "assistant") {
+    return { output: finalVisible.text, usage: finalVisible.usage ?? latestUsage };
+  }
+
+  return latestUsage ? { usage: latestUsage } : undefined;
 }
 
 function findLastMessageIndex<T>(items: T[], predicate: (item: T) => boolean): number {
@@ -404,17 +536,39 @@ function findLastMessageIndex<T>(items: T[], predicate: (item: T) => boolean): n
 }
 
 function extractMessageText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(extractMessageText).filter(Boolean).join("\n");
+  }
   if (!isRecord(value)) return "";
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.content === "string") return value.content;
-  if (!Array.isArray(value.content)) return "";
-  return value.content
-    .map((block) => {
-      if (!isRecord(block)) return "";
-      return readString(block.text) ?? readString(block.content) ?? "";
-    })
-    .filter(Boolean)
-    .join("\n");
+
+  const direct =
+    readRawString(value.text) ??
+    readRawString(value.message) ??
+    readRawString(value.output);
+  if (direct !== undefined) return direct;
+
+  const content = extractMessageText(value.content);
+  if (content) return content;
+
+  for (const key of ["result", "data", "artifact", "artifacts"]) {
+    const visible = stringifyVisibleValue(value[key]);
+    if (visible) return visible;
+  }
+  return "";
+}
+
+function stringifyVisibleValue(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value) || isRecord(value)) return JSON.stringify(value, null, 2);
+  return undefined;
+}
+
+function isMeaningfulTranscriptText(value: string): boolean {
+  const normalized = value.trim();
+  return Boolean(normalized && normalized.toLowerCase() !== "completed");
 }
 
 function readUsageFact(value: unknown, fallbackModelId?: string, fallbackId?: string): OpenClawUsageFact | undefined {
@@ -560,6 +714,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readRawString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
 }
 
 function readNumber(value: unknown): number | undefined {
