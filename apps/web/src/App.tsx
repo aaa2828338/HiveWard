@@ -30,11 +30,13 @@ import type {
   RuntimeOverview,
   WorkspaceDashboard,
   BlueprintDefinition,
+  BlueprintRunSummary,
   BlueprintRunView
 } from "@hiveward/shared";
 import { api } from "./lib/api";
 import { appSections, type AppSectionId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
+import { syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
 
@@ -98,7 +100,8 @@ export function App() {
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
-  const [runs, setRuns] = useState<BlueprintRunView[]>([]);
+  const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
+  const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
@@ -166,6 +169,15 @@ export function App() {
     };
   }, []);
 
+  const runs = useMemo<BlueprintRunView[]>(
+    () =>
+      runSummaries.map((summary) => {
+        const detail = runDetailsById[summary.id];
+        return detail ? { ...detail, run: summary } : { run: summary, nodeRuns: [], events: [], finalResult: null };
+      }),
+    [runSummaries, runDetailsById]
+  );
+
   const hydrateWorkspace = useCallback(
     async (options?: { blueprintId?: string; runId?: string }) => {
       const [
@@ -175,7 +187,7 @@ export function App() {
         nextOpenClawConfig,
         nextOpenClawWizard,
         nextOpenClawModelUsage,
-        nextRuns,
+        nextRunSummaries,
         nextApprovals,
         nextDashboard,
         nextRuntime
@@ -192,6 +204,10 @@ export function App() {
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
 
+      const preferredRunId = options?.runId ?? selectedRunIdRef.current ?? nextRunSummaries[0]?.id;
+      const nextRunId = nextRunSummaries.some((item) => item.id === preferredRunId) ? preferredRunId : nextRunSummaries[0]?.id;
+      const nextRunView = nextRunId ? await api.getBlueprintRun(nextRunId).catch(() => undefined) : undefined;
+
       setCompanies(companyDirectory.companies);
       setSelectedCompanyId(companyDirectory.selectedCompanyId);
       setBlueprints(nextBlueprints);
@@ -199,7 +215,8 @@ export function App() {
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
-      setRuns(nextRuns);
+      setRunSummaries(nextRunSummaries);
+      setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
@@ -209,9 +226,6 @@ export function App() {
       const nextBlueprint = nextBlueprints.find((item) => item.id === preferredBlueprintId) ?? nextBlueprints[0];
       setBlueprint(nextBlueprint);
       setSelectedNodeId(undefined);
-
-      const preferredRunId = options?.runId ?? selectedRunIdRef.current ?? nextRuns[0]?.run.id;
-      const nextRunId = nextRuns.some((item) => item.run.id === preferredRunId) ? preferredRunId : nextRuns[0]?.run.id;
       setSelectedRunId(nextRunId);
     },
     []
@@ -430,6 +444,12 @@ export function App() {
     }
   }, []);
 
+  const applyRunView = useCallback((runView: BlueprintRunView) => {
+    setRunDetailsById((current) => ({ ...current, [runView.run.id]: runView }));
+    setRunSummaries((current) => upsertRunSummary(current, runView.run));
+    setApprovals((current) => syncApprovalsForRun(current, runView));
+  }, []);
+
   const loadOpenClawVersion = useCallback(async () => {
     try {
       setOpenClawVersion(await api.getOpenClawVersion());
@@ -594,10 +614,11 @@ export function App() {
     void withBusy("runBlueprint", async () => {
       const saved = await api.saveBlueprint(blueprint);
       const runView = await api.startBlueprintRun(saved.id);
+      applyRunView(runView);
       await hydrateWorkspace({ blueprintId: saved.id, runId: runView.run.id });
       setSection("runs");
     });
-  }, [hydrateWorkspace, withBusy, blueprint]);
+  }, [applyRunView, hydrateWorkspace, withBusy, blueprint]);
 
   const approveRun = useCallback(
     (blueprintRunId?: string) => {
@@ -605,10 +626,11 @@ export function App() {
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
         const updated = await api.approveBlueprintRun(targetRunId);
+        applyRunView(updated);
         await hydrateWorkspace({ blueprintId: updated.run.blueprintId, runId: updated.run.id });
       });
     },
-    [hydrateWorkspace, latestRunForBlueprint?.run.id, withBusy]
+    [applyRunView, hydrateWorkspace, latestRunForBlueprint?.run.id, withBusy]
   );
 
   const addWidget = useCallback(
@@ -675,24 +697,39 @@ export function App() {
   }, [systemMenuOpen]);
 
   useEffect(() => {
+    if (!selectedRunId || runDetailsById[selectedRunId]) return;
+
+    let cancelled = false;
+    void api.getBlueprintRun(selectedRunId)
+      .then((runView) => {
+        if (!cancelled) applyRunView(runView);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyRunView, runDetailsById, selectedRunId]);
+
+  useEffect(() => {
     const activeRun =
       section === "runs"
         ? runs.find((runView) => runView.run.id === selectedRunId)
         : latestRunForBlueprint;
 
-    if (!activeRun || !["queued", "running", "waiting_approval"].includes(activeRun.run.status)) {
+    if (!activeRun || !["queued", "running"].includes(activeRun.run.status)) {
       return;
     }
 
+    const activeRunId = activeRun.run.id;
     const timer = window.setTimeout(() => {
-      void hydrateWorkspace({
-        blueprintId: selectedBlueprintIdRef.current,
-        runId: section === "runs" ? selectedRunIdRef.current : activeRun.run.id
-      }).catch(() => undefined);
+      void api.getBlueprintRun(activeRunId)
+        .then(applyRunView)
+        .catch(() => undefined);
     }, 2500);
 
     return () => window.clearTimeout(timer);
-  }, [hydrateWorkspace, latestRunForBlueprint, runs, section, selectedRunId]);
+  }, [applyRunView, latestRunForBlueprint, runs, section, selectedRunId]);
 
   const renderSection = () => {
     if (section === "company") {

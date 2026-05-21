@@ -12,7 +12,7 @@ import type {
   ImportBlueprintPackageResponse,
   LatestBlueprintRunResponse,
   ListPendingApprovalsResponse,
-  ListBlueprintRunViewsResponse,
+  ListBlueprintRunSummariesResponse,
   ListBlueprintsResponse,
   OpenClawConfigResponse,
   OpenClawConfigWizardMetadata,
@@ -138,9 +138,14 @@ export const api = {
     return response.blueprint;
   },
 
-  async listBlueprintRuns(): Promise<ListBlueprintRunViewsResponse["runs"]> {
-    const response = await request<ListBlueprintRunViewsResponse>("/api/blueprint-runs");
+  async listBlueprintRuns(): Promise<ListBlueprintRunSummariesResponse["runs"]> {
+    const response = await request<ListBlueprintRunSummariesResponse>("/api/blueprint-runs");
     return response.runs;
+  },
+
+  async getBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}`);
+    return response.run;
   },
 
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {

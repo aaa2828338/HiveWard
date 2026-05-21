@@ -285,7 +285,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
 
   router.get("/api/blueprint-runs", async (_req, res, next) => {
     try {
-      res.json({ runs: await store.listRunViews() });
+      res.json({ runs: await store.listRunSummaries() });
     } catch (error) {
       next(error);
     }

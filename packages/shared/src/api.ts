@@ -7,7 +7,7 @@ import type {
   OpenClawTaskSummary,
   OpenClawVersionInfo
 } from "./openclaw";
-import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunView } from "./blueprint";
+import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 
 export interface ListBlueprintsResponse {
@@ -55,8 +55,8 @@ export interface BlueprintRunResponse {
   run: BlueprintRunView;
 }
 
-export interface ListBlueprintRunViewsResponse {
-  runs: BlueprintRunView[];
+export interface ListBlueprintRunSummariesResponse {
+  runs: BlueprintRunSummary[];
 }
 
 export interface ListPendingApprovalsResponse {

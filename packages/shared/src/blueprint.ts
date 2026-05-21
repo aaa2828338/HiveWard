@@ -251,7 +251,7 @@ export interface BlueprintNodeEvent {
 }
 
 export interface BlueprintRunView {
-  run: BlueprintRun;
+  run: BlueprintRunSummary;
   nodeRuns: BlueprintNodeRun[];
   events: BlueprintNodeEvent[];
   finalResult?: FinalRunResult | null;

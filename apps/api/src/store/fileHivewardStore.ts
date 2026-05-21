@@ -371,6 +371,18 @@ export class FileHivewardStore {
     });
   }
 
+  async listRunSummaries(): Promise<BlueprintRunSummary[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      if (!companyId) return [];
+      return index.runIndex
+        .filter((run) => run.companyId === companyId)
+        .slice()
+        .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime());
+    });
+  }
+
   async listRunViews(): Promise<BlueprintRunView[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
