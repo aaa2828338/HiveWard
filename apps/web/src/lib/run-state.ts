@@ -1,4 +1,31 @@
-import type { BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+
+export type RunPollingView = "blueprint" | "runs";
+
+export function selectRunPollingTarget({
+  runs,
+  selectedBlueprintId,
+  selectedRunId,
+  view
+}: {
+  runs: BlueprintRunView[];
+  selectedBlueprintId?: string;
+  selectedRunId?: string;
+  view: RunPollingView;
+}): string | undefined {
+  const selectedRun = selectedRunId ? runs.find((runView) => runView.run.id === selectedRunId) : undefined;
+  if (view === "runs" && selectedRun && isPollingRunStatus(selectedRun.run.status)) {
+    return selectedRun.run.id;
+  }
+
+  return runs.find((runView) => {
+    return runView.run.blueprintId === selectedBlueprintId && isPollingRunStatus(runView.run.status);
+  })?.run.id;
+}
+
+export function isPollingRunStatus(status: BlueprintRunStatus): boolean {
+  return status === "queued" || status === "running";
+}
 
 export function syncRunDetails(
   current: Record<string, BlueprintRunView>,

@@ -36,7 +36,7 @@ import type {
 import { api } from "./lib/api";
 import { appSections, type AppSectionId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
-import { syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
+import { selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage } from "./components/WorkspacePages";
 
@@ -49,6 +49,8 @@ const sidebarIcons = {
   schedule: CalendarDays,
   channels: Radio
 };
+
+const RUN_POLL_INTERVAL_MS = 2500;
 
 type AppTheme = "light" | "dark";
 
@@ -397,6 +399,16 @@ export function App() {
     () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
     [runs]
   );
+  const pollingRunId = useMemo(
+    () =>
+      selectRunPollingTarget({
+        runs,
+        selectedBlueprintId: blueprint?.id,
+        selectedRunId,
+        view: section === "runs" ? "runs" : "blueprint"
+      }),
+    [blueprint?.id, runs, section, selectedRunId]
+  );
 
   const selectBlueprint = useCallback(
     (blueprintId: string) => {
@@ -613,12 +625,14 @@ export function App() {
     if (!blueprint) return;
     void withBusy("runBlueprint", async () => {
       const saved = await api.saveBlueprint(blueprint);
+      setBlueprint(saved);
+      setBlueprints((current) => replaceBlueprint(current, saved));
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
-      await hydrateWorkspace({ blueprintId: saved.id, runId: runView.run.id });
+      setSelectedRunId(runView.run.id);
       setSection("runs");
     });
-  }, [applyRunView, hydrateWorkspace, withBusy, blueprint]);
+  }, [applyRunView, withBusy, blueprint]);
 
   const approveRun = useCallback(
     (blueprintRunId?: string) => {
@@ -627,10 +641,10 @@ export function App() {
       void withBusy("approveRun", async () => {
         const updated = await api.approveBlueprintRun(targetRunId);
         applyRunView(updated);
-        await hydrateWorkspace({ blueprintId: updated.run.blueprintId, runId: updated.run.id });
+        setSelectedRunId(updated.run.id);
       });
     },
-    [applyRunView, hydrateWorkspace, latestRunForBlueprint?.run.id, withBusy]
+    [applyRunView, latestRunForBlueprint?.run.id, withBusy]
   );
 
   const addWidget = useCallback(
@@ -712,24 +726,33 @@ export function App() {
   }, [applyRunView, runDetailsById, selectedRunId]);
 
   useEffect(() => {
-    const activeRun =
-      section === "runs"
-        ? runs.find((runView) => runView.run.id === selectedRunId)
-        : latestRunForBlueprint;
-
-    if (!activeRun || !["queued", "running"].includes(activeRun.run.status)) {
+    if (!pollingRunId) {
       return;
     }
 
-    const activeRunId = activeRun.run.id;
-    const timer = window.setTimeout(() => {
-      void api.getBlueprintRun(activeRunId)
-        .then(applyRunView)
-        .catch(() => undefined);
-    }, 2500);
+    let cancelled = false;
+    let timer: number | undefined;
 
-    return () => window.clearTimeout(timer);
-  }, [applyRunView, latestRunForBlueprint, runs, section, selectedRunId]);
+    const scheduleNextPoll = () => {
+      timer = window.setTimeout(() => {
+        void api.getBlueprintRun(pollingRunId)
+          .then((runView) => {
+            if (!cancelled) applyRunView(runView);
+          })
+          .catch(() => undefined)
+          .finally(() => {
+            if (!cancelled) scheduleNextPoll();
+          });
+      }, RUN_POLL_INTERVAL_MS);
+    };
+
+    scheduleNextPoll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [applyRunView, pollingRunId]);
 
   const renderSection = () => {
     if (section === "company") {
@@ -1198,6 +1221,16 @@ function defaultWidgetLayout(index: number) {
     w: 6,
     h: 4
   };
+}
+
+function replaceBlueprint(blueprints: BlueprintDefinition[], blueprint: BlueprintDefinition): BlueprintDefinition[] {
+  let replaced = false;
+  const next = blueprints.map((candidate) => {
+    if (candidate.id !== blueprint.id) return candidate;
+    replaced = true;
+    return blueprint;
+  });
+  return replaced ? next : [blueprint, ...next];
 }
 
 function defaultNewBlueprintName(index: number, language: Language): string {

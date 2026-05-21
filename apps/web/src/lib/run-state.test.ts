@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
-import { syncApprovalsForRun } from "./run-state";
+import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+import { selectRunPollingTarget, syncApprovalsForRun } from "./run-state";
 
 describe("run state sync", () => {
   it("derives pending inbox items from a waiting approval node in run detail", () => {
@@ -44,16 +44,71 @@ describe("run state sync", () => {
 
     expect(syncApprovalsForRun(existing, createRunView("running"))).toEqual([]);
   });
+
+  it("polls the selected running run on the runs page", () => {
+    const running = createRunView("running", { runId: "run-running" });
+    const queued = createRunView("queued", { runId: "run-queued" });
+
+    expect(
+      selectRunPollingTarget({
+        runs: [queued, running],
+        selectedBlueprintId: "blueprint-1",
+        selectedRunId: "run-running",
+        view: "runs"
+      })
+    ).toBe("run-running");
+  });
+
+  it("moves from a stale selected run to the current blueprint active run", () => {
+    const stale = createRunView("failed", { runId: "run-stale" });
+    const running = createRunView("running", { runId: "run-running" });
+
+    expect(
+      selectRunPollingTarget({
+        runs: [running, stale],
+        selectedBlueprintId: "blueprint-1",
+        selectedRunId: "run-stale",
+        view: "runs"
+      })
+    ).toBe("run-running");
+  });
+
+  it("does not poll waiting approval runs", () => {
+    expect(
+      selectRunPollingTarget({
+        runs: [createRunView("waiting_approval")],
+        selectedBlueprintId: "blueprint-1",
+        selectedRunId: "run-1",
+        view: "runs"
+      })
+    ).toBeUndefined();
+  });
+
+  it("does not poll runs from another blueprint", () => {
+    expect(
+      selectRunPollingTarget({
+        runs: [createRunView("running", { blueprintId: "blueprint-2" })],
+        selectedBlueprintId: "blueprint-1",
+        view: "blueprint"
+      })
+    ).toBeUndefined();
+  });
 });
 
-function createRunView(approvalStatus: "waiting_approval" | "succeeded" | "running"): BlueprintRunView {
+function createRunView(
+  nodeStatus: "waiting_approval" | "succeeded" | "running" | "queued" | "failed",
+  options: {
+    blueprintId?: string;
+    runId?: string;
+  } = {}
+): BlueprintRunView {
   const run: BlueprintRunSummary = {
-    id: "run-1",
+    id: options.runId ?? "run-1",
     companyId: "company-1",
-    blueprintId: "blueprint-1",
+    blueprintId: options.blueprintId ?? "blueprint-1",
     blueprintName: "Blueprint 1",
     blueprintVersion: 1,
-    status: approvalStatus === "waiting_approval" ? "waiting_approval" : "running",
+    status: toRunStatus(nodeStatus),
     startedBy: "tester",
     startedAt: "2026-05-21T01:00:00.000Z",
     totalInputTokens: 0,
@@ -72,10 +127,10 @@ function createRunView(approvalStatus: "waiting_approval" | "succeeded" | "runni
         nodeId: "approval",
         nodeLabel: "Human Approval",
         nodeType: "approval",
-        status: approvalStatus,
+        status: nodeStatus,
         queuedAt: "2026-05-21T01:01:00.000Z",
         startedAt: "2026-05-21T01:02:00.000Z",
-        output: approvalStatus === "waiting_approval"
+        output: nodeStatus === "waiting_approval"
           ? {
               approverHint: "Lead",
               instructions: "Approve before send."
@@ -86,4 +141,11 @@ function createRunView(approvalStatus: "waiting_approval" | "succeeded" | "runni
     events: [],
     finalResult: null
   };
+}
+
+function toRunStatus(nodeStatus: "waiting_approval" | "succeeded" | "running" | "queued" | "failed"): BlueprintRunStatus {
+  if (nodeStatus === "waiting_approval") return "waiting_approval";
+  if (nodeStatus === "failed") return "failed";
+  if (nodeStatus === "succeeded") return "succeeded";
+  return nodeStatus;
 }
