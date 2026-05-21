@@ -80,6 +80,33 @@ export interface SelectCompanyRequest {
   companyId?: string;
 }
 
+export type HarnessId = "openclaw" | "claudeCode" | "codex";
+
+export type HarnessConnectionState = "connected" | "available" | "needs_config" | "unavailable";
+
+export interface HarnessStatusCheck {
+  id: string;
+  label: string;
+  status: "pass" | "warning" | "fail";
+  detail: string;
+}
+
+export interface HarnessStatus {
+  id: HarnessId;
+  label: string;
+  defaultModelId?: string;
+  installed: boolean;
+  environmentOk: boolean;
+  connectionState: HarnessConnectionState;
+  summary: string;
+  checkedAt: string;
+  checks: HarnessStatusCheck[];
+}
+
+export interface HarnessStatusResponse {
+  statuses: HarnessStatus[];
+}
+
 export interface OpenClawConfigResponse {
   config: OpenClawConfigState;
 }

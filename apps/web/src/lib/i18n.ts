@@ -240,26 +240,26 @@ export const messages: Record<Language, Messages> = {
       addWidget: "Add widget",
       approve: "Approve",
       catalog: "Catalog",
-      createBlueprint: "新建 Blueprint",
+      createBlueprint: "New blueprint",
       deleteNode: "Delete node",
       disableNode: "Disable node",
       enableNode: "Enable node",
-      exportBlueprint: "导出 Blueprint",
-      importBlueprint: "导入 Blueprint",
+      exportBlueprint: "Export blueprint",
+      importBlueprint: "Import blueprint",
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
       run: "Start task",
-      runBlueprint: "启动 Blueprint",
+      runBlueprint: "Start blueprint",
       save: "Save",
       saveModel: "Save model",
-      saveBlueprint: "保存 Blueprint",
+      saveBlueprint: "Save blueprint",
       saveWorkspace: "Save workspace",
       switchLanguage: "Switch language"
     },
     common: {
       allStatuses: "All statuses",
-      allBlueprints: "全部 Blueprint",
+      allBlueprints: "All blueprints",
       defaultModel: "OpenClaw default",
       defaultOption: "default",
       dirtyWorkspace: "Unsaved workspace state",
@@ -304,18 +304,18 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
       noRun: "No task yet",
-      noRunHistory: "这个 Blueprint 还没有运行记录。",
-      noRuns: "还没有 Blueprint 运行",
+      noRunHistory: "This blueprint has no run activity yet.",
+      noRuns: "No blueprint runs yet",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
-      noSkills: "No skills added",
+      noSkills: "No Skills returned from OpenClaw.",
       noTags: "No tags yet",
       noTasks: "No runtime tasks yet",
       noWidgets: "No overview widgets yet",
       selectNode: "Select a node",
       selectRun: "Select a task",
       selectSkill: "Select a skill",
-      selectBlueprint: "尚未选择 Blueprint。"
+      selectBlueprint: "No blueprint is selected."
     },
     errors: {
       approve: "Failed to approve run.",
@@ -348,7 +348,7 @@ export const messages: Record<Language, Messages> = {
       position: "Position",
       ports: "Ports",
       primaryModel: "Primary model",
-      prompt: "提示词",
+      prompt: "Prompt",
       provider: "Provider",
       relatedRun: "Related task",
       relatedBlueprint: "Related blueprint",
@@ -391,8 +391,12 @@ export const messages: Record<Language, Messages> = {
       approvals: "Inbox",
       models: "Models",
       agents: "Agents",
+      openclaw: "Config",
+      skills: "Skills",
       schedule: "Schedule",
-      channels: "Channels"
+      channels: "Channels",
+      claudeCodeConfig: "Config",
+      codexConfig: "Config"
     },
     nodeTypes: {
       agent: "Agent",
@@ -400,8 +404,8 @@ export const messages: Record<Language, Messages> = {
       condition: "Condition",
       group: "Group",
       loop: "Loop",
-      manager: "管理器",
-      manager_slot: "槽位",
+      manager: "Manager",
+      manager_slot: "Slot",
       note: "Note",
       parallel_agents: "Parallel agents",
       send: "Send",
@@ -432,6 +436,14 @@ export const messages: Record<Language, Messages> = {
         title: "Agents",
         description: "Create configured OpenClaw agents and inspect available agents separately from blueprints."
       },
+      openclaw: {
+        title: "OpenClaw Config",
+        description: "Check the local OpenClaw harness, Gateway environment, and connection status."
+      },
+      skills: {
+        title: "Skills",
+        description: "Inspect Skills loaded from the OpenClaw catalog."
+      },
       schedule: {
         title: "Schedule",
         description: "Pick a calendar date and review records from that day."
@@ -439,6 +451,14 @@ export const messages: Record<Language, Messages> = {
       channels: {
         title: "Channels",
         description: "Inspect delivery channels and tool availability for fast channel configuration."
+      },
+      claudeCodeConfig: {
+        title: "Claude code Config",
+        description: "Check whether the local Claude Code harness is installed and ready."
+      },
+      codexConfig: {
+        title: "Codex Config",
+        description: "Check whether the local Codex harness is installed and ready."
       }
     },
     panels: {
@@ -534,26 +554,26 @@ export const messages: Record<Language, Messages> = {
       addWidget: "添加卡片",
       approve: "批准",
       catalog: "目录",
-      createBlueprint: "New blueprint",
+      createBlueprint: "\u65b0\u5efa\u84dd\u56fe",
       deleteNode: "删除节点",
       disableNode: "禁用节点",
       enableNode: "启用节点",
-      exportBlueprint: "Export blueprint",
-      importBlueprint: "Import blueprint",
+      exportBlueprint: "\u5bfc\u51fa\u84dd\u56fe",
+      importBlueprint: "\u5bfc\u5165\u84dd\u56fe",
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
       run: "启动任务",
-      runBlueprint: "Start blueprint",
+      runBlueprint: "\u542f\u52a8\u84dd\u56fe",
       save: "保存",
       saveModel: "保存模型",
-      saveBlueprint: "Save blueprint",
+      saveBlueprint: "\u4fdd\u5b58\u84dd\u56fe",
       saveWorkspace: "保存工作区",
       switchLanguage: "切换语言"
     },
     common: {
       allStatuses: "全部状态",
-      allBlueprints: "All blueprints",
+      allBlueprints: "\u5168\u90e8\u84dd\u56fe",
       defaultModel: "OpenClaw 默认",
       defaultOption: "默认",
       dirtyWorkspace: "工作区状态未保存",
@@ -581,9 +601,9 @@ export const messages: Record<Language, Messages> = {
       managerSlotLabel: "槽位",
       noteBody: "记录这次运行为什么重要、发生了什么变化，或还需要谁复核。",
       noteLabel: "备注",
-      parallelAgentsLabel: "并行代理",
+      parallelAgentsLabel: "并行 Agent",
       savedViewName: "新建视图",
-      sendBody: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}",
+      sendBody: "\u84dd\u56fe {{blueprint.name}} \u5df2\u5b8c\u6210\u3002\u6458\u8981\uff1a{{summary}}",
       sendLabel: "发送",
       summaryLabel: "汇总",
       tagColor: "#0f766e",
@@ -597,25 +617,25 @@ export const messages: Record<Language, Messages> = {
       noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
       noRun: "还没有任务",
-      noRunHistory: "This blueprint has no run activity yet.",
-      noRuns: "No blueprint runs yet",
+      noRunHistory: "\u8fd9\u4e2a\u84dd\u56fe\u8fd8\u6ca1\u6709\u8fd0\u884c\u8bb0\u5f55\u3002",
+      noRuns: "\u8fd8\u6ca1\u6709\u84dd\u56fe\u8fd0\u884c",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
-      noSkills: "还没有添加 Skill",
+      noSkills: "OpenClaw \u6682\u672a\u8fd4\u56de Skills",
       noTags: "还没有标签",
       noTasks: "当前没有运行任务",
       noWidgets: "还没有总览卡片",
       selectNode: "请选择一个节点",
       selectRun: "请选择一个任务",
       selectSkill: "选择一个 Skill",
-      selectBlueprint: "No blueprint is selected."
+      selectBlueprint: "\u5c1a\u672a\u9009\u62e9\u84dd\u56fe\u3002"
     },
     errors: {
       approve: "批准运行失败。",
       catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
       run: "启动任务失败。",
-      save: "保存 Blueprint 失败。",
+      save: "\u4fdd\u5b58\u84dd\u56fe\u5931\u8d25\u3002",
       workspace: "保存工作区状态失败。"
     },
     fields: {
@@ -623,7 +643,7 @@ export const messages: Record<Language, Messages> = {
       advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u6743\u9650\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
       body: "内容",
       category: "分类",
-      channels: "通道",
+      channels: "\u9891\u9053",
       description: "说明",
       agentName: "Agent 名称",
       approver: "审批人",
@@ -636,19 +656,19 @@ export const messages: Record<Language, Messages> = {
       model: "模型",
       mode: "模式",
       nodeId: "节点 ID",
-      openclawAgent: "OpenClaw agent",
+      openclawAgent: "OpenClaw Agent",
       output: "输出",
       position: "位置",
       ports: "端口",
       primaryModel: "主模型",
-      prompt: "Prompt",
+      prompt: "提示词",
       provider: "提供方",
       relatedRun: "关联任务",
-      relatedBlueprint: "关联 Blueprint",
+      relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
       runLabel: "任务标签",
       section: "页面",
       settings: "设置",
-      skills: "技能",
+      skills: "Skills",
       slot: "槽位",
       status: "状态",
       supportsTools: "支持工具",
@@ -658,13 +678,13 @@ export const messages: Record<Language, Messages> = {
       title: "标题",
       updatedAt: "更新时间",
       waitFor: "等待条件",
-      blueprint: "Blueprint",
+      blueprint: "\u84dd\u56fe",
       workspace: "工作区"
     },
     metrics: {
       agents: (count) => `${count} 个 Agent`,
       approvals: (count) => `${count} 个收件箱项`,
-      channels: (count) => `${count} 个通道`,
+      channels: (count) => `${count} \u4e2a\u9891\u9053`,
       cost: (cost) => cost,
       models: (count) => `${count} 个模型`,
       nodes: (count) => `${count} 个节点`,
@@ -675,17 +695,21 @@ export const messages: Record<Language, Messages> = {
       tokens: (count) => `${count} tokens`,
       tools: (count) => `${count} 个工具`,
       widgets: (count) => `${count} 张总览卡片`,
-      blueprints: (count) => `${count} 个 Blueprint`
+      blueprints: (count) => `${count} \u4e2a\u84dd\u56fe`
     },
     navigation: {
       company: "公司",
-      blueprint: "Blueprint",
+      blueprint: "\u84dd\u56fe",
       runs: "任务",
       approvals: "收件箱",
       models: "模型",
       agents: "Agent",
       schedule: "日程",
-      channels: "Channel"
+      openclaw: "\u914d\u7f6e",
+      skills: "Skills",
+      channels: "\u9891\u9053",
+      claudeCodeConfig: "\u914d\u7f6e",
+      codexConfig: "\u914d\u7f6e"
     },
     nodeTypes: {
       agent: "Agent",
@@ -693,8 +717,8 @@ export const messages: Record<Language, Messages> = {
       condition: "条件",
       group: "分组",
       loop: "循环",
-      manager: "Manager",
-      manager_slot: "Slot",
+      manager: "管理器",
+      manager_slot: "槽位",
       note: "备注",
       parallel_agents: "并行 Agent",
       send: "发送",
@@ -706,8 +730,8 @@ export const messages: Record<Language, Messages> = {
         description: "切换当前公司、查看公司级用量，并在同一页面维护总览卡片。"
       },
       blueprint: {
-        title: "Blueprint 指挥台",
-        description: "组织多 Agent Blueprint 结构、交接和审查关，并查看最近一次运行证据。"
+        title: "\u84dd\u56fe\u6307\u6325\u53f0",
+        description: "\u7ec4\u7ec7\u591a Agent \u84dd\u56fe\u7ed3\u6784\u3001\u4ea4\u63a5\u548c\u5ba1\u67e5\u5173\uff0c\u5e76\u67e5\u770b\u6700\u8fd1\u4e00\u6b21\u8fd0\u884c\u8bc1\u636e\u3002"
       },
       runs: {
         title: "任务",
@@ -715,7 +739,7 @@ export const messages: Record<Language, Messages> = {
       },
       approvals: {
         title: "收件箱",
-        description: "处理因为人工决策而暂停的 Blueprint。"
+        description: "\u5904\u7406\u56e0\u4e3a\u4eba\u5de5\u51b3\u7b56\u800c\u6682\u505c\u7684\u84dd\u56fe\u3002"
       },
       models: {
         title: "模型",
@@ -723,15 +747,31 @@ export const messages: Record<Language, Messages> = {
       },
       agents: {
         title: "Agent",
-        description: "创建已配置 OpenClaw Agent，并把可用 Agent 与 Blueprint 配置分开查看。"
+        description: "\u521b\u5efa\u5df2\u914d\u7f6e OpenClaw Agent\uff0c\u5e76\u628a\u53ef\u7528 Agent \u4e0e\u84dd\u56fe\u914d\u7f6e\u5206\u5f00\u67e5\u770b\u3002"
+      },
+      openclaw: {
+        title: "OpenClaw \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a OpenClaw harness\u3001\u7f51\u5173\u73af\u5883\u548c\u8fde\u63a5\u72b6\u6001\u3002"
+      },
+      skills: {
+        title: "Skills",
+        description: "\u67e5\u770b\u4ece OpenClaw \u76ee\u5f55\u62c9\u53d6\u7684 Skills\u3002"
       },
       schedule: {
         title: "日程",
         description: "按日历选择日期，查看当天相关记录。"
       },
       channels: {
-        title: "Channel",
-        description: "查看交付通道和工具可用性，为后续快速通道配置留出独立入口。"
+        title: "\u9891\u9053",
+        description: "\u67e5\u770b\u4ea4\u4ed8\u9891\u9053\u548c\u5de5\u5177\u53ef\u7528\u6027\uff0c\u4e3a\u540e\u7eed\u5feb\u901f\u9891\u9053\u914d\u7f6e\u7559\u51fa\u72ec\u7acb\u5165\u53e3\u3002"
+      },
+      claudeCodeConfig: {
+        title: "Claude code \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a Claude Code harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      codexConfig: {
+        title: "Codex \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a Codex harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       }
     },
     panels: {
@@ -785,7 +825,7 @@ export const messages: Record<Language, Messages> = {
     },
     tables: {
       agents: "Agent",
-      channels: "通道",
+      channels: "\u9891\u9053",
       models: "模型",
       notes: "笔记",
       savedViews: "保存视图",
@@ -808,9 +848,9 @@ export const messages: Record<Language, Messages> = {
       "node.run.queued": "节点已排队",
       "node.run.started": "节点已启动",
       "node.run.waiting_approval": "等待收件箱处理",
-      "blueprint.run.completed": "Blueprint 已完成",
-      "blueprint.run.failed": "Blueprint 失败",
-      "blueprint.run.started": "Blueprint 已启动"
+      "blueprint.run.completed": "\u84dd\u56fe\u5df2\u5b8c\u6210",
+      "blueprint.run.failed": "\u84dd\u56fe\u5931\u8d25",
+      "blueprint.run.started": "\u84dd\u56fe\u5df2\u542f\u52a8"
     }
   }
 };

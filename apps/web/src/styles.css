@@ -4999,6 +4999,100 @@ button.sidebar-system-version.active {
   z-index: 90;
 }
 
+.sidebar-nav {
+  grid-template-columns: 1fr;
+  align-content: start;
+  gap: 8px;
+}
+
+.nav-system-group {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.sidebar-nav .nav-system-toggle {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 8px;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: #7e8999;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
+.sidebar-nav .nav-system-toggle:hover:not(:disabled),
+.sidebar-nav .nav-system-toggle:focus-visible,
+.sidebar-nav .nav-system-toggle.active {
+  color: var(--text);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+  transform: none;
+}
+
+.nav-system-main,
+.nav-item-main {
+  min-width: 0;
+}
+
+.nav-system-main {
+  display: inline-grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-system-label,
+.nav-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-system-label {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0;
+}
+
+.nav-system-children {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  margin-left: 0;
+  padding: 1px 0 4px;
+}
+
+.nav-system-children .nav-item {
+  width: 100%;
+  min-width: 0;
+}
+
+html[data-theme="light"] .sidebar-nav .nav-system-toggle {
+  color: #667085;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:hover:not(:disabled),
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible,
+html[data-theme="light"] .sidebar-nav .nav-system-toggle.active {
+  color: var(--text);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
 .openclaw-control-page {
   gap: 14px;
 }
@@ -5017,6 +5111,21 @@ button.sidebar-system-version.active {
 .openclaw-control-section {
   align-content: start;
   gap: 10px;
+}
+
+.harness-status-block {
+  display: grid;
+  gap: 14px;
+}
+
+.harness-check-value {
+  min-width: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  text-align: right;
 }
 
 .openclaw-page-head {
@@ -5104,7 +5213,7 @@ button.sidebar-system-version.active {
 .openclaw-panel-metrics {
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
 }
 

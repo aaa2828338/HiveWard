@@ -178,7 +178,7 @@ export function CompanyPage({
           noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u4ECE\u4E0B\u65B9\u5217\u8868\u4E2D\u5207\u6362\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
-          blueprints: "Blueprint",
+          blueprints: "\u84dd\u56fe",
           runs: "\u4EFB\u52A1",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
@@ -1011,6 +1011,69 @@ export function AgentsPage({
   );
 }
 
+export function SkillsPage({
+  catalog,
+  language,
+  t
+}: {
+  catalog?: CatalogSnapshot;
+  language: Language;
+  t: Messages;
+}) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          source: "\u6570\u636e\u6e90",
+          openclawCatalog: "OpenClaw \u76ee\u5f55",
+          count: (value: number) => `${value.toLocaleString(language)} Skills`
+        }
+      : {
+          source: "Source",
+          openclawCatalog: "OpenClaw catalog",
+          count: (value: number) => `${value.toLocaleString(language)} Skills`
+        };
+  const skills = catalog?.tools ?? [];
+
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{t.pages.skills?.title ?? "Skills"}</h3>
+            <p>{t.pages.skills?.description ?? copy.openclawCatalog}</p>
+          </div>
+          <span className="status-pill status-running">{copy.count(skills.length)}</span>
+        </div>
+
+        <div className="model-card-grid">
+          {skills.length ? (
+            skills.map((skill) => (
+              <article key={skill.id} className="model-card">
+                <div className="model-card-head">
+                  <div className="model-card-main">
+                    <strong>{skill.label}</strong>
+                    <code>{skill.id}</code>
+                  </div>
+                  <span className="status-pill status-succeeded">{skill.category || "Skill"}</span>
+                </div>
+                <div className="model-card-main">
+                  <p>{skill.description || "-"}</p>
+                </div>
+                <div className="model-card-meta">
+                  <span>{`${copy.source}: ${copy.openclawCatalog}`}</span>
+                  <span>{`${t.fields.category}: ${skill.category || "-"}`}</span>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{t.empty.noSkills}</div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function SchedulePage({
   runtime,
   runs,
@@ -1032,7 +1095,7 @@ export function SchedulePage({
           calendar: "\u65e5\u5386",
           records: "\u5f53\u5929\u8bb0\u5f55",
           active: "\u8fdb\u884c\u4e2d",
-          blueprintTasks: "Blueprint \u4efb\u52a1",
+          blueprintTasks: "\u84dd\u56fe\u4efb\u52a1",
           inbox: "\u6536\u4ef6\u7bb1",
           selectedDate: "\u9009\u62e9\u65e5\u671f",
           noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
@@ -1242,13 +1305,13 @@ export function ChannelsPage({
   const wizardCopy =
     language === "zh-CN"
       ? {
-          title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0 Channel",
-          channelStep: "Channel",
+          title: "\u6309 CLI \u8def\u5f84\u6dfb\u52a0\u9891\u9053",
+          channelStep: "\u9891\u9053",
           detailsStep: "\u914d\u7f6e\u9009\u9879",
           search: "\u641c\u7d22",
           configure: "\u5199\u5165\u914d\u7f6e",
           back: "\u8fd4\u56de",
-          empty: "\u672a\u52a0\u8f7d OpenClaw Channel \u5411\u5bfc\u5143\u6570\u636e"
+          empty: "\u672a\u52a0\u8f7d OpenClaw \u9891\u9053\u5411\u5bfc\u5143\u6570\u636e"
         }
       : {
           title: "Add channel through the CLI path",
