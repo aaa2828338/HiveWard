@@ -249,7 +249,7 @@ export const messages: Record<Language, Messages> = {
       refreshCatalog: "Refresh config data",
       refreshWorkspace: "Refresh workspace",
       remove: "Remove",
-      run: "Start task",
+      run: "Start run",
       runBlueprint: "Start blueprint",
       save: "Save",
       saveModel: "Save model",
@@ -303,17 +303,17 @@ export const messages: Record<Language, Messages> = {
       noNodeOutput: "This node has no output yet.",
       noParallelAgents: "No parallel agents configured",
       noNotes: "No notes yet",
-      noRun: "No task yet",
+      noRun: "No run yet",
       noRunHistory: "This blueprint has no run activity yet.",
       noRuns: "No blueprint runs yet",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
       noSkills: "No Skills returned from OpenClaw.",
       noTags: "No tags yet",
-      noTasks: "No runtime tasks yet",
+      noTasks: "No active runs yet",
       noWidgets: "No overview widgets yet",
       selectNode: "Select a node",
-      selectRun: "Select a task",
+      selectRun: "Select a run",
       selectSkill: "Select a skill",
       selectBlueprint: "No blueprint is selected."
     },
@@ -321,7 +321,7 @@ export const messages: Record<Language, Messages> = {
       approve: "Failed to approve run.",
       catalog: "Failed to refresh config data.",
       load: "Failed to load workspace.",
-      run: "Failed to start task.",
+      run: "Failed to start run.",
       save: "Failed to save blueprint.",
       workspace: "Failed to save workspace state."
     },
@@ -350,9 +350,9 @@ export const messages: Record<Language, Messages> = {
       primaryModel: "Primary model",
       prompt: "Prompt",
       provider: "Provider",
-      relatedRun: "Related task",
+      relatedRun: "Related run",
       relatedBlueprint: "Related blueprint",
-      runLabel: "Task label",
+      runLabel: "Run label",
       section: "Section",
       settings: "Settings",
       skills: "Skills",
@@ -376,7 +376,7 @@ export const messages: Record<Language, Messages> = {
       models: (count) => `${count} models`,
       nodes: (count) => `${count} nodes`,
       notes: (count) => `${count} notes`,
-      runs: (count) => `${count} tasks`,
+      runs: (count) => `${count} runs`,
       savedViews: (count) => `${count} saved views`,
       tags: (count) => `${count} tags`,
       tokens: (count) => `${count} tokens`,
@@ -387,7 +387,7 @@ export const messages: Record<Language, Messages> = {
     navigation: {
       company: "Company",
       blueprint: "Blueprint",
-      runs: "Tasks",
+      runs: "Runs",
       approvals: "Inbox",
       models: "Models",
       agents: "Agents",
@@ -421,8 +421,8 @@ export const messages: Record<Language, Messages> = {
         description: "Command agent teams through blueprint structure, handoffs, gates, and run evidence."
       },
       runs: {
-        title: "Tasks",
-        description: "Track blueprint runs, agent outputs, and execution evidence."
+        title: "Run Monitor",
+        description: "Monitor blueprint runs, agent outputs, and execution evidence."
       },
       approvals: {
         title: "Inbox",
@@ -465,7 +465,7 @@ export const messages: Record<Language, Messages> = {
       catalog: "Catalog",
       inspector: "Inspector",
       nodes: "Nodes",
-      run: "Task"
+      run: "Run"
     },
     catalogConfig: {
       addAgentDescription: "Creates an OpenClaw agent entry using the same config fields as `openclaw agents add`.",
@@ -483,21 +483,21 @@ export const messages: Record<Language, Messages> = {
     trace: {
       completed: "Completed",
       currentIssue: (label) => `Current step: ${label}`,
-      description: "Review blueprint progress on the left, and read agent output on the right.",
+      description: "Monitor run progress on the left, and read current output on the right.",
       flowFinished: "Blueprint finished",
       flowStarted: "Blueprint started",
       inProgress: "In progress",
-      issueList: "Task steps",
+      issueList: "Run steps",
       managerInputBody: "Manager handed work into this slot. The nested node outputs are shown between this input and the slot output.",
       managerInputPreview: "Manager input entered this slot.",
       managerInputWaiting: "Waiting for manager input.",
       modelOutput: "Current output",
       noOutput: "No output yet",
       pending: "Pending",
-      runOption: (runId, startedAt) => `Task ${runId.slice(-6)} · ${startedAt}`,
+      runOption: (runId, startedAt) => `Run ${runId.slice(-6)} · ${startedAt}`,
       slotInputSuffix: "input",
       slotOutputSuffix: "output",
-      title: "Task Progress",
+      title: "Run Monitor",
       waitingNestedNodes: "Waiting for nested nodes to finish."
     },
     status: {
@@ -518,7 +518,7 @@ export const messages: Record<Language, Messages> = {
       savedViews: "Saved views",
       sessions: "Sessions",
       tags: "Tags",
-      tasks: "Tasks",
+      tasks: "Runs",
       tools: "Tools",
       widgets: "Overview widgets"
     },
@@ -526,7 +526,7 @@ export const messages: Record<Language, Messages> = {
       approvals: "Inbox",
       catalog: "Config health",
       notes: "Notes feed",
-      runs: "Recent tasks"
+      runs: "Recent runs"
     },
     events: {
       "node.run.cancelled": "Node cancelled",
@@ -563,7 +563,7 @@ export const messages: Record<Language, Messages> = {
       refreshCatalog: "刷新配置数据",
       refreshWorkspace: "刷新工作区",
       remove: "移除",
-      run: "启动任务",
+      run: "启动运行",
       runBlueprint: "\u542f\u52a8\u84dd\u56fe",
       save: "保存",
       saveModel: "保存模型",
@@ -597,7 +597,7 @@ export const messages: Record<Language, Messages> = {
       groupLabel: "分组",
       loopLabel: "循环",
       managerLabel: "管理器",
-      managerInstructions: "通过编号槽位路由任务。Agent 可以返回包含 status、nextSlot 或 returnToSlot 的 JSON。",
+      managerInstructions: "通过编号槽位路由运行。Agent 可以返回包含 status、nextSlot 或 returnToSlot 的 JSON。",
       managerSlotLabel: "槽位",
       noteBody: "记录这次运行为什么重要、发生了什么变化，或还需要谁复核。",
       noteLabel: "备注",
@@ -616,17 +616,17 @@ export const messages: Record<Language, Messages> = {
       noNodeOutput: "这个节点还没有输出。",
       noParallelAgents: "还没有配置并行 Agent",
       noNotes: "还没有笔记",
-      noRun: "还没有任务",
+      noRun: "还没有运行",
       noRunHistory: "\u8fd9\u4e2a\u84dd\u56fe\u8fd8\u6ca1\u6709\u8fd0\u884c\u8bb0\u5f55\u3002",
       noRuns: "\u8fd8\u6ca1\u6709\u84dd\u56fe\u8fd0\u884c",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
       noSkills: "OpenClaw \u6682\u672a\u8fd4\u56de Skills",
       noTags: "还没有标签",
-      noTasks: "当前没有运行任务",
+      noTasks: "当前没有运行",
       noWidgets: "还没有总览卡片",
       selectNode: "请选择一个节点",
-      selectRun: "请选择一个任务",
+      selectRun: "请选择一个运行",
       selectSkill: "选择一个 Skill",
       selectBlueprint: "\u5c1a\u672a\u9009\u62e9\u84dd\u56fe\u3002"
     },
@@ -634,7 +634,7 @@ export const messages: Record<Language, Messages> = {
       approve: "批准运行失败。",
       catalog: "刷新配置数据失败。",
       load: "加载工作区失败。",
-      run: "启动任务失败。",
+      run: "启动运行失败。",
       save: "\u4fdd\u5b58\u84dd\u56fe\u5931\u8d25\u3002",
       workspace: "保存工作区状态失败。"
     },
@@ -663,9 +663,9 @@ export const messages: Record<Language, Messages> = {
       primaryModel: "主模型",
       prompt: "提示词",
       provider: "提供方",
-      relatedRun: "关联任务",
+      relatedRun: "关联运行",
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
-      runLabel: "任务标签",
+      runLabel: "运行标签",
       section: "页面",
       settings: "设置",
       skills: "Skills",
@@ -689,7 +689,7 @@ export const messages: Record<Language, Messages> = {
       models: (count) => `${count} 个模型`,
       nodes: (count) => `${count} 个节点`,
       notes: (count) => `${count} 条笔记`,
-      runs: (count) => `${count} 个任务`,
+      runs: (count) => `${count} 个运行`,
       savedViews: (count) => `${count} 个视图`,
       tags: (count) => `${count} 个标签`,
       tokens: (count) => `${count} tokens`,
@@ -700,7 +700,7 @@ export const messages: Record<Language, Messages> = {
     navigation: {
       company: "公司",
       blueprint: "\u84dd\u56fe",
-      runs: "任务",
+      runs: "运行",
       approvals: "收件箱",
       models: "模型",
       agents: "Agent",
@@ -734,8 +734,8 @@ export const messages: Record<Language, Messages> = {
         description: "\u7ec4\u7ec7\u591a Agent \u84dd\u56fe\u7ed3\u6784\u3001\u4ea4\u63a5\u548c\u5ba1\u67e5\u5173\uff0c\u5e76\u67e5\u770b\u6700\u8fd1\u4e00\u6b21\u8fd0\u884c\u8bc1\u636e\u3002"
       },
       runs: {
-        title: "任务",
-        description: "查看当前任务进展、节点输出和执行证据。"
+        title: "运行监控",
+        description: "监控蓝图运行、节点输出和执行证据。"
       },
       approvals: {
         title: "收件箱",
@@ -778,7 +778,7 @@ export const messages: Record<Language, Messages> = {
       catalog: "目录",
       inspector: "检查器",
       nodes: "节点",
-      run: "任务"
+      run: "运行"
     },
     catalogConfig: {
       addAgentDescription: "使用与 `openclaw agents add` 相同的配置字段创建 OpenClaw agent 条目。",
@@ -796,21 +796,21 @@ export const messages: Record<Language, Messages> = {
     trace: {
       completed: "已完成",
       currentIssue: (label) => `当前步骤：${label}`,
-      description: "左侧按任务步骤查看进度，右侧查看当前输出。",
+      description: "左侧查看运行步骤，右侧查看当前输出。",
       flowFinished: "流程结束",
       flowStarted: "流程开始",
       inProgress: "进行中",
-      issueList: "任务步骤",
+      issueList: "运行步骤",
       managerInputBody: "管理器已将工作交给该槽位。嵌套节点输出会显示在槽位输入和槽位输出之间。",
       managerInputPreview: "管理器输入已进入该槽位。",
       managerInputWaiting: "等待管理器输入。",
       modelOutput: "当前输出",
       noOutput: "暂无输出",
       pending: "待处理",
-      runOption: (runId, startedAt) => `任务 ${runId.slice(-6)} · ${startedAt}`,
+      runOption: (runId, startedAt) => `运行 ${runId.slice(-6)} · ${startedAt}`,
       slotInputSuffix: "输入",
       slotOutputSuffix: "输出",
-      title: "任务进展",
+      title: "运行监控",
       waitingNestedNodes: "等待嵌套节点完成。"
     },
     status: {
@@ -831,7 +831,7 @@ export const messages: Record<Language, Messages> = {
       savedViews: "保存视图",
       sessions: "会话",
       tags: "标签",
-      tasks: "任务",
+      tasks: "运行",
       tools: "工具",
       widgets: "总览卡片"
     },
@@ -839,7 +839,7 @@ export const messages: Record<Language, Messages> = {
       approvals: "收件箱",
       catalog: "配置状态",
       notes: "笔记流",
-      runs: "最近任务"
+      runs: "最近运行"
     },
     events: {
       "node.run.cancelled": "节点已取消",

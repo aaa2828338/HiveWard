@@ -329,7 +329,7 @@ export class BlueprintWorker {
       tools: config.tools
     });
     if (result.status !== "succeeded") {
-      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
+      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
       return result;
     }
     if (!hasVisibleAgentOutput(result.output)) {
@@ -891,7 +891,7 @@ export class BlueprintWorker {
         tools: []
       });
       if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
+        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
         return;
       }
       if (!hasVisibleAgentOutput(result.output)) {
@@ -1411,7 +1411,7 @@ export class BlueprintWorker {
       openclawRef.runId ? `runId ${openclawRef.runId}` : undefined,
       openclawRef.sessionKey ? `session ${openclawRef.sessionKey}` : undefined
     ].filter(Boolean).join(", ");
-    return `Agent task finished without visible output${location ? ` (${location})` : ""}.`;
+    return `Agent run finished without visible output${location ? ` (${location})` : ""}.`;
   }
 
   private async runAgentTask(input: StartAgentTaskInput): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {

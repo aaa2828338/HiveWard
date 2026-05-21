@@ -42,6 +42,7 @@ import type {
   BlueprintRunView
 } from "@hiveward/shared";
 import type { Language, Messages } from "../lib/i18n";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
@@ -187,7 +188,7 @@ export function CompanyDirectoryPage({
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
           blueprints: "\u84dd\u56fe",
-          runs: "\u4EFB\u52A1",
+          runs: "\u8FD0\u884C",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
           active: "\u5F53\u524D\u516C\u53F8",
@@ -209,7 +210,7 @@ export function CompanyDirectoryPage({
           noCompanies: "No companies are available.",
           goal: "Business goal",
           blueprints: "Blueprints",
-          runs: "Tasks",
+          runs: "Runs",
           tokens: "Tokens",
           approvals: "Pending approvals",
           active: "Current company",
@@ -374,7 +375,7 @@ export function CompanyPage({
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
           blueprints: "\u84dd\u56fe",
-          runs: "\u4EFB\u52A1",
+          runs: "\u8FD0\u884C",
           tokens: "Token \u6D88\u8017",
           approvals: "\u5F85\u5BA1\u6279",
           widgets: "\u603B\u89C8\u5361\u7247",
@@ -388,7 +389,7 @@ export function CompanyPage({
           noCompanies: "No companies are available.",
           goal: "Business goal",
           blueprints: "Blueprints",
-          runs: "Tasks",
+          runs: "Runs",
           tokens: "Tokens",
           approvals: "Pending approvals",
           widgets: "Overview widgets",
@@ -539,9 +540,9 @@ export function RunsPage({
                   <div className="trace-issue-main">
                     <div className="trace-issue-topline">
                       <strong>{issue.label}</strong>
-                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{issue.statusLabel}</span>
+                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{traceIssueStatusLabel(issue.issueStatus, language)}</span>
                     </div>
-                    <span>{issue.outputPreview}</span>
+                    <MarkdownRenderer value={issue.outputPreview} className="trace-issue-preview" />
                   </div>
                 </button>
               ))
@@ -624,7 +625,7 @@ export function ApprovalsPage({
                   <dd>{formatDateTime(approval.requestedAt, language)}</dd>
                 </dl>
                 {approval.approverHint && <p className="supporting-copy">{approval.approverHint}</p>}
-                {approval.instructions && <pre className="inline-note">{approval.instructions}</pre>}
+                {approval.instructions && <MarkdownRenderer value={approval.instructions} className="inline-note" />}
                 <div className="card-actions">
                   <button type="button" className="primary-action" onClick={() => onApprove(approval.blueprintRunId)}>
                     <BadgeCheck size={16} />
@@ -1236,7 +1237,7 @@ export function SchedulePage({
           calendar: "\u65e5\u5386",
           records: "\u5f53\u5929\u8bb0\u5f55",
           active: "\u8fdb\u884c\u4e2d",
-          blueprintTasks: "\u84dd\u56fe\u4efb\u52a1",
+          blueprintTasks: "\u84dd\u56fe\u8fd0\u884c",
           inbox: "\u6536\u4ef6\u7bb1",
           selectedDate: "\u9009\u62e9\u65e5\u671f",
           noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
@@ -1246,7 +1247,7 @@ export function SchedulePage({
           calendar: "Calendar",
           records: "Records for the day",
           active: "In progress",
-          blueprintTasks: "Blueprint tasks",
+          blueprintTasks: "Blueprint runs",
           inbox: "Inbox",
           selectedDate: "Selected date",
           noRecords: "No records for this date.",
@@ -1999,7 +2000,7 @@ function TraceBubble({
   return (
     <article className={`trace-bubble trace-bubble-${role}`}>
       <div className="trace-bubble-title">{title}</div>
-      <pre className="trace-bubble-body">{body}</pre>
+      <MarkdownRenderer value={body} className="trace-bubble-body" />
     </article>
   );
 }
@@ -2207,6 +2208,14 @@ function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
   return t.trace.pending;
 }
 
+function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): string {
+  const zh = language === "zh-CN";
+  if (status === "completed") return zh ? "成功" : "Success";
+  if (status === "failed") return zh ? "失败" : "Failed";
+  if (status === "in_progress") return zh ? "运行中" : "Running";
+  return zh ? "等待中" : "Waiting";
+}
+
 function statusLabelForNodeRun(status: BlueprintNodeRunStatus | undefined, t: Messages): string {
   return status ? t.status[status] : t.trace.pending;
 }
@@ -2214,8 +2223,44 @@ function statusLabelForNodeRun(status: BlueprintNodeRunStatus | undefined, t: Me
 function summarizeOutput(output: unknown, t: Messages): string {
   const normalized = formatOutput(output ?? "");
   if (!normalized.trim()) return t.trace.noOutput;
-  const flattened = normalized.replace(/\s+/g, " ").trim();
-  return flattened.length > 88 ? `${flattened.slice(0, 85)}...` : flattened;
+  const previewLines = normalized
+    .split("\n")
+    .map(toTracePreviewLine)
+    .filter(Boolean)
+    .slice(0, 2);
+  if (!previewLines.length) return t.trace.noOutput;
+  return previewLines.map((line) => (line.length > 120 ? `${line.slice(0, 117)}...` : line)).join("\n");
+}
+
+function toTracePreviewLine(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) return "";
+  if (trimmed.startsWith("```")) return "";
+  if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) return "";
+  if (isTracePreviewTableSeparator(trimmed)) return "";
+
+  const tableCells = parseTracePreviewTableCells(trimmed);
+  if (tableCells.length > 1) return tableCells.filter(Boolean).join(" ");
+
+  return trimmed
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/^>\s?/, "")
+    .replace(/^\s{0,3}[-*+]\s+/, "")
+    .replace(/^\s{0,3}\d+[.)]\s+/, "")
+    .trim();
+}
+
+function parseTracePreviewTableCells(line: string): string[] {
+  if (!line.includes("|")) return [];
+  let row = line.trim();
+  if (row.startsWith("|")) row = row.slice(1);
+  if (row.endsWith("|")) row = row.slice(0, -1);
+  return row.split("|").map((cell) => cell.trim());
+}
+
+function isTracePreviewTableSeparator(line: string): boolean {
+  const cells = parseTracePreviewTableCells(line);
+  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 }
 
 function getBlueprintNodeOrder(blueprint?: BlueprintDefinition): BlueprintNode[] {

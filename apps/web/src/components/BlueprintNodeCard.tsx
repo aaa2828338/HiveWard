@@ -100,14 +100,14 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
           />
           <Handle
             id="manager-slot-in"
-            className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-in"
+            className="node-handle input-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-in"
             type="target"
             position={Position.Left}
             style={{ top: 34 }}
           />
           <Handle
             id="manager-slot-out"
-            className="node-handle input-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-out"
+            className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-out"
             type="source"
             position={Position.Left}
             style={{ top: 52 }}

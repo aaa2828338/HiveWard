@@ -199,7 +199,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       sessionKey,
       source: "codex",
       status: "cancelled",
-      error: timedOut ? formatAgentSdkError("timeout", "Task exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Task was cancelled.")
+      error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")
     });
   }
 }
