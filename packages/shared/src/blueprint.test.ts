@@ -248,6 +248,30 @@ describe("blueprint contracts", () => {
     expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["summary"]);
   });
 
+  it("allows an explicit final role to select a delivery node", () => {
+    const summary = createContractNode("summary", "summary", "Summary");
+    const send = createContractNode("send", "send", "Send", {
+      resultRole: "final"
+    });
+    const blueprint = createResolverBlueprint([summary, send], [
+      { id: "summary-send", source: "summary", target: "send", condition: "success" }
+    ]);
+
+    const result = resolveFinalRunResult(blueprint, [
+      createContractNodeRun(summary, "summary"),
+      createContractNodeRun(send, { delivered: true })
+    ]);
+
+    expect(result?.candidates).toHaveLength(1);
+    expect(result?.candidates[0]).toMatchObject({
+      nodeId: "send",
+      nodeType: "send",
+      resultRole: "final",
+      selectionReason: "explicit_final",
+      output: { delivered: true }
+    });
+  });
+
   it("excludes nodes marked resultRole ignore from final result candidates", () => {
     const ignored = createContractNode("ignored", "summary", "Ignored summary", {
       resultRole: "ignore"
@@ -322,6 +346,36 @@ describe("blueprint contracts", () => {
     ]);
 
     expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["manager"]);
+  });
+
+  it("returns an empty final result state for terminal runs without result candidates", () => {
+    const note = createContractNode("note", "note", "Note");
+    const blueprint = createResolverBlueprint([note]);
+
+    const result = resolveFinalRunResult(
+      blueprint,
+      [
+        createContractNodeRun(note, { noted: true })
+      ],
+      "succeeded"
+    );
+
+    expect(result).toEqual({
+      state: "empty",
+      candidates: []
+    });
+  });
+
+  it("returns failed state for run-level failures without a failed node", () => {
+    const note = createContractNode("note", "note", "Note");
+    const blueprint = createResolverBlueprint([note]);
+
+    const result = resolveFinalRunResult(blueprint, [], "failed");
+
+    expect(result).toEqual({
+      state: "failed",
+      candidates: []
+    });
   });
 
   it("marks catalog snapshots stale only after staleAfter", () => {

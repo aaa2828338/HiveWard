@@ -359,7 +359,7 @@ export function resolveFinalRunResult(
     .find((nodeRun) => nodeRun.status === "waiting_approval");
   const finalRunState = resolveFinalRunResultState(runStatus, selectedCandidates, failedNode, waitingApprovalNode);
 
-  if (selectedCandidates.length === 0 && !failedNode && !waitingApprovalNode) {
+  if (selectedCandidates.length === 0 && !failedNode && !waitingApprovalNode && !shouldReturnEmptyFinalResult(runStatus)) {
     return null;
   }
 
@@ -407,7 +407,7 @@ function isSuccessfulResultCandidate(
 ): boolean {
   return (
     resultRole !== "ignore" &&
-    resultProducingNodeTypes.has(nodeType) &&
+    (resultRole === "final" || resultProducingNodeTypes.has(nodeType)) &&
     nodeRun.status === "succeeded" &&
     nodeRun.output !== undefined
   );
@@ -502,9 +502,13 @@ function resolveFinalRunResultState(
   failedNode: BlueprintNodeRun | undefined,
   waitingApprovalNode: BlueprintNodeRun | undefined
 ): FinalRunResultState {
-  if (runStatus === "failed" || failedNode) return "failed";
+  if (runStatus === "failed" || runStatus === "cancelled" || failedNode) return "failed";
   if (runStatus === "waiting_approval" || waitingApprovalNode) return "waiting_approval";
   return candidates.length > 0 ? "available" : "empty";
+}
+
+function shouldReturnEmptyFinalResult(runStatus: BlueprintRunStatus | undefined): boolean {
+  return runStatus === "succeeded" || runStatus === "failed" || runStatus === "cancelled" || runStatus === "waiting_approval";
 }
 
 export function createStarterBlueprint(now: string, companyId = "company-hiveward-studio"): BlueprintDefinition {
