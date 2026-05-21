@@ -51,12 +51,8 @@ export interface Messages {
   };
   defaults: {
     agentName: string;
-    openClawAgentLabel: string;
-    openClawAgentPrompt: string;
-    codexAgentLabel: string;
-    codexAgentPrompt: string;
-    claudeCodeAgentLabel: string;
-    claudeCodeAgentPrompt: string;
+    agentLabel: string;
+    agentPrompt: string;
     approvalInstructions: string;
     approvalLabel: string;
     approvalOwner: string;
@@ -278,12 +274,8 @@ export const messages: Record<Language, Messages> = {
     },
     defaults: {
       agentName: "agent",
-      openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "Execute this Hiveward blueprint node through the selected OpenClaw agent.",
-      codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "Execute this Hiveward blueprint node through Codex SDK.",
-      claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "Execute this Hiveward blueprint node through Claude Code SDK.",
+      agentLabel: "Agent",
+      agentPrompt: "Execute this Hiveward blueprint node through the selected runtime.",
       approvalInstructions: "Review the merged output.",
       approvalLabel: "Approval",
       approvalOwner: "Owner",
@@ -403,9 +395,7 @@ export const messages: Record<Language, Messages> = {
       channels: "Channels"
     },
     nodeTypes: {
-      openclaw_agent: "OpenClaw Agent",
-      codex_agent: "Codex Agent",
-      claude_code_agent: "Claude Code Agent",
+      agent: "Agent",
       approval: "Approval",
       condition: "Condition",
       group: "Group",
@@ -578,12 +568,8 @@ export const messages: Record<Language, Messages> = {
     },
     defaults: {
       agentName: "agent",
-      openClawAgentLabel: "OpenClaw Agent",
-      openClawAgentPrompt: "Execute this Hiveward blueprint node through the selected OpenClaw agent.",
-      codexAgentLabel: "Codex Agent",
-      codexAgentPrompt: "Execute this Hiveward blueprint node through Codex SDK.",
-      claudeCodeAgentLabel: "Claude Code Agent",
-      claudeCodeAgentPrompt: "Execute this Hiveward blueprint node through Claude Code SDK.",
+      agentLabel: "Agent",
+      agentPrompt: "通过所选执行器运行这个 Hiveward Agent 节点。",
       approvalInstructions: "审核汇总后的输出。",
       approvalLabel: "人工审批",
       approvalOwner: "负责人",
@@ -702,9 +688,7 @@ export const messages: Record<Language, Messages> = {
       channels: "Channel"
     },
     nodeTypes: {
-      openclaw_agent: "OpenClaw Agent",
-      codex_agent: "Codex Agent",
-      claude_code_agent: "Claude Code Agent",
+      agent: "Agent",
       approval: "人工审批",
       condition: "条件",
       group: "分组",

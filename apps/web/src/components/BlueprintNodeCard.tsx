@@ -5,14 +5,12 @@ import {
   CheckCircle2,
   CircleDashed,
   Clock3,
-  Code2,
   GitBranch,
   MessagesSquare,
   Network,
   Repeat2,
   Send,
   ShieldCheck,
-  Terminal,
   XCircle
 } from "lucide-react";
 import type { CanvasSize, BlueprintNodeRunStatus, BlueprintNodeType } from "@hiveward/shared";
@@ -31,9 +29,7 @@ export interface BlueprintNodeCardData extends Record<string, unknown> {
 }
 
 const typeIcon: Record<BlueprintNodeType, typeof Bot> = {
-  openclaw_agent: Bot,
-  codex_agent: Code2,
-  claude_code_agent: Terminal,
+  agent: Bot,
   parallel_agents: MessagesSquare,
   manager: Network,
   manager_slot: Network,

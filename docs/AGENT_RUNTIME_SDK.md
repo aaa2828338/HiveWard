@@ -27,11 +27,11 @@ Hiveward owns blueprint execution:
 
 The provider SDK owns only the agent loop for the selected node task.
 
-Blueprint node types:
+Blueprint agent nodes:
 
-- `openclaw_agent`: existing OpenClaw execution
-- `codex_agent`: Codex SDK execution
-- `claude_code_agent`: Claude Code SDK execution
+- `type: "agent", runtimeId: "openclaw"`: OpenClaw execution
+- `type: "agent", runtimeId: "codex"`: Codex SDK execution
+- `type: "agent", runtimeId: "claude"`: Claude Code SDK execution
 
 ## Verified SDKs
 
@@ -49,8 +49,6 @@ Reference docs:
 
 ```ts
 export type AgentSdkProvider = "claude" | "codex";
-
-export type AgentSdkBlueprintNodeType = "codex_agent" | "claude_code_agent";
 
 export type AgentPermissionProfile = "read_only" | "workspace_write";
 
@@ -145,17 +143,18 @@ Only `packages/adapter` imports SDK packages.
 
 ## Runtime Source
 
-Blueprint nodes select runtime by node type:
+Blueprint nodes select runtime by `runtimeId`:
 
 ```ts
-type: "openclaw_agent" | "codex_agent" | "claude_code_agent"
+type: "agent";
+runtimeId: "openclaw" | "codex" | "claude";
 ```
 
 Mapping:
 
-- `openclaw_agent`: OpenClaw adapter
-- `codex_agent`: Codex SDK runtime
-- `claude_code_agent`: Claude Code SDK runtime
+- `runtimeId: "openclaw"`: OpenClaw adapter
+- `runtimeId: "codex"`: Codex SDK runtime
+- `runtimeId: "claude"`: Claude Code SDK runtime
 
 `source` is runtime input derived by `BlueprintWorker`; it is not stored in node config.
 

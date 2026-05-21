@@ -2,7 +2,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
-import { createOpenClawAdapter } from "@hiveward/adapter";
+import { createRuntimeAdapter } from "@hiveward/adapter";
 import { createApiRouter } from "./routes/apiRouter";
 import { FileHivewardStore } from "./store/fileHivewardStore";
 import { OpenClawConfigStore } from "./store/openClawConfigStore";
@@ -13,7 +13,7 @@ export async function createHivewardApiApp(): Promise<ReturnType<typeof express>
   await store.init();
 
   const openClawConfigStore = new OpenClawConfigStore();
-  const adapter = createOpenClawAdapter({ sdkWorkspaceRoot: projectRoot() });
+  const adapter = createRuntimeAdapter({ sdkWorkspaceRoot: projectRoot() });
   const worker = new BlueprintWorker(store, adapter);
 
   const app = express();

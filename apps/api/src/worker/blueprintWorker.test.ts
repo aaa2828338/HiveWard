@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { OpenClawAdapter } from "@hiveward/adapter";
+import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
   blueprintRunArchiveSchema,
@@ -19,7 +19,7 @@ import {
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import { BlueprintWorker } from "./blueprintWorker";
 
-class ScriptedAdapter implements OpenClawAdapter {
+class ScriptedAdapter implements RuntimeAdapter {
   readonly calls: StartAgentTaskInput[] = [];
   readonly waitCalls: WaitForAgentTaskInput[] = [];
 
@@ -86,7 +86,7 @@ class ScriptedAdapter implements OpenClawAdapter {
   }
 }
 
-class BlockingAdapter implements OpenClawAdapter {
+class BlockingAdapter implements RuntimeAdapter {
   readonly calls: StartAgentTaskInput[] = [];
   readonly waitCalls: WaitForAgentTaskInput[] = [];
   private resolveCompletion?: (result: AgentTaskResult) => void;
@@ -474,7 +474,7 @@ describe("BlueprintWorker", () => {
       [
         {
           ...createAgentNode("sdk-node", "SDK Node"),
-          type: "codex_agent",
+          runtimeId: "codex",
           config: {
             label: "SDK Node",
             agentName: "codex-runner",
@@ -976,11 +976,12 @@ function createUsageFact(inputTokens: number, outputTokens: number, costUsd: num
 function createAgentNode(id: string, label: string, position = { x: 120, y: 180 }): BlueprintNode {
   return {
     id,
-    type: "openclaw_agent",
+    type: "agent",
+    runtimeId: "openclaw",
     position,
     config: {
       label,
-      agentId: "main",
+      openclawAgentId: "main",
       agentName: id,
       prompt: `Run ${id}`,
       tools: []

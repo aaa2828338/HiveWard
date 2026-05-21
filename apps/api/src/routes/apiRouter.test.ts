@@ -4,14 +4,14 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { MockOpenClawAdapter } from "@hiveward/adapter";
+import { MockRuntimeAdapter } from "@hiveward/adapter";
 import type { RuntimeOverview } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 
-class TrackingAdapter extends MockOpenClawAdapter {
+class TrackingAdapter extends MockRuntimeAdapter {
   runtimeOverviewCalls = 0;
 
   override async getRuntimeOverview(): Promise<RuntimeOverview> {

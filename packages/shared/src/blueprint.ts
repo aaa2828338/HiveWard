@@ -1,9 +1,8 @@
 import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
 
-export type AgentBlueprintNodeType =
-  | "openclaw_agent"
-  | "codex_agent"
-  | "claude_code_agent";
+export type AgentRuntimeId = "openclaw" | "codex" | "claude";
+
+export type AgentBlueprintNodeType = "agent";
 
 export type BlueprintNodeType =
   | AgentBlueprintNodeType
@@ -54,7 +53,8 @@ export interface BlueprintNodeBaseConfig {
 }
 
 export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
-  agentId?: string;
+  openclawAgentId?: string;
+  profileId?: string;
   agentName: string;
   prompt: string;
   modelId?: string;
@@ -90,7 +90,7 @@ export interface ConditionNodeConfig extends BlueprintNodeBaseConfig {
 }
 
 export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
-  mode: "structured_merge" | "openclaw_agent";
+  mode: "structured_merge" | "openclaw_summary_agent";
   prompt?: string;
   modelId?: string;
 }
@@ -128,18 +128,25 @@ export type BlueprintNodeConfig =
   | GroupNodeConfig;
 
 export function isAgentBlueprintNodeType(type: BlueprintNodeType): type is AgentBlueprintNodeType {
-  return type === "openclaw_agent" || type === "codex_agent" || type === "claude_code_agent";
+  return type === "agent";
 }
 
-export function resolveAgentNodeSource(type: AgentBlueprintNodeType): OpenClawObjectSource {
-  if (type === "codex_agent") return "codex";
-  if (type === "claude_code_agent") return "claude";
-  return "openclaw";
+export function isAgentBlueprintNode(node: BlueprintNode): node is BlueprintNode & {
+  type: "agent";
+  runtimeId: AgentRuntimeId;
+  config: AgentNodeConfig;
+} {
+  return node.type === "agent";
+}
+
+export function resolveAgentRuntimeSource(runtimeId: AgentRuntimeId): OpenClawObjectSource {
+  return runtimeId;
 }
 
 export interface BlueprintNode {
   id: string;
   type: BlueprintNodeType;
+  runtimeId?: AgentRuntimeId;
   position: CanvasPosition;
   size?: CanvasSize;
   config: BlueprintNodeConfig;
@@ -191,7 +198,7 @@ export interface PortableBlueprintPackage {
 }
 
 export interface BlueprintImportDefaults {
-  agentId?: string;
+  openclawAgentId?: string;
   modelId?: string;
   channelId?: string;
 }
@@ -316,9 +323,7 @@ export interface FinalRunResult {
 }
 
 const resultProducingNodeTypes = new Set<BlueprintNodeType>([
-  "openclaw_agent",
-  "codex_agent",
-  "claude_code_agent",
+  "agent",
   "parallel_agents",
   "manager",
   "summary"
@@ -522,11 +527,12 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
     nodes: [
       {
         id: "requirements",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 80, y: 120 },
         config: {
           label: "Requirements Agent",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "requirements-analyst",
           prompt: "Analyze the requested change and produce crisp acceptance criteria.",
           tools: ["repo.search"]
@@ -534,11 +540,12 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
       },
       {
         id: "architecture",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 420, y: 36 },
         config: {
           label: "Architecture Agent",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "architect",
           prompt: "Check boundaries, data ownership, and integration shape.",
           tools: ["repo.search"]
@@ -546,11 +553,12 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
       },
       {
         id: "tests",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 420, y: 220 },
         config: {
           label: "Test Agent",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "test-engineer",
           prompt: "Define verification that proves behavior without coupling to runtime internals.",
           tools: ["repo.test"]
@@ -616,11 +624,12 @@ export function createRealThreeAgentBlueprint(now: string, companyId = "company-
     nodes: [
       {
         id: "brief",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 120, y: 180 },
         config: {
           label: "1. Brief",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "main",
           prompt:
             "Summarize the user request in JSON with goal, constraints, and acceptance criteria. Keep it concise.",
@@ -629,11 +638,12 @@ export function createRealThreeAgentBlueprint(now: string, companyId = "company-
       },
       {
         id: "plan",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 500, y: 180 },
         config: {
           label: "2. Plan",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "main",
           prompt:
             "Using the upstream brief, propose exactly three implementation steps and one verification command. Return JSON.",
@@ -642,11 +652,12 @@ export function createRealThreeAgentBlueprint(now: string, companyId = "company-
       },
       {
         id: "verify",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 880, y: 180 },
         config: {
           label: "3. Verify",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "main",
           prompt:
             "Review the upstream plan. Return JSON with verified boolean, risks array, and final recommendation.",
@@ -684,11 +695,12 @@ export function createMultiAgentCompatibilityBlueprint(
     nodes: [
       {
         id: "compat-openclaw-brief",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 80, y: 180 },
         config: {
           label: "1. OpenClaw Brief",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "openclaw-compat-brief",
           prompt:
             "Create a concise JSON compatibility brief for this Hiveward blueprint. Return only JSON with keys: goal, inputContract, expectedNodeTypes, passCriteria.",
@@ -697,7 +709,8 @@ export function createMultiAgentCompatibilityBlueprint(
       },
       {
         id: "compat-codex-check",
-        type: "codex_agent",
+        type: "agent",
+        runtimeId: "codex",
         position: { x: 480, y: 64 },
         config: {
           label: "2A. Codex Check",
@@ -722,7 +735,8 @@ export function createMultiAgentCompatibilityBlueprint(
       },
       {
         id: "compat-claude-check",
-        type: "claude_code_agent",
+        type: "agent",
+        runtimeId: "claude",
         position: { x: 480, y: 296 },
         config: {
           label: "2B. Claude Code Check",
@@ -757,11 +771,12 @@ export function createMultiAgentCompatibilityBlueprint(
       },
       {
         id: "compat-openclaw-verify",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 1240, y: 180 },
         config: {
           label: "4. OpenClaw Verify",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "openclaw-compat-verifier",
           prompt:
             "Inspect the merged upstream outputs. Return only JSON with keys: passed, checkedRuntimes, missingRuntimes, recommendation.",
@@ -819,13 +834,14 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
       },
       {
         id: "html-manager-slot-1-agent-1",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         parentId: "html-manager-slot-1",
         position: { x: 76, y: 154 },
         config: {
           label: "1. News Research",
           resultRole: "ignore",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "news-researcher",
           prompt:
             "为后续 HTML 页面收集一份具体新闻简报。根据管理器输入判断主题、受众、地区、时间范围和最终页面目标；如果输入没有指定主题，默认选择面向构建者和运营者的 AI agent 生产力新闻。不要向用户追问，不要留下占位符。请用清晰的中文结构输出，包含：主题、受众、时间范围、来源状态、3 到 5 条可直接用于页面创作的新闻要点、每条新闻为什么重要、适合页面呈现的角度、来源线索、页面核心主张和内容风险。",
@@ -834,13 +850,14 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
       },
       {
         id: "html-manager-slot-1-agent-2",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         parentId: "html-manager-slot-1",
         position: { x: 424, y: 154 },
         config: {
           label: "2. HTML Execution Doc",
           resultRole: "ignore",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "execution-doc-writer",
           prompt:
             "使用上游新闻简报，写一份可直接交给 HTML 构建者执行的生产说明。不要要求更多上下文，不要出现 [fill in]、lorem ipsum、占位 logo、占位评价或未解决的 placeholder 文本。缺少细节时，请做具体、保守的编辑判断，并在假设中说明。请用中文写成清晰的制作文档，包含：页面标题、核心主张、分区结构、每个区块的真实标题和文案方向、CTA 文案、视觉约束、响应式要求、必须呈现的新闻事实、验收标准和假设。完成后自然交给下一个槽位继续制作页面，不需要输出 JSON。",
@@ -860,13 +877,14 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
       },
       {
         id: "html-manager-slot-2-agent-1",
-        type: "openclaw_agent",
+        type: "agent",
+        runtimeId: "openclaw",
         parentId: "html-manager-slot-2",
         position: { x: 264, y: 132 },
         config: {
           label: "3. HTML Builder",
           resultRole: "final",
-          agentId: "main",
+          openclawAgentId: "main",
           agentName: "html-code-builder",
           prompt:
             "根据管理器 previousResults 中的 Slot 1 制作说明，写出一个完整的独立 HTML 文档，包含 inline CSS 和必要的 inline JavaScript。最终输出应当是可直接在浏览器运行的 HTML，不要包含 [fill in]、lorem ipsum、占位 logo、占位评价或泛泛的括号占位文案。保留新闻驱动的页面主张、真实标题、CTA 文案和制作说明中的具体内容。不需要包成 JSON。",
@@ -1100,7 +1118,7 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       label: parallelConfig.label,
       description: parallelConfig.description,
       resultRole: parallelConfig.resultRole,
-      agents: parallelConfig.agents.map((agent) => toPortableBlueprintNodeConfig("openclaw_agent", agent) as AgentNodeConfig),
+      agents: parallelConfig.agents.map((agent) => toPortableBlueprintNodeConfig("agent", agent) as AgentNodeConfig),
       waitFor: parallelConfig.waitFor
     };
   }
@@ -1149,7 +1167,7 @@ function applyImportDefaultsToConfig(
     const agentConfig = config as AgentNodeConfig;
     return {
       ...agentConfig,
-      agentId: defaults.agentId ?? "main",
+      openclawAgentId: defaults.openclawAgentId ?? "main",
       modelId: defaults.modelId,
       tools: []
     };
@@ -1158,14 +1176,14 @@ function applyImportDefaultsToConfig(
     const parallelConfig = config as ParallelAgentsNodeConfig;
     return {
       ...parallelConfig,
-      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("openclaw_agent", agent, defaults) as AgentNodeConfig)
+      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults) as AgentNodeConfig)
     };
   }
   if (type === "summary") {
     const summaryConfig = config as SummaryNodeConfig;
     return {
       ...summaryConfig,
-      modelId: summaryConfig.mode === "openclaw_agent" ? defaults.modelId : undefined
+      modelId: summaryConfig.mode === "openclaw_summary_agent" ? defaults.modelId : undefined
     };
   }
   if (type === "send") {

@@ -14,12 +14,12 @@ import type {
   StartedAgentTaskResult,
   WaitForAgentTaskInput,
 } from "@hiveward/shared";
-import type { OpenClawAdapter } from "./index";
+import type { RuntimeAdapter } from "./index";
 import type { GatewayAdapterConfig } from "./gateway-config";
 import { GatewaySession } from "./gateway-client";
 import { createGatewayId } from "./gateway-device";
 
-export class GatewayOpenClawAdapter implements OpenClawAdapter {
+export class GatewayOpenClawAdapter implements RuntimeAdapter {
   private sharedSession: GatewaySession | undefined;
   private sharedSessionPromise: Promise<GatewaySession> | undefined;
   private readonly inflightAgentTasks = new Map<string, Promise<Record<string, unknown>>>();

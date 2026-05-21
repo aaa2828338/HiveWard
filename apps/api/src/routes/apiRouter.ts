@@ -22,8 +22,8 @@ import type {
   BlueprintDefinition,
   StartBlueprintRunRequest
 } from "@hiveward/shared";
-import { createPortableBlueprintPackage, readPortableBlueprintPackage } from "@hiveward/shared";
-import type { OpenClawAdapter } from "@hiveward/adapter";
+import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
+import type { RuntimeAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
@@ -32,7 +32,7 @@ import type { BlueprintWorker } from "../worker/blueprintWorker";
 interface ApiRouterDeps {
   store: FileHivewardStore;
   openClawConfigStore: OpenClawConfigStore;
-  adapter: OpenClawAdapter;
+  adapter: RuntimeAdapter;
   worker: BlueprintWorker;
 }
 
@@ -177,7 +177,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       const blueprintPackage = readPortableBlueprintPackage(body.blueprintPackage);
       const config = await openClawConfigStore.getState();
       const blueprints = await store.importBlueprintPackage(blueprintPackage, {
-        agentId: selectDefaultAgentId(config.configuredAgents),
+        openclawAgentId: selectDefaultAgentId(config.configuredAgents),
         modelId: config.defaultModelId,
         channelId: selectDefaultChannelId(config.configuredChannels)
       });
@@ -367,14 +367,14 @@ function collectInvalidAgentIds(blueprint: BlueprintDefinition, configuredAgentI
   const invalid = new Set<string>();
 
   for (const node of blueprint.nodes) {
-    if (node.type === "openclaw_agent") {
-      const agentId = (node.config as AgentNodeConfig).agentId ?? "main";
+    if (isAgentBlueprintNode(node) && node.runtimeId === "openclaw") {
+      const agentId = node.config.openclawAgentId ?? "main";
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
       continue;
     }
     if (node.type === "parallel_agents") {
       for (const agent of (node.config as ParallelAgentsNodeConfig).agents) {
-        const agentId = agent.agentId ?? "main";
+        const agentId = agent.openclawAgentId ?? "main";
         if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
       }
     }
@@ -398,7 +398,7 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaultModelId?: string
   return {
     ...blueprint,
     nodes: blueprint.nodes.map((node) => {
-      if (node.type === "openclaw_agent") {
+      if (isAgentBlueprintNode(node) && node.runtimeId === "openclaw") {
         const config = node.config as AgentNodeConfig;
         return config.modelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
       }
@@ -414,14 +414,14 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaultModelId?: string
       }
       if (node.type === "summary") {
         const config = node.config as SummaryNodeConfig;
-        return config.mode === "openclaw_agent" && !config.modelId ? { ...node, config: { ...config, modelId: defaultModelId } } : node;
+        return config.mode === "openclaw_summary_agent" && !config.modelId ? { ...node, config: { ...config, modelId: defaultModelId } } : node;
       }
       return node;
     })
   };
 }
 
-async function refreshCatalog(adapter: OpenClawAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
+async function refreshCatalog(adapter: RuntimeAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
     id: `catalog-${nanoid(8)}`,

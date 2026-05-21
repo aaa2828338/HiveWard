@@ -25,13 +25,14 @@ describe("blueprint contracts", () => {
     const blueprint = createStarterBlueprint("2026-05-18T00:00:00.000Z");
 
     expect(blueprint.nodes.map((node) => node.type)).toEqual([
-      "openclaw_agent",
-      "openclaw_agent",
-      "openclaw_agent",
+      "agent",
+      "agent",
+      "agent",
       "summary",
       "approval",
       "send"
     ]);
+    expect(blueprint.nodes.slice(0, 3).map((node) => node.runtimeId)).toEqual(["openclaw", "openclaw", "openclaw"]);
     expect(blueprint.edges).toHaveLength(6);
     expect(blueprint.nodes.every((node) => "position" in node)).toBe(true);
     expect(blueprint.companyId).toBe(defaultCompanyId);
@@ -41,19 +42,20 @@ describe("blueprint contracts", () => {
     const blueprint = createRealThreeAgentBlueprint("2026-05-18T00:00:00.000Z");
 
     expect(blueprint.nodes.map((node) => node.id)).toEqual(["brief", "plan", "verify"]);
-    expect(blueprint.nodes.every((node) => node.type === "openclaw_agent")).toBe(true);
+    expect(blueprint.nodes.every((node) => node.type === "agent")).toBe(true);
+    expect(blueprint.nodes.every((node) => node.runtimeId === "openclaw")).toBe(true);
     expect(blueprint.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
       "brief->plan",
       "plan->verify"
     ]);
-    expect(blueprint.nodes.every((node) => "agentId" in node.config && node.config.agentId === "main")).toBe(true);
+    expect(blueprint.nodes.every((node) => "openclawAgentId" in node.config && node.config.openclawAgentId === "main")).toBe(true);
     expect(blueprint.companyId).toBe(defaultCompanyId);
   });
 
   it("creates a manager-driven HTML delivery blueprint", () => {
     const blueprint = createManagerDrivenHtmlBlueprint("2026-05-18T00:00:00.000Z");
     const agentConfigs = blueprint.nodes
-      .filter((node) => node.type === "openclaw_agent")
+      .filter((node) => node.type === "agent")
       .map((node) => node.config as AgentNodeConfig);
 
     expect(blueprint.nodes.map((node) => node.id)).toContain("html-manager");
@@ -79,11 +81,18 @@ describe("blueprint contracts", () => {
     );
 
     expect(blueprint.nodes.map((node) => node.type)).toEqual([
-      "openclaw_agent",
-      "codex_agent",
-      "claude_code_agent",
+      "agent",
+      "agent",
+      "agent",
       "summary",
-      "openclaw_agent"
+      "agent"
+    ]);
+    expect(blueprint.nodes.map((node) => node.runtimeId ?? null)).toEqual([
+      "openclaw",
+      "codex",
+      "claude",
+      null,
+      "openclaw"
     ]);
     expect(blueprint.edges.map((edge) => `${edge.source}->${edge.target}`)).toEqual([
       "compat-openclaw-brief->compat-codex-check",
@@ -134,7 +143,7 @@ describe("blueprint contracts", () => {
     const exportedSend = exportedBlueprint.nodes.find((node) => node.id === "send")!.config as SendNodeConfig;
 
     expect(blueprintPackage.schema).toBe("hiveward.blueprint-package/v1");
-    expect(exportedAgent.agentId).toBeUndefined();
+    expect(exportedAgent.openclawAgentId).toBeUndefined();
     expect(exportedAgent.modelId).toBeUndefined();
     expect(exportedAgent.tools).toEqual([]);
     expect(exportedSend.channelId).toBe("");
@@ -152,7 +161,7 @@ describe("blueprint contracts", () => {
       companyId: "company-local",
       now: "2026-05-19T00:00:00.000Z",
       defaults: {
-        agentId: "local-main",
+        openclawAgentId: "local-main",
         modelId: "local/model",
         channelId: "local-channel"
       }
@@ -164,7 +173,7 @@ describe("blueprint contracts", () => {
     expect(imported.id).toBe("blueprint-imported");
     expect(imported.companyId).toBe("company-local");
     expect(imported.version).toBe(1);
-    expect(importedAgent.agentId).toBe("local-main");
+    expect(importedAgent.openclawAgentId).toBe("local-main");
     expect(importedAgent.modelId).toBe("local/model");
     expect(importedAgent.tools).toEqual([]);
     expect(importedSend.disabled).toBe(true);
@@ -173,8 +182,8 @@ describe("blueprint contracts", () => {
   });
 
   it("resolves explicit final results without relying on node labels", () => {
-    const brief = createContractNode("brief", "openclaw_agent", "Final Report");
-    const chosen = createContractNode("chosen", "openclaw_agent", "Implementation Notes", {
+    const brief = createContractNode("brief", "agent", "Final Report");
+    const chosen = createContractNode("chosen", "agent", "Implementation Notes", {
       resultRole: "final"
     });
     const blueprint = createResolverBlueprint([brief, chosen], [
@@ -196,8 +205,8 @@ describe("blueprint contracts", () => {
   });
 
   it("resolves multiple terminal result branches without silently merging them", () => {
-    const researchA = createContractNode("research-a", "openclaw_agent", "Research A");
-    const researchB = createContractNode("research-b", "codex_agent", "Research B");
+    const researchA = createContractNode("research-a", "agent", "Research A");
+    const researchB = createContractNode("research-b", "agent", "Research B");
     const blueprint = createResolverBlueprint([researchA, researchB]);
 
     const result = resolveFinalRunResult(blueprint, [
@@ -210,8 +219,8 @@ describe("blueprint contracts", () => {
   });
 
   it("chooses merged downstream output over earlier branch outputs", () => {
-    const researchA = createContractNode("research-a", "openclaw_agent", "Research A");
-    const researchB = createContractNode("research-b", "claude_code_agent", "Research B");
+    const researchA = createContractNode("research-a", "agent", "Research A");
+    const researchB = createContractNode("research-b", "agent", "Research B");
     const merge = createContractNode("merge", "summary", "Merge");
     const blueprint = createResolverBlueprint([researchA, researchB, merge], [
       { id: "a-merge", source: "research-a", target: "merge", condition: "success" },
@@ -228,7 +237,7 @@ describe("blueprint contracts", () => {
   });
 
   it("keeps approval and send nodes from taking the final result", () => {
-    const brief = createContractNode("brief", "openclaw_agent", "Brief");
+    const brief = createContractNode("brief", "agent", "Brief");
     const summary = createContractNode("summary", "summary", "Summary");
     const approval = createContractNode("approval", "approval", "Approval");
     const send = createContractNode("send", "send", "Send");
@@ -276,7 +285,7 @@ describe("blueprint contracts", () => {
     const ignored = createContractNode("ignored", "summary", "Ignored summary", {
       resultRole: "ignore"
     });
-    const fallback = createContractNode("fallback", "openclaw_agent", "Fallback");
+    const fallback = createContractNode("fallback", "agent", "Fallback");
     const blueprint = createResolverBlueprint([ignored, fallback], [
       { id: "ignored-fallback", source: "ignored", target: "fallback", condition: "success" }
     ]);
@@ -290,8 +299,8 @@ describe("blueprint contracts", () => {
   });
 
   it("includes failed node context and current result candidates for failed runs", () => {
-    const brief = createContractNode("brief", "openclaw_agent", "Brief");
-    const plan = createContractNode("plan", "openclaw_agent", "Plan");
+    const brief = createContractNode("brief", "agent", "Brief");
+    const plan = createContractNode("plan", "agent", "Plan");
     const blueprint = createResolverBlueprint([brief, plan], [
       { id: "brief-plan", source: "brief", target: "plan", condition: "success" }
     ]);
@@ -322,7 +331,7 @@ describe("blueprint contracts", () => {
 
   it("uses top-level manager output as the automatic manager result", () => {
     const manager = createContractNode("manager", "manager", "Manager");
-    const participant = createContractNode("participant", "openclaw_agent", "Participant");
+    const participant = createContractNode("participant", "agent", "Participant");
     const blueprint = createResolverBlueprint([manager, participant], [
       {
         id: "manager-participant",
@@ -422,6 +431,7 @@ function createContractNode(
   return {
     id,
     type,
+    runtimeId: type === "agent" ? "openclaw" : undefined,
     position: { x: 0, y: 0 },
     config: {
       ...createContractNodeConfig(type, label),
@@ -463,7 +473,7 @@ function createContractNodeConfig(type: BlueprintNode["type"], label: string): B
   }
   return {
     label,
-    agentId: "main",
+    openclawAgentId: "main",
     agentName: idFromLabel(label),
     prompt: `Run ${label}`,
     tools: []

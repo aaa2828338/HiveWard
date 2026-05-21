@@ -16,8 +16,8 @@ import {
   type NodeMouseHandler,
   type OnNodesChange
 } from "@xyflow/react";
-import { Bot, Check, Code2, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Terminal, Upload, X } from "lucide-react";
-import { isAgentBlueprintNodeType, resolveAgentNodeSource } from "@hiveward/shared";
+import { Bot, Check, Download, GitBranch, Loader2, MessagesSquare, Network, Play, Plus, RefreshCw, Repeat2, Save, Send, ShieldCheck, Upload, X } from "lucide-react";
+import { isAgentBlueprintNode, type AgentRuntimeId } from "@hiveward/shared";
 import type {
   AgentNodeConfig,
   ApprovalNodeConfig,
@@ -54,9 +54,7 @@ const nodeTypes = {
 };
 
 const palette: Array<{ type: BlueprintNodeType; icon: typeof Plus }> = [
-  { type: "openclaw_agent", icon: Bot },
-  { type: "codex_agent", icon: Code2 },
-  { type: "claude_code_agent", icon: Terminal },
+  { type: "agent", icon: Bot },
   { type: "manager", icon: Network },
   { type: "manager_slot", icon: Network },
   { type: "loop", icon: Repeat2 },
@@ -74,9 +72,7 @@ const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
 const blueprintStepTypes = new Set<BlueprintNodeType>([
-  "openclaw_agent",
-  "codex_agent",
-  "claude_code_agent",
+  "agent",
   "parallel_agents",
   "manager",
   "manager_slot",
@@ -203,6 +199,16 @@ export function BlueprintStudioPage({
     [onUpdateBlueprint]
   );
 
+  const patchNode = useCallback(
+    (nodeId: string, patch: Partial<BlueprintNode>) => {
+      onUpdateBlueprint((current) => ({
+        ...current,
+        nodes: current.nodes.map((node) => (node.id === nodeId ? { ...node, ...patch } : node))
+      }));
+    },
+    [onUpdateBlueprint]
+  );
+
   const onNodesChange: OnNodesChange<Node<BlueprintNodeCardData>> = useCallback(
     (changes) => {
       setLocalNodes((current) => applyNodeChanges(changes, current));
@@ -241,6 +247,7 @@ export function BlueprintStudioPage({
         const node: BlueprintNode = {
           id,
           type,
+          runtimeId: type === "agent" ? "openclaw" : undefined,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
             ? managerSlotChildInitialPosition(selectedSlot!, blueprintWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
@@ -626,6 +633,7 @@ export function BlueprintStudioPage({
             node={inspectedNode}
             t={t}
             onClose={() => setInspectedNodeId(undefined)}
+            onPatchNode={(patch) => patchNode(inspectedNode.id, patch)}
             onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
           />
         )}
@@ -640,6 +648,7 @@ function NodeDetailModal({
   node,
   t,
   onClose,
+  onPatchNode,
   onPatchConfig
 }: {
   catalog?: CatalogSnapshot;
@@ -647,6 +656,7 @@ function NodeDetailModal({
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
+  onPatchNode: (patch: Partial<BlueprintNode>) => void;
   onPatchConfig: (patch: Partial<BlueprintNode["config"]>) => void;
 }) {
   const models = catalog?.models ?? [];
@@ -675,11 +685,12 @@ function NodeDetailModal({
                 configuredAgents={configuredAgents}
                 models={models}
                 channels={channels}
+                onPatchNode={onPatchNode}
                 onPatchConfig={onPatchConfig}
                 t={t}
               />
             </div>
-            {node.type === "openclaw_agent" && (
+            {isAgentBlueprintNode(node) && node.runtimeId === "openclaw" && (
               <AgentSkillPanel
                 node={node}
                 skills={catalog?.tools ?? []}
@@ -699,6 +710,7 @@ function NodeConfigForm({
   configuredAgents,
   models,
   channels,
+  onPatchNode,
   onPatchConfig,
   t
 }: {
@@ -707,29 +719,38 @@ function NodeConfigForm({
   configuredAgents?: OpenClawConfiguredAgent[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
+  onPatchNode: (patch: Partial<BlueprintNode>) => void;
   onPatchConfig: (patch: Partial<BlueprintNode["config"]>) => void;
   t: Messages;
 }) {
-  const agentOutputSchema = isAgentBlueprintNodeType(node.type) ? (node.config as AgentNodeConfig).outputSchema : undefined;
+  const agentOutputSchema = isAgentBlueprintNode(node) ? node.config.outputSchema : undefined;
   const [schemaText, setSchemaText] = useState("");
 
   useEffect(() => {
     setSchemaText(formatOutputSchema(agentOutputSchema));
   }, [agentOutputSchema, node.id, node.type]);
 
-  if (isAgentBlueprintNodeType(node.type)) {
-    const config = node.config as AgentNodeConfig;
-    const source = resolveAgentNodeSource(node.type);
-    const isSdkProvider = source === "claude" || source === "codex";
+  if (isAgentBlueprintNode(node)) {
+    const config = node.config;
+    const runtimeId = node.runtimeId;
+    const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const selectedModel = config.modelId ?? "";
     const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
-    const selectedAgentId = config.agentId ?? agentOptions[0]?.id ?? "main";
+    const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
     const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
 
     return (
       <div className="node-agent-config">
         <div className="config-form node-modal-form node-agent-primary-form">
+          <label>
+            <span>Runtime</span>
+            <select value={runtimeId} onChange={(event) => onPatchNode({ runtimeId: event.target.value as AgentRuntimeId })}>
+              <option value="openclaw">OpenClaw</option>
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+            </select>
+          </label>
           <label>
             <span>{t.fields.title}</span>
             <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
@@ -750,7 +771,7 @@ function NodeConfigForm({
                 <span>{t.fields.openclawAgent}</span>
                 <select
                   value={selectedAgentId}
-                  onChange={(event) => onPatchConfig({ agentId: event.target.value })}
+                  onChange={(event) => onPatchConfig({ openclawAgentId: event.target.value })}
                 >
                   {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
                   {agentOptions.map((agent) => (
@@ -995,7 +1016,7 @@ function NodeConfigForm({
           <span>{t.fields.mode}</span>
           <select value={config.mode} onChange={(event) => onPatchConfig({ mode: event.target.value as SummaryNodeConfig["mode"] })}>
             <option value="structured_merge">{t.options.structuredMerge}</option>
-            <option value="openclaw_agent">{t.options.openClawAgent}</option>
+            <option value="openclaw_summary_agent">{t.options.openClawAgent}</option>
           </select>
         </label>
         <label className="field-span-full">
@@ -1049,13 +1070,13 @@ function NodeConfigForm({
             config.agents.map((agent, index) => {
               const selectedModel = agent.modelId ?? "";
               const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
-              const selectedAgentId = agent.agentId ?? agentOptions[0]?.id ?? "main";
+              const selectedAgentId = agent.openclawAgentId ?? agentOptions[0]?.id ?? "main";
               const hasSelectedAgent = agentOptions.some((candidate) => candidate.id === selectedAgentId);
 
               return (
-                <div key={`${agent.agentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
+                <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
                   <div className="parallel-agent-card-header">
-                    <h4>{`${t.nodeTypes.openclaw_agent} ${index + 1}`}</h4>
+                    <h4>{`OpenClaw Agent ${index + 1}`}</h4>
                     <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
                       <X size={14} />
                     </button>
@@ -1063,7 +1084,7 @@ function NodeConfigForm({
                   <div className="config-form parallel-agent-form">
                     <label>
                       <span>{t.fields.openclawAgent}</span>
-                      <select value={selectedAgentId} onChange={(event) => updateAgent(index, { agentId: event.target.value })}>
+                      <select value={selectedAgentId} onChange={(event) => updateAgent(index, { openclawAgentId: event.target.value })}>
                         {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
                         {agentOptions.map((candidate) => (
                           <option key={candidate.id} value={candidate.id}>
@@ -1738,30 +1759,12 @@ function blueprintEdgeType(edge: BlueprintEdge): Edge["type"] | undefined {
 }
 
 export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNode["config"] {
-  if (type === "openclaw_agent") {
+  if (type === "agent") {
     return {
-      label: t.defaults.openClawAgentLabel,
-      agentId: "main",
+      label: t.defaults.agentLabel,
+      openclawAgentId: "main",
       agentName: t.defaults.agentName,
-      prompt: t.defaults.openClawAgentPrompt,
-      tools: []
-    };
-  }
-  if (type === "codex_agent") {
-    return {
-      label: t.defaults.codexAgentLabel,
-      agentName: "codex",
-      prompt: t.defaults.codexAgentPrompt,
-      permissionProfile: "read_only",
-      timeoutMs: 600000,
-      tools: []
-    };
-  }
-  if (type === "claude_code_agent") {
-    return {
-      label: t.defaults.claudeCodeAgentLabel,
-      agentName: "claude-code",
-      prompt: t.defaults.claudeCodeAgentPrompt,
+      prompt: t.defaults.agentPrompt,
       permissionProfile: "read_only",
       timeoutMs: 600000,
       tools: []
@@ -1889,10 +1892,10 @@ function readOutputSchema(value: string): Record<string, unknown> | undefined {
 
 function createDefaultParallelAgent(t: Messages, agentId = "main"): AgentNodeConfig {
   return {
-    label: t.defaults.openClawAgentLabel,
-    agentId,
+    label: t.defaults.agentLabel,
+    openclawAgentId: agentId,
     agentName: t.defaults.agentName,
-    prompt: t.defaults.openClawAgentPrompt,
+    prompt: t.defaults.agentPrompt,
     tools: []
   };
 }

@@ -4541,58 +4541,22 @@ html[data-theme="light"] .node-type-loop {
   background: #eff6ff;
 }
 
-.blueprint-node-openclaw_agent {
+.blueprint-node-agent {
   border-color: #7dd3fc;
 }
 
-.blueprint-node-codex_agent {
-  border-color: #c4b5fd;
-}
-
-.blueprint-node-claude_code_agent {
-  border-color: #f7c873;
-}
-
-.node-type-openclaw_agent {
+.node-type-agent {
   color: #67e8f9;
   background: rgb(8 145 178 / 0.16);
 }
 
-.node-type-codex_agent {
-  color: #c4b5fd;
-  background: rgb(124 58 237 / 0.16);
-}
-
-.node-type-claude_code_agent {
-  color: #facc15;
-  background: rgb(202 138 4 / 0.16);
-}
-
-html[data-theme="light"] .blueprint-node-openclaw_agent {
+html[data-theme="light"] .blueprint-node-agent {
   border-color: #7dd3fc;
 }
 
-html[data-theme="light"] .blueprint-node-codex_agent {
-  border-color: #c4b5fd;
-}
-
-html[data-theme="light"] .blueprint-node-claude_code_agent {
-  border-color: #f7c873;
-}
-
-html[data-theme="light"] .node-type-openclaw_agent {
+html[data-theme="light"] .node-type-agent {
   color: #0369a1;
   background: #e0f2fe;
-}
-
-html[data-theme="light"] .node-type-codex_agent {
-  color: #6d28d9;
-  background: #f3e8ff;
-}
-
-html[data-theme="light"] .node-type-claude_code_agent {
-  color: #92400e;
-  background: #fef3c7;
 }
 
 html[data-theme="light"] .node-start-badge {

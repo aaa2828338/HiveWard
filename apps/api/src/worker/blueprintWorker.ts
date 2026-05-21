@@ -1,10 +1,10 @@
 import { nanoid } from "nanoid";
-import type { OpenClawAdapter } from "@hiveward/adapter";
+import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
-  isAgentBlueprintNodeType,
-  resolveAgentNodeSource,
+  isAgentBlueprintNode,
+  resolveAgentRuntimeSource,
   type AgentNodeConfig,
-  type AgentBlueprintNodeType,
+  type AgentRuntimeId,
   type ApprovalNodeConfig,
   type AgentTaskResult,
   type ConditionNodeConfig,
@@ -25,9 +25,7 @@ import {
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 
 const executableTypes = new Set([
-  "openclaw_agent",
-  "codex_agent",
-  "claude_code_agent",
+  "agent",
   "parallel_agents",
   "manager",
   "manager_slot",
@@ -103,7 +101,7 @@ export class BlueprintWorker {
 
   constructor(
     private readonly store: FileHivewardStore,
-    private readonly adapter: OpenClawAdapter
+    private readonly adapter: RuntimeAdapter
   ) {}
 
   async startRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
@@ -245,8 +243,8 @@ export class BlueprintWorker {
     const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
 
     try {
-      if (isAgentBlueprintNodeType(node.type)) {
-        await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(node), nodeRun, input);
+      if (isAgentBlueprintNode(node)) {
+        await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
       } else if (node.type === "parallel_agents") {
         await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, input.upstream);
       } else if (node.type === "manager") {
@@ -298,7 +296,7 @@ export class BlueprintWorker {
   private async executeAgentNode(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    node: BlueprintNode & { type: AgentBlueprintNodeType },
+    node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun
   ): Promise<void> {
     await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, {
@@ -309,7 +307,7 @@ export class BlueprintWorker {
   private async executeAgentNodeWithInput(
     _blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    node: BlueprintNode & { type: AgentBlueprintNodeType },
+    node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun,
     input: unknown
   ): Promise<AgentTaskResult> {
@@ -318,8 +316,8 @@ export class BlueprintWorker {
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
-      source: resolveAgentNodeSource(node.type),
-      agentId: config.agentId ?? "main",
+      source: resolveAgentRuntimeSource(node.runtimeId),
+      agentId: node.runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
       prompt: config.prompt,
       modelId: config.modelId,
@@ -381,7 +379,7 @@ export class BlueprintWorker {
           blueprintRunId: run.id,
           nodeRunId: nodeRun.id,
           source: "openclaw",
-          agentId: agent.agentId ?? "main",
+          agentId: agent.openclawAgentId ?? "main",
           agentName: agent.agentName,
           prompt: agent.prompt,
           modelId: agent.modelId,
@@ -505,9 +503,9 @@ export class BlueprintWorker {
       };
       let result: AgentTaskResult;
 
-      if (isAgentBlueprintNodeType(assignment.target.type)) {
+      if (isAgentBlueprintNode(assignment.target)) {
         const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
-        result = await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(assignment.target), participantRun, managerContext);
+        result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, managerContext);
       } else if (assignment.target.type === "manager_slot") {
         const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
         result = await this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, managerContext);
@@ -659,8 +657,8 @@ export class BlueprintWorker {
   ): Promise<void> {
     const input = { upstream };
     const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
-    if (isAgentBlueprintNodeType(node.type)) {
-      await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(node), nodeRun, input);
+    if (isAgentBlueprintNode(node)) {
+      await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
     } else if (node.type === "parallel_agents") {
       await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, upstream);
     } else if (node.type === "condition") {
@@ -880,7 +878,7 @@ export class BlueprintWorker {
     const config = node.config as SummaryNodeConfig;
     const input = { upstream };
     const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
-    if (config.mode === "openclaw_agent") {
+    if (config.mode === "openclaw_summary_agent") {
       const { result, openclawRef } = await this.runAgentTask({
         blueprintRunId: run.id,
         nodeRunId: nodeRun.id,
@@ -1396,7 +1394,7 @@ export class BlueprintWorker {
 
   private formatParallelAgentOutput(agent: AgentNodeConfig, result: AgentTaskResult) {
     return {
-      agentId: agent.agentId ?? "main",
+      agentId: agent.openclawAgentId ?? "main",
       agentName: agent.agentName,
       status: result.status,
       output: result.output,
@@ -1481,13 +1479,6 @@ export class BlueprintWorker {
       openclawRef
     });
   }
-}
-
-function asAgentBlueprintNode(node: BlueprintNode): BlueprintNode & { type: AgentBlueprintNodeType } {
-  if (!isAgentBlueprintNodeType(node.type)) {
-    throw new Error(`Node type ${node.type} is not an agent node.`);
-  }
-  return node as BlueprintNode & { type: AgentBlueprintNodeType };
 }
 
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {

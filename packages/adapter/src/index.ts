@@ -18,7 +18,7 @@ import { GatewayOpenClawAdapter } from "./gateway-adapter";
 import { resolveGatewayAdapterConfig } from "./gateway-config";
 import { createAgentSdkRuntime, isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkRuntime } from "./sdk-runtime";
 
-export interface OpenClawAdapter {
+export interface RuntimeAdapter {
   listModels(): Promise<OpenClawModel[]>;
   listAgents(): Promise<OpenClawAgent[]>;
   listTools(): Promise<OpenClawTool[]>;
@@ -31,7 +31,7 @@ export interface OpenClawAdapter {
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
 }
 
-export class MockOpenClawAdapter implements OpenClawAdapter {
+export class MockRuntimeAdapter implements RuntimeAdapter {
   private readonly agentResults = new Map<string, AgentTaskResult>();
 
   async listModels(): Promise<OpenClawModel[]> {
@@ -177,13 +177,13 @@ export class MockOpenClawAdapter implements OpenClawAdapter {
   }
 }
 
-export interface CreateOpenClawAdapterOptions {
+export interface CreateRuntimeAdapterOptions {
   sdkWorkspaceRoot: string;
 }
 
-export class SdkRoutingOpenClawAdapter implements OpenClawAdapter {
+export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
   constructor(
-    private readonly baseAdapter: OpenClawAdapter,
+    private readonly baseAdapter: RuntimeAdapter,
     private readonly sdkRuntime: AgentSdkRuntime
   ) {}
 
@@ -230,16 +230,16 @@ export class SdkRoutingOpenClawAdapter implements OpenClawAdapter {
   }
 }
 
-export function createOpenClawAdapter(options: CreateOpenClawAdapterOptions): OpenClawAdapter {
+export function createRuntimeAdapter(options: CreateRuntimeAdapterOptions): RuntimeAdapter {
   const mode = (process.env.OPENCLAW_ADAPTER ?? "auto").trim().toLowerCase();
   const sdkRuntime = createAgentSdkRuntime(readAgentSdkRuntimeOptions(options.sdkWorkspaceRoot));
   if (mode === "mock") {
-    return new SdkRoutingOpenClawAdapter(new MockOpenClawAdapter(), sdkRuntime);
+    return new SdkRoutingRuntimeAdapter(new MockRuntimeAdapter(), sdkRuntime);
   }
 
   const gatewayConfig = resolveGatewayAdapterConfig();
   if (gatewayConfig) {
-    return new SdkRoutingOpenClawAdapter(new GatewayOpenClawAdapter(gatewayConfig), sdkRuntime);
+    return new SdkRoutingRuntimeAdapter(new GatewayOpenClawAdapter(gatewayConfig), sdkRuntime);
   }
 
   if (mode === "real" || mode === "gateway") {
@@ -248,7 +248,7 @@ export function createOpenClawAdapter(options: CreateOpenClawAdapterOptions): Op
     );
   }
 
-  return new SdkRoutingOpenClawAdapter(new MockOpenClawAdapter(), sdkRuntime);
+  return new SdkRoutingRuntimeAdapter(new MockRuntimeAdapter(), sdkRuntime);
 }
 
 export { GatewayOpenClawAdapter } from "./gateway-adapter";

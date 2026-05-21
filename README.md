@@ -38,7 +38,7 @@ Available environment variables:
 6. Edit the prompt.
 7. Run the blueprint. Hiveward saves the blueprint, calls OpenClaw through the adapter, and records runtime evidence.
 
-Node labels such as `Requirements Agent` are Hiveward display labels. Real execution identity comes from explicit fields such as `agentId`, `modelId`, `taskId`, `runId`, and `sessionKey`.
+Node labels such as `Requirements Agent` are Hiveward display labels. Real execution identity comes from explicit fields such as `runtimeId`, `openclawAgentId`, `modelId`, `taskId`, `runId`, and `sessionKey`.
 
 ## Architecture Boundary
 
