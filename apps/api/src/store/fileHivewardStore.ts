@@ -119,6 +119,36 @@ export class FileHivewardStore {
     });
   }
 
+  async createCompany(input: { name: string; businessGoal?: string; logoLabel?: string; logoUrl?: string }): Promise<{
+    companies: CompanyOverview[];
+    selectedCompanyId?: string;
+  }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const now = new Date().toISOString();
+      const name = readRequiredCompanyName(input.name);
+      const company: CompanyProfile = {
+        id: nextCompanyId(index.companies),
+        name,
+        logoLabel: readOptionalString(input.logoLabel) ?? companyInitials(name),
+        logoUrl: readOptionalString(input.logoUrl),
+        businessGoal: readOptionalString(input.businessGoal) ?? "Coordinate blueprints, governed agent runs, and review gates.",
+        createdAt: now,
+        updatedAt: now
+      };
+
+      index.companies.push(company);
+      index.selectedCompanyId = company.id;
+      index.companyDashboards[company.id] = createDefaultWorkspaceDashboard(now);
+      await this.writeIndexUnlocked(index);
+
+      return {
+        companies: this.buildCompanyOverviews(index),
+        selectedCompanyId: index.selectedCompanyId ?? undefined
+      };
+    });
+  }
+
   async selectCompany(companyId?: string): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string }> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -752,6 +782,20 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
+function readOptionalString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function readRequiredCompanyName(value: unknown): string {
+  const name = readOptionalString(value);
+  if (!name) {
+    throw new Error("Company name is required.");
+  }
+  return name;
+}
+
 function readScopedCompanyId(value: unknown, fallbackCompanyId: string): string {
   return typeof value === "string" && value ? value : fallbackCompanyId;
 }
@@ -793,6 +837,25 @@ function nextBlueprintId(blueprints: Array<{ id: string }>): string {
     id = `blueprint-${nanoid(8)}`;
   }
   return id;
+}
+
+function nextCompanyId(companies: Array<{ id: string }>): string {
+  const used = new Set(companies.map((company) => company.id));
+  let id = `company-${nanoid(8)}`;
+  while (used.has(id)) {
+    id = `company-${nanoid(8)}`;
+  }
+  return id;
+}
+
+function companyInitials(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return parts
+    .slice(0, 2)
+    .map((part) => part[0] ?? "")
+    .join("")
+    .toUpperCase();
 }
 
 function nextImportedBlueprintName(blueprints: Array<{ name: string }>, baseName: string): string {

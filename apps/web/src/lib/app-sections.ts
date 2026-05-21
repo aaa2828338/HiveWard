@@ -1,4 +1,4 @@
-export type AppSectionId =
+export type AppNavSectionId =
   | "company"
   | "blueprint"
   | "runs"
@@ -12,7 +12,7 @@ export type AppSectionId =
   | "claudeCodeConfig"
   | "codexConfig";
 
-export type AppNavSectionId = AppSectionId;
+export type AppSectionId = AppNavSectionId | "companyDirectory";
 
 export type AppSystemId = "hiveward" | "openclaw" | "claudeCode" | "codex";
 

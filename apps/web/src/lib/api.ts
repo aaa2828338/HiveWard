@@ -4,6 +4,7 @@ import type {
   CompanyDirectoryResponse,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
+  CreateCompanyRequest,
   CreateOpenClawAgentRequest,
   CreateBlueprintRequest,
   DashboardStateResponse,
@@ -118,6 +119,13 @@ export const api = {
 
   async listCompanies(): Promise<CompanyDirectoryResponse> {
     return request<CompanyDirectoryResponse>("/api/companies");
+  },
+
+  async createCompany(input: CreateCompanyRequest): Promise<CompanyDirectoryResponse> {
+    return request<CompanyDirectoryResponse>("/api/companies", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateCompanyRequest)
+    });
   },
 
   async selectCompany(companyId?: string): Promise<CompanyDirectoryResponse> {

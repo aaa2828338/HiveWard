@@ -20,7 +20,37 @@ class TrackingAdapter extends MockRuntimeAdapter {
   }
 }
 
-describe("apiRouter run read paths", () => {
+describe("apiRouter", () => {
+  it("creates and selects a new company", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/companies`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "Field Ops",
+            businessGoal: "Coordinate field operations.",
+            logoLabel: "FO"
+          })
+        });
+        const body = await readOkJson<{
+          companies: Array<{ id: string; name: string; businessGoal: string; logoLabel?: string }>;
+          selectedCompanyId?: string;
+        }>(response);
+        const company = body.companies.find((item) => item.name === "Field Ops");
+
+        expect(company).toMatchObject({
+          businessGoal: "Coordinate field operations.",
+          logoLabel: "FO"
+        });
+        expect(body.selectedCompanyId).toBe(company?.id);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("lists run summaries from runIndex without reading archive files", async () => {
     const fixture = await createStoreFixture();
     try {

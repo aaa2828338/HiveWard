@@ -11,6 +11,7 @@ import {
   Loader2,
   MessageSquareText,
   PanelsTopLeft,
+  Plus,
   RefreshCw,
   Search,
   Trash2
@@ -19,6 +20,7 @@ import type {
   CatalogSnapshot,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
+  CreateCompanyRequest,
   OpenClawChannelSetupOption,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
@@ -160,22 +162,215 @@ type TraceIssue = {
   events: BlueprintNodeEvent[];
 };
 
-export function CompanyPage({
+export function CompanyDirectoryPage({
   companies,
   selectedCompanyId,
   language,
-  onSelectCompany
+  busy,
+  onSelectCompany,
+  onCreateCompany
 }: {
   companies: CompanyOverview[];
   selectedCompanyId?: string;
   language: Language;
+  busy: boolean;
   onSelectCompany: (companyId?: string) => void;
+  onCreateCompany: (input: CreateCompanyRequest) => void | Promise<void>;
+}) {
+  const [addingCompany, setAddingCompany] = useState(false);
+  const [companyName, setCompanyName] = useState("");
+  const [companyGoal, setCompanyGoal] = useState("");
+  const [companyLogoLabel, setCompanyLogoLabel] = useState("");
+  const copy =
+    language === "zh-CN"
+      ? {
+          noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
+          goal: "\u4E1A\u52A1\u76EE\u6807",
+          blueprints: "\u84dd\u56fe",
+          runs: "\u4EFB\u52A1",
+          tokens: "Token \u6D88\u8017",
+          approvals: "\u5F85\u5BA1\u6279",
+          active: "\u5F53\u524D\u516C\u53F8",
+          switchTitle: "\u516C\u53F8\u5217\u8868",
+          switchSubtitle: "\u9009\u62E9\u516C\u53F8\u540E\uff0c\u5176\u4ED6\u5DE5\u4F5C\u533A\u4F1A\u5207\u5230\u8BE5\u516C\u53F8\u7684\u6570\u636E\u8303\u56F4\u3002",
+          addCompany: "\u6DFB\u52A0\u516C\u53F8",
+          newCompanyTitle: "\u65B0\u516C\u53F8",
+          companyName: "\u516C\u53F8\u540D\u79F0",
+          namePlaceholder: "\u4F8B\u5982\uFF1AHiveward Studio",
+          goalPlaceholder: "\u5199\u4E0B\u8FD9\u4E2A\u516C\u53F8\u7684\u4E1A\u52A1\u76EE\u6807",
+          logoLabel: "Logo \u6587\u672C",
+          logoPlaceholder: "HW",
+          create: "\u521B\u5EFA\u516C\u53F8",
+          cancel: "\u53D6\u6D88",
+          clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
+          select: "\u5207\u6362\u5230\u8BE5\u516C\u53F8"
+        }
+      : {
+          noCompanies: "No companies are available.",
+          goal: "Business goal",
+          blueprints: "Blueprints",
+          runs: "Tasks",
+          tokens: "Tokens",
+          approvals: "Pending approvals",
+          active: "Current company",
+          switchTitle: "Companies",
+          switchSubtitle: "Choosing a company updates the scope for the rest of the workspace.",
+          addCompany: "Add company",
+          newCompanyTitle: "New company",
+          companyName: "Company name",
+          namePlaceholder: "Example: Hiveward Studio",
+          goalPlaceholder: "Describe this company's business goal",
+          logoLabel: "Logo text",
+          logoPlaceholder: "HW",
+          create: "Create company",
+          cancel: "Cancel",
+          clear: "Clear selection",
+          select: "Switch to company"
+        };
+
+  const canCreateCompany = companyName.trim().length > 0 && !busy;
+
+  const resetCompanyForm = () => {
+    setCompanyName("");
+    setCompanyGoal("");
+    setCompanyLogoLabel("");
+    setAddingCompany(false);
+  };
+
+  const submitCompany = () => {
+    const name = companyName.trim();
+    if (!name || busy) return;
+
+    void Promise.resolve(
+      onCreateCompany({
+        name,
+        businessGoal: companyGoal.trim() || undefined,
+        logoLabel: companyLogoLabel.trim() || undefined
+      })
+    ).then(resetCompanyForm);
+  };
+
+  return (
+    <section className="page-grid company-page-grid">
+      <div className="content-card stack-card company-selector-card">
+        <div className="card-toolbar company-selector-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.switchTitle}</h3>
+            <p>{copy.switchSubtitle}</p>
+          </div>
+          <button
+            type="button"
+            className="primary-action"
+            disabled={busy}
+            onClick={() => setAddingCompany((current) => !current)}
+          >
+            {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+            {copy.addCompany}
+          </button>
+        </div>
+
+        {addingCompany && (
+          <div className="company-create-panel">
+            <div className="card-title-block">
+              <h3>{copy.newCompanyTitle}</h3>
+            </div>
+            <div className="form-grid form-grid-wide company-create-form">
+              <label>
+                <span>{copy.companyName}</span>
+                <input
+                  value={companyName}
+                  onChange={(event) => setCompanyName(event.target.value)}
+                  placeholder={copy.namePlaceholder}
+                />
+              </label>
+              <label>
+                <span>{copy.logoLabel}</span>
+                <input
+                  value={companyLogoLabel}
+                  onChange={(event) => setCompanyLogoLabel(event.target.value)}
+                  maxLength={4}
+                  placeholder={copy.logoPlaceholder}
+                />
+              </label>
+              <label className="field-span-full">
+                <span>{copy.goal}</span>
+                <textarea
+                  value={companyGoal}
+                  onChange={(event) => setCompanyGoal(event.target.value)}
+                  placeholder={copy.goalPlaceholder}
+                />
+              </label>
+            </div>
+            <div className="card-actions">
+              <button type="button" onClick={resetCompanyForm} disabled={busy}>
+                {copy.cancel}
+              </button>
+              <button type="button" className="primary-action" onClick={submitCompany} disabled={!canCreateCompany}>
+                {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+                {copy.create}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {companies.length === 0 ? (
+          <div className="empty-state page-empty">{copy.noCompanies}</div>
+        ) : (
+          <div className="company-list-grid">
+            {companies.map((company) => (
+              <button
+                key={company.id}
+                type="button"
+                className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
+                disabled={busy}
+                onClick={() => onSelectCompany(company.id)}
+              >
+                <div className="company-list-card-top">
+                  <div className="company-logo-small">
+                    {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : companyMonogram(company)}
+                  </div>
+                  <div className="company-list-card-copy">
+                    <strong>{company.name}</strong>
+                    <span>{company.businessGoal}</span>
+                  </div>
+                </div>
+                <div className="company-list-card-metrics">
+                  <span>{`${copy.blueprints}: ${company.blueprintCount}`}</span>
+                  <span>{`${copy.runs}: ${company.runCount}`}</span>
+                  <span>{`${copy.tokens}: ${company.totalTokens.toLocaleString(language)}`}</span>
+                  <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
+                </div>
+                <span className="company-list-card-action">{company.id === selectedCompanyId ? copy.active : copy.select}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        <div className="card-actions">
+          <button type="button" onClick={() => onSelectCompany(undefined)} disabled={busy || !selectedCompanyId}>
+            {copy.clear}
+          </button>
+        </div>
+      </div>
+
+    </section>
+  );
+}
+
+export function CompanyPage({
+  companies,
+  selectedCompanyId,
+  language
+}: {
+  companies: CompanyOverview[];
+  selectedCompanyId?: string;
+  language: Language;
 }) {
   const copy =
     language === "zh-CN"
       ? {
           choose: "\u9009\u62E9\u516C\u53F8",
-          noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u4ECE\u4E0B\u65B9\u5217\u8868\u4E2D\u5207\u6362\u3002",
+          noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u5148\u4ECE\u5DE6\u4E0B\u89D2\u7684\u516C\u53F8\u5165\u53E3\u5207\u6362\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
           blueprints: "\u84dd\u56fe",
@@ -185,15 +380,11 @@ export function CompanyPage({
           widgets: "\u603B\u89C8\u5361\u7247",
           cost: "\u6210\u672C",
           latest: "\u6700\u8FD1\u8FD0\u884C",
-          active: "\u5F53\u524D\u516C\u53F8",
-          switchTitle: "\u516C\u53F8\u5217\u8868",
-          switchSubtitle: "\u5728\u8FD9\u91CC\u5207\u6362\u540E\uff0c\u5176\u4ED6\u5DE5\u4F5C\u533A\u90FD\u4F1A\u5207\u5230\u8BE5\u516C\u53F8\u7684\u6570\u636E\u8303\u56F4\u3002",
-          clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-          select: "\u5207\u6362\u5230\u8BE5\u516C\u53F8"
+          active: "\u5F53\u524D\u516C\u53F8"
         }
       : {
           choose: "Choose company",
-          noSelection: "No company is selected yet. Choose one from the list below.",
+          noSelection: "No company is selected yet. Use the company entry at the lower left to choose one first.",
           noCompanies: "No companies are available.",
           goal: "Business goal",
           blueprints: "Blueprints",
@@ -203,11 +394,7 @@ export function CompanyPage({
           widgets: "Overview widgets",
           cost: "Cost",
           latest: "Latest run",
-          active: "Current company",
-          switchTitle: "Companies",
-          switchSubtitle: "Switching here updates the scope for the rest of the workspace.",
-          clear: "Clear selection",
-          select: "Switch to company"
+          active: "Current company"
         };
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
@@ -250,52 +437,6 @@ export function CompanyPage({
             <span>{companies.length === 0 ? copy.noCompanies : copy.noSelection}</span>
           </div>
         )}
-      </div>
-
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.switchTitle}</h3>
-            <p>{copy.switchSubtitle}</p>
-          </div>
-        </div>
-
-        {companies.length === 0 ? (
-          <div className="empty-state page-empty">{copy.noCompanies}</div>
-        ) : (
-          <div className="company-list-grid">
-            {companies.map((company) => (
-              <button
-                key={company.id}
-                type="button"
-                className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
-                onClick={() => onSelectCompany(company.id)}
-              >
-                <div className="company-list-card-top">
-                  <div className="company-logo-small">
-                    {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : companyMonogram(company)}
-                  </div>
-                  <div className="company-list-card-copy">
-                    <strong>{company.name}</strong>
-                    <span>{company.businessGoal}</span>
-                  </div>
-                </div>
-                <div className="company-list-card-metrics">
-                  <span>{`${copy.blueprints}: ${company.blueprintCount}`}</span>
-                  <span>{`${copy.tokens}: ${company.totalTokens}`}</span>
-                  <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
-                </div>
-                <span className="company-list-card-action">{company.id === selectedCompanyId ? copy.active : copy.select}</span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div className="card-actions">
-          <button type="button" onClick={() => onSelectCompany(undefined)}>
-            {copy.clear}
-          </button>
-        </div>
       </div>
     </section>
   );

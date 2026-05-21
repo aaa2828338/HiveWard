@@ -21,6 +21,7 @@ import {
 import type {
   CatalogSnapshot,
   CompanyOverview,
+  CreateCompanyRequest,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   DashboardWidgetType,
@@ -42,7 +43,18 @@ import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSyst
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
-import { AgentsPage, ApprovalsPage, ChannelsPage, CompanyPage, DashboardPage, ModelsPage, RunsPage, SchedulePage, SkillsPage } from "./components/WorkspacePages";
+import {
+  AgentsPage,
+  ApprovalsPage,
+  ChannelsPage,
+  CompanyDirectoryPage,
+  CompanyPage,
+  DashboardPage,
+  ModelsPage,
+  RunsPage,
+  SchedulePage,
+  SkillsPage
+} from "./components/WorkspacePages";
 
 const sidebarIcons = {
   company: Building2,
@@ -129,7 +141,6 @@ export function App() {
   const [busyAction, setBusyAction] = useState<string | undefined>();
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
-  const [companyMenuOpen, setCompanyMenuOpen] = useState(false);
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const [expandedSystems, setExpandedSystems] = useState<Record<AppSystemId, boolean>>({
     hiveward: true,
@@ -141,7 +152,6 @@ export function App() {
   const messageRef = useRef(t);
   const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
-  const companySwitcherRef = useRef<HTMLDivElement | null>(null);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
   const blueprintImportInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -168,7 +178,7 @@ export function App() {
 
   useEffect(() => {
     if (selectedCompanyId || !companyScopedSections.has(section)) return;
-    setSection("company");
+    setSection("companyDirectory");
   }, [section, selectedCompanyId]);
 
   useEffect(() => {
@@ -389,25 +399,7 @@ export function App() {
   const codexHarnessStatus = harnessStatuses.find((status) => status.id === "codex");
   const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
   const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
-  const companyUi = useMemo(
-    () =>
-      language === "zh-CN"
-        ? {
-            placeholder: "\u9009\u62E9\u516C\u53F8",
-            menuTitle: "\u5207\u6362\u516C\u53F8",
-            noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u9009\u516C\u53F8",
-            clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-            blueprintCount: (count: number) => `${count} \u4E2A\u84dd\u56fe`
-          }
-        : {
-            placeholder: "Choose company",
-            menuTitle: "Switch company",
-            noCompanies: "No companies available",
-            clear: "Clear selection",
-            blueprintCount: (count: number) => `${count} blueprints`
-          },
-    [language]
-  );
+  const companySwitcherLabel = language === "zh-CN" ? "\u9009\u62E9\u516C\u53F8" : "Choose company";
 
   useEffect(() => {
     setBusyAction("load");
@@ -532,10 +524,18 @@ export function App() {
     (companyId?: string) => {
       void withBusy("selectCompany", async () => {
         await api.selectCompany(companyId);
-        setCompanyMenuOpen(false);
         await hydrateWorkspace();
       });
     },
+    [hydrateWorkspace, withBusy]
+  );
+
+  const createCompany = useCallback(
+    (input: CreateCompanyRequest) =>
+      withBusy("createCompany", async () => {
+        await api.createCompany(input);
+        await hydrateWorkspace();
+      }),
     [hydrateWorkspace, withBusy]
   );
 
@@ -736,18 +736,6 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!companyMenuOpen) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (companySwitcherRef.current?.contains(event.target as Node)) return;
-      setCompanyMenuOpen(false);
-    };
-
-    window.addEventListener("mousedown", handlePointerDown);
-    return () => window.removeEventListener("mousedown", handlePointerDown);
-  }, [companyMenuOpen]);
-
-  useEffect(() => {
     if (!systemMenuOpen) return;
 
     const handlePointerDown = (event: MouseEvent) => {
@@ -804,15 +792,22 @@ export function App() {
   }, [applyRunView, pollingRunId]);
 
   const renderSection = () => {
+    if (section === "companyDirectory") {
+      return (
+        <CompanyDirectoryPage
+          companies={companies}
+          selectedCompanyId={selectedCompanyId}
+          language={language}
+          busy={Boolean(busyAction)}
+          onSelectCompany={selectCompany}
+          onCreateCompany={createCompany}
+        />
+      );
+    }
     if (section === "company") {
       return (
         <>
-          <CompanyPage
-            companies={companies}
-            selectedCompanyId={selectedCompanyId}
-            language={language}
-            onSelectCompany={selectCompany}
-          />
+          <CompanyPage companies={companies} selectedCompanyId={selectedCompanyId} language={language} />
           <DashboardPage
             dashboard={dashboard}
             blueprints={blueprints}
@@ -1016,7 +1011,6 @@ export function App() {
                           className={`nav-item ${section === item ? "active" : ""}`}
                           onClick={() => {
                             setSection(item);
-                            setCompanyMenuOpen(false);
                             setSystemMenuOpen(false);
                           }}
                         >
@@ -1037,15 +1031,14 @@ export function App() {
         <div className="sidebar-status">
           {dashboardDirty && <span className="status-badge">{t.common.dirtyWorkspace}</span>}
           <div className="sidebar-system" ref={systemMenuRef}>
-            <div className="sidebar-company" ref={companySwitcherRef}>
+            <div className="sidebar-company">
               <button
                 type="button"
-                className={`company-switcher sidebar-company-switcher ${section === "company" ? "active" : ""}`}
-                title={selectedCompany?.name ?? companyUi.placeholder}
+                className={`company-switcher sidebar-company-switcher ${section === "companyDirectory" ? "active" : ""}`}
+                title={selectedCompany?.name ?? companySwitcherLabel}
                 onClick={() => {
-                  setSection("company");
+                  setSection("companyDirectory");
                   setSystemMenuOpen(false);
-                  setCompanyMenuOpen((current) => !current);
                 }}
               >
                 <span className="company-switcher-avatar">
@@ -1056,39 +1049,10 @@ export function App() {
                   )}
                 </span>
                 <span className="company-switcher-copy">
-                  <strong>{selectedCompany?.name ?? companyUi.placeholder}</strong>
+                  <strong>{selectedCompany?.name ?? companySwitcherLabel}</strong>
                 </span>
-                <ChevronDown size={16} />
+                <ChevronRight size={16} />
               </button>
-
-              {companyMenuOpen && (
-                <div className="company-menu sidebar-company-menu">
-                  <div className="company-menu-title">{companyUi.menuTitle}</div>
-                  {companies.length === 0 ? (
-                    <div className="company-menu-empty">{companyUi.noCompanies}</div>
-                  ) : (
-                    companies.map((company) => (
-                      <button
-                        key={company.id}
-                        type="button"
-                        className={`company-menu-item ${company.id === selectedCompanyId ? "active" : ""}`}
-                        onClick={() => selectCompany(company.id)}
-                      >
-                        <span className="company-switcher-avatar small">
-                          {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : <span>{companyMonogram(company)}</span>}
-                        </span>
-                        <span className="company-menu-copy">
-                          <strong>{company.name}</strong>
-                          <span>{companyUi.blueprintCount(company.blueprintCount)}</span>
-                        </span>
-                      </button>
-                    ))
-                  )}
-                  <button type="button" className="company-menu-clear" onClick={() => selectCompany(undefined)}>
-                    {companyUi.clear}
-                  </button>
-                </div>
-              )}
             </div>
             <div className="sidebar-system-control">
               <button
@@ -1097,7 +1061,6 @@ export function App() {
                 aria-label={`${openClawPanelUi.openPanel}: ${openClawVersionLabel} ${openClawVersionStatusLabel}`}
                 title={`${openClawVersionLabel} ${openClawVersionStatusLabel}`}
                 onClick={() => {
-                  setCompanyMenuOpen(false);
                   setSystemMenuOpen(false);
                   setSection("openclaw");
                 }}
@@ -1112,7 +1075,6 @@ export function App() {
                 aria-label={systemUi.settings}
                 aria-expanded={systemMenuOpen}
                 onClick={() => {
-                  setCompanyMenuOpen(false);
                   setSystemMenuOpen((current) => !current);
                 }}
               >

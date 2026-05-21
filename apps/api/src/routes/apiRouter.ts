@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
   CatalogSnapshot,
+  CreateCompanyRequest,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawChannelRequest,
@@ -65,6 +66,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.get("/api/companies", async (_req, res, next) => {
     try {
       res.json(await store.listCompanies());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/companies", async (req, res, next) => {
+    try {
+      const body = req.body as CreateCompanyRequest;
+      res.status(201).json(await store.createCompany(body));
     } catch (error) {
       next(error);
     }

@@ -1071,6 +1071,23 @@ pre {
   align-content: start;
 }
 
+.company-selector-toolbar {
+  align-items: flex-start;
+}
+
+.company-create-panel {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgb(19 38 47 / 0.08);
+  border-radius: 9px;
+  background: rgb(255 255 255 / 0.62);
+}
+
+.company-create-form textarea {
+  min-height: 96px;
+}
+
 .company-hero-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
@@ -1149,8 +1166,10 @@ pre {
 
 .company-list-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 320px));
   gap: 14px;
+  align-items: stretch;
+  justify-content: start;
 }
 
 .company-list-card {
@@ -1184,6 +1203,7 @@ pre {
 
 .company-list-card-copy {
   gap: 6px;
+  flex: 1 1 auto;
 }
 
 .company-list-card-copy strong {
@@ -2346,8 +2366,8 @@ dd {
     min-width: 100%;
   }
 
-  .sidebar-company-menu {
-    width: min(320px, calc(100vw - 32px));
+  .company-list-grid {
+    grid-template-columns: 1fr;
   }
 
   .blueprint-shell {
@@ -3108,6 +3128,22 @@ textarea {
   gap: 12px;
 }
 
+.company-selector-toolbar {
+  gap: 10px;
+}
+
+.company-create-panel {
+  gap: 10px;
+  padding: 10px;
+  border-color: var(--line);
+  border-radius: var(--radius-md);
+  background: #10151d;
+}
+
+.company-create-form textarea {
+  min-height: 86px;
+}
+
 .company-hero-card {
   overflow: hidden;
 }
@@ -3171,7 +3207,7 @@ textarea {
 }
 
 .company-list-grid {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(240px, 300px));
   gap: 10px;
 }
 

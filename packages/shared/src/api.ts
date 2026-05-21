@@ -76,6 +76,13 @@ export interface CompanyDirectoryResponse {
   selectedCompanyId?: string;
 }
 
+export interface CreateCompanyRequest {
+  name: string;
+  businessGoal?: string;
+  logoLabel?: string;
+  logoUrl?: string;
+}
+
 export interface SelectCompanyRequest {
   companyId?: string;
 }
