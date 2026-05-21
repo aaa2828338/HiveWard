@@ -86,6 +86,72 @@ class ScriptedAdapter implements OpenClawAdapter {
   }
 }
 
+class BlockingAdapter implements OpenClawAdapter {
+  readonly calls: StartAgentTaskInput[] = [];
+  readonly waitCalls: WaitForAgentTaskInput[] = [];
+  private resolveCompletion?: (result: AgentTaskResult) => void;
+  private readonly completion: Promise<AgentTaskResult>;
+
+  constructor(private readonly startedResult: StartedAgentTaskResult) {
+    this.completion = new Promise((resolve) => {
+      this.resolveCompletion = resolve;
+    });
+  }
+
+  async listModels() {
+    return [];
+  }
+
+  async listAgents() {
+    return [];
+  }
+
+  async listTools() {
+    return [];
+  }
+
+  async listChannels() {
+    return [];
+  }
+
+  async listSessions() {
+    return [];
+  }
+
+  async listTasks() {
+    return [];
+  }
+
+  async getRuntimeOverview() {
+    return {
+      sessions: [],
+      tasks: []
+    };
+  }
+
+  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+    this.calls.push(input);
+    return this.startedResult;
+  }
+
+  async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    this.waitCalls.push(input);
+    return this.completion;
+  }
+
+  async sendChannelMessage(): Promise<SendChannelResult> {
+    return {
+      deliveryId: "delivery-1",
+      status: "sent",
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  complete(result: AgentTaskResult): void {
+    this.resolveCompletion?.(result);
+  }
+}
+
 describe("BlueprintWorker", () => {
   it("persists a newly-created blank blueprint for the selected company", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-store-"));
@@ -153,8 +219,13 @@ describe("BlueprintWorker", () => {
     const failedPlanRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "plan");
     expect(failedPlanRun?.status).toBe("failed");
     expect(failedPlanRun?.input).toEqual({
-      upstream: [{ nodeId: "brief", nodeLabel: "1. Brief", output: "brief ok" }]
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "1. Brief", status: "succeeded", output: "brief ok" })]
     });
+    expect((failedPlanRun?.input as { upstream?: Array<{ nodeRunId?: string; openclawRef?: { runId?: string } }> } | undefined)?.upstream?.[0])
+      .toMatchObject({
+        nodeRunId: expect.any(String),
+        openclawRef: expect.objectContaining({ runId: "task-1-run" })
+      });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "verify")?.status).toBe("skipped");
     expect(view?.events.some((event) => event.type === "blueprint.run.failed")).toBe(true);
 
@@ -178,6 +249,131 @@ describe("BlueprintWorker", () => {
     expect(index.nodeRuns).toBeUndefined();
     expect(index.events).toBeUndefined();
     expect(index.runIndex?.find((item) => item.id === run.id)?.status).toBe("failed");
+  });
+
+  it("writes node input to the run archive before the agent task finishes", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const storePath = path.join(tempDir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new BlockingAdapter(createStartedAgentTask("task-1"));
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const runningNode = await waitForNodeRun(store, run.id, "brief", (nodeRun) => nodeRun.status === "running" && nodeRun.input !== undefined);
+    const archiveWhileRunning = JSON.parse(readFileSync(path.join(tempDir, "runs", `${run.id}.json`), "utf8")) as {
+      nodeRuns: Array<{ nodeId: string; status: string; input?: unknown }>;
+    };
+
+    expect(runningNode.input).toEqual({ upstream: [] });
+    expect(archiveWhileRunning.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")).toMatchObject({
+      status: "running",
+      input: { upstream: [] }
+    });
+
+    adapter.complete(createCompletedAgentTask("task-1", "succeeded", "brief ok"));
+    const view = await waitForRunTerminal(store, run.id);
+    expect(view?.run.status).toBe("succeeded");
+  });
+
+  it("fails an agent node that finishes without visible output", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
+
+    expect(view?.run.status).toBe("failed");
+    expect(nodeRun?.status).toBe("failed");
+    expect(nodeRun?.output).toBeUndefined();
+    expect(nodeRun?.error).toContain("visible output");
+  });
+
+  it("keeps platform-owned fields authoritative when agent output contains matching names", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const storePath = path.join(tempDir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const agentOutput = JSON.stringify({
+      status: "failed",
+      nodeRunId: "agent-node-run",
+      taskId: "agent-task",
+      runId: "agent-run",
+      sessionKey: "agent-session",
+      inputTokens: 999,
+      outputTokens: 999,
+      error: "agent-claimed-error",
+      source: "agent-source",
+      nextNode: "agent-next",
+      slotIndex: 42,
+      resultRole: "ignore",
+      artifactId: "agent-artifact",
+      answer: "semantic content"
+    });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1")
+    ], [
+      {
+        ...createCompletedAgentTask("task-1", "succeeded", agentOutput),
+        usage: createUsageFact(7, 11, 0.012345)
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
+    const index = JSON.parse(readFileSync(storePath, "utf8")) as {
+      runIndex?: Array<{ id: string; totalInputTokens: number; totalOutputTokens: number; totalCostUsd: number }>;
+    };
+
+    expect(nodeRun).toMatchObject({
+      status: "succeeded",
+      output: agentOutput,
+      usage: {
+        inputTokens: 7,
+        outputTokens: 11,
+        costUsd: 0.012345
+      },
+      openclawRef: {
+        taskId: "task-1",
+        runId: "task-1-run",
+        sessionKey: "agent:main:main",
+        source: "openclaw"
+      }
+    });
+    expect(nodeRun?.error).toBeUndefined();
+    expect(view?.run).toMatchObject({
+      id: run.id,
+      status: "succeeded",
+      totalInputTokens: 7,
+      totalOutputTokens: 11,
+      totalCostUsd: 0.012345
+    });
+    expect(view?.finalResult?.candidates[0]).toMatchObject({
+      nodeId: "brief",
+      resultRole: "auto",
+      output: agentOutput
+    });
+    expect(index.runIndex?.find((candidate) => candidate.id === run.id)).toMatchObject({
+      totalInputTokens: 7,
+      totalOutputTokens: 11,
+      totalCostUsd: 0.012345
+    });
   });
 
   it("skips the branch that does not match a condition result", async () => {
@@ -222,6 +418,9 @@ describe("BlueprintWorker", () => {
 
     expect(run.status).toBe("running");
     expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "gate")?.input).toEqual({
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", output: "brief ready" })]
+    });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "gate")?.output).toEqual({ result: true });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "yes")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "no")?.status).toBe("skipped");
@@ -579,40 +778,33 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask(
         "task-1",
         "succeeded",
-        JSON.stringify({
-          status: "continue",
-          topic: "AI agent productivity",
-          newsItems: [
-            {
-              headline: "Agent teams move into production workflows",
-              summary: "Builders are using coordinated AI agents for research and delivery.",
-              whyItMatters: "The page needs a concrete industry hook.",
-              pageAngle: "Make the hero about operational adoption.",
-              sourceHint: "industry briefing"
-            }
-          ],
-          pageThesis: "Agentic workflows are becoming production infrastructure."
-        })
+        [
+          "# News brief",
+          "",
+          "Topic: AI agent productivity.",
+          "",
+          "- Agent teams move into production workflows: builders are using coordinated AI agents for research and delivery.",
+          "",
+          "Page thesis: Agentic workflows are becoming production infrastructure."
+        ].join("\n")
       ),
       createCompletedAgentTask(
         "task-2",
         "succeeded",
-        JSON.stringify({
-          status: "continue",
-          nextSlot: 2,
-          executionDocumentHtml: "<section><h1>Agentic workflows are becoming production infrastructure.</h1></section>",
-          pageTitle: "Agentic Workflow Brief",
-          acceptanceCriteria: ["Standalone HTML", "No placeholders"]
-        })
+        [
+          "# HTML execution document",
+          "",
+          "Page title: Agentic Workflow Brief",
+          "",
+          "Hero headline: Agentic workflows are becoming production infrastructure.",
+          "",
+          "Acceptance criteria: standalone HTML, no placeholders."
+        ].join("\n")
       ),
       createCompletedAgentTask(
         "task-3",
         "succeeded",
-        JSON.stringify({
-          status: "complete",
-          html: "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>",
-          buildNotes: ["Built from Slot 1 execution document"]
-        })
+        "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>"
       )
     ]);
     const worker = new BlueprintWorker(store, adapter);
@@ -629,13 +821,8 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-1")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2")?.status).toBe("succeeded");
     expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "html-manager-slot-3")).toBe(false);
-    const builderOutput = JSON.parse(
-      view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2-agent-1")?.output as string
-    ) as { status: string; html: string };
-    expect(builderOutput).toMatchObject({
-      status: "complete",
-      html: expect.stringContaining("<!doctype html>")
-    });
+    const builderOutput = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2-agent-1")?.output;
+    expect(builderOutput).toEqual(expect.stringContaining("<!doctype html>"));
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager")?.output).toMatchObject({
       status: "completed"
     });
@@ -689,7 +876,7 @@ describe("BlueprintWorker", () => {
       iteration: 2,
       maxIterations: 2,
       rerunTargets: [{ nodeId: "brief", nodeLabel: "Brief" }],
-      upstream: [{ nodeId: "brief", nodeLabel: "Brief", output: "brief ready again" }]
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", output: "brief ready again" })]
     });
   });
 });
@@ -737,6 +924,26 @@ async function waitForRunTerminal(store: FileHivewardStore, runId: string): Prom
   throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}`);
 }
 
+async function waitForNodeRun(
+  store: FileHivewardStore,
+  runId: string,
+  nodeId: string,
+  predicate: (nodeRun: NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>["nodeRuns"][number]) => boolean
+): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>["nodeRuns"][number]> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    const view = await store.getRunView(runId);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === nodeId);
+    if (nodeRun && predicate(nodeRun)) {
+      return nodeRun;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Node run did not match the expected state in time: ${runId}/${nodeId}`);
+}
+
 function createBlueprint(nodes: BlueprintNode[], edges: BlueprintEdge[]): BlueprintDefinition {
   const now = new Date().toISOString();
   return {
@@ -752,6 +959,17 @@ function createBlueprint(nodes: BlueprintNode[], edges: BlueprintEdge[]): Bluepr
     },
     createdAt: now,
     updatedAt: now
+  };
+}
+
+function createUsageFact(inputTokens: number, outputTokens: number, costUsd: number) {
+  return {
+    id: "usage-1",
+    modelId: "test-model",
+    inputTokens,
+    outputTokens,
+    costUsd,
+    recordedAt: new Date().toISOString()
   };
 }
 

@@ -70,7 +70,7 @@ interface ManagerSlotContext {
     handoff: number;
     maxHandoffs: number;
   };
-  upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>;
+  upstream: UpstreamOutput;
   previousResults: Array<{
     handoff: number;
     slot: number;
@@ -81,6 +81,21 @@ interface ManagerSlotContext {
     error?: string;
     decision?: ManagerDecision;
   }>;
+}
+
+interface UpstreamOutputItem {
+  nodeId: string;
+  nodeLabel: string;
+  nodeRunId: string;
+  status: BlueprintNodeRun["status"];
+  output: unknown;
+  openclawRef?: OpenClawObjectRef;
+}
+
+type UpstreamOutput = UpstreamOutputItem[];
+
+interface StandardNodeInput {
+  upstream: UpstreamOutput;
 }
 
 export class BlueprintWorker {
@@ -226,27 +241,28 @@ export class BlueprintWorker {
   }
 
   private async executeNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<void> {
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node);
+    const input = await this.collectStandardNodeInput(blueprint, run.id, node);
+    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
 
     try {
       if (isAgentBlueprintNodeType(node.type)) {
-        await this.executeAgentNode(blueprint, run, asAgentBlueprintNode(node), nodeRun);
+        await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(node), nodeRun, input);
       } else if (node.type === "parallel_agents") {
-        await this.executeParallelAgentsNode(blueprint, run, node, nodeRun);
+        await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, input.upstream);
       } else if (node.type === "manager") {
-        await this.executeManagerNode(blueprint, run, node, nodeRun);
+        await this.executeManagerNode(blueprint, run, node, nodeRun, input.upstream);
       } else if (node.type === "manager_slot") {
         await this.failNode(nodeRun, "Manager slot nodes can only run when called by their manager.");
       } else if (node.type === "loop") {
-        await this.executeLoopNode(blueprint, run, node, nodeRun);
+        await this.executeLoopNode(blueprint, run, node, nodeRun, input.upstream);
       } else if (node.type === "condition") {
         await this.completeNode(nodeRun, { result: this.evaluateCondition(blueprint, node.config as ConditionNodeConfig) });
       } else if (node.type === "summary") {
-        await this.executeSummaryNode(blueprint, run, node, nodeRun);
+        await this.executeSummaryNodeWithUpstream(run, node, nodeRun, input.upstream);
       } else if (node.type === "approval") {
         await this.waitForApproval(node, nodeRun);
       } else if (node.type === "send") {
-        await this.executeSendNode(blueprint, run, node, nodeRun);
+        await this.executeSendNodeWithUpstream(run, node, nodeRun, blueprint.name, input.upstream);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown node failure";
@@ -254,7 +270,12 @@ export class BlueprintWorker {
     }
   }
 
-  private async createRunningNodeRun(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<BlueprintNodeRun> {
+  private async createRunningNodeRun(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    input?: unknown
+  ): Promise<BlueprintNodeRun> {
     const now = new Date().toISOString();
     const nodeRun: BlueprintNodeRun = {
       id: `node-run-${nanoid(10)}`,
@@ -265,7 +286,8 @@ export class BlueprintWorker {
       nodeType: node.type,
       status: "running",
       queuedAt: now,
-      startedAt: now
+      startedAt: now,
+      ...(input === undefined ? {} : { input })
     };
     await this.store.upsertNodeRun(nodeRun);
     await this.event(run.id, "node.run.queued", `${node.config.label} queued.`, nodeRun.id);
@@ -292,10 +314,7 @@ export class BlueprintWorker {
     input: unknown
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
-    const nodeRunWithInput: BlueprintNodeRun = {
-      ...nodeRun,
-      input
-    };
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
@@ -315,10 +334,15 @@ export class BlueprintWorker {
       await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
       return result;
     }
+    if (!hasVisibleAgentOutput(result.output)) {
+      const error = this.missingAgentOutputError(openclawRef);
+      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, error);
+      return { ...result, status: "failed", error, output: undefined };
+    }
 
     await this.completeNode(
       { ...nodeRunWithInput, openclawRef, usage: result.usage },
-      result.output ?? "",
+      result.output,
       openclawRef
     );
     return result;
@@ -342,9 +366,11 @@ export class BlueprintWorker {
     run: BlueprintRun,
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
-    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+    upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as ParallelAgentsNodeConfig;
+    const input = { upstream };
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     if (config.agents.length === 0) {
       throw new Error("Parallel agents node has no agents configured.");
     }
@@ -363,22 +389,20 @@ export class BlueprintWorker {
           workingDirectory: agent.workingDirectory,
           timeoutMs: agent.timeoutMs,
           outputSchema: agent.outputSchema,
-          input: {
-            upstream
-          },
+          input,
           tools: agent.tools
         })
       )
     );
 
     if (config.waitFor === "first_success") {
-      const winnerIndex = outputs.findIndex((output) => output.result.status === "succeeded");
+      const winnerIndex = outputs.findIndex((output) => output.result.status === "succeeded" && hasVisibleAgentOutput(output.result.output));
       if (winnerIndex < 0) {
         const firstFailure = outputs[0];
-        await this.failNode(nodeRun, firstFailure?.result.error ?? "No parallel agent succeeded.");
+        await this.failNode(nodeRunWithInput, firstFailure?.result.error ?? "No parallel agent returned visible output.");
         return;
       }
-      await this.completeNode(nodeRun, {
+      await this.completeNode(nodeRunWithInput, {
         waitFor: config.waitFor,
         winner: this.formatParallelAgentOutput(config.agents[winnerIndex]!, outputs[winnerIndex]!.result),
         results: outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
@@ -386,13 +410,13 @@ export class BlueprintWorker {
       return;
     }
 
-    const failed = outputs.find((output) => output.result.status !== "succeeded");
+    const failed = outputs.find((output) => output.result.status !== "succeeded" || !hasVisibleAgentOutput(output.result.output));
     if (failed) {
-      await this.failNode(nodeRun, failed.result.error ?? `Agent task ${failed.result.status}.`);
+      await this.failNode(nodeRunWithInput, failed.result.error ?? this.missingAgentOutputError(failed.openclawRef));
       return;
     }
     await this.completeNode(
-      nodeRun,
+      nodeRunWithInput,
       outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
     );
   }
@@ -402,12 +426,13 @@ export class BlueprintWorker {
     run: BlueprintRun,
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
-    upstream?: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+    upstream?: UpstreamOutput
   ): Promise<AgentTaskResult> {
     const config = node.config as ManagerNodeConfig;
     const portCount = normalizeInteger(config.portCount, 1, 8, 3);
     const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
     const managerUpstream = upstream ?? await this.collectUpstreamOutputs(blueprint, run.id, node);
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, { upstream: managerUpstream });
     const trace: ManagerTraceItem[] = [];
     let slot = this.firstConnectedManagerSlot(blueprint, node, portCount);
 
@@ -417,7 +442,7 @@ export class BlueprintWorker {
         reason: "manager_has_no_connected_slots",
         trace
       };
-      await this.completeNode(nodeRun, output);
+      await this.completeNode(nodeRunWithInput, output);
       return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
     }
 
@@ -429,7 +454,7 @@ export class BlueprintWorker {
           reason: `manager_slot_${slot}_is_not_connected`,
           trace
         };
-        await this.completeNode(nodeRun, output);
+        await this.completeNode(nodeRunWithInput, output);
         return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
       }
 
@@ -451,7 +476,7 @@ export class BlueprintWorker {
             reason: "manager_reached_final_slot",
             trace
           };
-          await this.completeNode(nodeRun, output);
+          await this.completeNode(nodeRunWithInput, output);
           return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
         }
         continue;
@@ -481,23 +506,26 @@ export class BlueprintWorker {
       let result: AgentTaskResult;
 
       if (isAgentBlueprintNodeType(assignment.target.type)) {
-        const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target);
+        const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
         result = await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(assignment.target), participantRun, managerContext);
       } else if (assignment.target.type === "manager_slot") {
-        const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target);
+        const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
         result = await this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, managerContext);
       } else if (assignment.target.type === "manager") {
-        const managerRun = await this.createRunningNodeRun(blueprint, run, assignment.target);
-        result = await this.executeManagerNode(blueprint, run, assignment.target, managerRun, [
+        const managerUpstreamInput: UpstreamOutput = [
           {
             nodeId: node.id,
             nodeLabel: node.config.label,
+            nodeRunId: nodeRun.id,
+            status: nodeRun.status,
             output: managerContext
           }
-        ]);
+        ];
+        const managerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
+        result = await this.executeManagerNode(blueprint, run, assignment.target, managerRun, managerUpstreamInput);
       } else {
         const error = `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`;
-        await this.failNode(nodeRun, error);
+        await this.failNode(nodeRunWithInput, error);
         return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
       }
 
@@ -515,7 +543,7 @@ export class BlueprintWorker {
 
       if (result.status !== "succeeded") {
         const error = result.error ?? `Manager participant ${assignment.target.config.label} returned ${result.status}.`;
-        await this.failNode(nodeRun, error);
+        await this.failNode(nodeRunWithInput, error);
         return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
       }
 
@@ -529,7 +557,7 @@ export class BlueprintWorker {
           reason: decision.reason ?? "manager_completed",
           trace
         };
-        await this.completeNode(nodeRun, output);
+        await this.completeNode(nodeRunWithInput, output);
         return this.syntheticAgentResult(nodeRun.id, "succeeded", stringifyManagerSlotOutput(output));
       }
 
@@ -537,7 +565,7 @@ export class BlueprintWorker {
     }
 
     const error = `Manager exceeded max handoffs (${maxHandoffs}).`;
-    await this.failNode(nodeRun, error);
+    await this.failNode(nodeRunWithInput, error);
     return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
   }
 
@@ -550,11 +578,15 @@ export class BlueprintWorker {
   ): Promise<AgentTaskResult> {
     const childNodes = blueprint.nodes.filter((node) => node.parentId === slotNode.id && this.isRunnableNode(node));
     const scopeStartIndex = Math.max(0, (await this.store.listNodeRuns(run.id)).length - 1);
-    const boundaryOutput = {
-      status: "manager_slot_input",
+    const slotInput = {
       manager: context.manager,
       upstream: context.upstream,
       previousResults: context.previousResults
+    };
+    const slotRunWithInput = await this.recordNodeInput(slotRun, slotInput);
+    const boundaryOutput = {
+      status: "manager_slot_input",
+      ...slotInput
     };
 
     if (childNodes.length === 0) {
@@ -563,7 +595,7 @@ export class BlueprintWorker {
         reason: "manager_slot_empty",
         input: boundaryOutput
       });
-      await this.completeNode(slotRun, output);
+      await this.completeNode(slotRunWithInput, output);
       return this.syntheticAgentResult(slotRun.id, "succeeded", output);
     }
 
@@ -578,7 +610,7 @@ export class BlueprintWorker {
       );
       if (failed) {
         const error = failed.error ?? `${failed.nodeLabel} returned ${failed.status}.`;
-        await this.failNode(slotRun, error);
+        await this.failNode(slotRunWithInput, error);
         return this.syntheticAgentResult(slotRun.id, "failed", undefined, error);
       }
 
@@ -596,7 +628,7 @@ export class BlueprintWorker {
               blueprint,
               run,
               node,
-              this.collectScopedUpstreamOutputs(blueprint, slotNode, node, nodeRuns, scopeStartIndex, boundaryOutput)
+              this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput)
             )
           )
         );
@@ -606,7 +638,7 @@ export class BlueprintWorker {
       const output = this.resolveManagerSlotOutput(blueprint, slotNode, childNodes, nodeRuns, scopeStartIndex);
       if (output !== undefined) {
         const serialized = stringifyManagerSlotOutput(output);
-        await this.completeNode(slotRun, serialized);
+        await this.completeNode(slotRunWithInput, serialized);
         return this.syntheticAgentResult(slotRun.id, "succeeded", serialized);
       }
 
@@ -614,7 +646,7 @@ export class BlueprintWorker {
         .filter((node) => !this.findLatestNodeRun(nodeRuns, node.id, undefined, scopeStartIndex))
         .map((node) => node.id);
       const error = `Manager slot ${slotNode.config.label} could not continue. Pending nodes: ${pending.join(", ") || "unknown"}.`;
-      await this.failNode(slotRun, error);
+      await this.failNode(slotRunWithInput, error);
       return this.syntheticAgentResult(slotRun.id, "failed", undefined, error);
     }
   }
@@ -623,11 +655,12 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
-    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+    upstream: UpstreamOutput
   ): Promise<void> {
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node);
+    const input = { upstream };
+    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
     if (isAgentBlueprintNodeType(node.type)) {
-      await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(node), nodeRun, { upstream });
+      await this.executeAgentNodeWithInput(blueprint, run, asAgentBlueprintNode(node), nodeRun, input);
     } else if (node.type === "parallel_agents") {
       await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, upstream);
     } else if (node.type === "condition") {
@@ -703,31 +736,28 @@ export class BlueprintWorker {
   private collectScopedUpstreamOutputs(
     blueprint: BlueprintDefinition,
     slotNode: BlueprintNode,
+    slotRun: BlueprintNodeRun,
     node: BlueprintNode,
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number,
     boundaryOutput: unknown
-  ): Array<{ nodeId: string; nodeLabel: string; output: unknown }> {
+  ): UpstreamOutput {
     const incoming = this.getScopedIncomingEdges(blueprint, slotNode, node);
     if (incoming.length === 0) {
-      return [{ nodeId: slotNode.id, nodeLabel: slotNode.config.label, output: boundaryOutput }];
+      return [this.toUpstreamOutputItem(slotRun, boundaryOutput)];
     }
 
-    const outputs: Array<{ nodeId: string; nodeLabel: string; output: unknown }> = [];
+    const outputs: UpstreamOutput = [];
     for (const edge of incoming) {
       if (this.resolveScopedEdgeState(blueprint, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
       if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) {
-        outputs.push({ nodeId: slotNode.id, nodeLabel: slotNode.config.label, output: boundaryOutput });
+        outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput));
         continue;
       }
 
       const sourceRun = this.findLatestNodeRun(nodeRuns, edge.source, "succeeded", scopeStartIndex);
       if (!sourceRun) continue;
-      outputs.push({
-        nodeId: sourceRun.nodeId,
-        nodeLabel: sourceRun.nodeLabel,
-        output: sourceRun.output
-      });
+      outputs.push(this.toUpstreamOutputItem(sourceRun));
     }
     return outputs;
   }
@@ -801,9 +831,11 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
-    nodeRun: BlueprintNodeRun
+    nodeRun: BlueprintNodeRun,
+    upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as LoopNodeConfig;
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, { upstream });
     const maxIterations = normalizeInteger(config.maxIterations, 1, 25, 3);
     const previousLoopRuns = await this.store.listNodeRuns(run.id);
     const previousIteration = previousLoopRuns
@@ -816,12 +848,12 @@ export class BlueprintWorker {
     }));
     const shouldRerun = iteration < maxIterations && rerunTargets.length > 0;
 
-    await this.completeNode(nodeRun, {
+    await this.completeNode(nodeRunWithInput, {
       status: shouldRerun ? "rerun" : "completed",
       iteration,
       maxIterations,
       rerunTargets,
-      upstream: await this.collectUpstreamOutputs(blueprint, run.id, node)
+      upstream
     });
   }
 
@@ -843,9 +875,11 @@ export class BlueprintWorker {
     run: BlueprintRun,
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
-    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+    upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as SummaryNodeConfig;
+    const input = { upstream };
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     if (config.mode === "openclaw_agent") {
       const { result, openclawRef } = await this.runAgentTask({
         blueprintRunId: run.id,
@@ -855,21 +889,23 @@ export class BlueprintWorker {
         agentName: "summary-agent",
         prompt: config.prompt ?? "Summarize upstream node outputs.",
         modelId: config.modelId,
-        input: {
-          upstream
-        },
+        input,
         tools: []
       });
       if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
+        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent task ${result.status}.`);
         return;
       }
-      await this.completeNode({ ...nodeRun, openclawRef, usage: result.usage }, result.output ?? "", openclawRef);
+      if (!hasVisibleAgentOutput(result.output)) {
+        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, this.missingAgentOutputError(openclawRef));
+        return;
+      }
+      await this.completeNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.output, openclawRef);
       return;
     }
 
     await this.completeNode(
-      nodeRun,
+      nodeRunWithInput,
       {
         merged: upstream.map((candidate) => ({
           node: candidate.nodeLabel,
@@ -908,9 +944,10 @@ export class BlueprintWorker {
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
     blueprintName: string,
-    upstream: Array<{ nodeId: string; nodeLabel: string; output: unknown }>
+    upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as SendNodeConfig;
+    const nodeRunWithInput = await this.recordNodeInput(nodeRun, { upstream });
     const summaryPayload = upstream.length <= 1 ? (upstream[0]?.output ?? {}) : upstream;
     const body = config.bodyTemplate
       .replaceAll("{{blueprint.name}}", blueprintName)
@@ -923,7 +960,7 @@ export class BlueprintWorker {
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id
     });
-    await this.completeNode(nodeRun, result);
+    await this.completeNode(nodeRunWithInput, result);
   }
 
   private evaluateCondition(blueprint: BlueprintDefinition, config: ConditionNodeConfig): boolean {
@@ -1085,12 +1122,12 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     blueprintRunId: string,
     node: BlueprintNode
-  ): Promise<Array<{ nodeId: string; nodeLabel: string; output: unknown }>> {
+  ): Promise<UpstreamOutput> {
     const incoming = this.getUpstreamIncomingEdges(blueprint, node);
     if (incoming.length === 0) return [];
 
     const nodeRuns = await this.store.listNodeRuns(blueprintRunId);
-    const outputs: Array<{ nodeId: string; nodeLabel: string; output: unknown }> = [];
+    const outputs: UpstreamOutput = [];
     const seen = new Set<string>();
     const requiredAfterIndex = this.getRequiredAfterIndex(blueprint, node, nodeRuns);
 
@@ -1105,14 +1142,21 @@ export class BlueprintWorker {
       if (!sourceRun || seen.has(sourceRun.nodeId)) continue;
 
       seen.add(sourceRun.nodeId);
-      outputs.push({
-        nodeId: sourceRun.nodeId,
-        nodeLabel: sourceRun.nodeLabel,
-        output: sourceRun.output
-      });
+      outputs.push(this.toUpstreamOutputItem(sourceRun));
     }
 
     return outputs;
+  }
+
+  private toUpstreamOutputItem(nodeRun: BlueprintNodeRun, output = nodeRun.output): UpstreamOutputItem {
+    return {
+      nodeId: nodeRun.nodeId,
+      nodeLabel: nodeRun.nodeLabel,
+      nodeRunId: nodeRun.id,
+      status: nodeRun.status,
+      output,
+      openclawRef: nodeRun.openclawRef
+    };
   }
 
   private async completeNode(nodeRun: BlueprintNodeRun, output: unknown, openclawRef?: OpenClawObjectRef): Promise<void> {
@@ -1125,6 +1169,25 @@ export class BlueprintWorker {
     };
     await this.store.upsertNodeRun(completed);
     await this.event(nodeRun.blueprintRunId, "node.run.completed", `${nodeRun.nodeLabel} completed.`, nodeRun.id, openclawRef);
+  }
+
+  private async collectStandardNodeInput(
+    blueprint: BlueprintDefinition,
+    blueprintRunId: string,
+    node: BlueprintNode
+  ): Promise<StandardNodeInput> {
+    return {
+      upstream: await this.collectUpstreamOutputs(blueprint, blueprintRunId, node)
+    };
+  }
+
+  private async recordNodeInput(nodeRun: BlueprintNodeRun, input: unknown): Promise<BlueprintNodeRun> {
+    const nodeRunWithInput: BlueprintNodeRun = {
+      ...nodeRun,
+      input
+    };
+    await this.store.upsertNodeRun(nodeRunWithInput);
+    return nodeRunWithInput;
   }
 
   private async failNode(nodeRun: BlueprintNodeRun, error: string): Promise<void> {
@@ -1336,13 +1399,21 @@ export class BlueprintWorker {
       agentId: agent.agentId ?? "main",
       agentName: agent.agentName,
       status: result.status,
-      output: result.output ?? "",
+      output: result.output,
       error: result.error,
       taskId: result.taskId,
       runId: result.runId,
       sessionKey: result.sessionKey,
       updatedAt: result.updatedAt
     };
+  }
+
+  private missingAgentOutputError(openclawRef: OpenClawObjectRef): string {
+    const location = [
+      openclawRef.runId ? `runId ${openclawRef.runId}` : undefined,
+      openclawRef.sessionKey ? `session ${openclawRef.sessionKey}` : undefined
+    ].filter(Boolean).join(", ");
+    return `Agent task finished without visible output${location ? ` (${location})` : ""}.`;
   }
 
   private async runAgentTask(input: StartAgentTaskInput): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {
@@ -1470,6 +1541,10 @@ function readInteger(value: unknown): number | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function hasVisibleAgentOutput(output: unknown): output is string {
+  return typeof output === "string" && output.trim().length > 0;
 }
 
 function stringifyManagerSlotOutput(output: unknown): string {

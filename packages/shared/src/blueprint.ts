@@ -799,7 +799,7 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
           portCount: 2,
           maxHandoffs: 8,
           instructions:
-            "Run Slot 1 first. In Slot 1, Agent 1 collects a concrete news brief and Agent 2 turns that brief into an HTML production execution document. Send Slot 1 output to Slot 2. In Slot 2, Agent 1 writes the final standalone HTML code. Complete when Slot 2 returns status complete with an html field."
+            "先运行 Slot 1。Slot 1 中，Agent 1 收集具体新闻简报，Agent 2 把新闻简报整理成可执行的 HTML 页面制作说明。然后把 Slot 1 的输出交给 Slot 2。Slot 2 中，Agent 1 根据制作说明写出完整、可直接运行的独立 HTML 页面。Slot 2 完成后即可结束流程。"
         }
       },
       {
@@ -824,7 +824,7 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
           agentId: "main",
           agentName: "news-researcher",
           prompt:
-            "Collect a concrete news brief for an HTML page. Use the manager input to determine the topic, audience, region, timeframe, and output goal. If the input does not specify a topic, default to AI agent productivity news for builders and operators. Do not ask for clarification and do not leave placeholders. Return strict JSON only: {\"status\":\"continue\",\"topic\":\"...\",\"audience\":\"...\",\"timeframe\":\"...\",\"sourceStatus\":\"verified_sources\"|\"needs_source_verification\",\"newsItems\":[{\"headline\":\"...\",\"summary\":\"...\",\"whyItMatters\":\"...\",\"pageAngle\":\"...\",\"sourceHint\":\"...\"}],\"pageThesis\":\"...\",\"contentRisks\":[...]}. Include 3 to 5 newsItems with specific, page-ready angles.",
+            "为后续 HTML 页面收集一份具体新闻简报。根据管理器输入判断主题、受众、地区、时间范围和最终页面目标；如果输入没有指定主题，默认选择面向构建者和运营者的 AI agent 生产力新闻。不要向用户追问，不要留下占位符。请用清晰的中文结构输出，包含：主题、受众、时间范围、来源状态、3 到 5 条可直接用于页面创作的新闻要点、每条新闻为什么重要、适合页面呈现的角度、来源线索、页面核心主张和内容风险。",
           tools: []
         }
       },
@@ -839,7 +839,7 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
           agentId: "main",
           agentName: "execution-doc-writer",
           prompt:
-            "Use the upstream news brief to write a production-ready HTML execution document for the builder. Do not ask for more context. Do not include [fill in], lorem ipsum, placeholder logos, placeholder testimonials, or unresolved <em>placeholder</em> text. If a detail is missing, make a concrete conservative editorial choice and record it in assumptions. Return strict JSON only: {\"status\":\"continue\",\"nextSlot\":2,\"executionDocumentHtml\":\"<section>...</section>\",\"pageTitle\":\"...\",\"requirements\":[...],\"acceptanceCriteria\":[...],\"assumptions\":[...]}. The executionDocumentHtml must include the final page thesis, section-by-section copy direction, real headings, CTA copy, visual constraints, responsive behavior, and the exact data from the news brief that the HTML must present.",
+            "使用上游新闻简报，写一份可直接交给 HTML 构建者执行的生产说明。不要要求更多上下文，不要出现 [fill in]、lorem ipsum、占位 logo、占位评价或未解决的 placeholder 文本。缺少细节时，请做具体、保守的编辑判断，并在假设中说明。请用中文写成清晰的制作文档，包含：页面标题、核心主张、分区结构、每个区块的真实标题和文案方向、CTA 文案、视觉约束、响应式要求、必须呈现的新闻事实、验收标准和假设。完成后自然交给下一个槽位继续制作页面，不需要输出 JSON。",
           tools: []
         }
       },
@@ -865,7 +865,7 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
           agentId: "main",
           agentName: "html-code-builder",
           prompt:
-            "Use the manager previousResults to find Slot 1 executionDocumentHtml. Build a complete standalone HTML document with inline CSS and any needed inline JavaScript. Return strict JSON only: {\"status\":\"complete\",\"html\":\"<!doctype html>...\",\"buildNotes\":[...]}. The html value must be directly runnable in a browser and must not contain [fill in], lorem ipsum, placeholder logos, placeholder testimonials, or generic bracketed copy. Preserve the news-driven page thesis, headings, CTA text, and concrete content from the execution document.",
+            "根据管理器 previousResults 中的 Slot 1 制作说明，写出一个完整的独立 HTML 文档，包含 inline CSS 和必要的 inline JavaScript。最终输出应当是可直接在浏览器运行的 HTML，不要包含 [fill in]、lorem ipsum、占位 logo、占位评价或泛泛的括号占位文案。保留新闻驱动的页面主张、真实标题、CTA 文案和制作说明中的具体内容。不需要包成 JSON。",
           tools: []
         }
       },

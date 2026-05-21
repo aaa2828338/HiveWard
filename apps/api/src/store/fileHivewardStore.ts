@@ -281,7 +281,10 @@ export class FileHivewardStore {
         throw new Error(`Blueprint run not found: ${run.id}`);
       }
       const archive = await this.readRunArchiveUnlocked(run.id);
-      const nextRun = toBlueprintRunSummary({ ...archive.run, ...run }, archive.blueprintSnapshot);
+      const nextRun = applyNodeRunFactsToRun(
+        toBlueprintRunSummary({ ...archive.run, ...run }, archive.blueprintSnapshot),
+        archive.nodeRuns
+      );
       const nextArchive: BlueprintRunArchive = {
         ...archive,
         run: nextRun,
@@ -306,6 +309,7 @@ export class FileHivewardStore {
 
   async upsertNodeRun(nodeRun: BlueprintNodeRun): Promise<void> {
     await this.enqueue(async () => {
+      const indexState = await this.readIndexUnlocked();
       const archive = await this.readRunArchiveUnlocked(nodeRun.blueprintRunId);
       const index = archive.nodeRuns.findIndex((item) => item.id === nodeRun.id);
       if (index >= 0) {
@@ -313,10 +317,19 @@ export class FileHivewardStore {
       } else {
         archive.nodeRuns.push(nodeRun);
       }
+      const run = applyNodeRunFactsToRun(archive.run, archive.nodeRuns);
+      const runIndex = indexState.runIndex.findIndex((item) => item.id === run.id);
+      if (runIndex >= 0) {
+        indexState.runIndex[runIndex] = run;
+      }
       await this.writeRunArchiveUnlocked({
         ...archive,
-        finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, archive.run.status)
+        run,
+        finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, run.status)
       });
+      if (runIndex >= 0) {
+        await this.writeIndexUnlocked(indexState);
+      }
     });
   }
 
@@ -685,6 +698,18 @@ function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDefinitio
   return {
     ...run,
     blueprintName: run.blueprintName ?? blueprint?.name ?? run.blueprintId
+  };
+}
+
+function applyNodeRunFactsToRun(run: BlueprintRunSummary, nodeRuns: BlueprintNodeRun[]): BlueprintRunSummary {
+  const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
+  const openclawRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.openclawRef ? [nodeRun.openclawRef] : []));
+  return {
+    ...run,
+    totalInputTokens: usage.reduce((sum, item) => sum + item.inputTokens, 0),
+    totalOutputTokens: usage.reduce((sum, item) => sum + item.outputTokens, 0),
+    totalCostUsd: Number(usage.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6)),
+    openclawRefs
   };
 }
 
