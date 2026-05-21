@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Activity,
   ArrowLeft,
   BadgeCheck,
+  Check,
   ChevronRight,
   Clock3,
   Database,
   FolderKanban,
   KeyRound,
+  LayoutTemplate,
   Loader2,
   MessageSquareText,
   PanelsTopLeft,
@@ -42,6 +44,12 @@ import type {
   BlueprintRunView
 } from "@hiveward/shared";
 import type { Language, Messages } from "../lib/i18n";
+import {
+  isTerminalBlueprintRunStatus,
+  readAcknowledgedTerminalRunIds,
+  resolveBlueprintActivityState,
+  writeAcknowledgedTerminalRunIds
+} from "../lib/run-state";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
@@ -168,15 +176,17 @@ export function CompanyDirectoryPage({
   selectedCompanyId,
   language,
   busy,
-  onSelectCompany,
-  onCreateCompany
+  onEnterCompany,
+  onCreateCompany,
+  onDeleteCompany
 }: {
   companies: CompanyOverview[];
   selectedCompanyId?: string;
   language: Language;
   busy: boolean;
-  onSelectCompany: (companyId?: string) => void;
+  onEnterCompany: (companyId: string) => void;
   onCreateCompany: (input: CreateCompanyRequest) => void | Promise<void>;
+  onDeleteCompany: (companyId: string) => void;
 }) {
   const [addingCompany, setAddingCompany] = useState(false);
   const [companyName, setCompanyName] = useState("");
@@ -187,10 +197,6 @@ export function CompanyDirectoryPage({
       ? {
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           goal: "\u4E1A\u52A1\u76EE\u6807",
-          blueprints: "\u84dd\u56fe",
-          runs: "\u8FD0\u884C",
-          tokens: "Token \u6D88\u8017",
-          approvals: "\u5F85\u5BA1\u6279",
           active: "\u5F53\u524D\u516C\u53F8",
           switchTitle: "\u516C\u53F8\u5217\u8868",
           switchSubtitle: "\u9009\u62E9\u516C\u53F8\u540E\uff0c\u5176\u4ED6\u5DE5\u4F5C\u533A\u4F1A\u5207\u5230\u8BE5\u516C\u53F8\u7684\u6570\u636E\u8303\u56F4\u3002",
@@ -203,16 +209,13 @@ export function CompanyDirectoryPage({
           logoPlaceholder: "HW",
           create: "\u521B\u5EFA\u516C\u53F8",
           cancel: "\u53D6\u6D88",
-          clear: "\u6E05\u7A7A\u5F53\u524D\u9009\u62E9",
-          select: "\u5207\u6362\u5230\u8BE5\u516C\u53F8"
+          enter: "\u8FDB\u5165\u516C\u53F8",
+          delete: "\u5220\u9664\u516C\u53F8",
+          deleteConfirm: (name: string) => `\u5220\u9664\u516C\u53F8\u201C${name}\u201D\u4F1A\u79FB\u9664\u8BE5\u516C\u53F8\u4E0B\u7684\u84DD\u56FE\u548C\u8FD0\u884C\u8BB0\u5F55\u3002\u786E\u8BA4\u5220\u9664\uFF1F`
         }
       : {
           noCompanies: "No companies are available.",
           goal: "Business goal",
-          blueprints: "Blueprints",
-          runs: "Runs",
-          tokens: "Tokens",
-          approvals: "Pending approvals",
           active: "Current company",
           switchTitle: "Companies",
           switchSubtitle: "Choosing a company updates the scope for the rest of the workspace.",
@@ -225,8 +228,9 @@ export function CompanyDirectoryPage({
           logoPlaceholder: "HW",
           create: "Create company",
           cancel: "Cancel",
-          clear: "Clear selection",
-          select: "Switch to company"
+          enter: "Enter company",
+          delete: "Delete company",
+          deleteConfirm: (name: string) => `Deleting "${name}" removes its blueprints and run history. Delete this company?`
         };
 
   const canCreateCompany = companyName.trim().length > 0 && !busy;
@@ -251,25 +255,30 @@ export function CompanyDirectoryPage({
     ).then(resetCompanyForm);
   };
 
+  const deleteCompany = (company: CompanyOverview) => {
+    if (busy || !window.confirm(copy.deleteConfirm(company.name))) return;
+    onDeleteCompany(company.id);
+  };
+
   return (
     <section className="page-grid company-page-grid">
-      <div className="content-card stack-card company-selector-card">
-        <div className="card-toolbar company-selector-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.switchTitle}</h3>
-            <p>{copy.switchSubtitle}</p>
-          </div>
-          <button
-            type="button"
-            className="primary-action"
-            disabled={busy}
-            onClick={() => setAddingCompany((current) => !current)}
-          >
-            {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-            {copy.addCompany}
-          </button>
+      <div className="company-directory-header">
+        <div className="card-title-block">
+          <h3>{copy.switchTitle}</h3>
+          <p>{copy.switchSubtitle}</p>
         </div>
+        <button
+          type="button"
+          className="primary-action"
+          disabled={busy}
+          onClick={() => setAddingCompany((current) => !current)}
+        >
+          {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+          {copy.addCompany}
+        </button>
+      </div>
 
+      <div className="content-card stack-card company-selector-card">
         {addingCompany && (
           <div className="company-create-panel">
             <div className="card-title-block">
@@ -319,12 +328,9 @@ export function CompanyDirectoryPage({
         ) : (
           <div className="company-list-grid">
             {companies.map((company) => (
-              <button
+              <article
                 key={company.id}
-                type="button"
                 className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
-                disabled={busy}
-                onClick={() => onSelectCompany(company.id)}
               >
                 <div className="company-list-card-top">
                   <div className="company-logo-small">
@@ -335,23 +341,21 @@ export function CompanyDirectoryPage({
                     <span>{company.businessGoal}</span>
                   </div>
                 </div>
-                <div className="company-list-card-metrics">
-                  <span>{`${copy.blueprints}: ${company.blueprintCount}`}</span>
-                  <span>{`${copy.runs}: ${company.runCount}`}</span>
-                  <span>{`${copy.tokens}: ${company.totalTokens.toLocaleString(language)}`}</span>
-                  <span>{`${copy.approvals}: ${company.activeApprovalCount}`}</span>
+                {company.id === selectedCompanyId && <span className="company-list-card-status">{copy.active}</span>}
+                <div className="company-list-card-actions">
+                  <button type="button" className="primary-action" onClick={() => onEnterCompany(company.id)} disabled={busy}>
+                    <ChevronRight size={16} />
+                    {copy.enter}
+                  </button>
+                  <button type="button" className="danger-action" onClick={() => deleteCompany(company)} disabled={busy}>
+                    <Trash2 size={16} />
+                    {copy.delete}
+                  </button>
                 </div>
-                <span className="company-list-card-action">{company.id === selectedCompanyId ? copy.active : copy.select}</span>
-              </button>
+              </article>
             ))}
           </div>
         )}
-
-        <div className="card-actions">
-          <button type="button" onClick={() => onSelectCompany(undefined)} disabled={busy || !selectedCompanyId}>
-            {copy.clear}
-          </button>
-        </div>
       </div>
 
     </section>
@@ -372,30 +376,12 @@ export function CompanyPage({
       ? {
           choose: "\u9009\u62E9\u516C\u53F8",
           noSelection: "\u5F53\u524D\u8FD8\u6CA1\u6709\u9009\u4E2D\u516C\u53F8\u3002\u8BF7\u5148\u4ECE\u5DE6\u4E0B\u89D2\u7684\u516C\u53F8\u5165\u53E3\u5207\u6362\u3002",
-          noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
-          goal: "\u4E1A\u52A1\u76EE\u6807",
-          blueprints: "\u84dd\u56fe",
-          runs: "\u8FD0\u884C",
-          tokens: "Token \u6D88\u8017",
-          approvals: "\u5F85\u5BA1\u6279",
-          widgets: "\u603B\u89C8\u5361\u7247",
-          cost: "\u6210\u672C",
-          latest: "\u6700\u8FD1\u8FD0\u884C",
-          active: "\u5F53\u524D\u516C\u53F8"
+          noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002"
         }
       : {
           choose: "Choose company",
           noSelection: "No company is selected yet. Use the company entry at the lower left to choose one first.",
-          noCompanies: "No companies are available.",
-          goal: "Business goal",
-          blueprints: "Blueprints",
-          runs: "Runs",
-          tokens: "Tokens",
-          approvals: "Pending approvals",
-          widgets: "Overview widgets",
-          cost: "Cost",
-          latest: "Latest run",
-          active: "Current company"
+          noCompanies: "No companies are available."
         };
 
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
@@ -404,32 +390,15 @@ export function CompanyPage({
     <section className="page-grid company-page-grid">
       <div className="content-card stack-card company-hero-card">
         {selectedCompany ? (
-          <div className="company-hero-layout">
-            <div className="company-hero-main">
-              <div className="company-brand-block">
-                <div className="company-logo-large">
-                  {selectedCompany.logoUrl ? <img src={selectedCompany.logoUrl} alt={selectedCompany.name} /> : companyMonogram(selectedCompany)}
-                </div>
-                <div className="company-brand-copy">
-                  <span className="hero-eyebrow">{copy.active}</span>
-                  <h3>{selectedCompany.name}</h3>
-                  <p>{selectedCompany.businessGoal}</p>
-                </div>
+          <div className="company-brand-poster" aria-label={selectedCompany.name}>
+            <div className="company-brand-block">
+              <div className="company-logo-large">
+                {selectedCompany.logoUrl ? <img src={selectedCompany.logoUrl} alt={selectedCompany.name} /> : companyMonogram(selectedCompany)}
               </div>
-
-              <div className="company-detail-grid">
-                <CompanyDetailCard label={copy.goal} value={selectedCompany.businessGoal} />
-                <CompanyDetailCard label={copy.cost} value={`$${selectedCompany.totalCostUsd.toFixed(4)}`} />
-                <CompanyDetailCard label={copy.latest} value={selectedCompany.latestRunAt ? formatDateTime(selectedCompany.latestRunAt, language) : "-"} />
-                <CompanyDetailCard label={copy.widgets} value={selectedCompany.dashboardWidgetCount} />
+              <div className="company-brand-copy">
+                <h3>{selectedCompany.name}</h3>
+                <p>{selectedCompany.businessGoal}</p>
               </div>
-            </div>
-
-            <div className="company-stat-grid">
-              <CompanyStatCard label={copy.blueprints} value={selectedCompany.blueprintCount.toLocaleString(language)} />
-              <CompanyStatCard label={copy.runs} value={selectedCompany.runCount.toLocaleString(language)} />
-              <CompanyStatCard label={copy.tokens} value={selectedCompany.totalTokens.toLocaleString(language)} />
-              <CompanyStatCard label={copy.approvals} value={selectedCompany.activeApprovalCount.toLocaleString(language)} />
             </div>
           </div>
         ) : (
@@ -463,118 +432,257 @@ export function RunsPage({
   onSelectRun: (runId: string) => void;
 }) {
   const blueprintRuns = useMemo(
-    () => (blueprint ? runs.filter((runView) => runView.run.blueprintId === blueprint.id) : []),
+    () =>
+      blueprint
+        ? runs
+            .filter((runView) => runView.run.blueprintId === blueprint.id)
+            .sort((left, right) => new Date(right.run.startedAt).getTime() - new Date(left.run.startedAt).getTime())
+        : [],
     [runs, blueprint]
   );
-  const currentTasks = useMemo(() => blueprintRuns.filter((runView) => isActiveRunStatus(runView.run.status)), [blueprintRuns]);
-  const taskOptions = currentTasks.length > 0 ? currentTasks : blueprintRuns;
-  const activeRun = taskOptions.find((runView) => runView.run.id === selectedRunId) ?? taskOptions[0];
+  const activeRun = blueprintRuns.find((runView) => runView.run.id === selectedRunId) ?? blueprintRuns[0];
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
+  const [blueprintPickerOpen, setBlueprintPickerOpen] = useState(false);
+  const [runHistoryOpen, setRunHistoryOpen] = useState(false);
+  const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() =>
+    readAcknowledgedTerminalRunIds(getBrowserStorage())
+  );
   const orderedNodes = useMemo(() => getBlueprintNodeOrder(blueprint), [blueprint]);
+  const blueprintRunStats = useMemo(() => {
+    const stats = new Map<string, { latestRunId?: string; latestStatus?: BlueprintRunStatus; lastUsedAt: number }>();
+    for (const runView of runs) {
+      const startedAt = toSafeTimestamp(runView.run.startedAt);
+      const current = stats.get(runView.run.blueprintId);
+      if (!current || startedAt >= current.lastUsedAt) {
+        stats.set(runView.run.blueprintId, {
+          latestRunId: runView.run.id,
+          latestStatus: runView.run.status,
+          lastUsedAt: startedAt
+        });
+      }
+    }
+    return stats;
+  }, [runs]);
+  const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
 
   const issues = useMemo<TraceIssue[]>(() => {
     return buildTraceIssues(activeRun, blueprint, orderedNodes, t);
   }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, blueprint?.nodes]);
 
-  const activeIssue =
-    issues.find((issue) => issue.key === activeIssueKey) ??
-    selectPreferredTraceIssue(issues) ??
-    issues[0];
+  const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : undefined;
+  const activeIssueOutput =
+    activeIssue?.outputBody !== undefined
+      ? activeIssue.outputBody
+      : activeIssue?.nodeRun?.output !== undefined
+        ? formatOutput(activeIssue.nodeRun.output)
+        : activeIssue?.nodeRun?.error;
+  const isActiveIssueError = activeIssue?.outputBody === undefined && activeIssue?.nodeRun?.output === undefined && Boolean(activeIssue?.nodeRun?.error);
+  const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
+  const runFrameState = traceRunFrameState(activeRun?.run.status);
 
   useEffect(() => {
     if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
     setActiveIssueKey(undefined);
   }, [activeIssueKey, issues]);
 
+  const acknowledgeTerminalRun = useCallback(
+    (blueprintId: string) => {
+      const stats = blueprintRunStats.get(blueprintId);
+      if (!stats?.latestRunId || !isTerminalBlueprintRunStatus(stats.latestStatus)) return;
+      setAcknowledgedTerminalRunIds((current) => {
+        if (current.has(stats.latestRunId!)) return current;
+        const next = new Set(current);
+        next.add(stats.latestRunId!);
+        return next;
+      });
+    },
+    [blueprintRunStats]
+  );
+
+  useEffect(() => {
+    if (!blueprint?.id) return;
+    acknowledgeTerminalRun(blueprint.id);
+  }, [acknowledgeTerminalRun, blueprint?.id, currentBlueprintRunStats?.latestRunId, currentBlueprintRunStats?.latestStatus]);
+
+  useEffect(() => {
+    writeAcknowledgedTerminalRunIds(getBrowserStorage(), acknowledgedTerminalRunIds);
+  }, [acknowledgedTerminalRunIds]);
+
+  useEffect(() => {
+    if (runs.length === 0) return;
+    const runIds = new Set(runs.map((runView) => runView.run.id));
+    setAcknowledgedTerminalRunIds((current) => {
+      const next = new Set([...current].filter((runId) => runIds.has(runId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [runs]);
+
+  const selectBlueprintForRunPage = (blueprintId: string) => {
+    acknowledgeTerminalRun(blueprintId);
+    onSelectBlueprint(blueprintId);
+    const latestRun = runs
+      .filter((runView) => runView.run.blueprintId === blueprintId)
+      .sort((left, right) => toSafeTimestamp(right.run.startedAt) - toSafeTimestamp(left.run.startedAt))[0];
+    if (latestRun) {
+      onSelectRun(latestRun.run.id);
+    }
+    setBlueprintPickerOpen(false);
+    setRunHistoryOpen(false);
+    setActiveIssueKey(undefined);
+  };
+
+  const selectRunHistoryItem = (runId: string) => {
+    onSelectRun(runId);
+    setRunHistoryOpen(false);
+    setActiveIssueKey(undefined);
+  };
+
   return (
     <section className="page-grid trace-page-grid">
-      <div className="content-card stack-card trace-page-header">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.trace.title}</h3>
-            <p>{currentTasks.length > 0 ? t.metrics.runs(currentTasks.length) : t.trace.description}</p>
+      <div className="trace-page-title">
+        <h2>{t.navigation.runs}</h2>
+        <div className="run-top-actions">
+          <div className="run-picker-wrap">
+            <button
+              type="button"
+              className="run-record-selector blueprint-selector-button"
+              title={activeRun ? t.trace.runOption(activeRun.run.id, formatDateTime(activeRun.run.startedAt, language)) : runRecordButtonLabel}
+              onClick={() => {
+                setRunHistoryOpen((current) => !current);
+                setBlueprintPickerOpen(false);
+              }}
+              disabled={!blueprint || blueprintRuns.length === 0}
+            >
+              <Clock3 size={16} />
+              <span>{runRecordButtonLabel}</span>
+            </button>
+            {runHistoryOpen && (
+              <div className="run-selection-panel run-history-panel">
+                <div className="run-history-list">
+                  {blueprintRuns.map((runView) => {
+                    const selected = runView.run.id === activeRun?.run.id;
+                    return (
+                      <button
+                        key={runView.run.id}
+                        type="button"
+                        className={`blueprint-card-button run-history-button${selected ? " selected" : ""}`}
+                        onClick={() => selectRunHistoryItem(runView.run.id)}
+                      >
+                        <span className="blueprint-card-icon">
+                          <Clock3 size={17} />
+                        </span>
+                        <strong>{t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}</strong>
+                        {selected && <Check className="blueprint-card-check" size={14} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
-          <div className="toolbar-cluster trace-toolbar">
-            <select value={blueprint?.id ?? ""} onChange={(event) => onSelectBlueprint(event.target.value)}>
-              {blueprints.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-            <select value={activeRun?.run.id ?? ""} onChange={(event) => onSelectRun(event.target.value)} disabled={taskOptions.length === 0}>
-              {taskOptions.length === 0 ? (
-                <option value="">{t.empty.selectRun}</option>
-              ) : (
-                taskOptions.map((runView) => (
-                  <option key={runView.run.id} value={runView.run.id}>
-                    {t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}
-                  </option>
-                ))
-              )}
-            </select>
+          <div className="run-picker-wrap">
+            <button
+              type="button"
+              className="run-blueprint-selector blueprint-selector-button"
+              title={t.fields.blueprint}
+              onClick={() => {
+                setBlueprintPickerOpen((current) => !current);
+                setRunHistoryOpen(false);
+              }}
+              disabled={blueprints.length === 0}
+            >
+              <LayoutTemplate size={16} />
+              <span>{blueprint?.name ?? t.empty.selectBlueprint}</span>
+            </button>
+            {blueprintPickerOpen && (
+              <div className="run-selection-panel run-blueprint-panel">
+                <div className="run-blueprint-card-list blueprint-card-list">
+                  {blueprints.length === 0 ? (
+                    <div className="empty-state compact-empty-state">{t.empty.selectBlueprint}</div>
+                  ) : (
+                    blueprints.map((item) => {
+                      const selected = item.id === blueprint?.id;
+                      const stats = blueprintRunStats.get(item.id);
+                      const terminalStatusSeen =
+                        item.id === blueprint?.id || (stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false);
+                      const activity = resolveBlueprintActivityState(stats?.latestStatus, terminalStatusSeen);
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
+                          onClick={() => selectBlueprintForRunPage(item.id)}
+                        >
+                          <span className="blueprint-card-icon">
+                            <LayoutTemplate size={17} />
+                          </span>
+                          <strong>{item.name}</strong>
+                          {selected && <Check className="blueprint-card-check" size={14} />}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       <section className="trace-layout">
-        <div className="content-card stack-card trace-issue-column">
+        <div className="trace-column-shell">
           <div className="trace-column-header">
             <h3>{t.trace.issueList}</h3>
-            {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
           </div>
-          <div className="trace-issue-list">
-            {!blueprint ? (
-              <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-            ) : issues.length === 0 ? (
-              <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-            ) : (
-              issues.map((issue) => (
-                <button
-                  key={issue.key}
-                  type="button"
-                  className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
-                  onClick={() => setActiveIssueKey(issue.key)}
-                >
-                  <div className="trace-issue-index">{issue.index}</div>
-                  <div className="trace-issue-main">
-                    <div className="trace-issue-topline">
-                      <strong>{issue.label}</strong>
-                      <span className={`trace-status-chip trace-${issue.issueStatus}`}>{traceIssueStatusLabel(issue.issueStatus, language)}</span>
+          <div className={`content-card stack-card trace-issue-column trace-run-frame-${runFrameState}`}>
+            <div className="trace-issue-list">
+              {!blueprint ? (
+                <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+              ) : issues.length === 0 ? (
+                <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+              ) : (
+                issues.map((issue) => (
+                  <button
+                    key={issue.key}
+                    type="button"
+                    className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
+                    onClick={() => setActiveIssueKey(issue.key)}
+                  >
+                    <div className="trace-issue-index">{issue.index}</div>
+                    <div className="trace-issue-main">
+                      <div className="trace-issue-topline">
+                        <strong>{issue.label}</strong>
+                        <span className={`trace-status-chip trace-${issue.issueStatus}`}>{traceIssueStatusLabel(issue.issueStatus, language)}</span>
+                      </div>
+                      <MarkdownRenderer value={issue.outputPreview} className="trace-issue-preview" />
                     </div>
-                    <MarkdownRenderer value={issue.outputPreview} className="trace-issue-preview" />
-                  </div>
-                </button>
-              ))
-            )}
+                  </button>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
-        <div className="content-card stack-card trace-output-column">
-          {activeIssue ? (
-            <>
-              <div className="trace-column-header">
-                <h3>{t.trace.modelOutput}</h3>
-              </div>
-              <div className="trace-output-stream">
-                {activeIssue.outputBody !== undefined ? (
-                  <TraceBubble
-                    role={activeIssue.kind === "slot_input" ? "system" : "assistant"}
-                    title={activeIssue.label}
-                    body={activeIssue.outputBody}
-                  />
-                ) : activeIssue.nodeRun?.output !== undefined ? (
-                  <TraceBubble role="assistant" title={activeIssue.label} body={formatOutput(activeIssue.nodeRun.output)} />
-                ) : activeIssue.nodeRun?.error ? (
-                  <TraceBubble role="error" title={t.status.failed} body={activeIssue.nodeRun.error} />
-                ) : (
-                  <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
-                )}
-              </div>
-            </>
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-          )}
+        <div className="trace-column-shell">
+          <div className="trace-column-header">
+            <h3>{t.trace.modelOutput}</h3>
+          </div>
+          <div className="content-card stack-card trace-output-column">
+            {activeIssue ? (
+              activeIssueOutput !== undefined ? (
+                <MarkdownRenderer
+                  value={activeIssueOutput}
+                  className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
+                />
+              ) : (
+                <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+              )
+            ) : activeRun ? (
+              <div className="empty-state page-empty">{t.empty.selectNode}</div>
+            ) : (
+              <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+            )}
+          </div>
         </div>
       </section>
     </section>
@@ -593,52 +701,154 @@ export function ApprovalsPage({
   onApprove: (blueprintRunId: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
+  const inboxCopy = getInboxCopy(language);
+  const [selectedApprovalId, setSelectedApprovalId] = useState<string | undefined>(approvals[0]?.nodeRunId);
+  const selectedApproval = approvals.find((approval) => approval.nodeRunId === selectedApprovalId) ?? approvals[0];
+
+  useEffect(() => {
+    setSelectedApprovalId((current) => {
+      if (current && approvals.some((approval) => approval.nodeRunId === current)) return current;
+      return approvals[0]?.nodeRunId;
+    });
+  }, [approvals]);
 
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{approvalsPage.title}</h3>
-            <p>{t.metrics.approvals(approvals.length)}</p>
+    <section className="page-grid trace-page-grid inbox-page-grid">
+      <div className="trace-page-title inbox-page-title">
+        <h2>{approvalsPage.title}</h2>
+        <p>{t.metrics.approvals(approvals.length)}</p>
+      </div>
+
+      <section className="trace-layout inbox-layout">
+        <div className="trace-column-shell inbox-column-shell">
+          <div className="trace-column-header inbox-column-header">
+            <h3>{inboxCopy.listTitle}</h3>
+          </div>
+          <div className="content-card stack-card inbox-list-column">
+            <div className="inbox-list" role="list" aria-label={inboxCopy.listTitle}>
+              {approvals.length === 0 ? (
+                <div className="inbox-empty-copy">
+                  <strong>{inboxCopy.emptyListTitle}</strong>
+                  <p>{inboxCopy.emptyListBody}</p>
+                </div>
+              ) : (
+                approvals.map((approval, index) => {
+                  const selected = approval.nodeRunId === selectedApproval?.nodeRunId;
+                  return (
+                    <article key={approval.nodeRunId} className={`inbox-row${selected ? " selected" : ""}`} role="listitem">
+                      <button
+                        type="button"
+                        className="inbox-row-main"
+                        aria-pressed={selected}
+                        onClick={() => setSelectedApprovalId(approval.nodeRunId)}
+                      >
+                        <span className="inbox-row-index">{index + 1}</span>
+                        <span className="inbox-row-content">
+                          <span className="inbox-row-topline">
+                            <strong>{approvalSubject(approval)}</strong>
+                            <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
+                          </span>
+                          <span className="inbox-row-preview">{approvalPreviewText(approval, inboxCopy, t)}</span>
+                          <span className="inbox-row-meta">
+                            <span>{approval.blueprintName}</span>
+                            <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
+                          </span>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="inbox-row-action primary-action"
+                        title={t.actions.approve}
+                        aria-label={t.actions.approve}
+                        onClick={() => onApprove(approval.blueprintRunId)}
+                      >
+                        <BadgeCheck size={16} />
+                      </button>
+                    </article>
+                  );
+                })
+              )}
+            </div>
           </div>
         </div>
-        <div className="card-grid approval-grid">
-          {approvals.length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noApprovals}</div>
-          ) : (
-            approvals.map((approval) => (
-              <article key={approval.nodeRunId} className="feature-card approval-card">
-                <div className="feature-card-header">
-                  <div>
-                    <strong>{approval.nodeLabel}</strong>
-                    <p>{approval.blueprintName}</p>
-                  </div>
-                  <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
-                </div>
-                <dl className="meta-grid">
-                  <dt>{t.fields.relatedBlueprint}</dt>
-                  <dd>{approval.blueprintName}</dd>
-                  <dt>{t.fields.relatedRun}</dt>
-                  <dd>{approval.blueprintRunId}</dd>
-                  <dt>{t.fields.updatedAt}</dt>
-                  <dd>{formatDateTime(approval.requestedAt, language)}</dd>
-                </dl>
-                {approval.approverHint && <p className="supporting-copy">{approval.approverHint}</p>}
-                {approval.instructions && <MarkdownRenderer value={approval.instructions} className="inline-note" />}
-                <div className="card-actions">
-                  <button type="button" className="primary-action" onClick={() => onApprove(approval.blueprintRunId)}>
-                    <BadgeCheck size={16} />
-                    {t.actions.approve}
-                  </button>
-                </div>
-              </article>
-            ))
-          )}
+
+        <div className="trace-column-shell inbox-column-shell">
+          <div className="trace-column-header inbox-column-header">
+            <h3>{inboxCopy.detailTitle}</h3>
+          </div>
+          <div className="content-card stack-card inbox-workspace-column" aria-label={inboxCopy.detailTitle}>
+            <div className="inbox-workspace-placeholder" aria-hidden="true" />
+          </div>
         </div>
-      </div>
+      </section>
     </section>
   );
+}
+
+type InboxCopy = {
+  detailTitle: string;
+  emptyListBody: string;
+  emptyListTitle: string;
+  listTitle: string;
+  noUpstreamOutput: string;
+};
+
+type InboxContentBlock = {
+  key: string;
+  label: string;
+  body: string;
+};
+
+function getInboxCopy(language: Language): InboxCopy {
+  if (language === "zh-CN") {
+    return {
+      detailTitle: "邮件详情",
+      emptyListBody: "新的人工审批会按时间出现在这里。",
+      emptyListTitle: "当前没有待审批收件",
+      listTitle: "收件",
+      noUpstreamOutput: "没有拿到上一个节点输出。"
+    };
+  }
+
+  return {
+    detailTitle: "Message detail",
+    emptyListBody: "New human approvals will appear here by request time.",
+    emptyListTitle: "No pending inbox items",
+    listTitle: "Messages",
+    noUpstreamOutput: "No previous node output was captured."
+  };
+}
+
+function approvalSubject(approval: PendingApprovalItem): string {
+  return approval.nodeLabel || approval.blueprintName;
+}
+
+function approvalPreviewText(approval: PendingApprovalItem, copy: InboxCopy, t: Messages): string {
+  return approvalContentBlocks(approval, copy, t)
+    .map((block) => block.body)
+    .join("\n\n");
+}
+
+function approvalContentBlocks(approval: PendingApprovalItem, copy: InboxCopy, t: Messages): InboxContentBlock[] {
+  const upstream = approval.upstream ?? [];
+  if (!upstream.length) {
+    return [
+      {
+        key: `${approval.nodeRunId}:empty`,
+        label: t.trace.modelOutput,
+        body: copy.noUpstreamOutput
+      }
+    ];
+  }
+
+  return upstream.map((item) => {
+    const formatted = (formatOutput(item.output) ?? "").trim();
+    return {
+      key: item.nodeRunId,
+      label: item.nodeLabel,
+      body: formatted || t.trace.noOutput
+    };
+  });
 }
 
 export function DashboardPage({
@@ -1216,15 +1426,13 @@ export function SkillsPage({
   );
 }
 
-export function SchedulePage({
-  runtime,
+export function HistoryPage({
   runs,
   approvals,
   blueprints,
   language,
   t
 }: {
-  runtime?: RuntimeOverview;
   runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
   blueprints: BlueprintDefinition[];
@@ -1234,93 +1442,71 @@ export function SchedulePage({
   const copy =
     language === "zh-CN"
       ? {
-          calendar: "\u65e5\u5386",
-          records: "\u5f53\u5929\u8bb0\u5f55",
-          active: "\u8fdb\u884c\u4e2d",
-          blueprintTasks: "\u84dd\u56fe\u8fd0\u884c",
+          title: "\u5386\u53f2",
+          runHistory: "\u8fd0\u884c\u5386\u53f2",
           inbox: "\u6536\u4ef6\u7bb1",
-          selectedDate: "\u9009\u62e9\u65e5\u671f",
-          noRecords: "\u8be5\u65e5\u671f\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
+          fromDate: "\u5f00\u59cb\u65e5\u671f",
+          toDate: "\u7ed3\u675f\u65e5\u671f",
+          noRecords: "\u8be5\u65f6\u95f4\u8303\u56f4\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
           startedAt: "\u542f\u52a8\u65f6\u95f4"
         }
       : {
-          calendar: "Calendar",
-          records: "Records for the day",
-          active: "In progress",
-          blueprintTasks: "Blueprint runs",
+          title: "History",
+          runHistory: "Run history",
           inbox: "Inbox",
-          selectedDate: "Selected date",
-          noRecords: "No records for this date.",
+          fromDate: "Start date",
+          toDate: "End date",
+          noRecords: "No records for this date range.",
           startedAt: "Started"
         };
-  const [selectedDate, setSelectedDate] = useState(() => toDateInputValue(new Date()));
-  const runtimeTasksForDay = useMemo(
-    () => (runtime?.tasks ?? []).filter((task) => isSameLocalDate(task.updatedAt, selectedDate)),
-    [runtime?.tasks, selectedDate]
-  );
-  const sessionsForDay = useMemo(
-    () => (runtime?.sessions ?? []).filter((session) => isSameLocalDate(session.updatedAt, selectedDate)),
-    [runtime?.sessions, selectedDate]
-  );
-  const blueprintTasksForDay = useMemo(
+  const [startDate, setStartDate] = useState(() => toDateInputValue(addDays(new Date(), -6)));
+  const [endDate, setEndDate] = useState(() => toDateInputValue(new Date()));
+  const [rangeStart, rangeEnd] = normalizeDateRange(startDate, endDate);
+  const runHistoryForRange = useMemo(
     () =>
-      runs.filter(
-        (runView) =>
-          isSameLocalDate(runView.run.startedAt, selectedDate) ||
-          (runView.run.endedAt ? isSameLocalDate(runView.run.endedAt, selectedDate) : false)
+      runs.filter((runView) =>
+        isRunInDateRange(runView, rangeStart, rangeEnd)
       ),
-    [runs, selectedDate]
+    [runs, rangeStart, rangeEnd]
   );
-  const inboxForDay = useMemo(
-    () => approvals.filter((approval) => isSameLocalDate(approval.requestedAt, selectedDate)),
-    [approvals, selectedDate]
+  const inboxForRange = useMemo(
+    () => approvals.filter((approval) => isLocalDateInRange(approval.requestedAt, rangeStart, rangeEnd)),
+    [approvals, rangeStart, rangeEnd]
   );
-  const activeTasks =
-    runtimeTasksForDay.filter((task) => task.status === "queued" || task.status === "running").length +
-    blueprintTasksForDay.filter((runView) => isActiveRunStatus(runView.run.status)).length;
-  const totalRecords = runtimeTasksForDay.length + sessionsForDay.length + blueprintTasksForDay.length + inboxForDay.length;
 
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
+    <section className="page-grid history-page-grid">
+      <div className="content-card stack-card history-header-card">
         <div className="card-toolbar">
           <div className="card-title-block">
-            <h3>{copy.calendar}</h3>
-            <p>{copy.records}</p>
+            <h3>{copy.title}</h3>
           </div>
-          <label className="date-picker-field">
-            <span>{copy.selectedDate}</span>
-            <input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value || toDateInputValue(new Date()))} />
-          </label>
-        </div>
-        <div className="metric-strip">
-          <div className="metric-chip">
-            <Clock3 size={16} />
-            <span>{formatDateLabel(selectedDate, language)}</span>
-          </div>
-          <div className="metric-chip">
-            <Clock3 size={16} />
-            <span>{`${copy.records}: ${totalRecords}`}</span>
-          </div>
-          <div className="metric-chip">
-            <Activity size={16} />
-            <span>{`${copy.active}: ${activeTasks}`}</span>
+          <div className="history-date-range">
+            <label className="date-picker-field">
+              <span>{copy.fromDate}</span>
+              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value || toDateInputValue(new Date()))} />
+            </label>
+            <label className="date-picker-field">
+              <span>{copy.toDate}</span>
+              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value || toDateInputValue(new Date()))} />
+            </label>
           </div>
         </div>
       </div>
 
-      <section className="card-grid data-card-grid">
-        <TableCard title={copy.blueprintTasks} rows={blueprintTasksForDay.length}>
-          {blueprintTasksForDay.length ? (
-            blueprintTasksForDay.map((runView) => (
-              <div key={runView.run.id} className="table-row">
-                <div>
+      <section className="card-grid history-card-grid">
+        <TableCard title={copy.runHistory} rows={runHistoryForRange.length} className="history-card">
+          {runHistoryForRange.length ? (
+            runHistoryForRange.map((runView) => (
+              <div key={runView.run.id} className="table-row history-list-row">
+                <div className="history-list-main">
                   <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
                   <p>{runView.run.id}</p>
                 </div>
-                <div className="table-meta">
-                  <span className={`status-pill status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-                  <span>{`${copy.startedAt}: ${formatDateTime(runView.run.startedAt, language)}`}</span>
+                <span className={`status-pill history-list-status status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
+                <div className="history-list-meta">
+                  <span>{copy.startedAt}</span>
+                  <time dateTime={runView.run.startedAt}>{formatDateTime(runView.run.startedAt, language)}</time>
                 </div>
               </div>
             ))
@@ -1329,59 +1515,23 @@ export function SchedulePage({
           )}
         </TableCard>
 
-        <TableCard title={t.tables.tasks} rows={runtimeTasksForDay.length}>
-          {runtimeTasksForDay.length ? (
-            runtimeTasksForDay.map((task) => (
-              <div key={task.id} className="table-row">
-                <div>
-                  <strong>{task.title}</strong>
-                  <p>{task.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span className={`status-pill status-${task.status}`}>{t.status[task.status]}</span>
-                  <span>{formatDateTime(task.updatedAt, language)}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{copy.noRecords}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={copy.inbox} rows={inboxForDay.length}>
-          {inboxForDay.length ? (
-            inboxForDay.map((approval) => (
-              <div key={approval.nodeRunId} className="table-row">
-                <div>
+        <TableCard title={copy.inbox} rows={inboxForRange.length} className="history-card">
+          {inboxForRange.length ? (
+            inboxForRange.map((approval) => (
+              <div key={approval.nodeRunId} className="table-row history-list-row">
+                <div className="history-list-main">
                   <strong>{approval.nodeLabel}</strong>
                   <p>{approval.blueprintName}</p>
                 </div>
-                <div className="table-meta">
-                  <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
-                  <span>{formatDateTime(approval.requestedAt, language)}</span>
+                <span className="status-pill history-list-status status-waiting_approval">{t.status.waiting_approval}</span>
+                <div className="history-list-meta">
+                  <span>{approval.blueprintName}</span>
+                  <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
                 </div>
               </div>
             ))
           ) : (
             <div className="empty-state page-empty">{t.empty.noApprovals}</div>
-          )}
-        </TableCard>
-
-        <TableCard title={t.tables.sessions} rows={sessionsForDay.length}>
-          {sessionsForDay.length ? (
-            sessionsForDay.map((session) => (
-              <div key={session.id} className="table-row">
-                <div>
-                  <strong>{session.title}</strong>
-                  <p>{session.id}</p>
-                </div>
-                <div className="table-meta">
-                  <span>{formatDateTime(session.updatedAt, language)}</span>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{copy.noRecords}</div>
           )}
         </TableCard>
       </section>
@@ -1956,9 +2106,9 @@ function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string,
   return actual === field.visibleWhen.equals;
 }
 
-function TableCard({ title, rows, children }: { title: string; rows: number; children: ReactNode }) {
+function TableCard({ title, rows, children, className = "" }: { title: string; rows: number; children: ReactNode; className?: string }) {
   return (
-    <div className="content-card stack-card">
+    <div className={`content-card stack-card ${className}`.trim()}>
       <div className="card-toolbar">
         <div className="card-title-block">
           <h3>{title}</h3>
@@ -1967,41 +2117,6 @@ function TableCard({ title, rows, children }: { title: string; rows: number; chi
       </div>
       <div className="table-stack">{children}</div>
     </div>
-  );
-}
-
-function CompanyDetailCard({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div className="company-detail-card">
-      <span>{label}</span>
-      <strong>{String(value)}</strong>
-    </div>
-  );
-}
-
-function CompanyStatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="company-stat-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function TraceBubble({
-  role,
-  title,
-  body
-}: {
-  role: "system" | "assistant" | "error";
-  title: string;
-  body: string;
-}) {
-  return (
-    <article className={`trace-bubble trace-bubble-${role}`}>
-      <div className="trace-bubble-title">{title}</div>
-      <MarkdownRenderer value={body} className="trace-bubble-body" />
-    </article>
   );
 }
 
@@ -2191,16 +2306,6 @@ function toSlotOutputIssueStatus(nodeRun: BlueprintNodeRun): TraceIssueStatus {
   return "pending";
 }
 
-function selectPreferredTraceIssue(issues: TraceIssue[]): TraceIssue | undefined {
-  return (
-    issues.find((issue) => issue.issueStatus === "in_progress" && issue.kind === "node" && issue.node?.type !== "manager") ??
-    issues.find((issue) => issue.issueStatus === "in_progress" && issue.kind === "node") ??
-    issues.find((issue) => issue.issueStatus === "in_progress") ??
-    issues.find((issue) => issue.nodeRun) ??
-    issues[0]
-  );
-}
-
 function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
   if (status === "completed") return t.trace.completed;
   if (status === "in_progress") return t.trace.inProgress;
@@ -2214,6 +2319,13 @@ function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): st
   if (status === "failed") return zh ? "失败" : "Failed";
   if (status === "in_progress") return zh ? "运行中" : "Running";
   return zh ? "等待中" : "Waiting";
+}
+
+function traceRunFrameState(status?: BlueprintRunStatus): "static" | "running" | "succeeded" | "failed" {
+  if (status === "running") return "running";
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed" || status === "cancelled") return "failed";
+  return "static";
 }
 
 function statusLabelForNodeRun(status: BlueprintNodeRunStatus | undefined, t: Messages): string {
@@ -2565,8 +2677,28 @@ function formatOutput(output: unknown): string {
   return JSON.stringify(output, null, 2);
 }
 
-function isSameLocalDate(value: string, selectedDate: string): boolean {
-  return toDateInputValue(value) === selectedDate;
+function addDays(value: Date, days: number): Date {
+  const next = new Date(value);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function normalizeDateRange(startDate: string, endDate: string): [string, string] {
+  if (!startDate) return [endDate, endDate];
+  if (!endDate) return [startDate, startDate];
+  return startDate <= endDate ? [startDate, endDate] : [endDate, startDate];
+}
+
+function isRunInDateRange(runView: BlueprintRunView, startDate: string, endDate: string): boolean {
+  const startedAt = toDateInputValue(runView.run.startedAt);
+  const endedAt = toDateInputValue(runView.run.endedAt ?? runView.run.startedAt);
+  if (!startedAt || !endedAt) return false;
+  return endedAt >= startDate && startedAt <= endDate;
+}
+
+function isLocalDateInRange(value: string, startDate: string, endDate: string): boolean {
+  const dateKey = toDateInputValue(value);
+  return Boolean(dateKey && dateKey >= startDate && dateKey <= endDate);
 }
 
 function toDateInputValue(value: string | Date): string {
@@ -2593,6 +2725,20 @@ function formatCompactDayLabel(value: string, language: Language): string {
 
 function formatDateTime(value: string, language: Language): string {
   return new Date(value).toLocaleString(language);
+}
+
+function toSafeTimestamp(value: string): number {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function getBrowserStorage(): Storage | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeAgentId(value: string): string {

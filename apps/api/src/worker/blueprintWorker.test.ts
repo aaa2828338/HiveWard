@@ -251,7 +251,7 @@ describe("BlueprintWorker", () => {
     expect(index.runIndex?.find((item) => item.id === run.id)?.status).toBe("failed");
   });
 
-  it("writes node input to the run archive before the agent task finishes", async () => {
+  it("writes node input and OpenClaw ref to the run archive before the agent task finishes", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
     const store = new FileHivewardStore(storePath);
@@ -262,15 +262,19 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const runningNode = await waitForNodeRun(store, run.id, "brief", (nodeRun) => nodeRun.status === "running" && nodeRun.input !== undefined);
+    const runningNode = await waitForNodeRun(store, run.id, "brief", (nodeRun) =>
+      nodeRun.status === "running" && nodeRun.input !== undefined && nodeRun.openclawRef?.taskId === "task-1"
+    );
     const archiveWhileRunning = JSON.parse(readFileSync(path.join(tempDir, "runs", `${run.id}.json`), "utf8")) as {
-      nodeRuns: Array<{ nodeId: string; status: string; input?: unknown }>;
+      nodeRuns: Array<{ nodeId: string; status: string; input?: unknown; openclawRef?: { taskId?: string; runId?: string } }>;
     };
 
     expect(runningNode.input).toEqual({ upstream: [] });
+    expect(runningNode.openclawRef).toMatchObject({ taskId: "task-1", runId: "task-1-run" });
     expect(archiveWhileRunning.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")).toMatchObject({
       status: "running",
-      input: { upstream: [] }
+      input: { upstream: [] },
+      openclawRef: expect.objectContaining({ taskId: "task-1", runId: "task-1-run" })
     });
 
     adapter.complete(createCompletedAgentTask("task-1", "succeeded", "brief ok"));
@@ -755,6 +759,68 @@ describe("BlueprintWorker", () => {
         (adapter.calls[0]?.input as { upstream?: Array<{ output?: { manager?: { slot?: number } } }> }).upstream?.[0]?.output
       )?.manager?.slot
     ).toBe(1);
+  });
+
+  it("resumes an interrupted manager-slot run from the persisted OpenClaw task ref", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 120, y: 120 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Run the slot."
+          }
+        },
+        {
+          id: "slot-1",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Slot 1",
+            managerNodeId: "manager",
+            slot: 1
+          }
+        },
+        {
+          ...createAgentNode("builder", "Builder", { x: 120, y: 100 }),
+          parentId: "slot-1"
+        }
+      ],
+      [
+        { id: "manager-slot", source: "manager", sourceHandle: "manager-out-1", target: "slot-1", targetHandle: "manager-slot-in", condition: "success" },
+        { id: "slot-manager", source: "slot-1", sourceHandle: "manager-slot-out", target: "manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "slot-start", source: "slot-1", sourceHandle: "manager-slot-inner-out", target: "builder", condition: "success" },
+        { id: "slot-finish", source: "builder", target: "slot-1", targetHandle: "manager-slot-inner-in", condition: "success" }
+      ]
+    );
+    const blockedAdapter = new BlockingAdapter(createStartedAgentTask("task-1"));
+    const firstWorker = new BlueprintWorker(store, blockedAdapter);
+
+    const run = await firstWorker.startRun(blueprint, "test-user");
+    await waitForNodeRun(store, run.id, "builder", (nodeRun) =>
+      nodeRun.status === "running" && nodeRun.openclawRef?.taskId === "task-1"
+    );
+
+    const recoveryAdapter = new ScriptedAdapter([], [
+      createCompletedAgentTask("task-1", "succeeded", "built html")
+    ]);
+    const recoveryWorker = new BlueprintWorker(store, recoveryAdapter);
+    await recoveryWorker.resumeActiveRuns();
+
+    const view = await waitForRunTerminal(store, run.id);
+    expect(recoveryAdapter.waitCalls[0]).toMatchObject({ taskId: "task-1", runId: "task-1-run" });
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "builder")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "slot-1")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.status).toBe("succeeded");
   });
 
   it("does not treat unassigned manager slot boxes as global start nodes", async () => {

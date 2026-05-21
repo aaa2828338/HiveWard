@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
-import { selectRunPollingTarget, syncApprovalsForRun } from "./run-state";
+import {
+  acknowledgedTerminalRunIdsStorageKey,
+  readAcknowledgedTerminalRunIds,
+  resolveBlueprintActivityState,
+  selectRunPollingTarget,
+  shouldShowBlueprintWorkspaceRunState,
+  syncApprovalsForRun,
+  writeAcknowledgedTerminalRunIds
+} from "./run-state";
 
 describe("run state sync", () => {
   it("derives pending inbox items from a waiting approval node in run detail", () => {
@@ -21,6 +29,25 @@ describe("run state sync", () => {
         requestedAt: "2026-05-21T01:02:00.000Z",
         approverHint: "Lead",
         instructions: "Approve before send."
+      }
+    ]);
+  });
+
+  it("carries previous node output into pending inbox items", () => {
+    const previousOutput = {
+      title: "Launch decision",
+      body: "Ship the approved HTML page to the team channel."
+    };
+    const runView = createRunView("waiting_approval", { upstreamOutput: previousOutput });
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.upstream).toEqual([
+      {
+        nodeId: "summary",
+        nodeLabel: "Summary",
+        nodeRunId: "node-run-summary",
+        output: previousOutput
       }
     ]);
   });
@@ -93,6 +120,45 @@ describe("run state sync", () => {
       })
     ).toBeUndefined();
   });
+
+  it("shows blueprint activity only for live running runs or unseen terminal results", () => {
+    expect(resolveBlueprintActivityState("running")).toBe("running");
+    expect(resolveBlueprintActivityState("queued")).toBe("idle");
+    expect(resolveBlueprintActivityState("waiting_approval")).toBe("idle");
+    expect(resolveBlueprintActivityState("succeeded")).toBe("succeeded");
+    expect(resolveBlueprintActivityState("failed")).toBe("failed");
+    expect(resolveBlueprintActivityState("cancelled")).toBe("failed");
+    expect(resolveBlueprintActivityState("succeeded", true)).toBe("idle");
+    expect(resolveBlueprintActivityState("failed", true)).toBe("idle");
+  });
+
+  it("clears terminal run details from the blueprint workspace after the run was seen", () => {
+    expect(shouldShowBlueprintWorkspaceRunState("running")).toBe(true);
+    expect(shouldShowBlueprintWorkspaceRunState("waiting_approval")).toBe(true);
+    expect(shouldShowBlueprintWorkspaceRunState("queued")).toBe(false);
+    expect(shouldShowBlueprintWorkspaceRunState("succeeded")).toBe(true);
+    expect(shouldShowBlueprintWorkspaceRunState("failed")).toBe(true);
+    expect(shouldShowBlueprintWorkspaceRunState("cancelled")).toBe(true);
+    expect(shouldShowBlueprintWorkspaceRunState("succeeded", true)).toBe(false);
+    expect(shouldShowBlueprintWorkspaceRunState("failed", true)).toBe(false);
+    expect(shouldShowBlueprintWorkspaceRunState("cancelled", true)).toBe(false);
+  });
+
+  it("persists acknowledged terminal run ids for reload-safe blueprint markers", () => {
+    const storage = createMemoryStorage();
+
+    writeAcknowledgedTerminalRunIds(storage, ["run-2", "run-1"]);
+
+    expect(JSON.parse(storage.getItem(acknowledgedTerminalRunIdsStorageKey) ?? "[]")).toEqual(["run-1", "run-2"]);
+    expect([...readAcknowledgedTerminalRunIds(storage)]).toEqual(["run-1", "run-2"]);
+  });
+
+  it("ignores invalid acknowledged run id storage", () => {
+    const storage = createMemoryStorage();
+    storage.setItem(acknowledgedTerminalRunIdsStorageKey, "{\"bad\":true}");
+
+    expect([...readAcknowledgedTerminalRunIds(storage)]).toEqual([]);
+  });
 });
 
 function createRunView(
@@ -100,6 +166,7 @@ function createRunView(
   options: {
     blueprintId?: string;
     runId?: string;
+    upstreamOutput?: unknown;
   } = {}
 ): BlueprintRunView {
   const run: BlueprintRunSummary = {
@@ -130,6 +197,21 @@ function createRunView(
         status: nodeStatus,
         queuedAt: "2026-05-21T01:01:00.000Z",
         startedAt: "2026-05-21T01:02:00.000Z",
+        ...(options.upstreamOutput === undefined
+          ? {}
+          : {
+              input: {
+                upstream: [
+                  {
+                    nodeId: "summary",
+                    nodeLabel: "Summary",
+                    nodeRunId: "node-run-summary",
+                    status: "succeeded",
+                    output: options.upstreamOutput
+                  }
+                ]
+              }
+            }),
         output: nodeStatus === "waiting_approval"
           ? {
               approverHint: "Lead",
@@ -148,4 +230,14 @@ function toRunStatus(nodeStatus: "waiting_approval" | "succeeded" | "running" | 
   if (nodeStatus === "failed") return "failed";
   if (nodeStatus === "succeeded") return "succeeded";
   return nodeStatus;
+}
+
+function createMemoryStorage(): Pick<Storage, "getItem" | "setItem"> {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    }
+  };
 }

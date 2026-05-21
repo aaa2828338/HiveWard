@@ -148,15 +148,20 @@ export class GatewaySession {
       finalResolve = resolve;
       finalReject = reject;
     });
+    // A lifecycle request can time out before callers attach a final handler.
+    // Keep the original promise rejectable for consumers, but mark it handled so
+    // a slow accepted frame cannot terminate the dev server with an unhandled rejection.
+    void final.catch(() => undefined);
 
     const acceptedTimeout =
       opts?.acceptedTimeoutMs === null
         ? undefined
         : setTimeout(() => {
-            this.pending.delete(id);
+            const pending = this.pending.get(id);
+            if (!pending || pending.kind !== "lifecycle" || pending.acceptedSettled) return;
+            pending.acceptedSettled = true;
             const error = new Error(`OpenClaw Gateway request timeout for ${method}.`);
             acceptedReject(error);
-            finalReject(error);
           }, opts?.acceptedTimeoutMs ?? this.config.requestTimeoutMs);
     const finalTimeout =
       opts?.finalTimeoutMs === null

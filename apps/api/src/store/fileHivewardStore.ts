@@ -168,6 +168,44 @@ export class FileHivewardStore {
     });
   }
 
+  async deleteCompany(companyId: string): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string; deleted: boolean }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const existingIndex = index.companies.findIndex((company) => company.id === companyId);
+      if (existingIndex < 0) {
+        return {
+          companies: this.buildCompanyOverviews(index),
+          selectedCompanyId: index.selectedCompanyId ?? undefined,
+          deleted: false
+        };
+      }
+
+      const blueprintIds = index.blueprintIndex.filter((blueprint) => blueprint.companyId === companyId).map((blueprint) => blueprint.id);
+      const runIds = index.runIndex.filter((run) => run.companyId === companyId).map((run) => run.id);
+
+      index.companies.splice(existingIndex, 1);
+      index.blueprintIndex = index.blueprintIndex.filter((blueprint) => blueprint.companyId !== companyId);
+      index.runIndex = index.runIndex.filter((run) => run.companyId !== companyId);
+      delete index.companyDashboards[companyId];
+
+      if (index.selectedCompanyId === companyId) {
+        index.selectedCompanyId = index.companies[0]?.id ?? null;
+      }
+
+      await this.writeIndexUnlocked(index);
+      await Promise.all([
+        ...blueprintIds.map((id) => rm(this.blueprintPath(id), { force: true })),
+        ...runIds.map((id) => rm(this.runArchivePath(id), { force: true }))
+      ]);
+
+      return {
+        companies: this.buildCompanyOverviews(index),
+        selectedCompanyId: index.selectedCompanyId ?? undefined,
+        deleted: true
+      };
+    });
+  }
+
   async listBlueprints(): Promise<BlueprintDefinition[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -445,6 +483,19 @@ export class FileHivewardStore {
     });
   }
 
+  async listRunArchives(): Promise<BlueprintRunArchive[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      if (!companyId) return [];
+      return Promise.all(
+        index.runIndex
+          .filter((run) => run.companyId === companyId)
+          .map((run) => this.readRunArchiveUnlocked(run.id))
+      );
+    });
+  }
+
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -463,6 +514,7 @@ export class FileHivewardStore {
           if (archive.run.companyId !== companyId || archive.blueprintSnapshot.companyId !== companyId) return [];
 
           const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+          const upstream = readPendingApprovalUpstream(nodeRun.input);
           const item: PendingApprovalItem = {
             blueprintId: archive.blueprintSnapshot.id,
             blueprintName: archive.blueprintSnapshot.name,
@@ -474,7 +526,8 @@ export class FileHivewardStore {
             startedAt: archive.run.startedAt,
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
             approverHint: readString(output?.approverHint),
-            instructions: readString(output?.instructions)
+            instructions: readString(output?.instructions),
+            ...(upstream ? { upstream } : {})
           };
           return [item];
         })
@@ -796,6 +849,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {
+  if (!isRecord(input) || !Array.isArray(input.upstream)) return undefined;
+
+  const upstream = input.upstream.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const nodeId = readString(candidate.nodeId);
+    const nodeLabel = readString(candidate.nodeLabel);
+    const nodeRunId = readString(candidate.nodeRunId);
+    if (!nodeId || !nodeLabel || !nodeRunId) return [];
+    return [
+      {
+        nodeId,
+        nodeLabel,
+        nodeRunId,
+        output: candidate.output
+      }
+    ];
+  });
+
+  return upstream.length ? upstream : undefined;
 }
 
 function readOptionalString(value: unknown): string | undefined {

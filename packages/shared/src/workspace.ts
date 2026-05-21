@@ -60,6 +60,14 @@ export interface PendingApprovalItem {
   requestedAt: string;
   approverHint?: string;
   instructions?: string;
+  upstream?: PendingApprovalUpstreamItem[];
+}
+
+export interface PendingApprovalUpstreamItem {
+  nodeId: string;
+  nodeLabel: string;
+  nodeRunId: string;
+  output: unknown;
 }
 
 export interface WorkspaceDashboard {

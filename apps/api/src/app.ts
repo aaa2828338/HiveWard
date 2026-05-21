@@ -22,6 +22,7 @@ export async function createHivewardApiApp(): Promise<ReturnType<typeof express>
   app.use(createApiRouter({ store, openClawConfigStore, adapter, worker }));
   app.use(apiNotFoundHandler);
   app.use(errorHandler);
+  await worker.resumeActiveRuns();
   return app;
 }
 

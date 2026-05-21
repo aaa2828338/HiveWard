@@ -6,6 +6,7 @@ import type {
   OpenClawTaskSummary,
   OpenClawTool,
   OpenClawUsageFact,
+  OpenClawExecutionStatus,
   RuntimeOverview,
   SendChannelInput,
   SendChannelResult,
@@ -22,7 +23,7 @@ import { createGatewayId } from "./gateway-device";
 export class GatewayOpenClawAdapter implements RuntimeAdapter {
   private sharedSession: GatewaySession | undefined;
   private sharedSessionPromise: Promise<GatewaySession> | undefined;
-  private readonly inflightAgentTasks = new Map<string, Promise<Record<string, unknown>>>();
+  private readonly inflightAgentTasks = new Map<string, InflightAgentTask>();
 
   constructor(private readonly config: GatewayAdapterConfig) {}
 
@@ -113,15 +114,42 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
         },
         { acceptedTimeoutMs: this.config.agentStartTimeoutMs, finalTimeoutMs: null },
       );
-      const accepted = await lifecycle.accepted;
+      const tracker: InflightAgentTask = {
+        final: lifecycle.final.finally(() => {
+          this.inflightAgentTasks.delete(idempotencyKey);
+          if (tracker.acceptedTaskId) {
+            this.inflightAgentTasks.delete(tracker.acceptedTaskId);
+          }
+        }),
+      };
+      this.inflightAgentTasks.set(idempotencyKey, tracker);
+
+      let accepted: Record<string, unknown>;
+      try {
+        accepted = await lifecycle.accepted;
+      } catch (error) {
+        if (isGatewayRequestTimeoutFor(error, "agent")) {
+          return {
+            taskId: idempotencyKey,
+            runId: idempotencyKey,
+            sessionKey: buildAgentMainSessionKey(input.agentId),
+            source: "openclaw",
+            status: "running",
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        this.inflightAgentTasks.delete(idempotencyKey);
+        throw error;
+      }
+
       const runId = readString(accepted.runId) ?? idempotencyKey;
       const sessionKey = readString(accepted.sessionKey) ?? buildAgentMainSessionKey(input.agentId);
       const taskId = runId;
       const status = mapAcceptedExecutionStatus(readString(accepted.status));
-
-      this.inflightAgentTasks.set(taskId, lifecycle.final.finally(() => {
-        this.inflightAgentTasks.delete(taskId);
-      }));
+      tracker.acceptedTaskId = taskId;
+      if (taskId !== idempotencyKey) {
+        this.inflightAgentTasks.set(taskId, tracker);
+      }
 
       return {
         taskId,
@@ -141,13 +169,27 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
   }
 
   async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
-    const finalResult = this.inflightAgentTasks.get(input.taskId);
-    if (!finalResult) {
-      throw new Error(`OpenClaw agent task tracker not found for ${input.taskId}.`);
+    const inflight = this.inflightAgentTasks.get(input.taskId);
+    const session = await this.getSession();
+    if (!inflight) {
+      const completion = await this.waitForTerminalSessionResult(session, input, () => false);
+      return completion.result;
     }
 
-    const result = await finalResult;
-    const session = await this.getSession();
+    let stopFallback = false;
+    // Some Gateway builds mark the backing session done without sending a final agent frame.
+    const completion = await Promise.race([
+      inflight.final.then((result) => ({ type: "gateway_final" as const, result })),
+      this.waitForTerminalSessionResult(session, input, () => stopFallback)
+    ]).finally(() => {
+      stopFallback = true;
+    });
+    if (completion.type === "session_terminal") {
+      this.inflightAgentTasks.delete(input.taskId);
+      return completion.result;
+    }
+
+    const result = completion.result;
     const runId = readString(result.runId) ?? input.runId;
     const sessionKey = readString(result.sessionKey) ?? input.sessionKey;
     const ok = readString(result.status) !== "error";
@@ -252,7 +294,126 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
     const id = readString(model.id);
     return provider && id ? { provider, model: id } : undefined;
   }
+
+  private async waitForTerminalSessionResult(
+    session: GatewaySession,
+    input: WaitForAgentTaskInput,
+    shouldStop: () => boolean,
+  ): Promise<{ type: "session_terminal"; result: AgentTaskResult }> {
+    let terminalSeenAt: number | undefined;
+
+    while (!shouldStop()) {
+      await delay(agentTerminalPollIntervalMs);
+      if (shouldStop()) break;
+
+      const terminal = await this.readTerminalSession(session, input.sessionKey).catch(() => undefined);
+      if (!terminal) continue;
+
+      const transcript = await readAgentTranscriptResult(session, input.sessionKey, input.nodeRunId, input.modelId);
+      if (!transcript?.foundRequest) {
+        terminalSeenAt = undefined;
+        continue;
+      }
+      if (transcript?.error) {
+        return {
+          type: "session_terminal",
+          result: {
+            taskId: input.taskId,
+            runId: input.runId,
+            sessionKey: input.sessionKey,
+            source: input.source,
+            status: "failed",
+            error: transcript.error,
+            usage: transcript.usage,
+            updatedAt: terminal.updatedAt,
+          },
+        };
+      }
+
+      if (transcript?.output) {
+        return {
+          type: "session_terminal",
+          result: {
+            taskId: input.taskId,
+            runId: input.runId,
+            sessionKey: input.sessionKey,
+            source: input.source,
+            status: "succeeded",
+            output: transcript.output,
+            usage: transcript.usage,
+            updatedAt: terminal.updatedAt,
+          },
+        };
+      }
+
+      if (terminal.status === "failed" || terminal.status === "cancelled") {
+        return {
+          type: "session_terminal",
+          result: {
+            taskId: input.taskId,
+            runId: input.runId,
+            sessionKey: input.sessionKey,
+            source: input.source,
+            status: terminal.status,
+            error: `OpenClaw session ${terminal.status}.`,
+            usage: transcript?.usage,
+            updatedAt: terminal.updatedAt,
+          },
+        };
+      }
+
+      terminalSeenAt ??= Date.now();
+      if (Date.now() - terminalSeenAt >= agentTerminalTranscriptGraceMs) {
+        return {
+          type: "session_terminal",
+          result: {
+            taskId: input.taskId,
+            runId: input.runId,
+            sessionKey: input.sessionKey,
+            source: input.source,
+            status: "succeeded",
+            usage: transcript?.usage,
+            updatedAt: terminal.updatedAt,
+          },
+        };
+      }
+    }
+
+    return new Promise<never>(() => {});
+  }
+
+  private async readTerminalSession(
+    session: GatewaySession,
+    sessionKey: string,
+  ): Promise<{ status: Exclude<OpenClawExecutionStatus, "queued" | "running">; updatedAt: string } | undefined> {
+    const result = await session.request<{ sessions?: unknown[] }>("sessions.list", {
+      limit: 20,
+      includeGlobal: true,
+      includeUnknown: true,
+    });
+    const record = (Array.isArray(result.sessions) ? result.sessions : []).find((candidate) => {
+      if (!isRecord(candidate)) return false;
+      const key = readString(candidate.key) ?? readString(candidate.sessionId);
+      return key === sessionKey;
+    });
+    if (!isRecord(record)) return undefined;
+
+    const status = mapGatewaySessionStatus(readString(record.status));
+    if (status !== "succeeded" && status !== "failed" && status !== "cancelled") return undefined;
+    return {
+      status,
+      updatedAt: dateFromMs(record.updatedAt),
+    };
+  }
 }
+
+interface InflightAgentTask {
+  final: Promise<Record<string, unknown>>;
+  acceptedTaskId?: string;
+}
+
+const agentTerminalPollIntervalMs = 5_000;
+const agentTerminalTranscriptGraceMs = 30_000;
 
 export function formatAgentMessage(input: StartAgentTaskInput): string {
   return [
@@ -465,7 +626,7 @@ async function readAgentTranscriptResult(
   sessionKey: string,
   nodeRunId: string,
   fallbackModelId?: string,
-): Promise<{ output?: string; error?: string; usage?: OpenClawUsageFact } | undefined> {
+): Promise<TranscriptReadResult | undefined> {
   try {
     const history = await session.request<{ messages?: unknown[] }>("chat.history", {
       sessionKey,
@@ -485,11 +646,18 @@ interface TranscriptOutputCandidate {
   usage?: OpenClawUsageFact;
 }
 
+interface TranscriptReadResult {
+  foundRequest: true;
+  output?: string;
+  error?: string;
+  usage?: OpenClawUsageFact;
+}
+
 export function readAgentTranscriptMessages(
   messages: unknown[],
   nodeRunId: string,
   fallbackModelId?: string,
-): { output?: string; error?: string; usage?: OpenClawUsageFact } | undefined {
+): TranscriptReadResult | undefined {
   const userIndex = findLastMessageIndex(messages, (message) => {
     if (!isRecord(message)) return false;
     const role = readString(message.role);
@@ -497,7 +665,7 @@ export function readAgentTranscriptMessages(
   });
   if (userIndex < 0) return undefined;
 
-  const visibleCandidates: TranscriptOutputCandidate[] = [];
+  let finalAssistantOutput: TranscriptOutputCandidate | undefined;
   let latestUsage: OpenClawUsageFact | undefined;
 
   for (const message of messages.slice(userIndex + 1)) {
@@ -509,23 +677,26 @@ export function readAgentTranscriptMessages(
     latestUsage = usage ?? latestUsage;
 
     const errorMessage = readString(message.errorMessage);
-    if (errorMessage) return { error: errorMessage, usage };
+    if (errorMessage) return { foundRequest: true, error: errorMessage, usage };
     if (readString(message.stopReason) === "error") {
-      return { error: "OpenClaw assistant stopped with an error before returning visible output.", usage };
+      return { foundRequest: true, error: "OpenClaw assistant stopped with an error before returning visible output.", usage };
     }
 
     const text = extractMessageText(message).trim();
-    if (!isMeaningfulTranscriptText(text)) continue;
+    if (role !== "assistant") continue;
+    if (!isMeaningfulTranscriptText(text)) {
+      finalAssistantOutput = undefined;
+      continue;
+    }
 
-    visibleCandidates.push({ role, text, usage });
+    finalAssistantOutput = { role, text, usage };
   }
 
-  const finalVisible = visibleCandidates[visibleCandidates.length - 1];
-  if (finalVisible?.role === "assistant") {
-    return { output: finalVisible.text, usage: finalVisible.usage ?? latestUsage };
+  if (finalAssistantOutput) {
+    return { foundRequest: true, output: finalAssistantOutput.text, usage: finalAssistantOutput.usage ?? latestUsage };
   }
 
-  return latestUsage ? { usage: latestUsage } : undefined;
+  return { foundRequest: true, ...(latestUsage ? { usage: latestUsage } : {}) };
 }
 
 function findLastMessageIndex<T>(items: T[], predicate: (item: T) => boolean): number {
@@ -683,6 +854,25 @@ function mapExecutionStatus(status: string | undefined): OpenClawTaskSummary["st
   return "succeeded";
 }
 
+function mapGatewaySessionStatus(status: string | undefined): OpenClawExecutionStatus | undefined {
+  if (status === "queued" || status === "running" || status === "succeeded" || status === "failed" || status === "cancelled") {
+    return status;
+  }
+  if (status === "accepted" || status === "processing" || status === "active") {
+    return "running";
+  }
+  if (status === "done" || status === "complete" || status === "completed") {
+    return "succeeded";
+  }
+  if (status === "error") {
+    return "failed";
+  }
+  if (status === "aborted") {
+    return "cancelled";
+  }
+  return undefined;
+}
+
 function mapAcceptedExecutionStatus(status: string | undefined): StartedAgentTaskResult["status"] {
   if (status === "running" || status === "queued" || status === "succeeded" || status === "failed" || status === "cancelled") {
     return status;
@@ -735,4 +925,12 @@ function isRecoverableGatewaySessionError(error: unknown): boolean {
     error.message.includes("Gateway connection closed") ||
     error.message.includes("Gateway connect timeout")
   );
+}
+
+function isGatewayRequestTimeoutFor(error: unknown, method: string): boolean {
+  return error instanceof Error && error.message === `OpenClaw Gateway request timeout for ${method}.`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

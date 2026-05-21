@@ -34,6 +34,26 @@ describe("gateway adapter transcript extraction", () => {
     expect(result?.output).toBeUndefined();
   });
 
+  it("keeps the assistant output when a later compaction message follows it", () => {
+    const result = readAgentTranscriptMessages([
+      { role: "user", content: "Hiveward node run: node-run-4\nBuild the page." },
+      { role: "assistant", content: "Final page written to workspace." },
+      { role: "system", content: "Compaction" }
+    ], "node-run-4");
+
+    expect(result?.output).toBe("Final page written to workspace.");
+  });
+
+  it("does not treat an unrelated terminal session as the current node output", () => {
+    const result = readAgentTranscriptMessages([
+      { role: "user", content: "Hiveward node run: node-run-previous\nBuild the page." },
+      { role: "assistant", content: "Previous node result." },
+      { role: "system", content: "Compaction" }
+    ], "node-run-current");
+
+    expect(result).toBeUndefined();
+  });
+
   it("formats upstream output as readable handoff text for the next agent", () => {
     const message = formatAgentMessage({
       blueprintRunId: "run-1",

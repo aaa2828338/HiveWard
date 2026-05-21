@@ -5,6 +5,7 @@ coverage/
 data/*.json
 data/blueprints/*.json
 data/runs/*.json
+tmp/
 !.gitkeep
 !data/blueprints/.gitkeep
 !data/runs/.gitkeep

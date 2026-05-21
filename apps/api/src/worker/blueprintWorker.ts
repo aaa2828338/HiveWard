@@ -105,6 +105,21 @@ export class BlueprintWorker {
     private readonly adapter: RuntimeAdapter
   ) {}
 
+  async resumeActiveRuns(): Promise<void> {
+    const archives = await this.store.listRunArchives();
+    for (const archive of archives) {
+      if (archive.run.status === "queued") {
+        const runningRun = { ...archive.run, status: "running" as const };
+        await this.store.updateBlueprintRun(runningRun);
+        this.scheduleRun(archive.blueprintSnapshot, runningRun);
+        continue;
+      }
+      if (archive.run.status === "running") {
+        this.scheduleRun(archive.blueprintSnapshot, archive.run);
+      }
+    }
+  }
+
   async startRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     const run = await this.store.createBlueprintRun(blueprint, startedBy);
     const runningRun = {
@@ -200,6 +215,10 @@ export class BlueprintWorker {
         continue;
       }
 
+      if (await this.reconcileOpenNodeRuns(blueprint, run, nodeRuns)) {
+        continue;
+      }
+
       const failedNodeRun = nodeRuns.find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
       if (failedNodeRun) {
         const failed = await this.applyRunTotals(run, startedAt, "failed");
@@ -234,6 +253,359 @@ export class BlueprintWorker {
 
       await Promise.all(readyNodes.map((node) => this.executeNode(blueprint, run, node)));
     }
+  }
+
+  private async reconcileOpenNodeRuns(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    nodeRuns: BlueprintNodeRun[]
+  ): Promise<boolean> {
+    const runningNodeRuns = nodeRuns.filter((nodeRun) => nodeRun.status === "running");
+    for (const nodeRun of runningNodeRuns) {
+      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+      if (node && isAgentBlueprintNode(node)) {
+        if (await this.reconcileRunningAgentNode(node, nodeRun)) return true;
+      }
+    }
+
+    for (const nodeRun of runningNodeRuns) {
+      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+      if (node?.type === "manager_slot") {
+        if (await this.reconcileRunningManagerSlotNode(blueprint, run, node, nodeRun, nodeRuns)) return true;
+      }
+    }
+
+    for (const nodeRun of runningNodeRuns) {
+      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+      if (node?.type === "manager") {
+        if (await this.reconcileRunningManagerNode(blueprint, run, node, nodeRun, nodeRuns)) return true;
+      }
+    }
+
+    return false;
+  }
+
+  private async reconcileRunningAgentNode(
+    node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
+    nodeRun: BlueprintNodeRun
+  ): Promise<boolean> {
+    const openclawRef = this.resolveAgentOpenClawRef(node, nodeRun);
+    if (!openclawRef?.sessionKey) return false;
+
+    const result = await this.adapter.waitForAgentTask({
+      nodeRunId: nodeRun.id,
+      taskId: openclawRef.taskId ?? openclawRef.sourceId,
+      runId: openclawRef.runId ?? openclawRef.sourceId,
+      sessionKey: openclawRef.sessionKey,
+      source: openclawRef.source,
+      agentId: node.runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
+      modelId: (node.config as AgentNodeConfig).modelId
+    });
+    const finalRef: OpenClawObjectRef = {
+      ...openclawRef,
+      sourceId: result.taskId,
+      sourceUpdatedAt: result.updatedAt,
+      taskId: result.taskId,
+      runId: result.runId,
+      sessionKey: result.sessionKey,
+      usageRef: result.usage?.id
+    };
+    await this.applyAgentTaskResult({ ...nodeRun, openclawRef: finalRef }, result, finalRef);
+    return true;
+  }
+
+  private async reconcileRunningManagerSlotNode(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    slotNode: BlueprintNode,
+    slotRun: BlueprintNodeRun,
+    nodeRuns: BlueprintNodeRun[]
+  ): Promise<boolean> {
+    const context = this.readManagerSlotContext(slotRun.input);
+    if (!context) return false;
+
+    const scopeStartIndex = nodeRuns.findIndex((candidate) => candidate.id === slotRun.id);
+    if (scopeStartIndex < 0) return false;
+
+    const childNodes = blueprint.nodes.filter((node) => node.parentId === slotNode.id && this.isRunnableNode(node));
+    if (childNodes.length === 0) {
+      const slotInput = isRecord(slotRun.input) ? slotRun.input : {};
+      const output = JSON.stringify({
+        status: "complete",
+        reason: "manager_slot_empty",
+        input: { status: "manager_slot_input", ...slotInput }
+      });
+      await this.completeNode(slotRun, output);
+      return true;
+    }
+
+    const childIds = new Set(childNodes.map((node) => node.id));
+    const failed = nodeRuns.find(
+      (candidate, index) =>
+        index > scopeStartIndex &&
+        childIds.has(candidate.nodeId) &&
+        (candidate.status === "failed" || candidate.status === "cancelled")
+    );
+    if (failed) {
+      await this.failNode(slotRun, failed.error ?? `${failed.nodeLabel} returned ${failed.status}.`);
+      return true;
+    }
+
+    const output = this.resolveManagerSlotOutput(blueprint, slotNode, childNodes, nodeRuns, scopeStartIndex);
+    if (output !== undefined) {
+      await this.completeNode(slotRun, stringifyManagerSlotOutput(output));
+      return true;
+    }
+
+    const hasRunningChild = nodeRuns.some(
+      (candidate, index) => index > scopeStartIndex && childIds.has(candidate.nodeId) && candidate.status === "running"
+    );
+    if (hasRunningChild) return false;
+
+    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, context, scopeStartIndex);
+    return true;
+  }
+
+  private async reconcileRunningManagerNode(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    nodeRun: BlueprintNodeRun,
+    nodeRuns: BlueprintNodeRun[]
+  ): Promise<boolean> {
+    const config = node.config as ManagerNodeConfig;
+    const portCount = normalizeInteger(config.portCount, 1, 8, 3);
+    const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
+    const nodeRunWithInput = nodeRun.input === undefined
+      ? await this.recordNodeInput(nodeRun, { upstream: await this.collectUpstreamOutputs(blueprint, run.id, node) })
+      : nodeRun;
+    const managerUpstream = this.readUpstreamInput(nodeRunWithInput.input);
+    const trace: ManagerTraceItem[] = [];
+    let slot = this.firstConnectedManagerSlot(blueprint, node, portCount);
+    let searchAfterIndex = nodeRuns.findIndex((candidate) => candidate.id === nodeRun.id);
+    if (searchAfterIndex < 0) return false;
+
+    if (!slot) {
+      await this.completeNode(nodeRunWithInput, {
+        status: "completed",
+        reason: "manager_has_no_connected_slots",
+        trace
+      });
+      return true;
+    }
+
+    for (let handoff = 1; handoff <= maxHandoffs; handoff += 1) {
+      const assignment = this.findManagerSlotAssignment(blueprint, node, slot);
+      if (!assignment) {
+        await this.completeNode(nodeRunWithInput, {
+          status: "completed",
+          reason: `manager_slot_${slot}_is_not_connected`,
+          trace
+        });
+        return true;
+      }
+
+      if (assignment.target.disabled) {
+        const decision = this.resolveManagerDecision({ status: "skipped" }, slot, portCount);
+        trace.push({
+          handoff,
+          slot,
+          nodeId: assignment.target.id,
+          nodeLabel: assignment.target.config.label,
+          status: "cancelled",
+          error: "disabled",
+          returnEdgePresent: assignment.returnEdgePresent,
+          decision
+        });
+        slot = decision.nextSlot ?? slot + 1;
+        if (slot > portCount || decision.status === "complete") {
+          await this.completeNode(nodeRunWithInput, {
+            status: "completed",
+            reason: decision.reason ?? "manager_reached_final_slot",
+            trace
+          });
+          return true;
+        }
+        continue;
+      }
+
+      const participant = this.findFirstNodeRunAfter(nodeRuns, assignment.target.id, searchAfterIndex);
+      if (!participant) {
+        const context: ManagerSlotContext = {
+          manager: {
+            nodeId: node.id,
+            nodeLabel: node.config.label,
+            instructions: config.instructions,
+            slot,
+            handoff,
+            maxHandoffs
+          },
+          upstream: managerUpstream,
+          previousResults: trace.map((item) => ({
+            handoff: item.handoff,
+            slot: item.slot,
+            nodeId: item.nodeId,
+            nodeLabel: item.nodeLabel,
+            status: item.status,
+            output: item.output,
+            error: item.error,
+            decision: item.decision
+          }))
+        };
+        await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, context);
+        return true;
+      }
+
+      if (!this.isTerminalStatus(participant.nodeRun.status)) return false;
+
+      const result = this.nodeRunToAgentTaskResult(participant.nodeRun);
+      const traceItem: ManagerTraceItem = {
+        handoff,
+        slot,
+        nodeId: assignment.target.id,
+        nodeLabel: assignment.target.config.label,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        returnEdgePresent: assignment.returnEdgePresent
+      };
+      trace.push(traceItem);
+      searchAfterIndex = participant.index;
+
+      if (result.status !== "succeeded") {
+        const error = result.error ?? `Manager participant ${assignment.target.config.label} returned ${result.status}.`;
+        await this.failNode(nodeRunWithInput, error);
+        return true;
+      }
+
+      const decision = this.resolveManagerDecision(result.output, slot, portCount, {
+        ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
+      });
+      traceItem.decision = decision;
+      if (decision.status === "complete" || !decision.nextSlot) {
+        await this.completeNode(nodeRunWithInput, {
+          status: "completed",
+          reason: decision.reason ?? "manager_completed",
+          trace
+        });
+        return true;
+      }
+      slot = decision.nextSlot;
+    }
+
+    await this.failNode(nodeRunWithInput, `Manager exceeded max handoffs (${maxHandoffs}).`);
+    return true;
+  }
+
+  private async executeManagerAssignment(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    managerNode: BlueprintNode,
+    managerRun: BlueprintNodeRun,
+    assignment: { target: BlueprintNode; returnEdgePresent: boolean },
+    context: ManagerSlotContext
+  ): Promise<AgentTaskResult> {
+    if (isAgentBlueprintNode(assignment.target)) {
+      const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
+      return this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, context);
+    }
+    if (assignment.target.type === "manager_slot") {
+      const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
+      return this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, context);
+    }
+    if (assignment.target.type === "manager") {
+      const managerUpstreamInput: UpstreamOutput = [
+        {
+          nodeId: managerNode.id,
+          nodeLabel: managerNode.config.label,
+          nodeRunId: managerRun.id,
+          status: managerRun.status,
+          output: context
+        }
+      ];
+      const nestedManagerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
+      return this.executeManagerNode(blueprint, run, assignment.target, nestedManagerRun, managerUpstreamInput);
+    }
+
+    const error = `Manager slot ${context.manager.slot} targets unsupported node type ${assignment.target.type}.`;
+    await this.failNode(managerRun, error);
+    return this.syntheticAgentResult(managerRun.id, "failed", undefined, error);
+  }
+
+  private resolveAgentOpenClawRef(
+    node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
+    nodeRun: BlueprintNodeRun
+  ): OpenClawObjectRef | undefined {
+    const existing = nodeRun.openclawRef;
+    const source = existing?.source ?? resolveAgentRuntimeSource(node.runtimeId);
+    const sourceId = existing?.sourceId ?? existing?.taskId ?? existing?.runId ?? nodeRun.id;
+    const sessionKey = existing?.sessionKey ?? (source === "openclaw" ? buildAgentSessionKey(node.config.openclawAgentId ?? "main") : undefined);
+    if (!sourceId || !sessionKey) return undefined;
+    return {
+      source,
+      sourceId,
+      sourceUpdatedAt: existing?.sourceUpdatedAt ?? nodeRun.startedAt ?? nodeRun.queuedAt,
+      taskId: existing?.taskId ?? sourceId,
+      runId: existing?.runId ?? sourceId,
+      sessionKey,
+      usageRef: existing?.usageRef
+    };
+  }
+
+  private readManagerSlotContext(value: unknown): ManagerSlotContext | undefined {
+    if (!isRecord(value) || !isRecord(value.manager)) return undefined;
+    return {
+      manager: {
+        nodeId: readString(value.manager.nodeId) ?? "",
+        nodeLabel: readString(value.manager.nodeLabel) ?? "",
+        instructions: readString(value.manager.instructions),
+        slot: readInteger(value.manager.slot) ?? 1,
+        handoff: readInteger(value.manager.handoff) ?? 1,
+        maxHandoffs: readInteger(value.manager.maxHandoffs) ?? 1
+      },
+      upstream: Array.isArray(value.upstream) ? value.upstream as UpstreamOutput : [],
+      previousResults: Array.isArray(value.previousResults)
+        ? value.previousResults as ManagerSlotContext["previousResults"]
+        : []
+    };
+  }
+
+  private readUpstreamInput(value: unknown): UpstreamOutput {
+    if (!isRecord(value) || !Array.isArray(value.upstream)) return [];
+    return value.upstream as UpstreamOutput;
+  }
+
+  private findFirstNodeRunAfter(
+    nodeRuns: BlueprintNodeRun[],
+    nodeId: string,
+    requiredAfterIndex: number
+  ): { nodeRun: BlueprintNodeRun; index: number } | undefined {
+    for (let index = requiredAfterIndex + 1; index < nodeRuns.length; index += 1) {
+      const nodeRun = nodeRuns[index]!;
+      if (nodeRun.nodeId === nodeId) return { nodeRun, index };
+    }
+    return undefined;
+  }
+
+  private nodeRunToAgentTaskResult(nodeRun: BlueprintNodeRun): AgentTaskResult {
+    const openclawRef = nodeRun.openclawRef;
+    const sourceId = openclawRef?.sourceId ?? nodeRun.id;
+    const status: AgentTaskResult["status"] = nodeRun.status === "succeeded"
+      ? "succeeded"
+      : nodeRun.status === "cancelled"
+        ? "cancelled"
+        : "failed";
+    return {
+      taskId: openclawRef?.taskId ?? sourceId,
+      runId: openclawRef?.runId ?? sourceId,
+      sessionKey: openclawRef?.sessionKey ?? "",
+      source: openclawRef?.source ?? "openclaw",
+      status,
+      output: nodeRun.output === undefined ? undefined : stringifyManagerSlotOutput(nodeRun.output),
+      error: nodeRun.error,
+      usage: nodeRun.usage,
+      updatedAt: nodeRun.endedAt ?? nodeRun.startedAt ?? nodeRun.queuedAt
+    };
   }
 
   private findReadyNodes(blueprint: BlueprintDefinition, nodeRuns: BlueprintNodeRun[]): BlueprintNode[] {
@@ -347,7 +719,7 @@ export class BlueprintWorker {
     input: unknown
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
-    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
+    let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
@@ -362,19 +734,29 @@ export class BlueprintWorker {
       outputSchema: config.outputSchema,
       input,
       tools: config.tools
+    }, async (startedRef) => {
+      nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
     });
+    return this.applyAgentTaskResult(nodeRunWithInput, result, openclawRef);
+  }
+
+  private async applyAgentTaskResult(
+    nodeRun: BlueprintNodeRun,
+    result: AgentTaskResult,
+    openclawRef: OpenClawObjectRef
+  ): Promise<AgentTaskResult> {
     if (result.status !== "succeeded") {
-      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
+      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
       return result;
     }
     if (!hasVisibleAgentOutput(result.output)) {
       const error = this.missingAgentOutputError(openclawRef);
-      await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, error);
+      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, error);
       return { ...result, status: "failed", error, output: undefined };
     }
 
     await this.completeNode(
-      { ...nodeRunWithInput, openclawRef, usage: result.usage },
+      { ...nodeRun, openclawRef, usage: result.usage },
       result.output,
       openclawRef
     );
@@ -607,10 +989,11 @@ export class BlueprintWorker {
     run: BlueprintRun,
     slotNode: BlueprintNode,
     slotRun: BlueprintNodeRun,
-    context: ManagerSlotContext
+    context: ManagerSlotContext,
+    existingScopeStartIndex?: number
   ): Promise<AgentTaskResult> {
     const childNodes = blueprint.nodes.filter((node) => node.parentId === slotNode.id && this.isRunnableNode(node));
-    const scopeStartIndex = Math.max(0, (await this.store.listNodeRuns(run.id)).length - 1);
+    const scopeStartIndex = existingScopeStartIndex ?? Math.max(0, (await this.store.listNodeRuns(run.id)).length - 1);
     const slotInput = {
       manager: context.manager,
       upstream: context.upstream,
@@ -912,7 +1295,7 @@ export class BlueprintWorker {
   ): Promise<void> {
     const config = node.config as SummaryNodeConfig;
     const input = { upstream };
-    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
+    let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     if (config.mode === "openclaw_summary_agent") {
       const { result, openclawRef } = await this.runAgentTask({
         blueprintRunId: run.id,
@@ -924,6 +1307,8 @@ export class BlueprintWorker {
         modelId: config.modelId,
         input,
         tools: []
+      }, async (startedRef) => {
+        nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
       });
       if (result.status !== "succeeded") {
         await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
@@ -1228,6 +1613,16 @@ export class BlueprintWorker {
     return nodeRunWithInput;
   }
 
+  private async recordNodeOpenClawRef(nodeRun: BlueprintNodeRun, openclawRef: OpenClawObjectRef): Promise<BlueprintNodeRun> {
+    const currentNodeRun = (await this.store.listNodeRuns(nodeRun.blueprintRunId)).find((candidate) => candidate.id === nodeRun.id);
+    const nodeRunWithRef: BlueprintNodeRun = {
+      ...(currentNodeRun ?? nodeRun),
+      openclawRef
+    };
+    await this.store.upsertNodeRun(nodeRunWithRef);
+    return nodeRunWithRef;
+  }
+
   private async failNode(nodeRun: BlueprintNodeRun, error: string): Promise<void> {
     if (this.cancelledRunIds.has(nodeRun.blueprintRunId)) {
       await this.cancelNodeRun(nodeRun, "Run stopped by user.");
@@ -1502,7 +1897,10 @@ export class BlueprintWorker {
     return `Agent run finished without visible output${location ? ` (${location})` : ""}.`;
   }
 
-  private async runAgentTask(input: StartAgentTaskInput): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {
+  private async runAgentTask(
+    input: StartAgentTaskInput,
+    onStarted?: (openclawRef: OpenClawObjectRef) => Promise<void>
+  ): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {
     const started = await this.adapter.startAgentTask(input);
     const source = started.source;
     const openclawRef: OpenClawObjectRef = {
@@ -1514,6 +1912,7 @@ export class BlueprintWorker {
       sessionKey: started.sessionKey,
       usageRef: undefined
     };
+    await onStarted?.(openclawRef);
 
     if (started.status === "failed" || started.status === "cancelled") {
       return {
@@ -1628,4 +2027,12 @@ function hasVisibleAgentOutput(output: unknown): output is string {
 
 function stringifyManagerSlotOutput(output: unknown): string {
   return typeof output === "string" ? output : JSON.stringify(output);
+}
+
+function buildAgentSessionKey(agentId: string): string {
+  return `agent:${normalizeAgentId(agentId)}:main`;
+}
+
+function normalizeAgentId(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
 }

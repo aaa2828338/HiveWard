@@ -9,6 +9,7 @@ import type {
   CreateBlueprintRequest,
   DashboardStateResponse,
   DeleteBlueprintResponse,
+  DeleteCompanyResponse,
   ExportBlueprintResponse,
   HarnessStatus,
   HarnessStatusResponse,
@@ -133,6 +134,12 @@ export const api = {
     return request<CompanyDirectoryResponse>("/api/companies/selected", {
       method: "PUT",
       body: JSON.stringify({ companyId } satisfies SelectCompanyRequest)
+    });
+  },
+
+  async deleteCompany(companyId: string): Promise<DeleteCompanyResponse> {
+    return request<DeleteCompanyResponse>(`/api/companies/${encodeURIComponent(companyId)}`, {
+      method: "DELETE"
     });
   },
 

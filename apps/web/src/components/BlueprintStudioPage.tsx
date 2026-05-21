@@ -70,6 +70,13 @@ import {
   type BlueprintNodeCardData
 } from "./BlueprintNodeCard";
 import { type Messages } from "../lib/i18n";
+import {
+  isTerminalBlueprintRunStatus,
+  readAcknowledgedTerminalRunIds,
+  resolveBlueprintActivityState,
+  shouldShowBlueprintWorkspaceRunState,
+  writeAcknowledgedTerminalRunIds
+} from "../lib/run-state";
 
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard
@@ -122,7 +129,6 @@ const blueprintStepTypes = new Set<BlueprintNodeType>([
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
-type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
 
 export function BlueprintStudioPage({
   blueprint,
@@ -184,7 +190,13 @@ export function BlueprintStudioPage({
   const [blueprintSortMode, setBlueprintSortMode] = useState<BlueprintSortMode>("recent");
   const [blueprintCardContextMenu, setBlueprintCardContextMenu] = useState<{ x: number; y: number; blueprintId: string }>();
   const [deleteCandidateBlueprintId, setDeleteCandidateBlueprintId] = useState<string | undefined>();
-  const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() => new Set());
+  const acknowledgedTerminalRunIdsRef = useRef<Set<string>>(new Set());
+  const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() => {
+    const initial = readAcknowledgedTerminalRunIds(getBrowserStorage());
+    acknowledgedTerminalRunIdsRef.current = initial;
+    return initial;
+  });
+  const currentTerminalRunIdRef = useRef<string | undefined>(undefined);
   const [nodeContextMenu, setNodeContextMenu] = useState<{ open: boolean; x: number; y: number; nodeId?: string }>({
     open: false,
     x: 0,
@@ -204,21 +216,27 @@ export function BlueprintStudioPage({
     });
   }, []);
 
+  const workspaceTerminalRunSeen = Boolean(
+    runView?.run.id &&
+      isTerminalBlueprintRunStatus(runView.run.status) &&
+      acknowledgedTerminalRunIds.has(runView.run.id)
+  );
+  const workspaceRunView = shouldShowBlueprintWorkspaceRunState(runView?.run.status, workspaceTerminalRunSeen) ? runView : undefined;
   const statusByNode = useMemo(() => {
     const map = new Map<string, BlueprintNodeRun>();
-    for (const nodeRun of runView?.nodeRuns ?? []) {
+    for (const nodeRun of workspaceRunView?.nodeRuns ?? []) {
       map.set(nodeRun.nodeId, nodeRun);
     }
     return map;
-  }, [runView]);
+  }, [workspaceRunView]);
 
   useEffect(() => {
     setLocalNodes(buildFlowNodes(blueprint, statusByNode, t));
   }, [statusByNode, t, blueprint]);
 
   useEffect(() => {
-    setLocalEdges(buildFlowEdges(blueprint, runView?.run.status));
-  }, [runView?.run.status, blueprint]);
+    setLocalEdges(buildFlowEdges(blueprint, workspaceRunView?.run.status));
+  }, [workspaceRunView?.run.status, blueprint]);
 
   useEffect(() => {
     setDrawerSelectedBlueprintId(blueprint?.id);
@@ -317,8 +335,13 @@ export function BlueprintStudioPage({
     return blueprintDrawerCopy.name;
   }, [blueprintDrawerCopy, blueprintSortMode]);
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
+  const currentTerminalRunId =
+    currentBlueprintRunStats?.latestRunId && isTerminalBlueprintRunStatus(currentBlueprintRunStats.latestStatus)
+      ? currentBlueprintRunStats.latestRunId
+      : undefined;
+  const currentTerminalRunSeen = Boolean(currentTerminalRunId && acknowledgedTerminalRunIds.has(currentTerminalRunId));
   const currentBlueprintActivity = currentBlueprintRunStats
-    ? resolveBlueprintActivityState(currentBlueprintRunStats.latestStatus, isTerminalBlueprintRunStatus(currentBlueprintRunStats.latestStatus))
+    ? resolveBlueprintActivityState(currentBlueprintRunStats.latestStatus, currentTerminalRunSeen)
     : "idle";
   const isBlueprintInteractionLocked = currentBlueprintActivity === "running";
   const isRunButtonBusy = busyAction === "runBlueprint" || busyAction === "cancelBlueprintRun";
@@ -327,19 +350,14 @@ export function BlueprintStudioPage({
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
   const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
 
-  const acknowledgeTerminalRun = useCallback(
-    (blueprintId: string) => {
-      const stats = blueprintRunStats.get(blueprintId);
-      if (!stats?.latestRunId || !isTerminalBlueprintRunStatus(stats.latestStatus)) return;
-      setAcknowledgedTerminalRunIds((current) => {
-        if (current.has(stats.latestRunId!)) return current;
-        const next = new Set(current);
-        next.add(stats.latestRunId!);
-        return next;
-      });
-    },
-    [blueprintRunStats]
-  );
+  const rememberAcknowledgedTerminalRunId = useCallback((runId: string) => {
+    if (acknowledgedTerminalRunIdsRef.current.has(runId)) return;
+    const next = new Set(acknowledgedTerminalRunIdsRef.current);
+    next.add(runId);
+    acknowledgedTerminalRunIdsRef.current = next;
+    writeAcknowledgedTerminalRunIds(getBrowserStorage(), next);
+    setAcknowledgedTerminalRunIds(next);
+  }, []);
 
   useEffect(() => {
     if (!blueprint) return;
@@ -350,14 +368,38 @@ export function BlueprintStudioPage({
   }, [onUpdateBlueprint, blueprint]);
 
   useEffect(() => {
-    if (!blueprint?.id) return;
-    acknowledgeTerminalRun(blueprint.id);
-  }, [acknowledgeTerminalRun, blueprint?.id, currentBlueprintRunStats?.latestRunId, currentBlueprintRunStats?.latestStatus]);
+    currentTerminalRunIdRef.current = currentTerminalRunId;
+  }, [currentTerminalRunId]);
 
   useEffect(() => {
+    return () => {
+      if (currentTerminalRunId) {
+        rememberAcknowledgedTerminalRunId(currentTerminalRunId);
+      }
+    };
+  }, [currentTerminalRunId, rememberAcknowledgedTerminalRunId]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (currentTerminalRunIdRef.current) {
+        rememberAcknowledgedTerminalRunId(currentTerminalRunIdRef.current);
+      }
+    };
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, [rememberAcknowledgedTerminalRunId]);
+
+  useEffect(() => {
+    acknowledgedTerminalRunIdsRef.current = acknowledgedTerminalRunIds;
+    writeAcknowledgedTerminalRunIds(getBrowserStorage(), acknowledgedTerminalRunIds);
+  }, [acknowledgedTerminalRunIds]);
+
+  useEffect(() => {
+    if (runSummaries.length === 0) return;
     const runIds = new Set(runSummaries.map((run) => run.id));
     setAcknowledgedTerminalRunIds((current) => {
       const next = new Set([...current].filter((runId) => runIds.has(runId)));
+      acknowledgedTerminalRunIdsRef.current = next;
       return next.size === current.size ? current : next;
     });
   }, [runSummaries]);
@@ -522,14 +564,13 @@ export function BlueprintStudioPage({
 
   const selectBlueprintCard = useCallback(
     (blueprintId: string) => {
-      acknowledgeTerminalRun(blueprintId);
       setDrawerSelectedBlueprintId(blueprintId);
       setBlueprintCardContextMenu(undefined);
       onSelectBlueprint(blueprintId);
       closeNodeMenu();
       closeNodeContextMenu();
     },
-    [acknowledgeTerminalRun, closeNodeContextMenu, closeNodeMenu, onSelectBlueprint]
+    [closeNodeContextMenu, closeNodeMenu, onSelectBlueprint]
   );
 
   const openBlueprintCardContextMenu = useCallback(
@@ -917,8 +958,7 @@ export function BlueprintStudioPage({
                   visibleBlueprints.map((item) => {
                     const selected = item.id === drawerSelectedBlueprintId;
                     const stats = blueprintRunStats.get(item.id);
-                    const terminalStatusSeen =
-                      item.id === blueprint?.id || (stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false);
+                    const terminalStatusSeen = stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false;
                     const activity = resolveBlueprintActivityState(stats?.latestStatus, terminalStatusSeen);
                     return (
                       <button
@@ -1651,16 +1691,13 @@ function toTimestamp(value: string): number {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
-function resolveBlueprintActivityState(status?: BlueprintRunSummary["status"], terminalStatusSeen = false): BlueprintActivityState {
-  if (status === "queued" || status === "running" || status === "waiting_approval") return "running";
-  if (terminalStatusSeen) return "idle";
-  if (status === "succeeded") return "succeeded";
-  if (status === "failed" || status === "cancelled") return "failed";
-  return "idle";
-}
-
-function isTerminalBlueprintRunStatus(status?: BlueprintRunSummary["status"]): boolean {
-  return status === "succeeded" || status === "failed" || status === "cancelled";
+function getBrowserStorage(): Storage | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 function nextBlueprintNodeId(blueprint: BlueprintDefinition, type: BlueprintNodeType, parentId?: string): string {

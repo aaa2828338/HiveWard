@@ -91,6 +91,10 @@ export interface SelectCompanyRequest {
   companyId?: string;
 }
 
+export interface DeleteCompanyResponse extends CompanyDirectoryResponse {
+  deleted: boolean;
+}
+
 export type HarnessId = "openclaw" | "claudeCode" | "codex";
 
 export type HarnessConnectionState = "connected" | "available" | "needs_config" | "unavailable";

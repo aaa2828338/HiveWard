@@ -89,6 +89,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.delete("/api/companies/:companyId", async (req, res, next) => {
+    try {
+      res.json(await store.deleteCompany(req.params.companyId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/openclaw-config", async (_req, res, next) => {
     try {
       res.json({ config: await openClawConfigStore.getState() });

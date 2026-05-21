@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -45,6 +45,49 @@ describe("apiRouter", () => {
           logoLabel: "FO"
         });
         expect(body.selectedCompanyId).toBe(company?.id);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("deletes a selected company and its scoped blueprints", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const createCompanyResponse = await fetch(`${baseUrl}/api/companies`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "Archive Lab",
+            businessGoal: "Temporary company for deletion coverage."
+          })
+        });
+        const createdCompanyBody = await readOkJson<{ selectedCompanyId: string }>(createCompanyResponse);
+        const companyId = createdCompanyBody.selectedCompanyId;
+
+        const createBlueprintResponse = await fetch(`${baseUrl}/api/blueprints`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Temporary deletion blueprint" })
+        });
+        const createdBlueprintBody = await readOkJson<{ blueprint: { id: string } }>(createBlueprintResponse);
+        const blueprintPath = join(fixture.dir, "blueprints", `${createdBlueprintBody.blueprint.id}.json`);
+        expect(existsSync(blueprintPath)).toBe(true);
+
+        const deleteResponse = await fetch(`${baseUrl}/api/companies/${companyId}`, {
+          method: "DELETE"
+        });
+        const deleteBody = await readOkJson<{
+          companies: Array<{ id: string; name: string }>;
+          selectedCompanyId?: string;
+          deleted: boolean;
+        }>(deleteResponse);
+
+        expect(deleteBody.deleted).toBe(true);
+        expect(deleteBody.companies.some((company) => company.id === companyId)).toBe(false);
+        expect(deleteBody.selectedCompanyId).not.toBe(companyId);
+        expect(existsSync(blueprintPath)).toBe(false);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

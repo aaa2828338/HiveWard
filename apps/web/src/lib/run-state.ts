@@ -1,6 +1,9 @@
 import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
 
 export type RunPollingView = "blueprint" | "runs";
+export type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
+
+export const acknowledgedTerminalRunIdsStorageKey = "hiveward-acknowledged-terminal-run-ids";
 
 export function selectRunPollingTarget({
   runs,
@@ -25,6 +28,50 @@ export function selectRunPollingTarget({
 
 export function isPollingRunStatus(status: BlueprintRunStatus): boolean {
   return status === "queued" || status === "running";
+}
+
+export function resolveBlueprintActivityState(status?: BlueprintRunStatus, terminalStatusSeen = false): BlueprintActivityState {
+  if (status === "running") return "running";
+  if (terminalStatusSeen) return "idle";
+  if (status === "succeeded") return "succeeded";
+  if (status === "failed" || status === "cancelled") return "failed";
+  return "idle";
+}
+
+export function isTerminalBlueprintRunStatus(status?: BlueprintRunStatus): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled";
+}
+
+export function shouldShowBlueprintWorkspaceRunState(status?: BlueprintRunStatus, terminalStatusSeen = false): boolean {
+  if (status === "running" || status === "waiting_approval") return true;
+  if (isTerminalBlueprintRunStatus(status)) return !terminalStatusSeen;
+  return false;
+}
+
+export function readAcknowledgedTerminalRunIds(storage?: Pick<Storage, "getItem">): Set<string> {
+  if (!storage) return new Set();
+
+  try {
+    const rawValue = storage.getItem(acknowledgedTerminalRunIdsStorageKey);
+    const parsedValue = rawValue ? JSON.parse(rawValue) as unknown : [];
+    if (!Array.isArray(parsedValue)) return new Set();
+    return new Set(parsedValue.filter((item): item is string => typeof item === "string" && item.length > 0));
+  } catch {
+    return new Set();
+  }
+}
+
+export function writeAcknowledgedTerminalRunIds(
+  storage: Pick<Storage, "setItem"> | undefined,
+  runIds: Iterable<string>
+): void {
+  if (!storage) return;
+
+  try {
+    storage.setItem(acknowledgedTerminalRunIdsStorageKey, JSON.stringify([...runIds].sort()));
+  } catch {
+    // Best-effort UI memory only; blocked storage should not break the blueprint page.
+  }
 }
 
 export function syncRunDetails(
@@ -53,6 +100,7 @@ export function syncApprovalsForRun(
     .filter((nodeRun) => nodeRun.status === "waiting_approval")
     .map((nodeRun): PendingApprovalItem => {
       const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+      const upstream = readPendingApprovalUpstream(nodeRun.input);
       return {
         blueprintId: runView.run.blueprintId,
         blueprintName: runView.run.blueprintName,
@@ -64,7 +112,8 @@ export function syncApprovalsForRun(
         startedAt: runView.run.startedAt,
         requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
         approverHint: readOptionalString(output?.approverHint),
-        instructions: readOptionalString(output?.instructions)
+        instructions: readOptionalString(output?.instructions),
+        ...(upstream ? { upstream } : {})
       };
     });
 
@@ -78,6 +127,28 @@ function sortRunSummaries(summaries: BlueprintRunSummary[]): BlueprintRunSummary
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {
+  if (!isRecord(input) || !Array.isArray(input.upstream)) return undefined;
+
+  const upstream = input.upstream.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const nodeId = readOptionalString(candidate.nodeId);
+    const nodeLabel = readOptionalString(candidate.nodeLabel);
+    const nodeRunId = readOptionalString(candidate.nodeRunId);
+    if (!nodeId || !nodeLabel || !nodeRunId) return [];
+    return [
+      {
+        nodeId,
+        nodeLabel,
+        nodeRunId,
+        output: candidate.output
+      }
+    ];
+  });
+
+  return upstream.length ? upstream : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

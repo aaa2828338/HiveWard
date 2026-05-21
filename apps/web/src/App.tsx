@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   Bot,
   Building2,
-  CalendarDays,
   ChevronDown,
   ChevronRight,
   Cloud,
   Database,
+  History,
   Inbox,
   Languages,
   LayoutTemplate,
@@ -50,10 +50,9 @@ import {
   ChannelsPage,
   CompanyDirectoryPage,
   CompanyPage,
-  DashboardPage,
+  HistoryPage,
   ModelsPage,
   RunsPage,
-  SchedulePage,
   SkillsPage
 } from "./components/WorkspacePages";
 
@@ -66,7 +65,7 @@ const sidebarIcons = {
   agents: Bot,
   openclaw: Settings,
   skills: Puzzle,
-  schedule: CalendarDays,
+  schedule: History,
   channels: Radio,
   claudeCodeConfig: Settings,
   codexConfig: Settings
@@ -453,7 +452,7 @@ export function App() {
       models: openClawConfig?.configuredModels.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? 0,
       skills: catalog?.tools.length ?? 0,
-      schedule: runtime?.tasks.length ?? 0,
+      schedule: runs.length + approvals.length,
       channels: openClawConfig?.configuredChannels.length ?? 0
     }),
     [
@@ -464,7 +463,7 @@ export function App() {
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
       catalog?.tools.length,
-      runtime?.tasks.length,
+      runs.length,
       blueprints.length
     ]
   );
@@ -520,10 +519,11 @@ export function App() {
 
   const refreshWorkspace = useCallback(() => withBusy("refreshWorkspace", () => hydrateWorkspace()), [hydrateWorkspace, withBusy]);
 
-  const selectCompany = useCallback(
-    (companyId?: string) => {
-      void withBusy("selectCompany", async () => {
+  const enterCompany = useCallback(
+    (companyId: string) => {
+      void withBusy("enterCompany", async () => {
         await api.selectCompany(companyId);
+        setSection("company");
         await hydrateWorkspace();
       });
     },
@@ -536,6 +536,16 @@ export function App() {
         await api.createCompany(input);
         await hydrateWorkspace();
       }),
+    [hydrateWorkspace, withBusy]
+  );
+
+  const deleteCompany = useCallback(
+    (companyId: string) => {
+      void withBusy("deleteCompany", async () => {
+        await api.deleteCompany(companyId);
+        await hydrateWorkspace();
+      });
+    },
     [hydrateWorkspace, withBusy]
   );
 
@@ -821,29 +831,14 @@ export function App() {
           selectedCompanyId={selectedCompanyId}
           language={language}
           busy={Boolean(busyAction)}
-          onSelectCompany={selectCompany}
+          onEnterCompany={enterCompany}
           onCreateCompany={createCompany}
+          onDeleteCompany={deleteCompany}
         />
       );
     }
     if (section === "company") {
-      return (
-        <>
-          <CompanyPage companies={companies} selectedCompanyId={selectedCompanyId} language={language} />
-          <DashboardPage
-            dashboard={dashboard}
-            blueprints={blueprints}
-            runs={runs}
-            approvals={approvals}
-            catalog={catalog}
-            runtime={runtime}
-            language={language}
-            t={t}
-            onAddWidget={addWidget}
-            onRemoveWidget={removeWidget}
-          />
-        </>
-      );
+      return <CompanyPage companies={companies} selectedCompanyId={selectedCompanyId} language={language} />;
     }
     if (section === "openclaw") {
       return (
@@ -972,7 +967,7 @@ export function App() {
       );
     }
     if (section === "schedule") {
-      return <SchedulePage runtime={runtime} runs={runs} approvals={approvals} blueprints={blueprints} language={language} t={t} />;
+      return <HistoryPage runs={runs} approvals={approvals} blueprints={blueprints} language={language} t={t} />;
     }
     if (section === "channels") {
       return (
