@@ -874,6 +874,7 @@ export function App() {
           catalog={catalog}
           openClawConfig={openClawConfig}
           harnessStatuses={harnessStatuses}
+          runtime={runtime}
           language={language}
         />
       );

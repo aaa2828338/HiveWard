@@ -30,6 +30,9 @@ import type {
   RuntimeOverviewResponse,
   SaveBlueprintRequest,
   SelectCompanyRequest,
+  ChatSessionHistoryResponse,
+  CreateChatSessionRequest,
+  CreateChatSessionResponse,
   SendChatMessageRequest,
   ChatStreamEvent,
   StartBlueprintRunResponse,
@@ -68,6 +71,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async createChatSession(input: CreateChatSessionRequest): Promise<CreateChatSessionResponse> {
+    return request<CreateChatSessionResponse>("/api/chat/session", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateChatSessionRequest)
+    });
+  },
+
   async streamChat(input: SendChatMessageRequest, handlers: ChatStreamHandlers): Promise<void> {
     const response = await fetch(`${apiBaseUrl}/api/chat/stream`, {
       method: "POST",
@@ -100,6 +110,11 @@ export const api = {
 
     buffer += decoder.decode();
     consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
+  },
+
+  async getChatSessionHistory(sessionKey: string): Promise<ChatSessionHistoryResponse["messages"]> {
+    const response = await request<ChatSessionHistoryResponse>(`/api/chat/history?sessionKey=${encodeURIComponent(sessionKey)}`);
+    return response.messages;
   },
 
   async getOpenClawConfig(): Promise<OpenClawConfigState> {

@@ -8,6 +8,9 @@ import type {
   OpenClawUsageFact,
   OpenClawExecutionStatus,
   RuntimeOverview,
+  ChatHistoryMessage,
+  ChatStreamEvent,
+  ChatThinkingEffort,
   SendChannelInput,
   SendChannelResult,
   AgentTaskResult,
@@ -15,7 +18,12 @@ import type {
   StartedAgentTaskResult,
   WaitForAgentTaskInput,
 } from "@hiveward/shared";
-import type { RuntimeAdapter } from "./index";
+import type {
+  RuntimeAdapter,
+  RuntimeChatSessionInput,
+  RuntimeChatSessionResult,
+  RuntimeChatStreamInput,
+} from "./index";
 import type { GatewayAdapterConfig } from "./gateway-config";
 import { GatewaySession } from "./gateway-client";
 import { createGatewayId } from "./gateway-device";
@@ -82,6 +90,144 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
       sessions: sessions.map(mapSession).filter(isPresent),
       tasks: sessions.map(mapSessionTask).filter(isPresent),
     };
+  }
+
+  async getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]> {
+    return this.withSession(async (session) => {
+      const history = await session.request<{ messages?: unknown[] }>("chat.history", {
+        sessionKey,
+        limit: 100,
+        maxChars: agentTranscriptHistoryMaxChars,
+      });
+      return (Array.isArray(history.messages) ? history.messages : [])
+        .map(mapChatHistoryMessage)
+        .filter(isPresent);
+    });
+  }
+
+  async createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
+    return this.withSession(async (session) => {
+      const agentId = input.agentId?.trim() || "main";
+      const parentSessionKey = input.parentSessionKey?.trim();
+      const result = await session.request<Record<string, unknown>>("sessions.create", {
+        agentId,
+        ...(parentSessionKey ? { parentSessionKey } : {})
+      });
+      const sessionKey = readString(result.key);
+      if (!sessionKey) {
+        throw new Error("OpenClaw sessions.create returned no session key.");
+      }
+      const sessionId = readString(result.sessionId);
+      const entry = isRecord(result.entry) ? result.entry : undefined;
+      return {
+        sessionKey,
+        sessionId,
+        title: readString(entry?.label) ?? sessionKey
+      };
+    });
+  }
+
+  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    const session = await this.getSession();
+    const runId = createGatewayId(input.idempotencyKey);
+    const startedAt = new Date().toISOString();
+    let output = "";
+    let lastUsage: OpenClawUsageFact | undefined;
+
+    await this.patchChatSession(session, input);
+
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let timer: NodeJS.Timeout;
+      let unsubscribeChat: () => void = () => undefined;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribeChat();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+      timer = setTimeout(() => {
+        onEvent({
+          type: "done",
+          taskId: runId,
+          runId,
+          sessionKey: input.sessionKey,
+          source: "openclaw",
+          status: "failed",
+          output,
+          error: "OpenClaw chat stream timed out before a final event.",
+          usage: lastUsage,
+          updatedAt: new Date().toISOString()
+        });
+        finish();
+      }, input.timeoutMs ?? this.config.agentStartTimeoutMs);
+
+      unsubscribeChat = session.onEvent("chat", (payload) => {
+        const event = mapGatewayChatEvent(payload, runId, input.sessionKey, output, lastUsage);
+        if (!event) return;
+        if (event.type === "delta") {
+          output = event.replace ? event.text : `${output}${event.text}`;
+        }
+        if (event.type === "done") {
+          output = event.output ?? output;
+          lastUsage = event.usage ?? lastUsage;
+        }
+        onEvent(event);
+        if (event.type === "done") {
+          finish();
+        }
+      });
+
+      void session.request<Record<string, unknown>>("chat.send", {
+        sessionKey: input.sessionKey,
+        message: input.message,
+        deliver: false,
+        ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
+        thinking: input.thinking,
+        timeoutMs: input.timeoutMs,
+        idempotencyKey: runId
+      }).then((result) => {
+        const acceptedRunId = readString(result.runId) ?? runId;
+        onEvent({
+          type: "started",
+          taskId: acceptedRunId,
+          runId: acceptedRunId,
+          sessionKey: input.sessionKey,
+          source: "openclaw",
+          status: "running",
+          updatedAt: startedAt
+        });
+        const status = readString(result.status);
+        if (status === "ok" || status === "error") {
+          onEvent({
+            type: "done",
+            taskId: acceptedRunId,
+            runId: acceptedRunId,
+            sessionKey: input.sessionKey,
+            source: "openclaw",
+            status: status === "ok" ? "succeeded" : "failed",
+            error: status === "error" ? readAgentResultOutput(result) ?? summarizeAgentResult(result) : undefined,
+            updatedAt: new Date().toISOString()
+          });
+          finish();
+        }
+      }).catch((error) => {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      });
+    });
+  }
+
+  private async patchChatSession(session: GatewaySession, input: RuntimeChatStreamInput): Promise<void> {
+    const patch: Record<string, unknown> = { key: input.sessionKey };
+    if (input.modelId?.trim()) patch.model = input.modelId.trim();
+    if (input.thinking?.trim()) patch.thinkingLevel = input.thinking.trim();
+    if (Object.keys(patch).length === 1) return;
+    await session.request<Record<string, unknown>>("sessions.patch", patch);
   }
 
   private async listSessionRecords(): Promise<unknown[]> {
@@ -416,14 +562,19 @@ const agentTerminalPollIntervalMs = 5_000;
 const agentTerminalTranscriptGraceMs = 30_000;
 
 export function formatAgentMessage(input: StartAgentTaskInput): string {
+  if (input.input === undefined) {
+    return input.prompt;
+  }
+
+  const formattedInput = formatAgentInput(input.input);
   return [
     `Hiveward blueprint run: ${input.blueprintRunId}`,
     `Hiveward node run: ${input.nodeRunId}`,
     "",
     input.prompt,
-    "",
-    formatAgentInput(input.input),
-  ].join("\n");
+    formattedInput ? "" : undefined,
+    formattedInput,
+  ].filter((section) => section !== undefined).join("\n");
 }
 
 function formatAgentInput(input: unknown): string {
@@ -518,13 +669,83 @@ function mapModel(value: unknown): OpenClawModel | undefined {
   const id = readString(value.id);
   const provider = readString(value.provider);
   if (!id || !provider) return undefined;
+  const thinkingLevels = readModelThinkingLevels(value);
   return {
     id: `${provider}/${id}`,
     label: readString(value.name) ?? readString(value.alias) ?? id,
     provider,
     supportsTools: true,
     contextWindow: readNumber(value.contextWindow),
+    ...(thinkingLevels ? { thinkingLevels } : {}),
   };
+}
+
+const baseThinkingLevels: ChatThinkingEffort[] = ["off", "minimal", "low", "medium", "high"];
+const thinkingLevelRank: Record<ChatThinkingEffort, number> = {
+  off: 0,
+  minimal: 10,
+  low: 20,
+  medium: 30,
+  high: 40,
+  adaptive: 50,
+  xhigh: 60,
+  max: 70,
+};
+
+function readModelThinkingLevels(value: Record<string, unknown>): ChatThinkingEffort[] | undefined {
+  const explicitLevels =
+    readThinkingLevelList(value.thinkingLevels) ??
+    readThinkingLevelList(value.thinkingOptions);
+  if (explicitLevels?.length) return explicitLevels;
+
+  const compat = isRecord(value.compat) ? value.compat : undefined;
+  const supportedReasoningEfforts =
+    readThinkingLevelList(compat?.supportedReasoningEfforts) ??
+    readThinkingLevelList(value.supportedReasoningEfforts);
+  if (supportedReasoningEfforts?.length) {
+    return mergeThinkingLevels([...baseThinkingLevels, ...supportedReasoningEfforts]);
+  }
+
+  if (value.reasoning === false) return ["off"];
+  if (value.reasoning === true || compat?.supportsReasoningEffort === true) return [...baseThinkingLevels];
+  return undefined;
+}
+
+function readThinkingLevelList(value: unknown): ChatThinkingEffort[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const levels = value
+    .map((entry) => {
+      if (typeof entry === "string") return normalizeThinkingLevel(entry);
+      if (!isRecord(entry)) return undefined;
+      return normalizeThinkingLevel(
+        readString(entry.id) ??
+        readString(entry.value) ??
+        readString(entry.reasoningEffort) ??
+        readString(entry.label) ??
+        readString(entry.name)
+      );
+    })
+    .filter(isPresent);
+  return levels.length > 0 ? mergeThinkingLevels(levels) : undefined;
+}
+
+function mergeThinkingLevels(levels: ChatThinkingEffort[]): ChatThinkingEffort[] {
+  return [...new Set(levels)].sort((left, right) => thinkingLevelRank[left] - thinkingLevelRank[right]);
+}
+
+function normalizeThinkingLevel(value: string | undefined): ChatThinkingEffort | undefined {
+  const key = value?.trim().toLowerCase();
+  if (!key) return undefined;
+  const collapsed = key.replace(/[\s_-]+/g, "");
+  if (collapsed === "off" || collapsed === "none" || collapsed === "disabled") return "off";
+  if (collapsed === "min" || collapsed === "minimal") return "minimal";
+  if (collapsed === "low" || collapsed === "on" || collapsed === "enabled") return "low";
+  if (collapsed === "medium" || collapsed === "med" || collapsed === "mid") return "medium";
+  if (collapsed === "high") return "high";
+  if (collapsed === "adaptive" || collapsed === "auto") return "adaptive";
+  if (collapsed === "xhigh" || collapsed === "extrahigh") return "xhigh";
+  if (collapsed === "max") return "max";
+  return undefined;
 }
 
 function mapAgent(value: unknown, defaultId: unknown): OpenClawAgent | undefined {
@@ -595,6 +816,92 @@ function mapSessionTask(value: unknown): OpenClawTaskSummary | undefined {
     status: mapExecutionStatus(readString(value.status)),
     updatedAt: dateFromMs(value.updatedAt),
   };
+}
+
+function mapChatHistoryMessage(value: unknown, index: number): ChatHistoryMessage | undefined {
+  if (!isRecord(value)) return undefined;
+  const role = readString(value.role);
+  if (role !== "user" && role !== "assistant") return undefined;
+  const content = extractMessageText(value).trim();
+  if (!content) return undefined;
+  return {
+    id: readString(value.id) ?? readString(value.messageId) ?? `openclaw-message-${index}`,
+    role,
+    content,
+    createdAt: dateFromTimestamp(value.createdAt ?? value.createdAtMs ?? value.updatedAt ?? value.updatedAtMs),
+  };
+}
+
+function mapGatewayChatEvent(
+  payload: unknown,
+  runId: string,
+  fallbackSessionKey: string,
+  currentOutput: string,
+  currentUsage: OpenClawUsageFact | undefined,
+): ChatStreamEvent | undefined {
+  if (!isRecord(payload)) return undefined;
+  const eventRunId = readString(payload.runId);
+  if (eventRunId !== runId) return undefined;
+  const sessionKey = readString(payload.sessionKey) ?? fallbackSessionKey;
+  const usage = readUsageFact(payload.usage ?? payload.message, undefined, runId) ?? currentUsage;
+  const state = readString(payload.state);
+
+  if (state === "delta") {
+    const text = readRawString(payload.deltaText) ?? extractMessageText(payload.message);
+    if (!text) return undefined;
+    return {
+      type: "delta",
+      text,
+      replace: payload.replace === true,
+    };
+  }
+
+  if (state === "final") {
+    const output = extractMessageText(payload.message).trim() || currentOutput;
+    return {
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey,
+      source: "openclaw",
+      status: "succeeded",
+      output,
+      usage,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  if (state === "aborted") {
+    return {
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey,
+      source: "openclaw",
+      status: "cancelled",
+      output: extractMessageText(payload.message).trim() || currentOutput,
+      usage,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  if (state === "error") {
+    const error = readString(payload.errorMessage) ?? "OpenClaw chat failed.";
+    return {
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey,
+      source: "openclaw",
+      status: "failed",
+      output: extractMessageText(payload.message).trim() || currentOutput,
+      error,
+      usage,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  return undefined;
 }
 
 function readAgentResultOutput(result: Record<string, unknown>): string | undefined {
@@ -896,6 +1203,15 @@ function normalizeAgentId(value: string): string {
 function dateFromMs(value: unknown): string {
   const ms = readNumber(value);
   return new Date(ms ?? Date.now()).toISOString();
+}
+
+function dateFromTimestamp(value: unknown): string {
+  const text = readString(value);
+  if (text) {
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+  }
+  return dateFromMs(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

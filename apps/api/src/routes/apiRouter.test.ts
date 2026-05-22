@@ -4,8 +4,16 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { MockRuntimeAdapter } from "@hiveward/adapter";
-import type { AgentNodeConfig, BlueprintDefinition, OpenClawConfigState, OpenClawVersionInfo, RuntimeOverview } from "@hiveward/shared";
+import { MockRuntimeAdapter, type RuntimeChatSessionInput, type RuntimeChatStreamInput } from "@hiveward/adapter";
+import type {
+  AgentNodeConfig,
+  BlueprintDefinition,
+  ChatStreamEvent,
+  OpenClawConfigState,
+  OpenClawVersionInfo,
+  RuntimeOverview,
+  StartAgentTaskInput
+} from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
@@ -13,6 +21,24 @@ import type { BlueprintWorker } from "../worker/blueprintWorker";
 
 class TrackingAdapter extends MockRuntimeAdapter {
   runtimeOverviewCalls = 0;
+  lastStartInput: StartAgentTaskInput | undefined;
+  lastChatSessionInput: RuntimeChatSessionInput | undefined;
+  lastChatStreamInput: RuntimeChatStreamInput | undefined;
+
+  override async startAgentTask(input: StartAgentTaskInput) {
+    this.lastStartInput = input;
+    return super.startAgentTask(input);
+  }
+
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+    this.lastChatStreamInput = input;
+    return super.streamChatMessage(input, onEvent);
+  }
+
+  override async createChatSession(input: RuntimeChatSessionInput) {
+    this.lastChatSessionInput = input;
+    return super.createChatSession(input);
+  }
 
   override async getRuntimeOverview(): Promise<RuntimeOverview> {
     this.runtimeOverviewCalls += 1;
@@ -207,6 +233,7 @@ describe("apiRouter", () => {
 
   it("streams OpenClaw chat responses through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await fetch(`${baseUrl}/api/chat/stream`, {
@@ -214,14 +241,12 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             harnessId: "openclaw",
-            mode: "chat",
             message: "Say hello from chat.",
-            history: [],
             attachments: [],
             modelId: "openclaw/default",
             agentId: "main",
             thinkingEffort: "medium",
-            showToolCalls: true
+            includePlatformContext: true
           })
         });
         const text = await response.text();
@@ -231,8 +256,62 @@ describe("apiRouter", () => {
         expect(text).toContain("event: started");
         expect(text).toContain("event: delta");
         expect(text).toContain("event: done");
-        expect(text).toContain("hiveward-chat completed through OpenClaw adapter");
+        expect(text).toContain("main completed through OpenClaw adapter");
+        expect(adapter.lastStartInput).toBeUndefined();
+        expect(adapter.lastChatStreamInput?.sessionKey).toBe("main");
+        expect(adapter.lastChatStreamInput?.message).toContain("System context:");
+        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard is a local company operations console");
+        expect(adapter.lastChatStreamInput?.message).toContain("User message:\nSay hello from chat.");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("Project context: HiveWard");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward blueprint run");
+        expect(adapter.lastChatStreamInput?.modelId).toBe("openclaw/default");
+        expect(adapter.lastChatStreamInput?.thinking).toBe("medium");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("proxies OpenClaw native chat history by session key", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("session-demo-1")}`);
+        const body = await readOkJson<{ messages: Array<{ role: string; content: string }> }>(response);
+
+        expect(body.messages.length).toBeGreaterThan(0);
+        expect(body.messages[0]).toMatchObject({
+          role: "user",
+          content: "Mock OpenClaw session history."
+        });
       });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates native OpenClaw chat sessions through the runtime adapter", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/session`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            agentId: "main",
+            parentSessionKey: "main"
+          })
+        });
+        const body = await readOkJson<{ sessionKey: string }>(response);
+
+        expect(response.status).toBe(201);
+        expect(body.sessionKey).toMatch(/^agent:main:chat-/);
+        expect(adapter.lastChatSessionInput).toEqual({
+          agentId: "main",
+          parentSessionKey: "main"
+        });
+      }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

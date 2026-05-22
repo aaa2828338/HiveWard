@@ -13,12 +13,15 @@ export interface OpenClawObjectRef {
   usageRef?: string;
 }
 
+export type ChatThinkingEffort = "off" | "minimal" | "low" | "medium" | "high" | "adaptive" | "xhigh" | "max";
+
 export interface OpenClawModel {
   id: string;
   label: string;
   provider: string;
   supportsTools: boolean;
   contextWindow?: number;
+  thinkingLevels?: ChatThinkingEffort[];
 }
 
 export interface OpenClawTool {
@@ -47,6 +50,7 @@ export interface OpenClawConfiguredModel {
   label: string;
   provider: string;
   alias?: string;
+  thinkingLevels?: ChatThinkingEffort[];
 }
 
 export interface OpenClawConfiguredAgent {

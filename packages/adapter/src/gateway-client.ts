@@ -41,6 +41,7 @@ interface PendingLifecycleRequest {
 }
 
 type PendingRequest = PendingSingleRequest | PendingLifecycleRequest;
+type GatewayEventHandler = (payload: unknown) => void;
 
 export interface GatewayRequestLifecycle<T> {
   accepted: Promise<T>;
@@ -65,6 +66,7 @@ export class GatewaySession {
   private connectResolve: (() => void) | undefined;
   private connectReject: ((error: Error) => void) | undefined;
   private connectTimer: NodeJS.Timeout | undefined;
+  private eventHandlers = new Map<string, Set<GatewayEventHandler>>();
 
   constructor(private readonly config: GatewayAdapterConfig) {}
 
@@ -186,6 +188,20 @@ export class GatewaySession {
     return { accepted, final };
   }
 
+  onEvent(event: string, handler: GatewayEventHandler): () => void {
+    const handlers = this.eventHandlers.get(event) ?? new Set<GatewayEventHandler>();
+    handlers.add(handler);
+    this.eventHandlers.set(event, handlers);
+    return () => {
+      const current = this.eventHandlers.get(event);
+      if (!current) return;
+      current.delete(handler);
+      if (current.size === 0) {
+        this.eventHandlers.delete(event);
+      }
+    };
+  }
+
   close(): void {
     this.ws?.close();
     this.ws = undefined;
@@ -204,7 +220,9 @@ export class GatewaySession {
     if (isGatewayEvent(parsed)) {
       if (parsed.event === "connect.challenge") {
         await this.sendConnect(parsed.payload);
+        return;
       }
+      this.emitEvent(parsed.event, parsed.payload);
       return;
     }
 
@@ -329,6 +347,15 @@ export class GatewaySession {
     if (this.connectTimer) clearTimeout(this.connectTimer);
     this.connectReject?.(error);
     this.rejectPending(error);
+  }
+
+  private emitEvent(event: string, payload: unknown): void {
+    for (const handler of this.eventHandlers.get(event) ?? []) {
+      handler(payload);
+    }
+    for (const handler of this.eventHandlers.get("*") ?? []) {
+      handler({ event, payload });
+    }
   }
 
   private rejectPending(error: Error): void {

@@ -7,6 +7,10 @@ import type {
   OpenClawTaskSummary,
   OpenClawTool,
   RuntimeOverview,
+  ChatHistoryMessage,
+  ChatAttachment,
+  ChatStreamEvent,
+  ChatThinkingEffort,
   SendChannelInput,
   SendChannelResult,
   AgentTaskResult,
@@ -26,9 +30,33 @@ export interface RuntimeAdapter {
   listSessions(): Promise<OpenClawSessionSummary[]>;
   listTasks(): Promise<OpenClawTaskSummary[]>;
   getRuntimeOverview(): Promise<RuntimeOverview>;
+  getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]>;
+  createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult>;
+  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void>;
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
+}
+
+export interface RuntimeChatSessionInput {
+  agentId?: string;
+  parentSessionKey?: string;
+}
+
+export interface RuntimeChatSessionResult {
+  sessionKey: string;
+  sessionId?: string;
+  title?: string;
+}
+
+export interface RuntimeChatStreamInput {
+  sessionKey: string;
+  message: string;
+  attachments: ChatAttachment[];
+  modelId?: string;
+  thinking?: ChatThinkingEffort;
+  idempotencyKey: string;
+  timeoutMs?: number;
 }
 
 export class MockRuntimeAdapter implements RuntimeAdapter {
@@ -41,21 +69,24 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
         label: "GPT-5.4",
         provider: "OpenAI",
         supportsTools: true,
-        contextWindow: 256000
+        contextWindow: 256000,
+        thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh"]
       },
       {
         id: "gpt-5.3-codex-spark",
         label: "GPT-5.3 Codex Spark",
         provider: "OpenAI",
         supportsTools: true,
-        contextWindow: 128000
+        contextWindow: 128000,
+        thinkingLevels: ["off", "minimal", "low", "medium", "high"]
       },
       {
         id: "local-reviewer",
         label: "Local Reviewer",
         provider: "OpenClaw Local",
         supportsTools: false,
-        contextWindow: 64000
+        contextWindow: 64000,
+        thinkingLevels: ["off"]
       }
     ];
   }
@@ -121,6 +152,60 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
   async getRuntimeOverview(): Promise<RuntimeOverview> {
     const [sessions, tasks] = await Promise.all([this.listSessions(), this.listTasks()]);
     return { sessions, tasks };
+  }
+
+  async getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]> {
+    const now = new Date().toISOString();
+    return [
+      {
+        id: `${sessionKey}:user-demo`,
+        role: "user",
+        content: "Mock OpenClaw session history.",
+        createdAt: now
+      },
+      {
+        id: `${sessionKey}:assistant-demo`,
+        role: "assistant",
+        content: "This message came from the runtime adapter history surface.",
+        createdAt: now
+      }
+    ];
+  }
+
+  async createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
+    const agentId = input.agentId?.trim() || "main";
+    return {
+      sessionKey: `agent:${agentId}:chat-${nanoid(8)}`,
+      title: "New OpenClaw chat"
+    };
+  }
+
+  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    const now = new Date().toISOString();
+    const runId = input.idempotencyKey;
+    onEvent({
+      type: "started",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey,
+      source: "openclaw",
+      status: "running",
+      updatedAt: now
+    });
+    onEvent({
+      type: "delta",
+      text: `main completed through OpenClaw adapter. Prompt boundary stayed outside Hiveward runtime.`
+    });
+    onEvent({
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey,
+      source: "openclaw",
+      status: "succeeded",
+      output: `main completed through OpenClaw adapter. Prompt boundary stayed outside Hiveward runtime.`,
+      updatedAt: now
+    });
   }
 
   async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
@@ -213,6 +298,18 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
 
   getRuntimeOverview(): Promise<RuntimeOverview> {
     return this.baseAdapter.getRuntimeOverview();
+  }
+
+  getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]> {
+    return this.baseAdapter.getSessionMessages(sessionKey);
+  }
+
+  createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
+    return this.baseAdapter.createChatSession(input);
+  }
+
+  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    return this.baseAdapter.streamChatMessage(input, onEvent);
   }
 
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {

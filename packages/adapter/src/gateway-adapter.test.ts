@@ -89,4 +89,22 @@ describe("gateway adapter transcript extraction", () => {
     expect(message).toContain("runId=run-oc-1");
     expect(message).not.toContain("\"upstream\"");
   });
+
+  it("omits run markers and input context when no task input is provided", () => {
+    const message = formatAgentMessage({
+      blueprintRunId: "chat-1",
+      nodeRunId: "chat-node-1",
+      source: "openclaw",
+      agentName: "main",
+      prompt: "Current user message:\nhi",
+      input: undefined,
+      tools: []
+    });
+
+    expect(message).toBe("Current user message:\nhi");
+    expect(message).not.toContain("Hiveward blueprint run");
+    expect(message).not.toContain("Hiveward node run");
+    expect(message).not.toContain("\u8f93\u5165\u4e0a\u4e0b\u6587");
+    expect(message).not.toContain("\u5176\u4ed6\u4e0a\u4e0b\u6587");
+  });
 });

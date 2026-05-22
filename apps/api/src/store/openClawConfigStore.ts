@@ -15,6 +15,7 @@ import type {
   OpenClawConfiguredChannel,
   OpenClawConfiguredModel,
   OpenClawGatewaySettingsSummary,
+  ChatThinkingEffort,
   OpenClawVersionInfo
 } from "@hiveward/shared";
 import {
@@ -353,7 +354,8 @@ function collectConfiguredModels(config: OpenClawConfigFile, defaultModelId?: st
         id: fullId,
         label: model.name?.trim() || aliases[fullId]?.alias || fullId,
         provider,
-        alias: aliases[fullId]?.alias
+        alias: aliases[fullId]?.alias,
+        thinkingLevels: readConfiguredThinkingLevels(model)
       });
     }
   }
@@ -379,6 +381,74 @@ function collectConfiguredModels(config: OpenClawConfigFile, defaultModelId?: st
   }
 
   return models.sort((left, right) => left.label.localeCompare(right.label));
+}
+
+const baseThinkingLevels: ChatThinkingEffort[] = ["off", "minimal", "low", "medium", "high"];
+const thinkingLevelRank: Record<ChatThinkingEffort, number> = {
+  off: 0,
+  minimal: 10,
+  low: 20,
+  medium: 30,
+  high: 40,
+  adaptive: 50,
+  xhigh: 60,
+  max: 70
+};
+
+function readConfiguredThinkingLevels(model: ConfigObject): ChatThinkingEffort[] | undefined {
+  const explicitLevels =
+    readThinkingLevelList(model.thinkingLevels) ??
+    readThinkingLevelList(model.thinkingOptions);
+  if (explicitLevels?.length) return explicitLevels;
+
+  const compat = isConfigObject(model.compat) ? model.compat : undefined;
+  const supportedReasoningEfforts =
+    readThinkingLevelList(compat?.supportedReasoningEfforts) ??
+    readThinkingLevelList(model.supportedReasoningEfforts);
+  if (supportedReasoningEfforts?.length) {
+    return mergeThinkingLevels([...baseThinkingLevels, ...supportedReasoningEfforts]);
+  }
+
+  if (model.reasoning === false) return ["off"];
+  if (model.reasoning === true || compat?.supportsReasoningEffort === true) return [...baseThinkingLevels];
+  return undefined;
+}
+
+function readThinkingLevelList(value: unknown): ChatThinkingEffort[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const levels = value
+    .map((entry) => {
+      if (typeof entry === "string") return normalizeThinkingLevel(entry);
+      if (!isConfigObject(entry)) return undefined;
+      return normalizeThinkingLevel(
+        readString(entry.id) ??
+        readString(entry.value) ??
+        readString(entry.reasoningEffort) ??
+        readString(entry.label) ??
+        readString(entry.name)
+      );
+    })
+    .filter((level): level is ChatThinkingEffort => Boolean(level));
+  return levels.length > 0 ? mergeThinkingLevels(levels) : undefined;
+}
+
+function mergeThinkingLevels(levels: ChatThinkingEffort[]): ChatThinkingEffort[] {
+  return [...new Set(levels)].sort((left, right) => thinkingLevelRank[left] - thinkingLevelRank[right]);
+}
+
+function normalizeThinkingLevel(value: string | undefined): ChatThinkingEffort | undefined {
+  const key = value?.trim().toLowerCase();
+  if (!key) return undefined;
+  const collapsed = key.replace(/[\s_-]+/g, "");
+  if (collapsed === "off" || collapsed === "none" || collapsed === "disabled") return "off";
+  if (collapsed === "min" || collapsed === "minimal") return "minimal";
+  if (collapsed === "low" || collapsed === "on" || collapsed === "enabled") return "low";
+  if (collapsed === "medium" || collapsed === "med" || collapsed === "mid") return "medium";
+  if (collapsed === "high") return "high";
+  if (collapsed === "adaptive" || collapsed === "auto") return "adaptive";
+  if (collapsed === "xhigh" || collapsed === "extrahigh") return "xhigh";
+  if (collapsed === "max") return "max";
+  return undefined;
 }
 
 function collectConfiguredChannels(config: OpenClawConfigFile): OpenClawConfiguredChannel[] {

@@ -6,6 +6,7 @@ import type {
   OpenClawModelUsageSummary,
   OpenClawObjectSource,
   OpenClawSessionSummary,
+  ChatThinkingEffort,
   OpenClawTaskSummary,
   OpenClawUsageFact,
   OpenClawVersionInfo
@@ -125,10 +126,6 @@ export interface HarnessStatusResponse {
   statuses: HarnessStatus[];
 }
 
-export type ChatMode = "chat" | "build_blueprint" | "drawing";
-
-export type ChatThinkingEffort = "low" | "medium" | "high" | "xhigh";
-
 export interface ChatAttachment {
   id: string;
   name: string;
@@ -148,14 +145,24 @@ export interface ChatHistoryMessage {
 
 export interface SendChatMessageRequest {
   harnessId: HarnessId;
-  mode: ChatMode;
   message: string;
-  history: ChatHistoryMessage[];
-  attachments: ChatAttachment[];
+  attachments?: ChatAttachment[];
   modelId?: string;
   agentId?: string;
-  thinkingEffort: ChatThinkingEffort;
-  showToolCalls?: boolean;
+  nativeSessionKey?: string;
+  thinkingEffort?: ChatThinkingEffort;
+  includePlatformContext?: boolean;
+}
+
+export interface CreateChatSessionRequest {
+  agentId?: string;
+  parentSessionKey?: string;
+}
+
+export interface CreateChatSessionResponse {
+  sessionKey: string;
+  sessionId?: string;
+  title?: string;
 }
 
 export type ChatStreamEvent =
@@ -171,6 +178,7 @@ export type ChatStreamEvent =
   | {
       type: "delta";
       text: string;
+      replace?: boolean;
     }
   | {
       type: "done";
@@ -188,6 +196,10 @@ export type ChatStreamEvent =
       type: "error";
       message: string;
     };
+
+export interface ChatSessionHistoryResponse {
+  messages: ChatHistoryMessage[];
+}
 
 export interface OpenClawConfigResponse {
   config: OpenClawConfigState;
