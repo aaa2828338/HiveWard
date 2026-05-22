@@ -96,6 +96,8 @@ type BlueprintCanvasWorld = {
 
 const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
 const canvasWorldScreenScale = 3;
+const nodeMenuPopoverWidth = 146;
+const nodeMenuViewportMargin = 12;
 
 const palette: Array<{ type: BlueprintNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
@@ -143,6 +145,7 @@ export function BlueprintStudioPage({
   busyAction,
   onSelectBlueprint,
   onCreateBlueprint,
+  onRefreshWorkspace,
   onOpenBlueprintImport,
   onExportBlueprint,
   onDeleteBlueprint,
@@ -205,6 +208,13 @@ export function BlueprintStudioPage({
   });
   const [canvasViewportSize, setCanvasViewportSize] = useState(fallbackCanvasViewportSize);
   const canvasPanelRef = useRef<HTMLElement | null>(null);
+  const nodeMenuRef = useRef<HTMLDivElement | null>(null);
+  const nodeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const nodeContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const blueprintSelectorButtonRef = useRef<HTMLButtonElement | null>(null);
+  const blueprintDrawerRef = useRef<HTMLElement | null>(null);
+  const blueprintCardContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean; openedMenu: boolean } | undefined>(undefined);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
@@ -500,7 +510,7 @@ export function BlueprintStudioPage({
         const node: BlueprintNode = {
           id,
           type,
-          runtimeId: type === "agent" ? "openclaw" : undefined,
+          runtimeId: type === "agent" || type === "manager" ? "openclaw" : undefined,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
             ? managerSlotChildInitialPosition(selectedSlot!, blueprintWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
@@ -536,6 +546,84 @@ export function BlueprintStudioPage({
     setNodeContextMenu({ open: false, x: 0, y: 0, nodeId: undefined });
   }, []);
 
+  const clearCanvasSelection = useCallback(() => {
+    setSelectedCanvasNodeIdsIfChanged([]);
+    onSelectNode(undefined);
+  }, [onSelectNode, setSelectedCanvasNodeIdsIfChanged]);
+
+  useEffect(() => {
+    const hasFloatingUi =
+      nodeMenuOpen ||
+      nodeContextMenu.open ||
+      blueprintDrawerOpen ||
+      Boolean(blueprintCardContextMenu) ||
+      Boolean(deleteCandidateBlueprintId) ||
+      Boolean(selectedNodeId) ||
+      selectedCanvasNodeIds.length > 0;
+    if (!hasFloatingUi) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const isInsideNodeMenu = Boolean(nodeMenuRef.current?.contains(target));
+      const isInsideNodeMenuButton = Boolean(nodeMenuButtonRef.current?.contains(target));
+      if (nodeMenuOpen && !isInsideNodeMenu && !isInsideNodeMenuButton) {
+        closeNodeMenu();
+      }
+
+      const isInsideNodeContextMenu = Boolean(nodeContextMenuRef.current?.contains(target));
+      if (nodeContextMenu.open && !isInsideNodeContextMenu) {
+        closeNodeContextMenu();
+      }
+
+      const isInsideBlueprintDrawer = Boolean(blueprintDrawerRef.current?.contains(target));
+      const isInsideBlueprintSelectorButton = Boolean(blueprintSelectorButtonRef.current?.contains(target));
+      const isInsideBlueprintCardContextMenu = Boolean(blueprintCardContextMenuRef.current?.contains(target));
+      const isInsideDeleteDialog = Boolean(deleteDialogRef.current?.contains(target));
+      if (
+        blueprintDrawerOpen &&
+        !isInsideBlueprintDrawer &&
+        !isInsideBlueprintSelectorButton &&
+        !isInsideBlueprintCardContextMenu &&
+        !isInsideDeleteDialog
+      ) {
+        setBlueprintDrawerOpen(false);
+        setBlueprintCardContextMenu(undefined);
+      }
+      if (blueprintCardContextMenu && !isInsideBlueprintCardContextMenu) {
+        setBlueprintCardContextMenu(undefined);
+      }
+      if (deleteCandidateBlueprintId && !isInsideDeleteDialog) {
+        setDeleteCandidateBlueprintId(undefined);
+      }
+
+      if (
+        (selectedNodeId || selectedCanvasNodeIds.length > 0) &&
+        !target.closest(".react-flow__node") &&
+        !target.closest(".node-modal") &&
+        !target.closest(".node-menu-popover") &&
+        !target.closest(".node-context-menu")
+      ) {
+        clearCanvasSelection();
+      }
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown, true);
+    return () => window.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [
+    blueprintCardContextMenu,
+    blueprintDrawerOpen,
+    clearCanvasSelection,
+    closeNodeContextMenu,
+    closeNodeMenu,
+    deleteCandidateBlueprintId,
+    nodeContextMenu.open,
+    nodeMenuOpen,
+    selectedCanvasNodeIds.length,
+    selectedNodeId
+  ]);
+
   useEffect(() => {
     if (!isBlueprintInteractionLocked) return;
     setInspectedNodeId(undefined);
@@ -546,21 +634,31 @@ export function BlueprintStudioPage({
 
   const openDockNodeMenu = useCallback(
     (button: HTMLButtonElement) => {
+      if (nodeMenuOpen) {
+        closeNodeMenu();
+        return;
+      }
       const rect = button.getBoundingClientRect();
       const dockRect = button.closest(".blueprint-action-dock")?.getBoundingClientRect();
-      const x = Math.max(12, Math.min(rect.left, window.innerWidth - 244));
+      const x = Math.max(nodeMenuViewportMargin, Math.min(rect.left, window.innerWidth - nodeMenuPopoverWidth - nodeMenuViewportMargin));
       openNodeMenuAt(x, (dockRect?.top ?? rect.top) - 8, "above");
     },
-    [openNodeMenuAt]
+    [closeNodeMenu, nodeMenuOpen, openNodeMenuAt]
   );
 
   const toggleBlueprintDrawer = useCallback(() => {
+    if (blueprintDrawerOpen) {
+      setBlueprintDrawerOpen(false);
+      setBlueprintCardContextMenu(undefined);
+      return;
+    }
     setDrawerSelectedBlueprintId(blueprint?.id ?? blueprints[0]?.id);
-    setBlueprintDrawerOpen((current) => !current);
+    setBlueprintDrawerOpen(true);
     setBlueprintCardContextMenu(undefined);
     closeNodeMenu();
     closeNodeContextMenu();
-  }, [blueprint?.id, blueprints, closeNodeContextMenu, closeNodeMenu]);
+    void onRefreshWorkspace();
+  }, [blueprint?.id, blueprintDrawerOpen, blueprints, closeNodeContextMenu, closeNodeMenu, onRefreshWorkspace]);
 
   const selectBlueprintCard = useCallback(
     (blueprintId: string) => {
@@ -880,6 +978,7 @@ export function BlueprintStudioPage({
               {runButtonLabel}
             </button>
             <button
+              ref={nodeMenuButtonRef}
               type="button"
               className="blueprint-dock-add"
               title={t.actions.add}
@@ -889,6 +988,7 @@ export function BlueprintStudioPage({
               <Plus size={18} />
             </button>
             <button
+              ref={blueprintSelectorButtonRef}
               type="button"
               className="blueprint-selector-button"
               title={t.fields.blueprint}
@@ -901,7 +1001,7 @@ export function BlueprintStudioPage({
           </div>
 
           {blueprintDrawerOpen && (
-            <aside className="blueprint-side-panel" aria-label={t.navigation.blueprint}>
+            <aside ref={blueprintDrawerRef} className="blueprint-side-panel" aria-label={t.navigation.blueprint}>
               <div className="blueprint-side-panel-header">
                 <div className="blueprint-side-panel-title">
                   <strong>{t.navigation.blueprint}</strong>
@@ -983,6 +1083,7 @@ export function BlueprintStudioPage({
 
           {blueprintCardContextMenu && (
             <div
+              ref={blueprintCardContextMenuRef}
               className="blueprint-card-context-menu"
               style={{
                 left: blueprintCardContextMenu.x,
@@ -1004,8 +1105,14 @@ export function BlueprintStudioPage({
           )}
 
           {deleteCandidateBlueprint && (
-            <div className="blueprint-delete-backdrop" role="dialog" aria-modal="true" aria-labelledby="blueprint-delete-title">
-              <div className="blueprint-delete-dialog">
+            <div
+              className="blueprint-delete-backdrop"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="blueprint-delete-title"
+              onClick={() => setDeleteCandidateBlueprintId(undefined)}
+            >
+              <div ref={deleteDialogRef} className="blueprint-delete-dialog" onClick={(event) => event.stopPropagation()}>
                 <div className="blueprint-delete-icon">
                   <Trash2 size={18} />
                 </div>
@@ -1028,6 +1135,7 @@ export function BlueprintStudioPage({
 
           {nodeMenuOpen && blueprint && (
             <div
+              ref={nodeMenuRef}
               className="node-menu-popover"
               style={{
                 left: nodeMenuAnchor.x,
@@ -1060,6 +1168,7 @@ export function BlueprintStudioPage({
 
           {nodeContextMenu.open && nodeContextMenu.nodeId && (
             <div
+              ref={nodeContextMenuRef}
               className="node-context-menu"
               style={{
                 left: nodeContextMenu.x,
@@ -1296,8 +1405,59 @@ function NodeConfigForm({
 
   if (node.type === "manager") {
     const config = node.config as ManagerNodeConfig;
+    const runtimeId = node.runtimeId ?? "openclaw";
+    const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
+    const selectedModel = config.modelId ?? "";
+    const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+    const agentOptions = configuredAgents ?? [];
+    const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
+    const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
     return (
       <div className="config-form node-modal-form">
+        <label>
+          <span>Runtime</span>
+          <select value={runtimeId} onChange={(event) => onPatchNode({ runtimeId: event.target.value as AgentRuntimeId })}>
+            <option value="openclaw">OpenClaw</option>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude Code</option>
+          </select>
+        </label>
+        {!isSdkProvider && (
+          <label>
+            <span>{t.fields.openclawAgent}</span>
+            <select
+              value={selectedAgentId}
+              onChange={(event) => onPatchConfig({ openclawAgentId: event.target.value })}
+            >
+              {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+              {agentOptions.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name ? `${agent.name} (${agent.id})` : agent.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label>
+          <span>{t.fields.model}</span>
+          {isSdkProvider ? (
+            <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
+          ) : (
+            <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
+              <option value="">{t.common.defaultModel}</option>
+              {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </label>
+        <label>
+          <span>{t.fields.runLabel}</span>
+          <input value={config.agentName ?? "manager"} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
+        </label>
         <label>
           <span>{t.fields.label}</span>
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
@@ -1322,6 +1482,33 @@ function NodeConfigForm({
             onChange={(event) => onPatchConfig({ maxHandoffs: clampNumberInput(event.target.value, 1, 50, 12) })}
           />
         </label>
+        {isSdkProvider && (
+          <>
+            <label>
+              <span>Permission</span>
+              <select
+                value={config.permissionProfile ?? "read_only"}
+                onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as ManagerNodeConfig["permissionProfile"] })}
+              >
+                <option value="read_only">Read only</option>
+                <option value="workspace_write">Workspace write</option>
+              </select>
+            </label>
+            <label>
+              <span>Working directory</span>
+              <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
+            </label>
+            <label>
+              <span>Timeout ms</span>
+              <input
+                min={1}
+                type="number"
+                value={config.timeoutMs ?? 600000}
+                onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+              />
+            </label>
+          </>
+        )}
         <label className="field-span-full">
           <span>{t.fields.instructions}</span>
           <textarea
@@ -2487,7 +2674,12 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       label: t.defaults.managerLabel,
       portCount: 3,
       maxHandoffs: 12,
-      instructions: t.defaults.managerInstructions
+      instructions: t.defaults.managerInstructions,
+      openclawAgentId: "main",
+      agentName: "manager",
+      permissionProfile: "read_only",
+      timeoutMs: 600000,
+      tools: []
     };
   }
   if (type === "manager_slot") {

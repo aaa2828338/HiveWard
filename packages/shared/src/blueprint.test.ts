@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  createActiveManagerNewsHtmlChaosBlueprint,
+  createActiveManagerRemotionVideoChaosBlueprint,
   createPortableBlueprintPackage,
   createBlankBlueprint,
   createDefaultBlueprints,
@@ -73,6 +75,62 @@ describe("blueprint contracts", () => {
     expect(blueprint.companyId).toBe(defaultCompanyId);
   });
 
+  it("creates an active manager chaos blueprint with intentionally scrambled slots", () => {
+    const blueprint = createActiveManagerNewsHtmlChaosBlueprint("2026-05-18T00:00:00.000Z");
+    const manager = blueprint.nodes.find((node) => node.id === "chaos-manager");
+    const slots = blueprint.nodes.filter((node) => node.type === "manager_slot");
+    const agentConfigs = blueprint.nodes
+      .filter((node) => node.type === "agent")
+      .map((node) => node.config as AgentNodeConfig);
+
+    expect(manager?.runtimeId).toBe("openclaw");
+    expect(manager?.config.label).toBe("主动分发 Manager");
+    expect(slots.map((node) => node.id)).toEqual([
+      "chaos-slot-build",
+      "chaos-slot-qa",
+      "chaos-slot-research",
+      "chaos-slot-spec"
+    ]);
+    expect(slots.map((node) => Number("slot" in node.config ? node.config.slot : 0))).toEqual([1, 2, 3, 4]);
+    expect(agentConfigs.map((config) => config.agentName)).toEqual([
+      "html-builder",
+      "html-qa-reviewer",
+      "news-researcher-cn",
+      "html-execution-doc-writer"
+    ]);
+    expect(agentConfigs.map((config) => config.resultRole)).toEqual(["final", "ignore", "ignore", "ignore"]);
+    expect(blueprint.edges.filter((edge) => edge.source === "chaos-manager")).toHaveLength(4);
+  });
+
+  it("creates an active manager Remotion chaos blueprint with strict QA rollback slots", () => {
+    const blueprint = createActiveManagerRemotionVideoChaosBlueprint("2026-05-18T00:00:00.000Z");
+    const manager = blueprint.nodes.find((node) => node.id === "remotion-manager");
+    const slots = blueprint.nodes.filter((node) => node.type === "manager_slot");
+    const agentConfigs = blueprint.nodes
+      .filter((node) => node.type === "agent")
+      .map((node) => node.config as AgentNodeConfig);
+
+    expect(manager?.runtimeId).toBe("openclaw");
+    expect(manager?.config.label).toBe("Remotion 主动分发 Manager");
+    expect(slots.map((node) => node.id)).toEqual([
+      "remotion-slot-build",
+      "remotion-slot-qa",
+      "remotion-slot-research",
+      "remotion-slot-storyboard",
+      "remotion-slot-tech-plan"
+    ]);
+    expect(slots.map((node) => Number("slot" in node.config ? node.config.slot : 0))).toEqual([1, 2, 3, 4, 5]);
+    expect(agentConfigs.map((config) => config.agentName)).toEqual([
+      "remotion-code-builder",
+      "remotion-qa-reviewer",
+      "remotion-video-researcher",
+      "remotion-storyboard-writer",
+      "remotion-tech-planner"
+    ]);
+    expect(agentConfigs.map((config) => config.resultRole)).toEqual(["final", "ignore", "ignore", "ignore", "ignore"]);
+    expect(blueprint.edges.filter((edge) => edge.source === "remotion-manager")).toHaveLength(5);
+  });
+
   it("creates a multi-agent compatibility smoke blueprint", () => {
     const blueprint = createMultiAgentCompatibilityBlueprint(
       "2026-05-18T00:00:00.000Z",
@@ -114,7 +172,9 @@ describe("blueprint contracts", () => {
       "starter-blueprint",
       "real-three-agent-blueprint",
       "multi-agent-compatibility-blueprint",
-      "manager-driven-html-blueprint"
+      "manager-driven-html-blueprint",
+      "active-manager-news-html-chaos-blueprint",
+      "active-manager-remotion-video-chaos-blueprint"
     ]);
   });
 
@@ -202,6 +262,32 @@ describe("blueprint contracts", () => {
     expect(result?.state).toBe("available");
     expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["chosen"]);
     expect(result?.candidates[0]?.selectionReason).toBe("explicit_final");
+  });
+
+  it("keeps only the latest explicit final result when the same node reruns", () => {
+    const builder = createContractNode("builder", "agent", "Builder", {
+      resultRole: "final"
+    });
+    const blueprint = createResolverBlueprint([builder]);
+
+    const result = resolveFinalRunResult(
+      blueprint,
+      [
+        createContractNodeRun(builder, "<!doctype html>bad retry output", "succeeded", {
+          id: "node-run-builder-1",
+          endedAt: "2026-05-20T00:00:01.000Z"
+        }),
+        createContractNodeRun(builder, "src/Root.tsx AgentOpsBriefVideo", "succeeded", {
+          id: "node-run-builder-2",
+          endedAt: "2026-05-20T00:00:02.000Z"
+        })
+      ],
+      "succeeded"
+    );
+
+    expect(result?.candidates).toHaveLength(1);
+    expect(result?.candidates[0]?.nodeRunId).toBe("node-run-builder-2");
+    expect(result?.candidates[0]?.output).toBe("src/Root.tsx AgentOpsBriefVideo");
   });
 
   it("resolves multiple terminal result branches without silently merging them", () => {

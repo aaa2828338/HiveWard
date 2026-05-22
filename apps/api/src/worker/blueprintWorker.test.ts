@@ -6,6 +6,8 @@ import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
   blueprintRunArchiveSchema,
+  createActiveManagerNewsHtmlChaosBlueprint,
+  createActiveManagerRemotionVideoChaosBlueprint,
   createManagerDrivenHtmlBlueprint,
   createRealThreeAgentBlueprint,
   type SendChannelResult,
@@ -761,6 +763,51 @@ describe("BlueprintWorker", () => {
     ).toBe(1);
   });
 
+  it("runs an agent-driven manager with the default sequential prompt when instructions are empty", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          runtimeId: "openclaw",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 3
+          }
+        },
+        createAgentNode("implementer", "Implementer", { x: 420, y: 180 })
+      ],
+      [
+        { id: "manager-implementer", source: "manager", sourceHandle: "manager-out-1", target: "implementer", condition: "success" },
+        { id: "implementer-manager", source: "implementer", target: "manager", targetHandle: "manager-in-1", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager"),
+      createStartedAgentTask("task-implementer"),
+      createStartedAgentTask("task-manager-complete")
+    ], [
+      createCompletedAgentTask("task-manager", "succeeded", "use the obvious first slot"),
+      createCompletedAgentTask("task-implementer", "succeeded", "implementation done"),
+      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({ status: "complete", reason: "single slot done" }))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "implementer", "manager"]);
+    expect(adapter.calls[0]?.prompt).toContain("You are a Hiveward manager agent.");
+    expect((adapter.calls[0]?.input as { delegationRoster?: { slots?: unknown[] } }).delegationRoster?.slots).toHaveLength(1);
+  });
+
   it("resumes an interrupted manager-slot run from the persisted OpenClaw task ref", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -866,10 +913,14 @@ describe("BlueprintWorker", () => {
 
     const blueprint = createManagerDrivenHtmlBlueprint(new Date().toISOString(), "company-hiveward-studio");
     const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-1"),
       createStartedAgentTask("task-1"),
       createStartedAgentTask("task-2"),
-      createStartedAgentTask("task-3")
+      createStartedAgentTask("task-manager-2"),
+      createStartedAgentTask("task-3"),
+      createStartedAgentTask("task-manager-3")
     ], [
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with research" })),
       createCompletedAgentTask(
         "task-1",
         "succeeded",
@@ -896,11 +947,13 @@ describe("BlueprintWorker", () => {
           "Acceptance criteria: standalone HTML, no placeholders."
         ].join("\n")
       ),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the page" })),
       createCompletedAgentTask(
         "task-3",
         "succeeded",
         "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>"
-      )
+      ),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "complete", reason: "HTML complete" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -909,10 +962,14 @@ describe("BlueprintWorker", () => {
 
     expect(view?.run.status).toBe("succeeded");
     expect(adapter.calls.map((call) => call.agentName)).toEqual([
+      "html-delivery-manager",
       "news-researcher",
       "execution-doc-writer",
-      "html-code-builder"
+      "html-delivery-manager",
+      "html-code-builder",
+      "html-delivery-manager"
     ]);
+    expect((adapter.calls[0]?.input as { delegationRoster?: { slots?: unknown[] } }).delegationRoster?.slots).toHaveLength(2);
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-1")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager-slot-2")?.status).toBe("succeeded");
     expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "html-manager-slot-3")).toBe(false);
@@ -921,6 +978,148 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "html-manager")?.output).toMatchObject({
       status: "completed"
     });
+  });
+
+  it("lets the active manager chaos blueprint choose a scrambled news-to-html route", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createActiveManagerNewsHtmlChaosBlueprint(new Date().toISOString(), "company-hiveward-studio");
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-1"),
+      createStartedAgentTask("task-news"),
+      createStartedAgentTask("task-manager-2"),
+      createStartedAgentTask("task-doc"),
+      createStartedAgentTask("task-manager-3"),
+      createStartedAgentTask("task-html"),
+      createStartedAgentTask("task-manager-4"),
+      createStartedAgentTask("task-qa"),
+      createStartedAgentTask("task-manager-5")
+    ], [
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先收集新闻" })),
+      createCompletedAgentTask("task-news", "succeeded", "新闻简报：AI agent 正在进入企业运营。"),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写制作说明" })),
+      createCompletedAgentTask("task-doc", "succeeded", "制作说明：需要 hero、新闻要点、source-index 和 risk-notes。"),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "现在构建 HTML" })),
+      createCompletedAgentTask(
+        "task-html",
+        "succeeded",
+        "<!doctype html><html><body><main><section id=\"source-index\"></section><section id=\"risk-notes\"></section></main></body></html>"
+      ),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "最后 QA" })),
+      createCompletedAgentTask("task-qa", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true })),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "complete", reason: "QA 已通过" }))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual([
+      "active-dispatch-manager",
+      "news-researcher-cn",
+      "active-dispatch-manager",
+      "html-execution-doc-writer",
+      "active-dispatch-manager",
+      "html-builder",
+      "active-dispatch-manager",
+      "html-qa-reviewer",
+      "active-dispatch-manager"
+    ]);
+    expect((adapter.calls[0]?.input as { delegationRoster?: { slots?: unknown[] } }).delegationRoster?.slots).toHaveLength(4);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "chaos-manager")?.output).toMatchObject({
+      status: "completed",
+      reason: "QA 已通过"
+    });
+  });
+
+  it("lets the active manager Remotion blueprint reroute to build after strict QA rejects HTML output", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createActiveManagerRemotionVideoChaosBlueprint(new Date().toISOString(), "company-hiveward-studio");
+    const remotionBundle = [
+      "src/Root.tsx",
+      "import {Composition} from 'remotion';",
+      "import {AgentOpsBrief} from './AgentOpsBrief';",
+      "export const Root = () => <Composition id=\"AgentOpsBriefVideo\" component={AgentOpsBrief} width={1920} height={1080} fps={30} durationInFrames={450} />;",
+      "src/AgentOpsBrief.tsx",
+      "import {AbsoluteFill, Sequence, interpolate, useCurrentFrame, spring, useVideoConfig} from 'remotion';",
+      "export const AgentOpsBrief = () => <AbsoluteFill><Sequence from={0} durationInFrames={120}>AI agent 进入企业运营</Sequence></AbsoluteFill>;",
+      "Verification: npx remotion studio"
+    ].join("\n");
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-1"),
+      createStartedAgentTask("task-research"),
+      createStartedAgentTask("task-manager-2"),
+      createStartedAgentTask("task-storyboard"),
+      createStartedAgentTask("task-manager-3"),
+      createStartedAgentTask("task-tech"),
+      createStartedAgentTask("task-manager-4"),
+      createStartedAgentTask("task-build-1"),
+      createStartedAgentTask("task-manager-5"),
+      createStartedAgentTask("task-qa-1"),
+      createStartedAgentTask("task-manager-6"),
+      createStartedAgentTask("task-build-2"),
+      createStartedAgentTask("task-manager-7"),
+      createStartedAgentTask("task-qa-2"),
+      createStartedAgentTask("task-manager-8")
+    ], [
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先研究视频主题" })),
+      createCompletedAgentTask("task-research", "succeeded", "研究：AI agent 与多 agent 工作流正在进入企业运营，需提示验证与治理风险。"),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写脚本分镜" })),
+      createCompletedAgentTask("task-storyboard", "succeeded", "分镜：0-90 标题，90-210 三个趋势点，210-330 风险，330-450 行动建议。"),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 5, reason: "补技术规划" })),
+      createCompletedAgentTask("task-tech", "succeeded", "技术规划：Root.tsx 注册 AgentOpsBriefVideo，1920x1080，30fps，450 frames，使用 Sequence、AbsoluteFill、interpolate。"),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "开始构建 Remotion" })),
+      createCompletedAgentTask("task-build-1", "succeeded", "<!doctype html><html><body>这是网页，不是 Remotion Composition。</body></html>"),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "严格 QA" })),
+      createCompletedAgentTask(
+        "task-qa-1",
+        "succeeded",
+        JSON.stringify({ status: "fail", returnToSlot: 1, reason: "产物是 HTML，不是 Remotion Composition", fixes: ["删除 HTML 输出", "提供 Root.tsx 和 Composition"] })
+      ),
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "QA 未通过，回退到构建槽修复" })),
+      createCompletedAgentTask("task-build-2", "succeeded", remotionBundle),
+      createCompletedAgentTask("task-manager-7", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "复审修复后的 Remotion 产物" })),
+      createCompletedAgentTask("task-qa-2", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true, reason: "Remotion 产物已通过严格审查" })),
+      createCompletedAgentTask("task-manager-8", "succeeded", JSON.stringify({ status: "complete", reason: "Remotion QA 已通过" }))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual([
+      "remotion-dispatch-manager",
+      "remotion-video-researcher",
+      "remotion-dispatch-manager",
+      "remotion-storyboard-writer",
+      "remotion-dispatch-manager",
+      "remotion-tech-planner",
+      "remotion-dispatch-manager",
+      "remotion-code-builder",
+      "remotion-dispatch-manager",
+      "remotion-qa-reviewer",
+      "remotion-dispatch-manager",
+      "remotion-code-builder",
+      "remotion-dispatch-manager",
+      "remotion-qa-reviewer",
+      "remotion-dispatch-manager"
+    ]);
+    expect((adapter.calls[0]?.input as { delegationRoster?: { slots?: unknown[] } }).delegationRoster?.slots).toHaveLength(5);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "remotion-code-builder" && nodeRun.status === "succeeded")).toHaveLength(2);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "remotion-qa-reviewer" && nodeRun.status === "succeeded")).toHaveLength(2);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "remotion-manager")?.output).toMatchObject({
+      status: "completed",
+      reason: "Remotion QA 已通过"
+    });
+    expect(view?.finalResult?.candidates[0]?.output).toEqual(expect.stringContaining("AgentOpsBriefVideo"));
+    expect(view?.finalResult?.candidates[0]?.output).not.toEqual(expect.stringContaining("<!doctype html>"));
   });
 
   it("reruns the loop output branch until the loop reaches max iterations", async () => {

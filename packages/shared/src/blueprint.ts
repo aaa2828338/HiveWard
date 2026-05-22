@@ -74,6 +74,13 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   portCount: number;
   maxHandoffs: number;
   instructions?: string;
+  openclawAgentId?: string;
+  agentName?: string;
+  modelId?: string;
+  permissionProfile?: AgentPermissionProfile;
+  workingDirectory?: string;
+  timeoutMs?: number;
+  tools?: string[];
 }
 
 export interface ManagerSlotNodeConfig extends BlueprintNodeBaseConfig {
@@ -351,7 +358,9 @@ export function resolveFinalRunResult(
     })
     .filter((candidate) => isSuccessfulResultCandidate(candidate.nodeType, candidate.nodeRun, candidate.resultRole));
 
-  const explicitFinals = indexedCandidates.filter((candidate) => candidate.resultRole === "final");
+  const explicitFinals = indexedCandidates
+    .filter((candidate) => candidate.resultRole === "final")
+    .filter((candidate, _index, finals) => !hasLaterSameNodeCandidate(candidate, finals));
   const selectedCandidates = explicitFinals.length > 0
     ? explicitFinals.map((candidate) => toFinalRunResultCandidate(candidate, "explicit_final"))
     : resolveAutomaticFinalCandidates(blueprint, indexedCandidates)
@@ -813,11 +822,16 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
       {
         id: "html-manager",
         type: "manager",
+        runtimeId: "openclaw",
         position: { x: 80, y: 420 },
         config: {
           label: "HTML Delivery Manager",
           portCount: 2,
           maxHandoffs: 8,
+          openclawAgentId: "main",
+          agentName: "html-delivery-manager",
+          timeoutMs: 600000,
+          tools: [],
           instructions:
             "先运行 Slot 1。Slot 1 中，Agent 1 收集具体新闻简报，Agent 2 把新闻简报整理成可执行的 HTML 页面制作说明。然后把 Slot 1 的输出交给 Slot 2。Slot 2 中，Agent 1 根据制作说明写出完整、可直接运行的独立 HTML 页面。Slot 2 完成后即可结束流程。"
         }
@@ -970,6 +984,459 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
   };
 }
 
+export function createActiveManagerNewsHtmlChaosBlueprint(
+  now: string,
+  companyId = "company-hiveward-studio"
+): BlueprintDefinition {
+  return {
+    id: "active-manager-news-html-chaos-blueprint",
+    companyId,
+    name: "主动分发 Manager 测试机：乱序新闻 HTML",
+    description:
+      "一个中文压力测试蓝图：端口顺序被故意打乱，manager 必须先读下属职责，再主动把新闻研究、制作说明、HTML 构建和 QA 返工串起来。",
+    version: 1,
+    nodes: [
+      {
+        id: "chaos-manager",
+        type: "manager",
+        runtimeId: "openclaw",
+        position: { x: 80, y: 380 },
+        config: {
+          label: "主动分发 Manager",
+          description: "读取下属职责清单，主动选择下一个 slot，而不是按端口顺序执行。",
+          portCount: 4,
+          maxHandoffs: 10,
+          openclawAgentId: "main",
+          agentName: "active-dispatch-manager",
+          timeoutMs: 600000,
+          tools: [],
+          instructions:
+            [
+              "你是 Hiveward 的公司架构 manager。你的任务不是自己写新闻或 HTML，而是根据 delegationRoster 选择应该委派给哪个 slot。",
+              "这个蓝图故意把端口顺序打乱：Slot 1 是最终 HTML 构建，Slot 2 是 QA，Slot 3 是新闻研究，Slot 4 是制作说明。",
+              "不要机械按 1、2、3、4 执行。你必须先让新闻研究完成，再让制作说明完成，再让 HTML 构建完成，最后让 QA 检查。",
+              "如果 QA 输出指出需要返工，优先回到 Slot 1 修复 HTML；如果 QA 输出已经通过或 status 为 complete/completed/pass，则结束流程。",
+              "每次只选择一个 slot。只返回 JSON，不要返回 markdown。",
+              "可用输出格式：{\"status\":\"continue\",\"nextSlot\":3,\"reason\":\"先收集新闻事实\"} 或 {\"status\":\"complete\",\"reason\":\"QA 已通过\"}。"
+            ].join("\n")
+        }
+      },
+      {
+        id: "chaos-slot-build",
+        type: "manager_slot",
+        position: { x: 520, y: 454 },
+        size: { width: 640, height: 320 },
+        config: {
+          label: "Slot 1 - HTML 构建（乱序放在最前）",
+          description: "根据新闻简报和制作说明生成最终独立 HTML；若 QA 要求返工，则修复 HTML。",
+          managerNodeId: "chaos-manager",
+          slot: 1
+        }
+      },
+      {
+        id: "chaos-html-builder",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "chaos-slot-build",
+        position: { x: 154, y: 142 },
+        config: {
+          label: "HTML 构建 Agent",
+          resultRole: "final",
+          openclawAgentId: "main",
+          agentName: "html-builder",
+          description: "把已核定的新闻研究和制作说明转成完整可运行的单文件 HTML。",
+          prompt:
+            [
+              "你是 HTML 构建 Agent。请根据 manager previousResults 中的新闻研究和制作说明输出完整、可直接保存运行的单文件 HTML。",
+              "必须包含 inline CSS 和必要的 inline JavaScript，不要使用外部依赖，不要输出 markdown 代码围栏。",
+              "页面主题聚焦“AI agent 和多 agent 工作流进入企业运营”。",
+              "验收硬要求：包含 hero、新闻要点、时间线、影响分析、执行建议、source-index 来源索引、risk-notes 风险提示、移动端响应式样式。",
+              "如果 previousResults 中有 QA 返工意见，必须逐条修复；否则先产出完整首版。",
+              "最终输出必须以 <!doctype html> 开头。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "chaos-slot-qa",
+        type: "manager_slot",
+        position: { x: 1220, y: 454 },
+        size: { width: 640, height: 320 },
+        config: {
+          label: "Slot 2 - QA 检查",
+          description: "严格检查最终 HTML，必要时要求回到 Slot 1 返工。",
+          managerNodeId: "chaos-manager",
+          slot: 2
+        }
+      },
+      {
+        id: "chaos-qa-reviewer",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "chaos-slot-qa",
+        position: { x: 154, y: 142 },
+        config: {
+          label: "QA 审查 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "html-qa-reviewer",
+          description: "检查 HTML 是否满足新闻事实、结构、风险提示、来源索引和移动端要求。",
+          prompt:
+            [
+              "你是 QA 审查 Agent。请检查上游 HTML 是否满足验收要求：",
+              "1. 以 <!doctype html> 开头；2. 包含 hero、新闻要点、时间线、影响分析、执行建议；",
+              "3. 包含 id=\"source-index\" 的来源索引；4. 包含 id=\"risk-notes\" 的风险提示；5. 有移动端响应式 CSS。",
+              "如果不通过，返回严格 JSON：{\"status\":\"fail\",\"returnToSlot\":1,\"reason\":\"...\",\"fixes\":[\"...\"]}。",
+              "如果通过，返回严格 JSON：{\"status\":\"complete\",\"reason\":\"HTML 已满足测试机验收\",\"deliveryReady\":true}。",
+              "不要返回 markdown。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "chaos-slot-research",
+        type: "manager_slot",
+        position: { x: 520, y: 58 },
+        size: { width: 640, height: 320 },
+        config: {
+          label: "Slot 3 - 新闻研究",
+          description: "先收集中文新闻简报和可核验线索，这是后续制作说明和 HTML 的事实基础。",
+          managerNodeId: "chaos-manager",
+          slot: 3
+        }
+      },
+      {
+        id: "chaos-news-researcher",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "chaos-slot-research",
+        position: { x: 154, y: 142 },
+        config: {
+          label: "新闻研究 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "news-researcher-cn",
+          description: "收集 AI agent、多 agent 工作流、企业运营自动化相关的中文新闻简报。",
+          prompt:
+            [
+              "你是中文新闻研究 Agent。请为后续 HTML 页面收集一份新闻简报。",
+              "如果运行器具备联网或检索能力，优先检索最近的真实新闻；如果不能联网，请明确写出“未联网核验”，并给出可核验的来源线索，不要伪造具体链接。",
+              "输出必须包含：主题、受众、时间范围、5 条新闻/趋势线索、每条为什么重要、页面呈现角度、来源线索、事实风险。",
+              "请用中文结构化输出，不要输出 JSON。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "chaos-slot-spec",
+        type: "manager_slot",
+        position: { x: 1220, y: 58 },
+        size: { width: 640, height: 320 },
+        config: {
+          label: "Slot 4 - HTML 制作说明",
+          description: "把新闻研究整理成可交付给 HTML 构建 Agent 的生产说明。",
+          managerNodeId: "chaos-manager",
+          slot: 4
+        }
+      },
+      {
+        id: "chaos-execution-doc",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "chaos-slot-spec",
+        position: { x: 154, y: 142 },
+        config: {
+          label: "制作说明 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "html-execution-doc-writer",
+          description: "把新闻简报转成完整 HTML 生产说明、信息架构和验收清单。",
+          prompt:
+            [
+              "你是 HTML 制作说明 Agent。请把上游新闻研究整理成可直接交给 HTML 构建 Agent 的生产说明。",
+              "必须包含：页面标题、核心主张、目标读者、信息架构、每个区块的真实文案方向、视觉约束、互动要求、来源索引要求、风险提示要求、移动端验收标准。",
+              "请明确要求最终 HTML 包含 source-index 和 risk-notes。",
+              "不要要求更多上下文，不要使用 placeholder。请用中文输出制作文档，不要输出 JSON。"
+            ].join("\n"),
+          tools: []
+        }
+      }
+    ],
+    edges: [
+      { id: "chaos-manager-to-build", source: "chaos-manager", sourceHandle: "manager-out-1", target: "chaos-slot-build", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "chaos-build-to-manager", source: "chaos-slot-build", sourceHandle: "manager-slot-out", target: "chaos-manager", targetHandle: "manager-in-1", condition: "success" },
+      { id: "chaos-manager-to-qa", source: "chaos-manager", sourceHandle: "manager-out-2", target: "chaos-slot-qa", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "chaos-qa-to-manager", source: "chaos-slot-qa", sourceHandle: "manager-slot-out", target: "chaos-manager", targetHandle: "manager-in-2", condition: "success" },
+      { id: "chaos-manager-to-research", source: "chaos-manager", sourceHandle: "manager-out-3", target: "chaos-slot-research", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "chaos-research-to-manager", source: "chaos-slot-research", sourceHandle: "manager-slot-out", target: "chaos-manager", targetHandle: "manager-in-3", condition: "success" },
+      { id: "chaos-manager-to-spec", source: "chaos-manager", sourceHandle: "manager-out-4", target: "chaos-slot-spec", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "chaos-spec-to-manager", source: "chaos-slot-spec", sourceHandle: "manager-slot-out", target: "chaos-manager", targetHandle: "manager-in-4", condition: "success" },
+      { id: "chaos-build-start", source: "chaos-slot-build", sourceHandle: "manager-slot-inner-out", target: "chaos-html-builder", condition: "success" },
+      { id: "chaos-build-finish", source: "chaos-html-builder", target: "chaos-slot-build", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "chaos-qa-start", source: "chaos-slot-qa", sourceHandle: "manager-slot-inner-out", target: "chaos-qa-reviewer", condition: "success" },
+      { id: "chaos-qa-finish", source: "chaos-qa-reviewer", target: "chaos-slot-qa", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "chaos-research-start", source: "chaos-slot-research", sourceHandle: "manager-slot-inner-out", target: "chaos-news-researcher", condition: "success" },
+      { id: "chaos-research-finish", source: "chaos-news-researcher", target: "chaos-slot-research", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "chaos-spec-start", source: "chaos-slot-spec", sourceHandle: "manager-slot-inner-out", target: "chaos-execution-doc", condition: "success" },
+      { id: "chaos-spec-finish", source: "chaos-execution-doc", target: "chaos-slot-spec", targetHandle: "manager-slot-inner-in", condition: "success" }
+    ],
+    variables: {},
+    display: {
+      viewport: { x: -18, y: 14, zoom: 0.62 }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function createActiveManagerRemotionVideoChaosBlueprint(
+  now: string,
+  companyId = "company-hiveward-studio"
+): BlueprintDefinition {
+  return {
+    id: "active-manager-remotion-video-chaos-blueprint",
+    companyId,
+    name: "主动分发 Manager 测试机：乱序 Remotion 视频",
+    description:
+      "一个中文 Remotion 视频生产测试蓝图：端口顺序被故意打乱，manager 必须主动安排研究、脚本、技术规划、Remotion 构建和严格 QA，并在不合格时回退返工。",
+    version: 1,
+    nodes: [
+      {
+        id: "remotion-manager",
+        type: "manager",
+        runtimeId: "openclaw",
+        position: { x: 80, y: 420 },
+        config: {
+          label: "Remotion 主动分发 Manager",
+          description: "读取 Remotion 视频团队职责，主动选择下一步，并根据 QA 结果回退返工。",
+          portCount: 5,
+          maxHandoffs: 14,
+          openclawAgentId: "main",
+          agentName: "remotion-dispatch-manager",
+          timeoutMs: 600000,
+          tools: [],
+          instructions:
+            [
+              "你是 Hiveward 的 Remotion 视频制作 manager。你只负责选择下一步委派，不要自己写完整代码或审查报告。",
+              "这个蓝图故意打乱端口顺序：Slot 1 是 Remotion 构建，Slot 2 是严格 QA，Slot 3 是新闻/主题研究，Slot 4 是视频脚本与分镜，Slot 5 是 Remotion 技术规划。",
+              "正确基础路线应该是 Slot 3 -> Slot 4 -> Slot 5 -> Slot 1 -> Slot 2。",
+              "如果 QA 输出 status 为 fail、needs_revision、retry、rework，或包含 returnToSlot/nextSlot，则优先按 QA 意见回退，通常回到 Slot 1 修复 Remotion 代码。",
+              "如果 QA 输出 status 为 complete/completed/pass/approved，或者明确 deliveryReady 为 true，则结束流程。",
+              "每次只选择一个 slot。只返回 JSON，不要返回 markdown。",
+              "示例：{\"status\":\"continue\",\"nextSlot\":3,\"reason\":\"先收集视频主题事实\"} 或 {\"status\":\"complete\",\"reason\":\"QA 已通过\"}。"
+            ].join("\n")
+        }
+      },
+      {
+        id: "remotion-slot-build",
+        type: "manager_slot",
+        position: { x: 520, y: 490 },
+        size: { width: 680, height: 340 },
+        config: {
+          label: "Slot 1 - Remotion 构建（故意放在最前）",
+          description: "根据研究、分镜和技术规划产出 Remotion Composition 源码包；QA 不通过时负责返工。",
+          managerNodeId: "remotion-manager",
+          slot: 1
+        }
+      },
+      {
+        id: "remotion-code-builder",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "remotion-slot-build",
+        position: { x: 142, y: 152 },
+        config: {
+          label: "Remotion 构建 Agent",
+          resultRole: "final",
+          openclawAgentId: "main",
+          agentName: "remotion-code-builder",
+          description: "产出可落地的 Remotion React Composition 源码包，并按 QA 意见返工。",
+          prompt:
+            [
+              "你是 Remotion 构建 Agent。请根据 previousResults 中的研究、脚本分镜和技术规划，输出 Remotion 源码包，不要输出 HTML 页面。",
+              "输出必须包含文件路径和代码内容，至少包括：src/Root.tsx、src/AgentOpsBrief.tsx、src/remotion-data.ts、package.json 依赖片段或运行命令。",
+              "Composition 要求：id 为 AgentOpsBriefVideo，1920x1080，30fps，12 到 18 秒，总帧数明确，使用 React + Remotion API。",
+              "必须使用 Remotion 的 Composition、AbsoluteFill、Sequence、interpolate 或 spring 中的至少两类；画面要有 4 个以上镜头/段落。",
+              "视频主题：AI agent 和多 agent 工作流进入企业运营。必须包含中文标题、3 个事实/趋势点、风险提示、结尾行动建议。",
+              "视觉要求：不是网页落地页，不要生成 <!doctype html>，不要依赖 Tailwind；使用内联 style 或组件内样式。",
+              "如果 previousResults 中有 QA 返工意见，必须先列出修复摘要，再输出修复后的完整源码包。",
+              "最终输出应能让开发者复制到 Remotion 项目中运行 npx remotion studio 预览。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "remotion-slot-qa",
+        type: "manager_slot",
+        position: { x: 1260, y: 490 },
+        size: { width: 680, height: 340 },
+        config: {
+          label: "Slot 2 - 严格 Remotion QA",
+          description: "严格审查 Remotion 源码包，失败时要求 manager 回退到 Slot 1。",
+          managerNodeId: "remotion-manager",
+          slot: 2
+        }
+      },
+      {
+        id: "remotion-qa-reviewer",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "remotion-slot-qa",
+        position: { x: 142, y: 152 },
+        config: {
+          label: "Remotion QA Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "remotion-qa-reviewer",
+          description: "检查 Remotion 产物是否真的可运行、符合镜头/时长/组件/API/非 HTML 要求。",
+          prompt:
+            [
+              "你是严格 Remotion QA Agent。请审查上游 Remotion 源码包。",
+              "必须检查：1. 不是 HTML 页面；2. 包含 src/Root.tsx 和 Composition；3. Composition id 为 AgentOpsBriefVideo；4. 1920x1080、30fps、12-18 秒；",
+              "5. 使用 AbsoluteFill 和 Sequence；6. 使用 interpolate 或 spring；7. 至少 4 个镜头/段落；8. 有中文标题、趋势点、风险提示、行动建议；",
+              "9. 没有 lorem ipsum、placeholder、外部不可控图片依赖；10. 给出 npx remotion studio 或 still 的验证命令。",
+              "如果不通过，返回严格 JSON：{\"status\":\"fail\",\"returnToSlot\":1,\"reason\":\"...\",\"fixes\":[\"...\"]}。",
+              "如果通过，返回严格 JSON：{\"status\":\"complete\",\"reason\":\"Remotion 产物已通过严格审查\",\"deliveryReady\":true}。",
+              "不要返回 markdown。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "remotion-slot-research",
+        type: "manager_slot",
+        position: { x: 520, y: 58 },
+        size: { width: 680, height: 340 },
+        config: {
+          label: "Slot 3 - 视频主题研究",
+          description: "先收集适合视频表达的 AI agent 企业运营主题事实、趋势和风险线索。",
+          managerNodeId: "remotion-manager",
+          slot: 3
+        }
+      },
+      {
+        id: "remotion-researcher",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "remotion-slot-research",
+        position: { x: 142, y: 152 },
+        config: {
+          label: "视频研究 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "remotion-video-researcher",
+          description: "为 Remotion 视频收集中文主题事实、叙事角度、风险和素材线索。",
+          prompt:
+            [
+              "你是中文视频研究 Agent。请为一个 12-18 秒 Remotion 短视频收集主题材料。",
+              "主题聚焦 AI agent、多 agent 协同和企业运营自动化。若不能联网，请明确写出未联网核验，并给出可核验的来源方向，不要伪造具体链接。",
+              "输出必须包含：视频目标受众、核心观点、3-5 个事实/趋势点、每个点的画面隐喻、风险提示、可视化素材建议、不可声称的内容。",
+              "用中文结构化输出，不要输出 JSON。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "remotion-slot-storyboard",
+        type: "manager_slot",
+        position: { x: 1260, y: 58 },
+        size: { width: 680, height: 340 },
+        config: {
+          label: "Slot 4 - 视频脚本与分镜",
+          description: "把研究材料变成可执行的 Remotion 分镜、旁白和节奏表。",
+          managerNodeId: "remotion-manager",
+          slot: 4
+        }
+      },
+      {
+        id: "remotion-storyboard-writer",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "remotion-slot-storyboard",
+        position: { x: 142, y: 152 },
+        config: {
+          label: "脚本分镜 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "remotion-storyboard-writer",
+          description: "写出 12-18 秒短视频的镜头表、字幕、动效节奏和画面重点。",
+          prompt:
+            [
+              "你是视频脚本与分镜 Agent。请基于上游研究输出一个 Remotion 可执行分镜。",
+              "必须包含：总时长、fps、镜头序列、每个镜头的帧范围、画面构图、字幕文本、动效建议、色彩/字体建议、转场节奏。",
+              "至少 4 个镜头，不能写成网页结构。字幕必须是中文，文案要短而有节奏。",
+              "请给 Remotion 构建 Agent 明确的 props/data 结构建议。不要输出 JSON。"
+            ].join("\n"),
+          tools: []
+        }
+      },
+      {
+        id: "remotion-slot-tech-plan",
+        type: "manager_slot",
+        position: { x: 2000, y: 58 },
+        size: { width: 680, height: 340 },
+        config: {
+          label: "Slot 5 - Remotion 技术规划",
+          description: "把分镜翻译成 Remotion 组件结构、时序、动画 API 和验收命令。",
+          managerNodeId: "remotion-manager",
+          slot: 5
+        }
+      },
+      {
+        id: "remotion-tech-planner",
+        type: "agent",
+        runtimeId: "openclaw",
+        parentId: "remotion-slot-tech-plan",
+        position: { x: 142, y: 152 },
+        config: {
+          label: "Remotion 技术规划 Agent",
+          resultRole: "ignore",
+          openclawAgentId: "main",
+          agentName: "remotion-tech-planner",
+          description: "设计 Remotion 文件结构、Composition 元数据、Sequence 时序和动画实现约束。",
+          prompt:
+            [
+              "你是 Remotion 技术规划 Agent。请把上游分镜转成 Remotion 实现计划。",
+              "必须明确：文件结构、Composition id、width、height、fps、durationInFrames、props/data shape、每个 Sequence 的 from/durationInFrames。",
+              "必须要求使用 AbsoluteFill、Sequence、interpolate 或 spring；避免 Tailwind 和外部图片依赖。",
+              "必须给出 QA 可执行的检查点和建议命令：npx remotion studio、npx remotion still AgentOpsBriefVideo --frame=30 --scale=0.25。",
+              "用中文输出技术规划，不要输出 JSON。"
+            ].join("\n"),
+          tools: []
+        }
+      }
+    ],
+    edges: [
+      { id: "remotion-manager-to-build", source: "remotion-manager", sourceHandle: "manager-out-1", target: "remotion-slot-build", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "remotion-build-to-manager", source: "remotion-slot-build", sourceHandle: "manager-slot-out", target: "remotion-manager", targetHandle: "manager-in-1", condition: "success" },
+      { id: "remotion-manager-to-qa", source: "remotion-manager", sourceHandle: "manager-out-2", target: "remotion-slot-qa", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "remotion-qa-to-manager", source: "remotion-slot-qa", sourceHandle: "manager-slot-out", target: "remotion-manager", targetHandle: "manager-in-2", condition: "success" },
+      { id: "remotion-manager-to-research", source: "remotion-manager", sourceHandle: "manager-out-3", target: "remotion-slot-research", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "remotion-research-to-manager", source: "remotion-slot-research", sourceHandle: "manager-slot-out", target: "remotion-manager", targetHandle: "manager-in-3", condition: "success" },
+      { id: "remotion-manager-to-storyboard", source: "remotion-manager", sourceHandle: "manager-out-4", target: "remotion-slot-storyboard", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "remotion-storyboard-to-manager", source: "remotion-slot-storyboard", sourceHandle: "manager-slot-out", target: "remotion-manager", targetHandle: "manager-in-4", condition: "success" },
+      { id: "remotion-manager-to-tech-plan", source: "remotion-manager", sourceHandle: "manager-out-5", target: "remotion-slot-tech-plan", targetHandle: "manager-slot-in", condition: "success" },
+      { id: "remotion-tech-plan-to-manager", source: "remotion-slot-tech-plan", sourceHandle: "manager-slot-out", target: "remotion-manager", targetHandle: "manager-in-5", condition: "success" },
+      { id: "remotion-build-start", source: "remotion-slot-build", sourceHandle: "manager-slot-inner-out", target: "remotion-code-builder", condition: "success" },
+      { id: "remotion-build-finish", source: "remotion-code-builder", target: "remotion-slot-build", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "remotion-qa-start", source: "remotion-slot-qa", sourceHandle: "manager-slot-inner-out", target: "remotion-qa-reviewer", condition: "success" },
+      { id: "remotion-qa-finish", source: "remotion-qa-reviewer", target: "remotion-slot-qa", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "remotion-research-start", source: "remotion-slot-research", sourceHandle: "manager-slot-inner-out", target: "remotion-researcher", condition: "success" },
+      { id: "remotion-research-finish", source: "remotion-researcher", target: "remotion-slot-research", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "remotion-storyboard-start", source: "remotion-slot-storyboard", sourceHandle: "manager-slot-inner-out", target: "remotion-storyboard-writer", condition: "success" },
+      { id: "remotion-storyboard-finish", source: "remotion-storyboard-writer", target: "remotion-slot-storyboard", targetHandle: "manager-slot-inner-in", condition: "success" },
+      { id: "remotion-tech-plan-start", source: "remotion-slot-tech-plan", sourceHandle: "manager-slot-inner-out", target: "remotion-tech-planner", condition: "success" },
+      { id: "remotion-tech-plan-finish", source: "remotion-tech-planner", target: "remotion-slot-tech-plan", targetHandle: "manager-slot-inner-in", condition: "success" }
+    ],
+    variables: {},
+    display: {
+      viewport: { x: -54, y: 8, zoom: 0.54 }
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
 export function createDefaultBlueprints(
   now: string,
   companyId = "company-hiveward-studio",
@@ -979,7 +1446,9 @@ export function createDefaultBlueprints(
     createStarterBlueprint(now, companyId),
     createRealThreeAgentBlueprint(now, companyId),
     createMultiAgentCompatibilityBlueprint(now, companyId, workingDirectory),
-    createManagerDrivenHtmlBlueprint(now, companyId)
+    createManagerDrivenHtmlBlueprint(now, companyId),
+    createActiveManagerNewsHtmlChaosBlueprint(now, companyId),
+    createActiveManagerRemotionVideoChaosBlueprint(now, companyId)
   ];
 }
 

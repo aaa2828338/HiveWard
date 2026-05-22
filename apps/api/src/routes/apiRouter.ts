@@ -20,6 +20,7 @@ import type {
   OpenClawConfiguredChannel,
   OpenClawConfigState,
   OpenClawVersionInfo,
+  ManagerNodeConfig,
   ParallelAgentsNodeConfig,
   SummaryNodeConfig,
   UpdateOpenClawDefaultModelRequest,
@@ -664,6 +665,11 @@ function collectInvalidAgentIds(blueprint: BlueprintDefinition, configuredAgentI
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
       continue;
     }
+    if (node.type === "manager" && (node.runtimeId ?? "openclaw") === "openclaw") {
+      const agentId = (node.config as ManagerNodeConfig).openclawAgentId ?? "main";
+      if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
+      continue;
+    }
     if (node.type === "parallel_agents") {
       for (const agent of (node.config as ParallelAgentsNodeConfig).agents) {
         const agentId = agent.openclawAgentId ?? "main";
@@ -694,6 +700,15 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
         const config = node.config as AgentNodeConfig;
         const defaultModelId = defaultModelForAgentRuntime(node.runtimeId, defaults);
         return config.modelId || !defaultModelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
+      }
+      if (node.type === "manager") {
+        const config = node.config as ManagerNodeConfig;
+        const defaultModelId = defaultModelForAgentRuntime(node.runtimeId ?? "openclaw", defaults);
+        return {
+          ...node,
+          runtimeId: node.runtimeId ?? "openclaw",
+          config: config.modelId || !defaultModelId ? config : { ...config, modelId: defaultModelId }
+        };
       }
       if (node.type === "parallel_agents") {
         const config = node.config as ParallelAgentsNodeConfig;
