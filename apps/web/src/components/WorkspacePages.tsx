@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowLeft,
@@ -1034,7 +1034,7 @@ export function ModelsPage({
             "OAuth / Device Pairing methods bind to an existing OpenClaw login on this host; the actual sign-in still runs through openclaw models auth login in an interactive terminal."
         };
   const modelProviders = wizard?.modelProviders ?? [];
-  const selectedProvider = modelProviders.find((provider) => provider.id === selectedProviderId) ?? modelProviders[0];
+  const selectedProvider = modelProviders.find((provider) => provider.id === selectedProviderId);
   const selectedMethod = selectedProvider?.methods.find((method) => method.id === selectedMethodId);
   const selectedModelFields = useMemo(
     () => mergeModelCatalogOptions(selectedMethod?.fields ?? [], selectedProvider?.id, catalog),
@@ -1044,11 +1044,6 @@ export function ModelsPage({
     () => filterWizardOptions(modelProviders, providerSearch),
     [modelProviders, providerSearch]
   );
-
-  useEffect(() => {
-    if (selectedProviderId || !modelProviders[0]) return;
-    setSelectedProviderId(modelProviders[0].id);
-  }, [modelProviders, selectedProviderId]);
 
   useEffect(() => {
     if (!selectedMethod) {
@@ -1089,10 +1084,10 @@ export function ModelsPage({
               const maxDailyTokens = Math.max(1, ...recentDays.map((day) => day.totalTokens));
 
               return (
-                <article key={model.id} className={`model-card ${isDefault ? "default" : ""}`}>
+                <article key={model.id} className="model-card">
                   <div className="model-card-head">
                     <IdentityTitle kind="model" id={model.provider} label={model.label} />
-                    {isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
+                    {isDefault && <span className="status-pill status-default">{t.common.defaultOption}</span>}
                   </div>
                   <div className="model-card-usage" aria-label={modelCopy.usage}>
                     <div className="model-usage-head">
@@ -1123,7 +1118,7 @@ export function ModelsPage({
                     </div>
                   </div>
                   <div className="model-card-actions">
-                    <button type="button" disabled={busy || isDefault} onClick={() => onSetDefaultModel(model.id)}>
+                    <button type="button" className={isDefault ? "default-action" : undefined} disabled={busy || isDefault} onClick={() => onSetDefaultModel(model.id)}>
                       {busyAction === `setOpenClawDefaultModel:${model.id}` && !isDefault ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
                       {isDefault ? t.common.defaultOption : modelCopy.setDefault}
                     </button>
@@ -1164,7 +1159,7 @@ export function ModelsPage({
               </label>
               <WizardChoiceList
                 options={filteredProviders}
-                selectedId={selectedProvider?.id}
+                selectedId={selectedProviderId}
                 emptyText={wizardCopy.empty}
                 identityKind="provider"
                 onSelect={(provider) => {
@@ -1177,7 +1172,13 @@ export function ModelsPage({
           ) : modelStep === "method" && selectedProvider ? (
             <>
               <div className="wizard-stage-toolbar">
-                <button type="button" onClick={() => setModelStep("provider")}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModelStep("provider");
+                    setSelectedMethodId("");
+                  }}
+                >
                   <ArrowLeft size={16} />
                   {wizardCopy.back}
                 </button>
@@ -1287,10 +1288,10 @@ export function AgentsPage({
         <div className="model-card-grid">
           {configuredAgents.length ? (
             configuredAgents.map((agent) => (
-              <article key={agent.id} className={`model-card ${agent.isDefault ? "default" : ""}`}>
+              <article key={agent.id} className="model-card">
                 <div className="model-card-head">
                   <IdentityTitle kind="agent" id={agent.id} label={agent.name ?? agent.id} />
-                  {agent.isDefault && <span className="status-pill status-running">{t.common.defaultOption}</span>}
+                  {agent.isDefault && <span className="status-pill status-default">{t.common.defaultOption}</span>}
                 </div>
                 <div className="model-card-main">
                   <code>{agent.agentDir}</code>
@@ -1475,65 +1476,75 @@ export function HistoryPage({
   );
 
   return (
-    <section className="page-grid history-page-grid">
-      <div className="content-card stack-card history-header-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.title}</h3>
-          </div>
-          <div className="history-date-range">
-            <label className="date-picker-field">
-              <span>{copy.fromDate}</span>
-              <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value || toDateInputValue(new Date()))} />
-            </label>
-            <label className="date-picker-field">
-              <span>{copy.toDate}</span>
-              <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value || toDateInputValue(new Date()))} />
-            </label>
-          </div>
+    <section className="page-grid trace-page-grid history-page-grid">
+      <div className="trace-page-title history-page-title">
+        <h2>{copy.title}</h2>
+        <div className="history-date-range">
+          <label className="date-picker-field">
+            <span>{copy.fromDate}</span>
+            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value || toDateInputValue(new Date()))} />
+          </label>
+          <label className="date-picker-field">
+            <span>{copy.toDate}</span>
+            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value || toDateInputValue(new Date()))} />
+          </label>
         </div>
       </div>
 
-      <section className="card-grid history-card-grid">
-        <TableCard title={copy.runHistory} rows={runHistoryForRange.length} className="history-card">
-          {runHistoryForRange.length ? (
-            runHistoryForRange.map((runView) => (
-              <div key={runView.run.id} className="table-row history-list-row">
-                <div className="history-list-main">
-                  <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
-                  <p>{runView.run.id}</p>
-                </div>
-                <span className={`status-pill history-list-status status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-                <div className="history-list-meta">
-                  <span>{copy.startedAt}</span>
-                  <time dateTime={runView.run.startedAt}>{formatDateTime(runView.run.startedAt, language)}</time>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{copy.noRecords}</div>
-          )}
-        </TableCard>
+      <section className="trace-layout history-layout">
+        <div className="trace-column-shell history-column-shell">
+          <div className="trace-column-header history-column-header">
+            <h3>{copy.runHistory}</h3>
+          </div>
+          <div className="content-card stack-card history-card">
+            <div className="table-stack history-list">
+              {runHistoryForRange.length ? (
+                runHistoryForRange.map((runView) => (
+                  <div key={runView.run.id} className="table-row history-list-row">
+                    <div className="history-list-main">
+                      <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
+                      <p>{runView.run.id}</p>
+                    </div>
+                    <span className={`status-pill history-list-status status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
+                    <div className="history-list-meta">
+                      <span>{copy.startedAt}</span>
+                      <time dateTime={runView.run.startedAt}>{formatDateTime(runView.run.startedAt, language)}</time>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state page-empty">{copy.noRecords}</div>
+              )}
+            </div>
+          </div>
+        </div>
 
-        <TableCard title={copy.inbox} rows={inboxForRange.length} className="history-card">
-          {inboxForRange.length ? (
-            inboxForRange.map((approval) => (
-              <div key={approval.nodeRunId} className="table-row history-list-row">
-                <div className="history-list-main">
-                  <strong>{approval.nodeLabel}</strong>
-                  <p>{approval.blueprintName}</p>
-                </div>
-                <span className="status-pill history-list-status status-waiting_approval">{t.status.waiting_approval}</span>
-                <div className="history-list-meta">
-                  <span>{approval.blueprintName}</span>
-                  <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="empty-state page-empty">{t.empty.noApprovals}</div>
-          )}
-        </TableCard>
+        <div className="trace-column-shell history-column-shell">
+          <div className="trace-column-header history-column-header">
+            <h3>{copy.inbox}</h3>
+          </div>
+          <div className="content-card stack-card history-card">
+            <div className="table-stack history-list">
+              {inboxForRange.length ? (
+                inboxForRange.map((approval) => (
+                  <div key={approval.nodeRunId} className="table-row history-list-row">
+                    <div className="history-list-main">
+                      <strong>{approval.nodeLabel}</strong>
+                      <p>{approval.blueprintName}</p>
+                    </div>
+                    <span className="status-pill history-list-status status-waiting_approval">{t.status.waiting_approval}</span>
+                    <div className="history-list-meta">
+                      <span>{approval.blueprintName}</span>
+                      <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="empty-state page-empty">{t.empty.noApprovals}</div>
+              )}
+            </div>
+          </div>
+        </div>
       </section>
     </section>
   );
@@ -1626,14 +1637,9 @@ export function ChannelsPage({
   const [channelSearch, setChannelSearch] = useState("");
   const [selectedChannelId, setSelectedChannelId] = useState("");
   const [channelValues, setChannelValues] = useState<Record<string, OpenClawWizardValue>>({});
-  const selectedChannel = channelOptions.find((channel) => channel.id === selectedChannelId) ?? channelOptions[0];
+  const selectedChannel = channelOptions.find((channel) => channel.id === selectedChannelId);
   const filteredChannels = useMemo(() => filterWizardOptions(channelOptions, channelSearch), [channelOptions, channelSearch]);
   const configuredChannels = openClawConfig?.configuredChannels ?? [];
-
-  useEffect(() => {
-    if (selectedChannelId || !channelOptions[0]) return;
-    setSelectedChannelId(channelOptions[0].id);
-  }, [channelOptions, selectedChannelId]);
 
   useEffect(() => {
     if (!selectedChannel) {
@@ -1663,7 +1669,7 @@ export function ChannelsPage({
           {configuredChannels.length ? (
             configuredChannels.flatMap((channel) =>
               channel.accounts.map((account) => (
-                <article key={`${channel.id}:${account.id}`} className={`model-card ${account.isDefault ? "default" : ""}`}>
+                <article key={`${channel.id}:${account.id}`} className="model-card">
                   <div className="model-card-head">
                     <IdentityTitle kind="channel" id={channel.id} label={account.name ?? `${channel.label} / ${account.id}`} />
                     <span className={`status-pill ${account.enabled && channel.enabled ? "status-succeeded" : "status-cancelled"}`}>
@@ -1674,7 +1680,9 @@ export function ChannelsPage({
                     <code>{`${channel.id}:${account.id}`}</code>
                   </div>
                   <div className="model-card-meta">
-                    <span>{account.isDefault ? configCopy.defaultAccount : `${configCopy.account}: ${account.id}`}</span>
+                    <span className={account.isDefault ? "default-label" : undefined}>
+                      {account.isDefault ? configCopy.defaultAccount : `${configCopy.account}: ${account.id}`}
+                    </span>
                     <span>{`${configCopy.credentialKeys}: ${account.credentialKeys.length ? account.credentialKeys.join(", ") : "-"}`}</span>
                   </div>
                 </article>
@@ -1706,7 +1714,7 @@ export function ChannelsPage({
               </label>
               <WizardChoiceList
                 options={filteredChannels}
-                selectedId={selectedChannel?.id}
+                selectedId={selectedChannelId}
                 emptyText={wizardCopy.empty}
                 identityKind="channel"
                 onSelect={(channel) => {
@@ -2104,20 +2112,6 @@ function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string,
   if (!field.visibleWhen) return true;
   const actual = values[field.visibleWhen.fieldId];
   return actual === field.visibleWhen.equals;
-}
-
-function TableCard({ title, rows, children, className = "" }: { title: string; rows: number; children: ReactNode; className?: string }) {
-  return (
-    <div className={`content-card stack-card ${className}`.trim()}>
-      <div className="card-toolbar">
-        <div className="card-title-block">
-          <h3>{title}</h3>
-          <p>{rows}</p>
-        </div>
-      </div>
-      <div className="table-stack">{children}</div>
-    </div>
-  );
 }
 
 function buildTraceIssues(

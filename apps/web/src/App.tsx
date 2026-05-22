@@ -183,6 +183,10 @@ export function App() {
   }, [section, selectedCompanyId]);
 
   useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [section]);
+
+  useEffect(() => {
     const preventGesture = (event: Event) => {
       event.preventDefault();
     };
@@ -1182,26 +1186,26 @@ function OpenClawControlPanelPage({
 }) {
   return (
     <section id="openclaw-control-panel" className="page-grid openclaw-control-page">
-      <div className="content-card stack-card openclaw-control-hero">
-        <div className="openclaw-page-head">
-          <div className="openclaw-panel-title">
-            <Cloud size={18} />
-            <div>
-              <strong>{ui.title}</strong>
-              <span>{ui.subtitle}</span>
-            </div>
-          </div>
-          <div className="openclaw-page-actions">
-            <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
-              {openClawVersionHealthy ? ui.available : ui.unavailable}
-            </span>
-            <button type="button" onClick={onCheckUpdates} disabled={busy}>
-              <RefreshCw size={14} className={busy ? "spin" : undefined} />
-              {busy ? ui.checking : ui.checkUpdates}
-            </button>
+      <div className="trace-page-title openclaw-page-title">
+        <div className="openclaw-panel-title">
+          <Cloud size={18} />
+          <div>
+            <strong>{ui.title}</strong>
+            <span>{ui.subtitle}</span>
           </div>
         </div>
+        <div className="openclaw-page-actions">
+          <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
+            {openClawVersionHealthy ? ui.available : ui.unavailable}
+          </span>
+          <button type="button" onClick={onCheckUpdates} disabled={busy}>
+            <RefreshCw size={14} className={busy ? "spin" : undefined} />
+            {busy ? ui.checking : ui.checkUpdates}
+          </button>
+        </div>
+      </div>
 
+      <div className="content-card stack-card openclaw-status-card">
         <div className="openclaw-panel-metrics">
           <OpenClawPanelMetric label={ui.version} value={openClawVersionLabel} />
           <OpenClawPanelMetric label={ui.gateway} value={gatewayStatusLabel} tone={gatewaySettings?.url ? "online" : "offline"} />
@@ -1266,22 +1270,20 @@ function HarnessConfigPage({
   const healthy = connectionState === "connected" || connectionState === "available";
   return (
     <section className="page-grid openclaw-control-page">
-      <div className="content-card stack-card openclaw-control-hero">
-        <div className="openclaw-page-head">
-          <div className="openclaw-panel-title">
-            <Settings size={18} />
-            <div>
-              <strong>{title}</strong>
-              <span>{description}</span>
-            </div>
+      <div className="trace-page-title openclaw-page-title">
+        <div className="openclaw-panel-title">
+          <Settings size={18} />
+          <div>
+            <strong>{title}</strong>
+            <span>{description}</span>
           </div>
-          <div className="openclaw-page-actions">
-            <span className={`openclaw-panel-state ${healthy ? "online" : "offline"}`}>{copy.states[connectionState]}</span>
-            <button type="button" onClick={onRefresh} disabled={busy}>
-              <RefreshCw size={14} className={busy ? "spin" : undefined} />
-              {busy ? copy.checking : copy.check}
-            </button>
-          </div>
+        </div>
+        <div className="openclaw-page-actions">
+          <span className={`openclaw-panel-state ${healthy ? "online" : "offline"}`}>{copy.states[connectionState]}</span>
+          <button type="button" onClick={onRefresh} disabled={busy}>
+            <RefreshCw size={14} className={busy ? "spin" : undefined} />
+            {busy ? copy.checking : copy.check}
+          </button>
         </div>
       </div>
 

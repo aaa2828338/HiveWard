@@ -43,7 +43,7 @@ const typeIcon: Record<BlueprintNodeType, typeof Bot> = {
 };
 
 const managerPortStart = 122;
-const managerPortGap = 34;
+const managerPortGap = 48;
 const managerBlueprintInputTop = 34;
 const managerBlueprintOutputTop = 62;
 const managerPortLaneOffset = 11;

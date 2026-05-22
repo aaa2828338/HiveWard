@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Draft
-- Last refreshed: 2026-05-21
+- Last refreshed: 2026-05-22
 - Primary product surfaces: Workspace sidebar, company tab, blueprint studio, run and approval views.
 - Evidence reviewed: `AGENTS.md`, `README.md`, `docs/ARCHITECTURE.md`, `apps/web/src/components/WorkspacePages.tsx`, `apps/web/src/App.tsx`, `apps/web/src/styles.css`, `apps/web/public/brand/*`.
 
@@ -32,9 +32,9 @@
 - Tradeoffs: Company pages can be sparse when that preserves focus and prevents the tab from becoming an information dump.
 
 ## Visual Language
-- Color: Neutral application surfaces with restrained brand accent for interaction and selected state.
-- Typography: Compact UI type for controls; larger editorial type is reserved for company identity or true hero moments.
-- Spacing/layout rhythm: Dense in operational panels, generous on brand/context views.
+- Color: Neutral application surfaces with restrained brand accent for interaction and selected state. Do not use gradients for UI surfaces. Semantic states use one solid palette: success `#22c55e`, danger `#ef4444`, and running/info `#38bdf8`.
+- Typography: Use one UI sans stack across all surfaces: Inter/Segoe UI Variable Text with Microsoft YaHei UI and PingFang SC fallbacks for Chinese. Do not use serif heading stacks; Chinese headings must not fall back to Songti/SimSun.
+- Spacing/layout rhythm: Use a consistent compact rhythm: page gaps around 14px, card padding around 14px, title-row gaps around 12px. Page titles, card titles, and subsection titles each use one shared size/line-height scale.
 - Shape/radius/elevation: Low-radius panels and restrained shadows; avoid nested cards inside major cards.
 - Motion: Minimal and functional.
 - Imagery/iconography: Use real company logos when available; fall back to a monogram.
@@ -62,6 +62,7 @@
 - Empty: Company tab explains when no company is selected or available.
 - Error: Surface API/runtime errors in the relevant operational panels.
 - Success: Successful selection should update the visible company context.
+- Selected: Sidebar navigation may use a filled active state. Content-area selected and run-state frames should appear only after an explicit user selection or runtime state and use one shared 4px outline/border width without tinted interior fills. Default labels are status metadata, not selected state.
 - Disabled: Disabled controls should remain legible and non-interactive.
 - Offline/slow network, if applicable: Local mock paths should keep the UI inspectable.
 
