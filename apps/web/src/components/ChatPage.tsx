@@ -1,16 +1,26 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction
+} from "react";
 import {
   Bot,
   Brain,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileUp,
-  Image as ImageIcon,
   Loader2,
   MessageSquareText,
   Paperclip,
+  Plus,
   Send,
-  Settings2,
   Sparkles,
   Trash2,
   Wrench
@@ -55,10 +65,23 @@ type SelectOption = {
   value: string;
   label: string;
   meta?: string;
+  disabled?: boolean;
+  variant?: "create";
+};
+
+type ChatSession = {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 const maxReadableFileChars = 24_000;
 const maxUploadFiles = 6;
+const chatSessionsStorageKey = "hiveward.chat.sessions.v1";
+const chatActiveSessionStorageKey = "hiveward.chat.activeSession.v1";
+const newSessionOptionValue = "__new_session__";
 
 export function ChatPage({
   catalog,
@@ -79,7 +102,8 @@ export function ChatPage({
   const defaultAgentId =
     openClawConfig?.configuredAgents.find((agent) => agent.isDefault)?.id ?? agentOptions[0]?.value ?? "main";
 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessions, setSessions] = useState<ChatSession[]>(() => loadChatSessions(copy));
+  const [activeSessionId, setActiveSessionId] = useState(() => loadActiveChatSessionId());
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [harnessId, setHarnessId] = useState<HarnessId>("openclaw");
@@ -92,6 +116,39 @@ export function ChatPage({
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const threadRef = useRef<HTMLDivElement | null>(null);
+  const activeSession = sessions.find((session) => session.id === activeSessionId) ?? sessions[0];
+  const messages = activeSession?.messages ?? [];
+
+  const updateActiveSessionMessages = useCallback<Dispatch<SetStateAction<ChatMessage[]>>>(
+    (nextMessagesAction) => {
+      setSessions((current) =>
+        current.map((session) => {
+          if (session.id !== activeSession?.id) return session;
+
+          const nextMessages =
+            typeof nextMessagesAction === "function"
+              ? nextMessagesAction(session.messages)
+              : nextMessagesAction;
+          return {
+            ...session,
+            title: deriveSessionTitle(session, nextMessages, copy),
+            messages: nextMessages,
+            updatedAt: new Date().toISOString()
+          };
+        })
+      );
+    },
+    [activeSession?.id, copy]
+  );
+
+  const createSession = useCallback(() => {
+    const nextSession = createChatSession(copy);
+    setSessions((current) => [nextSession, ...current]);
+    setActiveSessionId(nextSession.id);
+    setDraft("");
+    setAttachments([]);
+    setError(undefined);
+  }, [copy]);
 
   useEffect(() => {
     if (!modelId && defaultModelId) setModelId(defaultModelId);
@@ -102,8 +159,82 @@ export function ChatPage({
   }, [agentId, defaultAgentId]);
 
   useEffect(() => {
+    if (activeSession) return;
+    const nextSession = createChatSession(copy);
+    setSessions([nextSession]);
+    setActiveSessionId(nextSession.id);
+  }, [activeSession, copy]);
+
+  useEffect(() => {
+    persistChatSessions(sessions, activeSession?.id);
+  }, [activeSession?.id, sessions]);
+
+  useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
   }, [messages]);
+
+  const sessionOptions = useMemo<SelectOption[]>(
+    () => [
+      {
+        value: newSessionOptionValue,
+        label: copy.newSession,
+        meta: copy.newSessionMeta,
+        variant: "create"
+      },
+      ...sessions.map((session) => ({
+        value: session.id,
+        label: session.title,
+        meta: formatSessionMeta(session, copy)
+      }))
+    ],
+    [copy, sessions]
+  );
+  const harnessOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "openclaw", label: "OpenClaw" },
+      { value: "codex", label: "Codex", meta: copy.soon, disabled: true },
+      { value: "claudeCode", label: "Claude Code", meta: copy.soon, disabled: true }
+    ],
+    [copy.soon]
+  );
+  const thinkingOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "low", label: copy.thinkingLow },
+      { value: "medium", label: copy.thinkingMedium },
+      { value: "high", label: copy.thinkingHigh },
+      { value: "xhigh", label: copy.thinkingXHigh }
+    ],
+    [copy.thinkingHigh, copy.thinkingLow, copy.thinkingMedium, copy.thinkingXHigh]
+  );
+  const modeOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "chat", label: copy.modeChat },
+      { value: "build_blueprint", label: copy.modeBlueprint },
+      { value: "drawing", label: copy.modeDrawing }
+    ],
+    [copy.modeBlueprint, copy.modeChat, copy.modeDrawing]
+  );
+  const usageOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "show", label: copy.showUsage },
+      { value: "hide", label: copy.hideUsage }
+    ],
+    [copy.hideUsage, copy.showUsage]
+  );
+
+  const selectSession = useCallback(
+    (sessionId: string) => {
+      if (sessionId === newSessionOptionValue) {
+        createSession();
+        return;
+      }
+      setActiveSessionId(sessionId);
+      setDraft("");
+      setAttachments([]);
+      setError(undefined);
+    },
+    [createSession]
+  );
 
   const canSend = !isSending && (draft.trim().length > 0 || attachments.length > 0) && harnessId === "openclaw";
 
@@ -130,7 +261,7 @@ export function ChatPage({
       status: "streaming"
     };
 
-    setMessages((current) => [...current, userMessage, assistantMessage]);
+    updateActiveSessionMessages((current) => [...current, userMessage, assistantMessage]);
     setDraft("");
     setAttachments([]);
     setError(undefined);
@@ -150,13 +281,13 @@ export function ChatPage({
           showToolCalls
         },
         {
-          onEvent: (event) => applyChatEvent(assistantId, event, setMessages)
+          onEvent: (event) => applyChatEvent(assistantId, event, updateActiveSessionMessages)
         }
       );
     } catch (streamError) {
       const message = streamError instanceof Error ? streamError.message : copy.sendFailed;
       setError(message);
-      setMessages((current) =>
+      updateActiveSessionMessages((current) =>
         current.map((item) =>
           item.id === assistantId
             ? { ...item, content: item.content || message, status: "failed" }
@@ -207,105 +338,61 @@ export function ChatPage({
 
           {!settingsCollapsed && (
             <div className="chat-settings-body">
-              <div className="chat-control-group">
-                <span className="chat-control-label">{copy.harness}</span>
-                <div className="chat-harness-options">
-                  {[
-                    { id: "openclaw" as const, label: "OpenClaw", disabled: false },
-                    { id: "codex" as const, label: "Codex", disabled: true },
-                    { id: "claudeCode" as const, label: "Claude Code", disabled: true }
-                  ].map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`chat-harness-option ${harnessId === item.id ? "selected" : ""}`}
-                      disabled={item.disabled}
-                      onClick={() => setHarnessId(item.id)}
-                    >
-                      <Bot size={15} />
-                      <span>{item.label}</span>
-                      {item.disabled && <small>{copy.soon}</small>}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <ChatSelect
+                label={copy.session}
+                icon={<MessageSquareText size={14} />}
+                value={activeSession?.id ?? ""}
+                options={sessionOptions}
+                onChange={selectSession}
+              />
 
-              <label className="chat-control-field">
-                <span>
-                  <Bot size={14} />
-                  {copy.agent}
-                </span>
-                <select value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-                  {agentOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ChatSelect
+                label={copy.harness}
+                icon={<Bot size={14} />}
+                value={harnessId}
+                options={harnessOptions}
+                onChange={(value) => setHarnessId(value as HarnessId)}
+              />
 
-              <label className="chat-control-field">
-                <span>
-                  <Sparkles size={14} />
-                  {copy.model}
-                </span>
-                <select value={modelId} onChange={(event) => setModelId(event.target.value)}>
-                  {modelOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.meta ? `${option.label} - ${option.meta}` : option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <ChatSelect
+                label={copy.agent}
+                icon={<Bot size={14} />}
+                value={agentId}
+                options={agentOptions}
+                onChange={setAgentId}
+              />
 
-              <label className="chat-control-field">
-                <span>
-                  <Brain size={14} />
-                  {copy.thinking}
-                </span>
-                <select value={thinkingEffort} onChange={(event) => setThinkingEffort(event.target.value as ChatThinkingEffort)}>
-                  <option value="low">{copy.thinkingLow}</option>
-                  <option value="medium">{copy.thinkingMedium}</option>
-                  <option value="high">{copy.thinkingHigh}</option>
-                  <option value="xhigh">{copy.thinkingXHigh}</option>
-                </select>
-              </label>
+              <ChatSelect
+                label={copy.model}
+                icon={<Sparkles size={14} />}
+                value={modelId}
+                options={modelOptions}
+                onChange={setModelId}
+              />
 
-              <div className="chat-control-group">
-                <span className="chat-control-label">{copy.mode}</span>
-                <div className="chat-mode-options">
-                  {[
-                    { id: "chat" as const, label: copy.modeChat, icon: MessageSquareText },
-                    { id: "build_blueprint" as const, label: copy.modeBlueprint, icon: Settings2 },
-                    { id: "drawing" as const, label: copy.modeDrawing, icon: ImageIcon }
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className={mode === item.id ? "selected" : ""}
-                        onClick={() => setMode(item.id)}
-                      >
-                        <Icon size={15} />
-                        {item.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+              <ChatSelect
+                label={copy.thinking}
+                icon={<Brain size={14} />}
+                value={thinkingEffort}
+                options={thinkingOptions}
+                onChange={(value) => setThinkingEffort(value as ChatThinkingEffort)}
+              />
 
-              <label className="chat-toggle-field">
-                <input
-                  type="checkbox"
-                  checked={showToolCalls}
-                  onChange={(event) => setShowToolCalls(event.target.checked)}
-                />
-                <span>
-                  <Wrench size={14} />
-                  {copy.showTools}
-                </span>
-              </label>
+              <ChatSelect
+                label={copy.mode}
+                icon={<MessageSquareText size={14} />}
+                value={mode}
+                options={modeOptions}
+                onChange={(value) => setMode(value as ChatMode)}
+              />
+
+              <ChatSelect
+                label={copy.usage}
+                icon={<Wrench size={14} />}
+                value={showToolCalls ? "show" : "hide"}
+                options={usageOptions}
+                onChange={(value) => setShowToolCalls(value === "show")}
+              />
             </div>
           )}
         </aside>
@@ -320,31 +407,35 @@ export function ChatPage({
               </div>
             ) : (
               messages.map((message) => (
-                <article key={message.id} className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
-                  <div className="chat-message-meta">
-                    <strong>{message.role === "user" ? copy.you : copy.assistant}</strong>
-                    {message.status === "streaming" && <span>{copy.streaming}</span>}
-                    {message.status === "failed" && <span>{copy.failed}</span>}
+                <article
+                  key={message.id}
+                  className={`chat-message-row chat-message-row-${message.role} ${message.status ?? ""}`}
+                >
+                  <div className={`chat-avatar chat-avatar-${message.role}`} aria-label={message.role === "user" ? copy.you : copy.assistant}>
+                    {message.role === "user" ? copy.youAvatar : <Bot size={16} />}
                   </div>
-                  {message.content ? (
-                    <MarkdownRenderer value={message.content} className="chat-message-body" />
-                  ) : (
-                    <div className="chat-message-pending">
-                      <Loader2 className="spin" size={15} />
-                      {copy.waiting}
-                    </div>
-                  )}
-                  {message.attachments?.length ? (
-                    <div className="chat-message-attachments">
-                      {message.attachments.map((attachment) => (
-                        <span key={attachment.id}>
-                          <FileUp size={13} />
-                          {attachment.name}
-                        </span>
-                      ))}
-                    </div>
-                  ) : null}
-                  {showToolCalls && message.runtimeRef && <RuntimeRefBlock runtimeRef={message.runtimeRef} copy={copy} />}
+                  <div className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
+                    {message.content ? (
+                      <MarkdownRenderer value={message.content} className="chat-message-body" />
+                    ) : (
+                      <div className="chat-message-pending">
+                        <Loader2 className="spin" size={15} />
+                        {copy.waiting}
+                      </div>
+                    )}
+                    {message.attachments?.length ? (
+                      <div className="chat-message-attachments">
+                        {message.attachments.map((attachment) => (
+                          <span key={attachment.id}>
+                            <FileUp size={13} />
+                            {attachment.name}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    {message.status === "failed" && <span className="chat-message-status">{copy.failed}</span>}
+                    {showToolCalls && message.runtimeRef && <RuntimeRefBlock runtimeRef={message.runtimeRef} copy={copy} />}
+                  </div>
                 </article>
               ))
             )}
@@ -407,18 +498,101 @@ export function ChatPage({
   );
 }
 
-function RuntimeRefBlock({ runtimeRef, copy }: { runtimeRef: ChatRuntimeRef; copy: ReturnType<typeof chatCopy> }) {
+function ChatSelect({
+  label,
+  icon,
+  value,
+  options,
+  onChange
+}: {
+  label: string;
+  icon: ReactNode;
+  value: string;
+  options: SelectOption[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedOption = options.find((option) => option.value === value && option.variant !== "create");
+  const selectedLabel = selectedOption?.label ?? options.find((option) => option.value === value)?.label ?? "";
+
   return (
-    <div className="chat-runtime-ref">
-      <span>{copy.runtime}</span>
-      <code>taskId={runtimeRef.taskId}</code>
-      <code>runId={runtimeRef.runId}</code>
-      <code>sessionKey={runtimeRef.sessionKey}</code>
-      {runtimeRef.usage && (
-        <code>
-          {runtimeRef.usage.modelId} / {runtimeRef.usage.inputTokens + runtimeRef.usage.outputTokens} tokens
-        </code>
-      )}
+    <div
+      className="chat-select-field"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
+      }}
+    >
+      <span className="chat-control-label">
+        {icon}
+        {label}
+      </span>
+      <div className="chat-select-shell">
+        <button
+          type="button"
+          className={`chat-select-button ${open ? "open" : ""}`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          onClick={() => setOpen((current) => !current)}
+        >
+          <span className="chat-select-value">
+            <strong>{selectedLabel}</strong>
+            {selectedOption?.meta && <small>{selectedOption.meta}</small>}
+          </span>
+          <ChevronDown size={15} />
+        </button>
+        {open && (
+          <div className="chat-select-menu" role="listbox" aria-label={label}>
+            {options.map((option) => {
+              const selected = option.value === value && option.variant !== "create";
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`chat-select-option ${selected ? "selected" : ""} ${option.variant === "create" ? "create" : ""}`}
+                  role="option"
+                  aria-selected={selected}
+                  disabled={option.disabled}
+                  onClick={() => {
+                    if (option.disabled) return;
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="chat-select-option-main">
+                    {option.variant === "create" && <Plus size={14} />}
+                    <span>{option.label}</span>
+                    {option.meta && <small>{option.meta}</small>}
+                  </span>
+                  {selected && <Check size={14} />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RuntimeRefBlock({ runtimeRef, copy }: { runtimeRef: ChatRuntimeRef; copy: ReturnType<typeof chatCopy> }) {
+  if (!runtimeRef.usage) return null;
+
+  const totalTokens = runtimeRef.usage.inputTokens + runtimeRef.usage.outputTokens;
+
+  return (
+    <div className="chat-runtime-ref" aria-label={copy.usageSummary}>
+      <span className="chat-runtime-pill">
+        <Sparkles size={13} />
+        <span>{copy.usageModel}</span>
+        <strong>{runtimeRef.usage.modelId}</strong>
+      </span>
+      <span className="chat-runtime-pill">
+        <Brain size={13} />
+        <span>{copy.usageTokens}</span>
+        <strong>
+          {formatTokenCount(totalTokens)} {copy.tokensUnit}
+        </strong>
+      </span>
     </div>
   );
 }
@@ -572,10 +746,75 @@ function toChatHistoryMessage(message: ChatMessage): ChatHistoryMessage {
   };
 }
 
+function createChatSession(copy: ReturnType<typeof chatCopy>): ChatSession {
+  const now = new Date().toISOString();
+  return {
+    id: makeLocalId("chat-session"),
+    title: copy.newSessionTitle,
+    messages: [],
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function loadChatSessions(copy: ReturnType<typeof chatCopy>): ChatSession[] {
+  if (typeof window === "undefined") return [createChatSession(copy)];
+  try {
+    const raw = window.localStorage.getItem(chatSessionsStorageKey);
+    if (!raw) return [createChatSession(copy)];
+    const parsed = JSON.parse(raw) as ChatSession[];
+    const sessions = parsed
+      .filter((session) => session.id && Array.isArray(session.messages))
+      .map((session) => ({
+        id: session.id,
+        title: session.title || copy.newSessionTitle,
+        messages: session.messages,
+        createdAt: session.createdAt || new Date().toISOString(),
+        updatedAt: session.updatedAt || session.createdAt || new Date().toISOString()
+      }));
+    return sessions.length > 0 ? sessions : [createChatSession(copy)];
+  } catch {
+    return [createChatSession(copy)];
+  }
+}
+
+function loadActiveChatSessionId(): string | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.localStorage.getItem(chatActiveSessionStorageKey) ?? undefined;
+}
+
+function persistChatSessions(sessions: ChatSession[], activeSessionId?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(chatSessionsStorageKey, JSON.stringify(sessions));
+    if (activeSessionId) {
+      window.localStorage.setItem(chatActiveSessionStorageKey, activeSessionId);
+    }
+  } catch {
+    // Session persistence should not block chat if browser storage is unavailable.
+  }
+}
+
+function deriveSessionTitle(session: ChatSession, messages: ChatMessage[], copy: ReturnType<typeof chatCopy>): string {
+  if (session.messages.length > 0 && session.title !== copy.newSessionTitle) return session.title;
+  const firstUserMessage = messages.find((message) => message.role === "user")?.content.trim();
+  if (!firstUserMessage) return session.title || copy.newSessionTitle;
+  return firstUserMessage.length > 24 ? `${firstUserMessage.slice(0, 24)}...` : firstUserMessage;
+}
+
+function formatSessionMeta(session: ChatSession, copy: ReturnType<typeof chatCopy>): string {
+  if (session.messages.length === 0) return copy.emptySessionMeta;
+  return `${session.messages.length} ${copy.messagesUnit}`;
+}
+
 function formatBytes(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} MB`;
   if (value >= 1_000) return `${(value / 1_000).toFixed(1)} KB`;
   return `${value} B`;
+}
+
+function formatTokenCount(value: number): string {
+  return value.toLocaleString();
 }
 
 function makeLocalId(prefix: string): string {
@@ -592,6 +831,12 @@ function chatCopy(language: Language) {
       settings: "\u5bf9\u8bdd\u914d\u7f6e",
       collapseSettings: "\u6536\u8d77",
       expandSettings: "\u5c55\u5f00",
+      session: "\u4f1a\u8bdd",
+      newSession: "\u65b0\u5efa\u4f1a\u8bdd",
+      newSessionMeta: "\u521b\u5efa Hiveward \u5e73\u53f0\u4f1a\u8bdd",
+      newSessionTitle: "\u65b0\u4f1a\u8bdd",
+      emptySessionMeta: "\u672a\u5f00\u59cb",
+      messagesUnit: "\u6761\u6d88\u606f",
       harness: "Harness",
       soon: "\u7a0d\u540e",
       agent: "Agent",
@@ -605,15 +850,22 @@ function chatCopy(language: Language) {
       modeChat: "\u804a\u5929",
       modeBlueprint: "\u521b\u5efa\u84dd\u56fe",
       modeDrawing: "\u7ed8\u753b",
-      showTools: "\u663e\u793a\u5de5\u5177\u8c03\u7528\u548c\u8fd0\u884c\u5f15\u7528",
+      showTools: "\u663e\u793a\u6a21\u578b\u548c Token \u6d88\u8017",
+      usage: "\u6d88\u8017\u663e\u793a",
+      showUsage: "\u663e\u793a",
+      hideUsage: "\u9690\u85cf",
       emptyTitle: "\u65b0\u5bf9\u8bdd",
       emptyBody: "\u9009\u62e9 Agent\u3001\u6a21\u578b\u548c\u6a21\u5f0f\uff0c\u7136\u540e\u76f4\u63a5\u53d1\u9001\u3002",
       you: "\u4f60",
+      youAvatar: "\u4f60",
       assistant: "OpenClaw",
       streaming: "\u8f93\u51fa\u4e2d",
       failed: "\u5931\u8d25",
       waiting: "\u7b49\u5f85 OpenClaw \u8fd4\u56de...",
-      runtime: "\u8fd0\u884c\u5f15\u7528",
+      usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
+      usageModel: "\u6a21\u578b",
+      usageTokens: "Token \u6d88\u8017",
+      tokensUnit: "tokens",
       attachmentOnlyMessage: "\u5df2\u4e0a\u4f20\u6587\u4ef6",
       removeAttachment: "\u79fb\u9664\u9644\u4ef6",
       upload: "\u4e0a\u4f20\u6587\u4ef6",
@@ -628,6 +880,12 @@ function chatCopy(language: Language) {
     settings: "Chat settings",
     collapseSettings: "Collapse",
     expandSettings: "Expand",
+    session: "Session",
+    newSession: "New session",
+    newSessionMeta: "Create a Hiveward platform session",
+    newSessionTitle: "New session",
+    emptySessionMeta: "Not started",
+    messagesUnit: "messages",
     harness: "Harness",
     soon: "soon",
     agent: "Agent",
@@ -641,15 +899,22 @@ function chatCopy(language: Language) {
     modeChat: "Chat",
     modeBlueprint: "Build a blueprint",
     modeDrawing: "Drawing",
-    showTools: "Show tool calls and runtime refs",
+    showTools: "Show model and token usage",
+    usage: "Usage display",
+    showUsage: "Show",
+    hideUsage: "Hide",
     emptyTitle: "New conversation",
     emptyBody: "Choose an agent, model, and mode, then send a message.",
     you: "You",
+    youAvatar: "You",
     assistant: "OpenClaw",
     streaming: "Streaming",
     failed: "Failed",
     waiting: "Waiting for OpenClaw...",
-    runtime: "Runtime refs",
+    usageSummary: "Model and token usage",
+    usageModel: "Model",
+    usageTokens: "Token usage",
+    tokensUnit: "tokens",
     attachmentOnlyMessage: "Uploaded files",
     removeAttachment: "Remove attachment",
     upload: "Upload files",
