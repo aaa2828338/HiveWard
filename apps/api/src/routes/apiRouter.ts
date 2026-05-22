@@ -29,6 +29,7 @@ import type {
   SaveBlueprintRequest,
   ChatAttachment,
   ChatThinkingEffort,
+  ApproveBlueprintRunRequest,
   CreateChatSessionRequest,
   SendChatMessageRequest,
   ChatStreamEvent,
@@ -543,7 +544,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      const updated = await worker.approveRun(blueprint, run);
+      const body = normalizeApproveBlueprintRunRequest(req.body);
+      const updated = await worker.approveRun(blueprint, run, body.nodeRunId);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -568,6 +570,16 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   });
 
   return router;
+}
+
+function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRunRequest {
+  if (value === undefined || value === null) return {};
+  if (!isPlainRecord(value)) {
+    throw new Error("Approve request must be a JSON object.");
+  }
+  return {
+    nodeRunId: readOptionalString(value.nodeRunId)
+  };
 }
 
 function normalizeCreateChatSessionRequest(value: unknown): CreateChatSessionRequest {

@@ -700,7 +700,7 @@ export function ApprovalsPage({
   approvals: PendingApprovalItem[];
   language: Language;
   t: Messages;
-  onApprove: (blueprintRunId: string) => void;
+  onApprove: (blueprintRunId: string, nodeRunId: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
   const inboxCopy = getInboxCopy(language);
@@ -762,7 +762,7 @@ export function ApprovalsPage({
                         className="inbox-row-action primary-action"
                         title={t.actions.approve}
                         aria-label={t.actions.approve}
-                        onClick={() => onApprove(approval.blueprintRunId)}
+                        onClick={() => onApprove(approval.blueprintRunId, approval.nodeRunId)}
                       >
                         <BadgeCheck size={16} />
                       </button>
@@ -2318,7 +2318,7 @@ function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): st
 }
 
 function traceRunFrameState(status?: BlueprintRunStatus): "static" | "running" | "succeeded" | "failed" {
-  if (status === "running") return "running";
+  if (status === "queued" || status === "running" || status === "waiting_approval") return "running";
   if (status === "succeeded") return "succeeded";
   if (status === "failed" || status === "cancelled") return "failed";
   return "static";

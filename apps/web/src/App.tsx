@@ -435,6 +435,17 @@ export function App() {
     setSelectedRunId(undefined);
   }, [runPageBlueprint, runPageBlueprintId]);
 
+  useEffect(() => {
+    if (section !== "runs" || runPageBlueprintId || runs.length === 0) return;
+    const preferredRun =
+      runs.find((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)) ??
+      (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined) ??
+      runs[0];
+    if (!preferredRun) return;
+    setRunPageBlueprintId(preferredRun.run.blueprintId);
+    setSelectedRunId(preferredRun.run.id);
+  }, [blueprint, runPageBlueprintId, runs, section]);
+
   const activeTaskCount = useMemo(
     () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
     [runs]
@@ -741,11 +752,11 @@ export function App() {
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
   const approveRun = useCallback(
-    (blueprintRunId?: string) => {
+    (blueprintRunId?: string, nodeRunId?: string) => {
       const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveBlueprintRun(targetRunId);
+        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId);
         applyRunView(updated);
         setSelectedRunId(updated.run.id);
       });

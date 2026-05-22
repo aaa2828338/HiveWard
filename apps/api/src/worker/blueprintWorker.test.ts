@@ -16,7 +16,8 @@ import {
   type WaitForAgentTaskInput,
   type BlueprintDefinition,
   type BlueprintEdge,
-  type BlueprintNode
+  type BlueprintNode,
+  type BlueprintRunStatus
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import { BlueprintWorker } from "./blueprintWorker";
@@ -522,6 +523,42 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls.slice(1).every((call) => Array.isArray((call.input as { upstream?: unknown[] }).upstream))).toBe(true);
     expect((adapter.calls[1]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
     expect((adapter.calls[2]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
+  });
+
+  it("approves the requested node when multiple human approvals are waiting", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+    const worker = new BlueprintWorker(store, new ScriptedAdapter([], []));
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "approval-a",
+          type: "approval",
+          position: { x: 0, y: 0 },
+          config: { label: "Approval A", approverHint: "Lead A", instructions: "Approve A." }
+        },
+        {
+          id: "approval-b",
+          type: "approval",
+          position: { x: 260, y: 0 },
+          config: { label: "Approval B", approverHint: "Lead B", instructions: "Approve B." }
+        }
+      ],
+      []
+    );
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const firstApproval = await waitForNodeRun(store, run.id, "approval-a", (nodeRun) => nodeRun.status === "waiting_approval");
+    const secondApproval = await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "waiting_approval");
+    const waitingRun = await waitForRunStatus(store, run.id, "waiting_approval");
+
+    await worker.approveRun(blueprint, waitingRun.run, secondApproval.id);
+    await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "succeeded");
+    const latestView = await waitForRunStatus(store, run.id, "waiting_approval");
+
+    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === firstApproval.id)?.status).toBe("waiting_approval");
+    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.status).toBe("succeeded");
   });
 
   it("passes SDK node configuration to the adapter and persists provider refs", async () => {
@@ -1240,6 +1277,24 @@ async function waitForRunTerminal(store: FileHivewardStore, runId: string): Prom
   }
 
   throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}`);
+}
+
+async function waitForRunStatus(
+  store: FileHivewardStore,
+  runId: string,
+  status: BlueprintRunStatus
+): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    const view = await store.getRunView(runId);
+    if (view?.run.status === status) {
+      return view;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Blueprint run did not reach ${status} in time: ${runId}`);
 }
 
 async function waitForNodeRun(

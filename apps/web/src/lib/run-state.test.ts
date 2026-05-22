@@ -100,7 +100,7 @@ describe("run state sync", () => {
     ).toBe("run-running");
   });
 
-  it("does not poll waiting approval runs", () => {
+  it("keeps polling waiting approval runs so external approvals update the workspace", () => {
     expect(
       selectRunPollingTarget({
         runs: [createRunView("waiting_approval")],
@@ -108,7 +108,7 @@ describe("run state sync", () => {
         selectedRunId: "run-1",
         view: "runs"
       })
-    ).toBeUndefined();
+    ).toBe("run-1");
   });
 
   it("does not poll runs from another blueprint", () => {
@@ -121,10 +121,10 @@ describe("run state sync", () => {
     ).toBeUndefined();
   });
 
-  it("shows blueprint activity only for live running runs or unseen terminal results", () => {
+  it("shows blueprint activity for open runs or unseen terminal results", () => {
     expect(resolveBlueprintActivityState("running")).toBe("running");
-    expect(resolveBlueprintActivityState("queued")).toBe("idle");
-    expect(resolveBlueprintActivityState("waiting_approval")).toBe("idle");
+    expect(resolveBlueprintActivityState("queued")).toBe("running");
+    expect(resolveBlueprintActivityState("waiting_approval")).toBe("running");
     expect(resolveBlueprintActivityState("succeeded")).toBe("succeeded");
     expect(resolveBlueprintActivityState("failed")).toBe("failed");
     expect(resolveBlueprintActivityState("cancelled")).toBe("failed");
@@ -135,7 +135,7 @@ describe("run state sync", () => {
   it("clears terminal run details from the blueprint workspace after the run was seen", () => {
     expect(shouldShowBlueprintWorkspaceRunState("running")).toBe(true);
     expect(shouldShowBlueprintWorkspaceRunState("waiting_approval")).toBe(true);
-    expect(shouldShowBlueprintWorkspaceRunState("queued")).toBe(false);
+    expect(shouldShowBlueprintWorkspaceRunState("queued")).toBe(true);
     expect(shouldShowBlueprintWorkspaceRunState("succeeded")).toBe(true);
     expect(shouldShowBlueprintWorkspaceRunState("failed")).toBe(true);
     expect(shouldShowBlueprintWorkspaceRunState("cancelled")).toBe(true);

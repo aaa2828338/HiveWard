@@ -155,14 +155,17 @@ export class BlueprintWorker {
     return runningRun;
   }
 
-  async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<BlueprintRun> {
+  async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
 
-    const waiting = (await this.store.listNodeRuns(run.id)).find((nodeRun) => nodeRun.status === "waiting_approval");
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    const waiting = nodeRuns.find((nodeRun) =>
+      nodeRun.status === "waiting_approval" && (!nodeRunId || nodeRun.id === nodeRunId)
+    );
     if (!waiting) {
-      throw new Error("No node is waiting for approval.");
+      throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
     }
 
     const now = new Date().toISOString();
