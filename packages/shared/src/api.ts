@@ -71,6 +71,10 @@ export interface ListPendingApprovalsResponse {
   approvals: PendingApprovalItem[];
 }
 
+export interface ApproveBlueprintRunRequest {
+  nodeRunId?: string;
+}
+
 export interface DashboardStateResponse {
   dashboard: WorkspaceDashboard;
 }

@@ -27,11 +27,11 @@ export function selectRunPollingTarget({
 }
 
 export function isPollingRunStatus(status: BlueprintRunStatus): boolean {
-  return status === "queued" || status === "running";
+  return status === "queued" || status === "running" || status === "waiting_approval";
 }
 
 export function resolveBlueprintActivityState(status?: BlueprintRunStatus, terminalStatusSeen = false): BlueprintActivityState {
-  if (status === "running") return "running";
+  if (status === "queued" || status === "running" || status === "waiting_approval") return "running";
   if (terminalStatusSeen) return "idle";
   if (status === "succeeded") return "succeeded";
   if (status === "failed" || status === "cancelled") return "failed";
@@ -43,7 +43,7 @@ export function isTerminalBlueprintRunStatus(status?: BlueprintRunStatus): boole
 }
 
 export function shouldShowBlueprintWorkspaceRunState(status?: BlueprintRunStatus, terminalStatusSeen = false): boolean {
-  if (status === "running" || status === "waiting_approval") return true;
+  if (status === "queued" || status === "running" || status === "waiting_approval") return true;
   if (isTerminalBlueprintRunStatus(status)) return !terminalStatusSeen;
   return false;
 }

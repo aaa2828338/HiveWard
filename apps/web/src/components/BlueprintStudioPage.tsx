@@ -2612,7 +2612,7 @@ function buildFlowEdges(blueprint: BlueprintDefinition | undefined, runStatus?: 
     sourceHandle: edge.sourceHandle,
     targetHandle: edge.targetHandle,
     label: edge.label ?? defaultVisibleEdgeLabel(edge.condition),
-    animated: runStatus === "running",
+    animated: runStatus === "queued" || runStatus === "running" || runStatus === "waiting_approval",
     className: "blueprint-edge",
     style: { strokeWidth: 3.5 }
   }));

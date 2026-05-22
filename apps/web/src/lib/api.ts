@@ -30,6 +30,7 @@ import type {
   RuntimeOverviewResponse,
   SaveBlueprintRequest,
   SelectCompanyRequest,
+  ApproveBlueprintRunRequest,
   ChatSessionHistoryResponse,
   CreateChatSessionRequest,
   CreateChatSessionResponse,
@@ -272,10 +273,10 @@ export const api = {
     return response.run ?? undefined;
   },
 
-  async approveBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
+  async approveBlueprintRun(runId: string, nodeRunId?: string): Promise<BlueprintRunResponse["run"]> {
     const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
       method: "POST",
-      body: JSON.stringify({})
+      body: JSON.stringify({ nodeRunId } satisfies ApproveBlueprintRunRequest)
     });
     return response.run;
   },
