@@ -11,6 +11,7 @@ import {
   Languages,
   LayoutTemplate,
   ListChecks,
+  MessageSquareText,
   Moon,
   Puzzle,
   Radio,
@@ -55,9 +56,11 @@ import {
   RunsPage,
   SkillsPage
 } from "./components/WorkspacePages";
+import { ChatPage } from "./components/ChatPage";
 
 const sidebarIcons = {
   company: Building2,
+  chat: MessageSquareText,
   blueprint: LayoutTemplate,
   runs: ListChecks,
   approvals: Inbox,
@@ -79,7 +82,7 @@ const systemLabels: Record<AppSystemId, string> = {
 };
 
 const RUN_POLL_INTERVAL_MS = 2500;
-const companyScopedSections = new Set<AppSectionId>(["company", "blueprint", "runs", "approvals", "schedule"]);
+const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 
 type AppTheme = "light" | "dark";
@@ -139,6 +142,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
+  const [runPageBlueprintId, setRunPageBlueprintId] = useState<string | undefined>();
   const [busyAction, setBusyAction] = useState<string | undefined>();
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -247,8 +251,8 @@ export function App() {
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
 
-      const preferredRunId = options?.runId ?? selectedRunIdRef.current ?? nextRunSummaries[0]?.id;
-      const nextRunId = nextRunSummaries.some((item) => item.id === preferredRunId) ? preferredRunId : nextRunSummaries[0]?.id;
+      const preferredRunId = options?.runId ?? selectedRunIdRef.current;
+      const nextRunId = preferredRunId && nextRunSummaries.some((item) => item.id === preferredRunId) ? preferredRunId : undefined;
       const nextRunView = nextRunId ? await api.getBlueprintRun(nextRunId).catch(() => undefined) : undefined;
 
       setCompanies(companyDirectory.companies);
@@ -420,6 +424,17 @@ export function App() {
     () => (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined),
     [runs, blueprint]
   );
+  const runPageBlueprint = useMemo(
+    () => blueprints.find((item) => item.id === runPageBlueprintId),
+    [blueprints, runPageBlueprintId]
+  );
+
+  useEffect(() => {
+    if (!runPageBlueprintId || runPageBlueprint) return;
+    setRunPageBlueprintId(undefined);
+    setSelectedRunId(undefined);
+  }, [runPageBlueprint, runPageBlueprintId]);
+
   const activeTaskCount = useMemo(
     () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
     [runs]
@@ -428,11 +443,11 @@ export function App() {
     () =>
       selectRunPollingTarget({
         runs,
-        selectedBlueprintId: blueprint?.id,
+        selectedBlueprintId: section === "runs" ? runPageBlueprint?.id : blueprint?.id,
         selectedRunId,
         view: section === "runs" ? "runs" : "blueprint"
       }),
-    [blueprint?.id, runs, section, selectedRunId]
+    [blueprint?.id, runPageBlueprint?.id, runs, section, selectedRunId]
   );
 
   const selectBlueprint = useCallback(
@@ -445,6 +460,14 @@ export function App() {
       setSelectedRunId(latestRunForNextBlueprint?.run.id);
     },
     [runs, blueprints]
+  );
+
+  const selectRunPageBlueprint = useCallback(
+    (blueprintId: string) => {
+      setRunPageBlueprintId(blueprintId);
+      selectBlueprint(blueprintId);
+    },
+    [selectBlueprint]
   );
 
   const sidebarMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
@@ -702,6 +725,7 @@ export function App() {
       setBlueprints((current) => replaceBlueprint(current, saved));
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
+      setRunPageBlueprintId(saved.id);
       setSelectedRunId(runView.run.id);
     });
   }, [applyRunView, withBusy, blueprint]);
@@ -844,6 +868,16 @@ export function App() {
     if (section === "company") {
       return <CompanyPage companies={companies} selectedCompanyId={selectedCompanyId} language={language} />;
     }
+    if (section === "chat") {
+      return (
+        <ChatPage
+          catalog={catalog}
+          openClawConfig={openClawConfig}
+          harnessStatuses={harnessStatuses}
+          language={language}
+        />
+      );
+    }
     if (section === "openclaw") {
       return (
         <OpenClawControlPanelPage
@@ -899,11 +933,11 @@ export function App() {
         <RunsPage
           runs={runs}
           blueprints={blueprints}
-          blueprint={blueprint}
+          blueprint={runPageBlueprint}
           selectedRunId={selectedRunId}
           language={language}
           t={t}
-          onSelectBlueprint={selectBlueprint}
+          onSelectBlueprint={selectRunPageBlueprint}
           onSelectRun={setSelectedRunId}
         />
       );
@@ -1040,7 +1074,7 @@ export function App() {
                         >
                           <span className="nav-item-main">
                             <Icon size={16} />
-                            <span className="nav-item-label">{t.navigation[item] ?? messages.en.navigation[item] ?? item}</span>
+                            <span className="nav-item-label">{t.navigation[item] ?? fallbackNavigationLabel(item, language)}</span>
                           </span>
                           {sidebarMeta[item] !== undefined && <span className="nav-count">{sidebarMeta[item]}</span>}
                         </button>
@@ -1537,6 +1571,11 @@ function safeBlueprintFileName(value: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80) || "blueprint";
+}
+
+function fallbackNavigationLabel(sectionId: AppNavSectionId, language: Language): string {
+  if (language === "zh-CN" && sectionId === "chat") return "\u804a\u5929";
+  return messages.en.navigation[sectionId] ?? sectionId;
 }
 
 function makeClientId(prefix: string): string {

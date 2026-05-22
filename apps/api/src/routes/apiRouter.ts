@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -27,6 +27,8 @@ import type {
   SelectCompanyRequest,
   SaveDashboardStateRequest,
   SaveBlueprintRequest,
+  SendChatMessageRequest,
+  ChatStreamEvent,
   BlueprintDefinition,
   StartBlueprintRunRequest
 } from "@hiveward/shared";
@@ -406,6 +408,118 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.post("/api/chat/stream", async (req, res) => {
+    let body: SendChatMessageRequest;
+    try {
+      body = normalizeChatRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "chat_request_invalid",
+          message: error instanceof Error ? error.message : "Invalid chat request."
+        }
+      });
+      return;
+    }
+
+    if (body.harnessId !== "openclaw") {
+      res.status(400).json({
+        error: {
+          code: "chat_harness_unavailable",
+          message: "Only the OpenClaw chat harness is available right now."
+        }
+      });
+      return;
+    }
+
+    const config = await openClawConfigStore.getState();
+    const agentId = body.agentId || selectDefaultAgentId(config.configuredAgents);
+    const modelId = body.modelId || config.defaultModelId;
+    const blueprintRunId = `chat-${nanoid(8)}`;
+    const nodeRunId = `chat-node-${nanoid(8)}`;
+
+    res.status(200);
+    res.setHeader("content-type", "text/event-stream; charset=utf-8");
+    res.setHeader("cache-control", "no-cache, no-transform");
+    res.setHeader("connection", "keep-alive");
+    res.flushHeaders?.();
+
+    let closed = false;
+    req.on("close", () => {
+      closed = true;
+    });
+
+    try {
+      const started = await adapter.startAgentTask({
+        blueprintRunId,
+        nodeRunId,
+        source: "openclaw",
+        agentId,
+        agentName: "hiveward-chat",
+        prompt: buildChatPrompt(body),
+        modelId,
+        permissionProfile: "read_only",
+        workingDirectory: config.defaultWorkspace,
+        input: {
+          chat: {
+            mode: body.mode,
+            thinkingEffort: body.thinkingEffort,
+            showToolCalls: body.showToolCalls === true,
+            attachments: body.attachments,
+            history: body.history
+          }
+        },
+        tools: []
+      });
+
+      if (!writeChatStreamEvent(res, {
+        type: "started",
+        taskId: started.taskId,
+        runId: started.runId,
+        sessionKey: started.sessionKey,
+        source: started.source,
+        status: started.status,
+        updatedAt: started.updatedAt
+      }, () => closed)) return;
+
+      const result = await adapter.waitForAgentTask({
+        nodeRunId,
+        taskId: started.taskId,
+        runId: started.runId,
+        sessionKey: started.sessionKey,
+        source: "openclaw",
+        agentId,
+        modelId
+      });
+
+      if (result.output) {
+        for (const chunk of chunkText(result.output, 480)) {
+          if (!writeChatStreamEvent(res, { type: "delta", text: chunk }, () => closed)) return;
+        }
+      }
+
+      writeChatStreamEvent(res, {
+        type: "done",
+        taskId: result.taskId,
+        runId: result.runId,
+        sessionKey: result.sessionKey,
+        source: result.source,
+        status: result.status,
+        output: result.output,
+        error: result.error,
+        usage: result.usage,
+        updatedAt: result.updatedAt
+      }, () => closed);
+      res.end();
+    } catch (error) {
+      writeChatStreamEvent(res, {
+        type: "error",
+        message: error instanceof Error ? error.message : "Chat request failed."
+      }, () => closed);
+      res.end();
+    }
+  });
+
   router.post("/api/blueprint-runs/:runId/approve", async (req, res, next) => {
     try {
       const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
@@ -443,6 +557,161 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   });
 
   return router;
+}
+
+function normalizeChatRequest(value: unknown): SendChatMessageRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Chat request must be a JSON object.");
+  }
+
+  const harnessId = readOptionalString(value.harnessId);
+  if (harnessId !== "openclaw" && harnessId !== "claudeCode" && harnessId !== "codex") {
+    throw new Error("Chat harnessId must be openclaw, claudeCode, or codex.");
+  }
+
+  const mode = readOptionalString(value.mode) ?? "chat";
+  if (mode !== "chat" && mode !== "build_blueprint" && mode !== "drawing") {
+    throw new Error("Chat mode must be chat, build_blueprint, or drawing.");
+  }
+
+  const thinkingEffort = readOptionalString(value.thinkingEffort) ?? "medium";
+  if (thinkingEffort !== "low" && thinkingEffort !== "medium" && thinkingEffort !== "high" && thinkingEffort !== "xhigh") {
+    throw new Error("Chat thinkingEffort must be low, medium, high, or xhigh.");
+  }
+
+  const message = readOptionalString(value.message) ?? "";
+  const attachments = normalizeChatAttachments(value.attachments);
+  if (!message.trim() && attachments.length === 0) {
+    throw new Error("Chat message or attachment is required.");
+  }
+
+  return {
+    harnessId,
+    mode,
+    message: message.slice(0, maxChatMessageChars),
+    history: normalizeChatHistory(value.history),
+    attachments,
+    modelId: readOptionalString(value.modelId),
+    agentId: readOptionalString(value.agentId),
+    thinkingEffort,
+    showToolCalls: value.showToolCalls === true
+  };
+}
+
+function normalizeChatHistory(value: unknown): SendChatMessageRequest["history"] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(-12).flatMap((item) => {
+    if (!isPlainRecord(item)) return [];
+    const role = readOptionalString(item.role);
+    const content = readOptionalString(item.content);
+    if ((role !== "user" && role !== "assistant") || !content) return [];
+    return [{
+      id: readOptionalString(item.id) ?? `history-${nanoid(8)}`,
+      role,
+      content: content.slice(0, maxChatMessageChars),
+      createdAt: readOptionalString(item.createdAt) ?? new Date().toISOString(),
+      attachments: normalizeChatAttachments(item.attachments)
+    }];
+  });
+}
+
+function normalizeChatAttachments(value: unknown): SendChatMessageRequest["attachments"] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, maxChatAttachments).flatMap((item) => {
+    if (!isPlainRecord(item)) return [];
+    const name = readOptionalString(item.name);
+    if (!name) return [];
+    const size = typeof item.size === "number" && Number.isFinite(item.size) ? Math.max(0, item.size) : 0;
+    const text = readOptionalString(item.text);
+    return [{
+      id: readOptionalString(item.id) ?? `attachment-${nanoid(8)}`,
+      name: name.slice(0, 180),
+      mediaType: readOptionalString(item.mediaType) ?? "application/octet-stream",
+      size,
+      text: text?.slice(0, maxChatAttachmentTextChars),
+      truncated: item.truncated === true || Boolean(text && text.length > maxChatAttachmentTextChars)
+    }];
+  });
+}
+
+function buildChatPrompt(input: SendChatMessageRequest): string {
+  return [
+    "You are Hiveward Chat, a company-scoped operator chat surface inside Hiveward.",
+    "Use the selected OpenClaw harness and answer the user directly.",
+    "Keep Hiveward product boundaries intact: Hiveward owns blueprints and local display state; OpenClaw owns runtime execution, agents, tools, sessions, transcripts, and usage facts.",
+    formatChatModeInstruction(input.mode),
+    `Thinking effort requested by the user: ${input.thinkingEffort}.`,
+    input.showToolCalls ? "When you use tools, make tool calls and runtime references visible in the answer." : "Do not narrate tool calls unless they materially affect the answer.",
+    "",
+    "Recent conversation:",
+    formatChatHistory(input.history),
+    "",
+    "Uploaded files:",
+    formatChatAttachments(input.attachments),
+    "",
+    "Current user message:",
+    input.message.trim() || "(No text message; use the uploaded files.)"
+  ].join("\n");
+}
+
+function formatChatModeInstruction(mode: SendChatMessageRequest["mode"]): string {
+  if (mode === "build_blueprint") {
+    return "Mode: build a blueprint. Help the user turn intent into a Hiveward blueprint shape with nodes, handoffs, required agent identities, model needs, tools, and verification. Do not claim you changed stored blueprints unless an explicit blueprint-writing skill or API does that work.";
+  }
+  if (mode === "drawing") {
+    return "Mode: drawing. Help the user specify image generation or visual output requirements clearly, including subject, composition, style, dimensions, and acceptance criteria. Do not claim an image was generated unless a real image tool returns one.";
+  }
+  return "Mode: chat. Answer normally and ask only when missing information blocks a useful answer.";
+}
+
+function formatChatHistory(history: SendChatMessageRequest["history"]): string {
+  if (history.length === 0) return "No prior messages.";
+  return history
+    .map((message) => {
+      const attachmentNames = message.attachments?.length
+        ? `\nAttachments: ${message.attachments.map((attachment) => attachment.name).join(", ")}`
+        : "";
+      return `### ${message.role}\n${message.content}${attachmentNames}`;
+    })
+    .join("\n\n");
+}
+
+function formatChatAttachments(attachments: SendChatMessageRequest["attachments"]): string {
+  if (attachments.length === 0) return "No uploaded files.";
+  return attachments
+    .map((attachment, index) => {
+      const body = attachment.text
+        ? ["", "Content preview:", "<<<BEGIN FILE>>>", attachment.text, "<<<END FILE>>>"].join("\n")
+        : "\nContent preview: unavailable or binary file.";
+      return [
+        `### ${index + 1}. ${attachment.name}`,
+        `mediaType: ${attachment.mediaType}`,
+        `size: ${attachment.size}`,
+        `truncated: ${attachment.truncated === true ? "true" : "false"}`,
+        body
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+function writeChatStreamEvent(
+  res: Response,
+  event: ChatStreamEvent,
+  isClosed: () => boolean
+): boolean {
+  if (isClosed()) return false;
+  res.write(`event: ${event.type}\n`);
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  return !isClosed();
+}
+
+function chunkText(value: string, size: number): string[] {
+  if (!value) return [];
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += size) {
+    chunks.push(value.slice(index, index + size));
+  }
+  return chunks;
 }
 
 function buildHarnessStatuses(
@@ -752,6 +1021,18 @@ function readEnvString(env: NodeJS.ProcessEnv, name: string): string | undefined
   const value = env[name]?.trim();
   return value || undefined;
 }
+
+function readOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+const maxChatMessageChars = 40_000;
+const maxChatAttachments = 6;
+const maxChatAttachmentTextChars = 24_000;
 
 async function refreshCatalog(adapter: RuntimeAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();

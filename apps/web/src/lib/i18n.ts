@@ -388,6 +388,7 @@ export const messages: Record<Language, Messages> = {
     },
     navigation: {
       company: "Company",
+      chat: "Chat",
       blueprint: "Blueprint",
       runs: "Runs",
       approvals: "Inbox",
@@ -417,6 +418,10 @@ export const messages: Record<Language, Messages> = {
       company: {
         title: "Company Context",
         description: "Switch the active company, inspect company-level usage, and keep blueprint data scoped to a single operator context."
+      },
+      chat: {
+        title: "Chat",
+        description: "Talk to configured harness agents with model, mode, thinking, attachments, and runtime evidence controls."
       },
       blueprint: {
         title: "Blueprint Studio",
@@ -732,6 +737,10 @@ export const messages: Record<Language, Messages> = {
       company: {
         title: "公司上下文",
         description: "切换当前公司、查看公司级用量，并在同一页面维护总览卡片。"
+      },
+      chat: {
+        title: "\u804a\u5929",
+        description: "\u9009\u62e9 Harness\u3001Agent\u3001\u6a21\u578b\u548c\u6a21\u5f0f\uff0c\u4e0e\u8fd0\u884c\u65b9\u5b98\u65b9\u63a5\u53e3\u5bf9\u8bdd\u3002"
       },
       blueprint: {
         title: "\u84dd\u56fe\u6307\u6325\u53f0",

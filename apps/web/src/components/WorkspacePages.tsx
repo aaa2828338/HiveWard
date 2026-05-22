@@ -440,7 +440,7 @@ export function RunsPage({
         : [],
     [runs, blueprint]
   );
-  const activeRun = blueprintRuns.find((runView) => runView.run.id === selectedRunId) ?? blueprintRuns[0];
+  const activeRun = selectedRunId ? blueprintRuns.find((runView) => runView.run.id === selectedRunId) : undefined;
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
   const [blueprintPickerOpen, setBlueprintPickerOpen] = useState(false);
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
@@ -677,6 +677,8 @@ export function RunsPage({
               ) : (
                 <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
               )
+            ) : !blueprint ? (
+              <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
             ) : activeRun ? (
               <div className="empty-state page-empty">{t.empty.selectNode}</div>
             ) : (

@@ -204,6 +204,39 @@ describe("apiRouter", () => {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
+
+  it("streams OpenClaw chat responses through the runtime adapter", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            mode: "chat",
+            message: "Say hello from chat.",
+            history: [],
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            showToolCalls: true
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/event-stream");
+        expect(text).toContain("event: started");
+        expect(text).toContain("event: delta");
+        expect(text).toContain("event: done");
+        expect(text).toContain("hiveward-chat completed through OpenClaw adapter");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardStore }> {

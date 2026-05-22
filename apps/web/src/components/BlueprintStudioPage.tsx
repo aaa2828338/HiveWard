@@ -95,7 +95,7 @@ type BlueprintCanvasWorld = {
 };
 
 const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
-const canvasWorldScreenScale = 3;
+const canvasWorldScreenScale = 9;
 const nodeMenuPopoverWidth = 146;
 const nodeMenuViewportMargin = 12;
 

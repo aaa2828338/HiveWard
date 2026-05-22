@@ -1,5 +1,6 @@
 export type AppNavSectionId =
   | "company"
+  | "chat"
   | "blueprint"
   | "runs"
   | "approvals"
@@ -24,7 +25,7 @@ export type AppSectionGroup = {
 export const appSectionGroups = [
   {
     id: "hiveward",
-    sections: ["company", "blueprint", "runs", "approvals", "schedule"]
+    sections: ["company", "chat", "blueprint", "runs", "approvals", "schedule"]
   },
   {
     id: "openclaw",

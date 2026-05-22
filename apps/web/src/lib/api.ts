@@ -30,6 +30,8 @@ import type {
   RuntimeOverviewResponse,
   SaveBlueprintRequest,
   SelectCompanyRequest,
+  SendChatMessageRequest,
+  ChatStreamEvent,
   StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
@@ -42,6 +44,10 @@ import type {
 } from "@hiveward/shared";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+
+export interface ChatStreamHandlers {
+  onEvent: (event: ChatStreamEvent) => void;
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -62,6 +68,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  async streamChat(input: SendChatMessageRequest, handlers: ChatStreamHandlers): Promise<void> {
+    const response = await fetch(`${apiBaseUrl}/api/chat/stream`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(input)
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      const message = body?.error?.message ?? `Request failed: ${response.status}`;
+      throw new Error(message);
+    }
+
+    if (!response.body) {
+      throw new Error("Chat stream response did not include a body.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = consumeChatStreamBuffer(buffer, handlers);
+    }
+
+    buffer += decoder.decode();
+    consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
+  },
+
   async getOpenClawConfig(): Promise<OpenClawConfigState> {
     const response = await request<OpenClawConfigResponse>("/api/openclaw-config");
     return response.config;
@@ -256,3 +296,23 @@ export const api = {
     return response.runtime;
   }
 };
+
+function consumeChatStreamBuffer(buffer: string, handlers: ChatStreamHandlers): string {
+  const frames = buffer.split(/\n\n/);
+  const remainder = frames.pop() ?? "";
+  for (const frame of frames) {
+    const event = readChatStreamFrame(frame);
+    if (event) handlers.onEvent(event);
+  }
+  return remainder;
+}
+
+function readChatStreamFrame(frame: string): ChatStreamEvent | undefined {
+  const data = frame
+    .split(/\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (!data) return undefined;
+  return JSON.parse(data) as ChatStreamEvent;
+}

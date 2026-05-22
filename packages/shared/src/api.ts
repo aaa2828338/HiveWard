@@ -1,10 +1,13 @@
 import type { CatalogSnapshot } from "./catalog";
 import type { CompanyOverview } from "./company";
 import type {
+  OpenClawExecutionStatus,
   OpenClawConfigState,
   OpenClawModelUsageSummary,
+  OpenClawObjectSource,
   OpenClawSessionSummary,
   OpenClawTaskSummary,
+  OpenClawUsageFact,
   OpenClawVersionInfo
 } from "./openclaw";
 import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
@@ -121,6 +124,70 @@ export interface HarnessStatus {
 export interface HarnessStatusResponse {
   statuses: HarnessStatus[];
 }
+
+export type ChatMode = "chat" | "build_blueprint" | "drawing";
+
+export type ChatThinkingEffort = "low" | "medium" | "high" | "xhigh";
+
+export interface ChatAttachment {
+  id: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  text?: string;
+  truncated?: boolean;
+}
+
+export interface ChatHistoryMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  attachments?: ChatAttachment[];
+}
+
+export interface SendChatMessageRequest {
+  harnessId: HarnessId;
+  mode: ChatMode;
+  message: string;
+  history: ChatHistoryMessage[];
+  attachments: ChatAttachment[];
+  modelId?: string;
+  agentId?: string;
+  thinkingEffort: ChatThinkingEffort;
+  showToolCalls?: boolean;
+}
+
+export type ChatStreamEvent =
+  | {
+      type: "started";
+      taskId: string;
+      runId: string;
+      sessionKey: string;
+      source: OpenClawObjectSource;
+      status: OpenClawExecutionStatus;
+      updatedAt: string;
+    }
+  | {
+      type: "delta";
+      text: string;
+    }
+  | {
+      type: "done";
+      taskId: string;
+      runId: string;
+      sessionKey: string;
+      source: OpenClawObjectSource;
+      status: OpenClawExecutionStatus;
+      output?: string;
+      error?: string;
+      usage?: OpenClawUsageFact;
+      updatedAt: string;
+    }
+  | {
+      type: "error";
+      message: string;
+    };
 
 export interface OpenClawConfigResponse {
   config: OpenClawConfigState;
