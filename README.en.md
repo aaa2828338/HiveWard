@@ -7,9 +7,7 @@
   </picture>
 </p>
 
-<p align="center">
-  <strong>Put 101 agents to work together for you.</strong>
-</p>
+<h2 align="center">Put 101 agents to work together for you.</h2>
 
 <p align="center">
   An open-source Agent Company workspace that organizes models, agents, blueprints, approvals, runs, and history into one managed operating system.

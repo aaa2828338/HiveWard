@@ -7,9 +7,7 @@
   </picture>
 </p>
 
-<p align="center">
-  <strong>让101个Agent合作为你打工</strong>
-</p>
+<h2 align="center">让101个Agent合作为你打工</h2>
 
 <p align="center">
   开源的 Agent Company 工作台。把模型、Agent、蓝图、审批、运行和历史组织成一个可管理的数字公司。
