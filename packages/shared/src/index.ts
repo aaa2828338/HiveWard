@@ -6,3 +6,4 @@ export * from "./workspace";
 export * from "./company";
 export * from "./roles";
 export * from "./inboxSubmission";
+export * from "./roleSkills";

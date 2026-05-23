@@ -32,6 +32,7 @@ const commandName = "hiveward";
 const defaultRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard.git";
 const defaultRegistryUrl = "https://registry.npmjs.org";
 const defaultInstallRef = "main";
+const defaultHivewardPort = 10101;
 const cliPackage = readCliPackageJson();
 
 async function main(): Promise<void> {
@@ -94,15 +95,17 @@ async function setupCommand(options: Record<string, string | boolean>): Promise<
 
 function startCommand(options: Record<string, string | boolean>): void {
   const installDir = resolveHivewardAppDir(options);
+  const port = resolveHivewardPort(options);
   assertHivewardCheckout(installDir);
 
   console.log(`${productName} starting from ${installDir}`);
-  console.log("Local URL: http://localhost:5173");
-  spawnLongRunning("npm", ["run", "dev"], installDir);
+  console.log(`Local URL: http://localhost:${port}`);
+  spawnLongRunning("npm", ["run", "dev"], installDir, { HIVEWARD_PORT: String(port) });
 }
 
 async function doctorCommand(options: Record<string, string | boolean>): Promise<void> {
   const installDir = resolveHivewardAppDir(options);
+  const port = resolveHivewardPort(options);
   const npmVersion = readCommandOutput("npm", ["-v"]);
   const checks: DoctorCheck[] = [
     {
@@ -132,11 +135,11 @@ async function doctorCommand(options: Record<string, string | boolean>): Promise
     }
   ];
 
-  const port5173Available = await isPortAvailable(5173);
+  const hivewardPortAvailable = await isPortAvailable(port);
   checks.push({
-    label: "Port 5173",
-    status: port5173Available ? "pass" : "warn",
-    detail: port5173Available ? "available" : "already in use; Hiveward may already be running"
+    label: `Port ${port}`,
+    status: hivewardPortAvailable ? "pass" : "warn",
+    detail: hivewardPortAvailable ? "available" : "already in use; Hiveward may already be running"
   });
 
   printDoctorChecks(checks);
@@ -213,13 +216,16 @@ function printHelp(): void {
 
 Usage:
   hiveward setup [--install-dir <path>] [--from <git-url>] [--ref <git-ref>] [--skip-install]
-  hiveward start [--install-dir <path>]
-  hiveward doctor [--install-dir <path>]
+  hiveward start [--install-dir <path>] [--port <port>]
+  hiveward doctor [--install-dir <path>] [--port <port>]
   hiveward update [--registry <url>] [--tag <npm-dist-tag>] [--apply]
   hiveward --version
 
 Default install directory:
   ${defaultAppDir()}
+
+Default local URL:
+  http://localhost:${defaultHivewardPort}
 `);
 }
 
@@ -237,6 +243,24 @@ function resolveHivewardAppDir(options: Record<string, string | boolean>): strin
 
   const localRoot = findHivewardRoot(process.cwd());
   return localRoot ?? defaultAppDir();
+}
+
+function resolveHivewardPort(options: Record<string, string | boolean>): number {
+  return (
+    readPortValue(readStringOption(options, "port"), "--port") ??
+    readPortValue(process.env.HIVEWARD_PORT, "HIVEWARD_PORT") ??
+    defaultHivewardPort
+  );
+}
+
+function readPortValue(value: string | undefined, label: string): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const port = Number(trimmed);
+  if (Number.isInteger(port) && port >= 1 && port <= 65535) return port;
+
+  throw new Error(`${label} must be an integer from 1 to 65535. Received: ${trimmed}`);
 }
 
 function findHivewardRoot(startDir: string): string | undefined {
@@ -319,11 +343,12 @@ function runCommand(
   });
 }
 
-function spawnLongRunning(command: string, args: string[], cwd: string): void {
+function spawnLongRunning(command: string, args: string[], cwd: string, env: Record<string, string> = {}): void {
+  const childEnv = { ...process.env, ...env };
   const child =
     process.platform === "win32"
-      ? spawn("cmd.exe", ["/d", "/s", "/c", shellCommand(command, args)], { cwd, stdio: "inherit" })
-      : spawn(command, args, { cwd, stdio: "inherit" });
+      ? spawn("cmd.exe", ["/d", "/s", "/c", shellCommand(command, args)], { cwd, env: childEnv, stdio: "inherit" })
+      : spawn(command, args, { cwd, env: childEnv, stdio: "inherit" });
 
   child.on("exit", (code) => {
     process.exit(code ?? 1);
@@ -380,7 +405,7 @@ async function isPortAvailable(port: number): Promise<boolean> {
     server.once("listening", () => {
       server.close(() => resolvePort(true));
     });
-    server.listen(port, "127.0.0.1");
+    server.listen(port, "0.0.0.0");
   });
 }
 

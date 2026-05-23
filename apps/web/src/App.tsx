@@ -26,6 +26,9 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   DashboardWidgetType,
+  HarnessId,
+  HarnessSkillInstallStatus,
+  HarnessSkillStatusResponse,
   HarnessStatus,
   ArchitectureBlueprintView,
   CompanyRoleDirectory,
@@ -87,6 +90,7 @@ const systemLabels: Record<AppSystemId, string> = {
 const RUN_POLL_INTERVAL_MS = 2500;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
+const harnessSkillHarnessIds: HarnessId[] = ["openclaw", "claudeCode", "codex"];
 
 type AppTheme = "light" | "dark";
 
@@ -122,6 +126,13 @@ type OpenClawPanelCopy = {
   lastChecked: string;
   checkUpdates: string;
   checking: string;
+  skills: string;
+  skillsReady: string;
+  skillsMissing: string;
+  skillsUnsupported: string;
+  installSkills: string;
+  installingSkills: string;
+  skillStatus: Record<HarnessSkillInstallStatus, string>;
 };
 
 export function App() {
@@ -138,6 +149,7 @@ export function App() {
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
+  const [harnessSkillStatuses, setHarnessSkillStatuses] = useState<Partial<Record<HarnessId, HarnessSkillStatusResponse>>>({});
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
@@ -239,6 +251,7 @@ export function App() {
         nextOpenClawWizard,
         nextOpenClawModelUsage,
         nextHarnessStatuses,
+        nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
         nextRoles,
@@ -253,6 +266,7 @@ export function App() {
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
         api.getHarnessStatus().catch(() => []),
+        loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
         api.getRoleDirectory().catch(() => undefined),
@@ -273,6 +287,7 @@ export function App() {
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
       setHarnessStatuses(nextHarnessStatuses);
+      setHarnessSkillStatuses(nextHarnessSkillStatuses);
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
@@ -357,7 +372,20 @@ export function App() {
             catalogRefreshed: "\u76ee\u5f55\u5237\u65b0",
             lastChecked: "\u6700\u540e\u68c0\u67e5",
             checkUpdates: "\u68c0\u67e5\u66f4\u65b0",
-            checking: "\u68c0\u67e5\u4e2d"
+            checking: "\u68c0\u67e5\u4e2d",
+            skills: "HiveWard Skill",
+            skillsReady: "CEO / Leader \u6267\u884c\u624b\u518c\u5df2\u5b89\u88c5\uff0c\u804a\u5929\u65f6\u53ea\u9700\u77ed\u8eab\u4efd\u63d0\u793a\u5e76\u8c03\u7528 Harness \u539f\u751f skill\u3002",
+            skillsMissing: "\u9700\u8981\u5b89\u88c5 HiveWard CEO / Leader skill\uff0c\u624d\u80fd\u8ba9 Harness \u539f\u751f\u8bfb\u53d6\u5e73\u53f0\u6267\u884c\u624b\u518c\u3002",
+            skillsUnsupported: "\u8be5 Harness \u6682\u672a\u63a5\u5165\u539f\u751f skill \u5b89\u88c5\u3002",
+            installSkills: "\u4e00\u952e\u5b89\u88c5",
+            installingSkills: "\u5b89\u88c5\u4e2d",
+            skillStatus: {
+              installed: "\u5df2\u5b89\u88c5",
+              missing: "\u672a\u5b89\u88c5",
+              stale: "\u9700\u66f4\u65b0",
+              unsupported: "\u672a\u652f\u6301",
+              error: "\u5f02\u5e38"
+            }
           }
         : {
             title: "OpenClaw Control Panel",
@@ -390,7 +418,20 @@ export function App() {
             catalogRefreshed: "Catalog refreshed",
             lastChecked: "Last checked",
             checkUpdates: "Check updates",
-            checking: "Checking"
+            checking: "Checking",
+            skills: "HiveWard Skills",
+            skillsReady: "CEO / Leader operating skills are installed, so chat can send a short role prompt and let the harness load native skills.",
+            skillsMissing: "Install HiveWard CEO / Leader skills so the harness can natively read the platform operating manual.",
+            skillsUnsupported: "This harness does not have native skill installation wired yet.",
+            installSkills: "Install skills",
+            installingSkills: "Installing",
+            skillStatus: {
+              installed: "Installed",
+              missing: "Missing",
+              stale: "Update needed",
+              unsupported: "Unsupported",
+              error: "Error"
+            }
           },
     [language]
   );
@@ -414,6 +455,9 @@ export function App() {
     .filter(Boolean)
     .join(" / ") || openClawPanelUi.notConfigured;
   const openClawPanelBusy = busyAction === "checkOpenClawUpdates";
+  const installingOpenClawSkills = busyAction === "installHarnessSkills:openclaw";
+  const installingClaudeCodeSkills = busyAction === "installHarnessSkills:claudeCode";
+  const installingCodexSkills = busyAction === "installHarnessSkills:codex";
   const openClawHarnessStatus = harnessStatuses.find((status) => status.id === "openclaw");
   const claudeCodeHarnessStatus = harnessStatuses.find((status) => status.id === "claudeCode");
   const codexHarnessStatus = harnessStatuses.find((status) => status.id === "codex");
@@ -605,17 +649,19 @@ export function App() {
   const refreshCatalog = useCallback(
     () =>
       withBusy("refreshCatalog", async () => {
-        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextRuntime] = await Promise.all([
+        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextHarnessSkillStatuses, nextRuntime] = await Promise.all([
           api.refreshCatalog(),
           api.getOpenClawConfig(),
           api.getOpenClawModelUsage().catch(() => []),
           api.getHarnessStatus().catch(() => []),
+          loadHarnessSkillStatuses(),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setCatalog(nextCatalog);
         setOpenClawConfig(nextOpenClawConfig);
         setOpenClawModelUsage(nextOpenClawModelUsage);
         setHarnessStatuses(nextHarnessStatuses);
+        setHarnessSkillStatuses(nextHarnessSkillStatuses);
         setRuntime(nextRuntime);
       }),
     [withBusy]
@@ -624,12 +670,13 @@ export function App() {
   const checkOpenClawUpdates = useCallback(
     () =>
       withBusy("checkOpenClawUpdates", async () => {
-        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextRuntime] = await Promise.all([
+        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextHarnessSkillStatuses, nextRuntime] = await Promise.all([
           api.getOpenClawVersion(),
           api.refreshCatalog(),
           api.getOpenClawConfig(),
           api.getOpenClawModelUsage().catch(() => []),
           api.getHarnessStatus().catch(() => []),
+          loadHarnessSkillStatuses(),
           api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
         ]);
         setOpenClawVersion(nextOpenClawVersion);
@@ -637,6 +684,7 @@ export function App() {
         setOpenClawConfig(nextOpenClawConfig);
         setOpenClawModelUsage(nextOpenClawModelUsage);
         setHarnessStatuses(nextHarnessStatuses);
+        setHarnessSkillStatuses(nextHarnessSkillStatuses);
         setRuntime(nextRuntime);
       }),
     [withBusy]
@@ -645,9 +693,35 @@ export function App() {
   const refreshHarnessStatus = useCallback(
     () =>
       withBusy("refreshHarnessStatus", async () => {
-        setHarnessStatuses(await api.getHarnessStatus());
+        const [nextHarnessStatuses, nextHarnessSkillStatuses] = await Promise.all([
+          api.getHarnessStatus(),
+          loadHarnessSkillStatuses()
+        ]);
+        setHarnessStatuses(nextHarnessStatuses);
+        setHarnessSkillStatuses(nextHarnessSkillStatuses);
       }),
     [withBusy]
+  );
+
+  const installHarnessSkills = useCallback(
+    (harnessId: HarnessId) => {
+      void withBusy(`installHarnessSkills:${harnessId}`, async () => {
+        const nextSkillStatus = await api.installHarnessSkills(harnessId);
+        setHarnessSkillStatuses((current) => ({
+          ...current,
+          [harnessId]: nextSkillStatus
+        }));
+        if (harnessId === "openclaw") {
+          const [nextCatalog, nextHarnessStatuses] = await Promise.all([
+            api.refreshCatalog().catch(() => catalog),
+            api.getHarnessStatus().catch(() => harnessStatuses)
+          ]);
+          if (nextCatalog) setCatalog(nextCatalog);
+          setHarnessStatuses(nextHarnessStatuses);
+        }
+      });
+    },
+    [catalog, harnessStatuses, withBusy]
   );
 
   const addOpenClawAgent = useCallback(
@@ -957,7 +1031,10 @@ export function App() {
           gatewayAuthLabel={gatewayAuthLabel}
           harnessStatus={openClawHarnessStatus}
           busy={openClawPanelBusy}
+          skillStatus={harnessSkillStatuses.openclaw}
+          skillBusy={installingOpenClawSkills}
           onCheckUpdates={checkOpenClawUpdates}
+          onInstallSkills={() => installHarnessSkills("openclaw")}
         />
       );
     }
@@ -1061,7 +1138,10 @@ export function App() {
           fallbackLabel="Claude code"
           language={language}
           busy={busyAction === "refreshHarnessStatus"}
+          skillStatus={harnessSkillStatuses.claudeCode}
+          skillBusy={installingClaudeCodeSkills}
           onRefresh={refreshHarnessStatus}
+          onInstallSkills={() => installHarnessSkills("claudeCode")}
         />
       );
     }
@@ -1074,7 +1154,10 @@ export function App() {
           fallbackLabel="Codex"
           language={language}
           busy={busyAction === "refreshHarnessStatus"}
+          skillStatus={harnessSkillStatuses.codex}
+          skillBusy={installingCodexSkills}
           onRefresh={refreshHarnessStatus}
+          onInstallSkills={() => installHarnessSkills("codex")}
         />
       );
     }
@@ -1274,7 +1357,10 @@ function OpenClawControlPanelPage({
   gatewayAuthLabel,
   harnessStatus,
   busy,
-  onCheckUpdates
+  skillStatus,
+  skillBusy,
+  onCheckUpdates,
+  onInstallSkills
 }: {
   ui: OpenClawPanelCopy;
   language: Language;
@@ -1290,7 +1376,10 @@ function OpenClawControlPanelPage({
   gatewayAuthLabel: string;
   harnessStatus?: HarnessStatus;
   busy: boolean;
+  skillStatus?: HarnessSkillStatusResponse;
+  skillBusy: boolean;
   onCheckUpdates: () => void;
+  onInstallSkills: () => void;
 }) {
   return (
     <section id="openclaw-control-panel" className="page-grid openclaw-control-page">
@@ -1352,6 +1441,14 @@ function OpenClawControlPanelPage({
           <OpenClawPanelRow label={ui.lastChecked} value={formatDateTimeLabel(openClawVersion?.resolvedAt, language, ui.none)} />
         </div>
       </div>
+
+      <HarnessSkillsCard
+        ui={ui}
+        skillStatus={skillStatus}
+        language={language}
+        busy={skillBusy}
+        onInstallSkills={onInstallSkills}
+      />
     </section>
   );
 }
@@ -1363,7 +1460,10 @@ function HarnessConfigPage({
   fallbackLabel,
   language,
   busy,
-  onRefresh
+  skillStatus,
+  skillBusy,
+  onRefresh,
+  onInstallSkills
 }: {
   title: string;
   description: string;
@@ -1371,9 +1471,13 @@ function HarnessConfigPage({
   fallbackLabel: string;
   language: Language;
   busy: boolean;
+  skillStatus?: HarnessSkillStatusResponse;
+  skillBusy: boolean;
   onRefresh: () => void;
+  onInstallSkills: () => void;
 }) {
   const copy = harnessStatusCopy(language);
+  const skillUi = openClawPanelSkillCopy(language);
   const connectionState = status?.connectionState ?? "unavailable";
   const healthy = connectionState === "connected" || connectionState === "available";
   return (
@@ -1396,8 +1500,111 @@ function HarnessConfigPage({
       </div>
 
       <HarnessStatusBlock status={status} language={language} fallbackLabel={fallbackLabel} />
+
+      <HarnessSkillsCard
+        ui={skillUi}
+        skillStatus={skillStatus}
+        language={language}
+        busy={skillBusy}
+        onInstallSkills={onInstallSkills}
+      />
     </section>
   );
+}
+
+type HarnessSkillsCardCopy = Pick<
+  OpenClawPanelCopy,
+  "skills" | "skillsReady" | "skillsMissing" | "skillsUnsupported" | "installSkills" | "installingSkills" | "skillStatus"
+>;
+
+function HarnessSkillsCard({
+  ui,
+  skillStatus,
+  language,
+  busy,
+  onInstallSkills
+}: {
+  ui: HarnessSkillsCardCopy;
+  skillStatus?: HarnessSkillStatusResponse;
+  language: Language;
+  busy: boolean;
+  onInstallSkills: () => void;
+}) {
+  const supported = Boolean(skillStatus?.supported);
+  const skills = skillStatus?.skills ?? [];
+  const installed = supported && skills.length > 0 && skills.every((skill) => skill.status === "installed");
+  const description = !supported ? ui.skillsUnsupported : installed ? ui.skillsReady : ui.skillsMissing;
+  return (
+    <div className="content-card stack-card openclaw-control-section harness-skills-card">
+      <div className="card-title-block harness-skills-card-head">
+        <div>
+          <h3>{ui.skills}</h3>
+          <p>{description}</p>
+        </div>
+        <button type="button" onClick={onInstallSkills} disabled={busy || !supported} title={ui.installSkills}>
+          <Puzzle size={14} className={busy ? "spin" : undefined} />
+          {busy ? ui.installingSkills : ui.installSkills}
+        </button>
+      </div>
+
+      {skills.length ? (
+        skills.map((skill) => (
+          <OpenClawPanelRow
+            key={skill.id}
+            label={skill.label}
+            value={
+              <span className="harness-check-value">
+                <span className={`status-pill ${statusClassForHarnessSkill(skill.status)}`}>{ui.skillStatus[skill.status]}</span>
+                <span>{skill.targetPath ?? skill.sourcePath}</span>
+              </span>
+            }
+          />
+        ))
+      ) : (
+        <div className="empty-state page-empty">{language === "zh-CN" ? "\u5c1a\u672a\u83b7\u53d6 skill \u72b6\u6001\u3002" : "Skill status has not been loaded."}</div>
+      )}
+    </div>
+  );
+}
+
+function openClawPanelSkillCopy(language: Language): HarnessSkillsCardCopy {
+  return language === "zh-CN"
+    ? {
+        skills: "HiveWard Skill",
+        skillsReady: "CEO / Leader \u6267\u884c\u624b\u518c\u5df2\u5b89\u88c5\uff0c\u804a\u5929\u65f6\u53ea\u9700\u77ed\u8eab\u4efd\u63d0\u793a\u5e76\u8c03\u7528 Harness \u539f\u751f skill\u3002",
+        skillsMissing: "\u9700\u8981\u5b89\u88c5 HiveWard CEO / Leader skill\uff0c\u624d\u80fd\u8ba9 Harness \u539f\u751f\u8bfb\u53d6\u5e73\u53f0\u6267\u884c\u624b\u518c\u3002",
+        skillsUnsupported: "\u8be5 Harness \u6682\u672a\u63a5\u5165\u539f\u751f skill \u5b89\u88c5\u3002",
+        installSkills: "\u4e00\u952e\u5b89\u88c5",
+        installingSkills: "\u5b89\u88c5\u4e2d",
+        skillStatus: {
+          installed: "\u5df2\u5b89\u88c5",
+          missing: "\u672a\u5b89\u88c5",
+          stale: "\u9700\u66f4\u65b0",
+          unsupported: "\u672a\u652f\u6301",
+          error: "\u5f02\u5e38"
+        }
+      }
+    : {
+        skills: "HiveWard Skills",
+        skillsReady: "CEO / Leader operating skills are installed, so chat can send a short role prompt and let the harness load native skills.",
+        skillsMissing: "Install HiveWard CEO / Leader skills so the harness can natively read the platform operating manual.",
+        skillsUnsupported: "This harness does not have native skill installation wired yet.",
+        installSkills: "Install skills",
+        installingSkills: "Installing",
+        skillStatus: {
+          installed: "Installed",
+          missing: "Missing",
+          stale: "Update needed",
+          unsupported: "Unsupported",
+          error: "Error"
+        }
+      };
+}
+
+function statusClassForHarnessSkill(status: HarnessSkillInstallStatus): string {
+  if (status === "installed") return "status-succeeded";
+  if (status === "stale" || status === "missing") return "status-running";
+  return "status-failed";
 }
 
 function HarnessStatusBlock({
@@ -1588,6 +1795,23 @@ function formatDateTimeLabel(value: string | undefined, language: Language, fall
     dateStyle: "medium",
     timeStyle: "short"
   }).format(date);
+}
+
+async function loadHarnessSkillStatuses(): Promise<Partial<Record<HarnessId, HarnessSkillStatusResponse>>> {
+  const entries = await Promise.all(
+    harnessSkillHarnessIds.map(async (harnessId) => {
+      try {
+        return [harnessId, await api.getHarnessSkillStatus(harnessId)] as const;
+      } catch {
+        return [harnessId, undefined] as const;
+      }
+    })
+  );
+  const statuses: Partial<Record<HarnessId, HarnessSkillStatusResponse>> = {};
+  for (const [harnessId, status] of entries) {
+    if (status) statuses[harnessId] = status;
+  }
+  return statuses;
 }
 
 function emptyRuntimeOverview(): RuntimeOverview {

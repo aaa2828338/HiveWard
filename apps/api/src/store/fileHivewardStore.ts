@@ -21,7 +21,8 @@ import type {
   BlueprintRun,
   BlueprintRunArchive,
   BlueprintRunSummary,
-  BlueprintRunView
+  BlueprintRunView,
+  RoleDriverBinding
 } from "@hiveward/shared";
 import {
   blueprintRunArchiveSchema,
@@ -1045,15 +1046,26 @@ function buildRoleDirectory(
 ): CompanyRoleDirectory {
   const company = index.companies.find((candidate) => candidate.id === companyId);
   const existingCeo = rawDirectory?.ceo;
+  const previousDriverBindings = Array.isArray(rawDirectory?.driverBindings) ? rawDirectory.driverBindings : [];
+  const ceoId = existingCeo?.id || "ceo";
+  const ceoLabel = existingCeo?.label || "CEO";
+  const driverBindings: RoleDriverBinding[] = [];
+  const ceoDriverBinding = buildRoleDriverBinding({
+    companyId,
+    roleId: ceoId,
+    roleLabel: ceoLabel,
+    roleSource: existingCeo,
+    previousDriverBindings,
+    now
+  });
+  driverBindings.push(ceoDriverBinding);
   const ceo: CompanyRoleProfile = {
-    id: existingCeo?.id || "ceo",
+    id: ceoId,
     companyId,
     kind: "ceo",
-    label: existingCeo?.label || "CEO",
+    label: ceoLabel,
     description: existingCeo?.description || `Company-level command role for ${company?.name ?? companyId}.`,
-    defaultAgentId: existingCeo?.defaultAgentId,
-    modelId: existingCeo?.modelId,
-    workspacePath: existingCeo?.workspacePath,
+    defaultDriverBindingId: ceoDriverBinding.id,
     capabilities: ["read_company", "discuss", "delegate_leader", "submit_inbox"],
     instructions: existingCeo?.instructions,
     createdAt: existingCeo?.createdAt || now,
@@ -1068,16 +1080,25 @@ function buildRoleDirectory(
     const existing =
       previousLeaders.find((leader) => leader.blueprintId === blueprint.id) ??
       previousLeaders.find((leader) => leader.id === `leader-${safeRoleIdSegment(blueprint.id)}`);
+    const leaderId = existing?.id || `leader-${safeRoleIdSegment(blueprint.id)}`;
+    const leaderLabel = existing?.label || `${blueprint.name} Leader`;
+    const leaderDriverBinding = buildRoleDriverBinding({
+      companyId,
+      roleId: leaderId,
+      roleLabel: leaderLabel,
+      roleSource: existing,
+      previousDriverBindings,
+      now
+    });
+    driverBindings.push(leaderDriverBinding);
     return {
-      id: existing?.id || `leader-${safeRoleIdSegment(blueprint.id)}`,
+      id: leaderId,
       companyId,
       kind: "leader",
-      label: existing?.label || `${blueprint.name} Leader`,
+      label: leaderLabel,
       description: existing?.description || `Leader role bound to ${blueprint.name}.`,
       blueprintId: blueprint.id,
-      defaultAgentId: existing?.defaultAgentId,
-      modelId: existing?.modelId,
-      workspacePath: existing?.workspacePath,
+      defaultDriverBindingId: leaderDriverBinding.id,
       capabilities: ["read_blueprint", "discuss", "create_blueprint_proposal", "submit_inbox"],
       instructions: existing?.instructions,
       createdAt: existing?.createdAt || now,
@@ -1089,8 +1110,42 @@ function buildRoleDirectory(
     companyId,
     ceo,
     leaders,
+    driverBindings,
     updatedAt: now
   };
+}
+
+function buildRoleDriverBinding(input: {
+  companyId: string;
+  roleId: string;
+  roleLabel: string;
+  roleSource?: unknown;
+  previousDriverBindings: RoleDriverBinding[];
+  now: string;
+}): RoleDriverBinding {
+  const source = isRecord(input.roleSource) ? input.roleSource : {};
+  const requestedBindingId = readString(source.defaultDriverBindingId);
+  const existing =
+    (requestedBindingId ? input.previousDriverBindings.find((binding) => binding.id === requestedBindingId) : undefined) ??
+    input.previousDriverBindings.find((binding) => binding.roleId === input.roleId);
+  const id = existing?.id ?? requestedBindingId ?? `driver-${safeRoleIdSegment(input.roleId)}-default`;
+
+  return {
+    id,
+    companyId: input.companyId,
+    roleId: input.roleId,
+    harnessId: normalizeRoleDriverHarnessId(existing?.harnessId ?? source.harnessId),
+    label: existing?.label || `${input.roleLabel} default driver`,
+    agentId: existing?.agentId ?? readString(source.defaultAgentId),
+    modelId: existing?.modelId ?? readString(source.modelId),
+    workspacePath: existing?.workspacePath ?? readString(source.workspacePath),
+    createdAt: existing?.createdAt || input.now,
+    updatedAt: input.now
+  };
+}
+
+function normalizeRoleDriverHarnessId(value: unknown): RoleDriverBinding["harnessId"] {
+  return value === "codex" || value === "claude" || value === "openclaw" ? value : "openclaw";
 }
 
 function buildArchitectureBlueprintView(

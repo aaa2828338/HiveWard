@@ -18,8 +18,8 @@ npx @hiveward/cli start
 ## Commands
 
 - `hiveward setup`: prepares a local Hiveward checkout, installs npm dependencies, and runs the environment check.
-- `hiveward start`: starts Hiveward from the prepared checkout.
-- `hiveward doctor`: checks Node.js, npm, the install directory, dependencies, the environment template, and port `5173`.
+- `hiveward start`: starts Hiveward from the prepared checkout on `http://localhost:10101` by default. Use `--port <port>` or `HIVEWARD_PORT` to override it.
+- `hiveward doctor`: checks Node.js, npm, the install directory, dependencies, the environment template, and the configured Hiveward port.
 - `hiveward update`: checks the npm registry for a newer CLI version.
 
 ## Update Rule
@@ -50,6 +50,7 @@ Environment overrides:
 - `HIVEWARD_INSTALL_DIR`: local Hiveward checkout path.
 - `HIVEWARD_REPOSITORY_URL`: Git repository used by `hiveward setup`.
 - `HIVEWARD_INSTALL_REF`: Git branch or tag used by `hiveward setup`.
+- `HIVEWARD_PORT`: local web/API port, default `10101`.
 
 ## Server Requirements
 

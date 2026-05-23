@@ -149,7 +149,7 @@ export function ChatPage({
   const [harnessId, setHarnessId] = useState<HarnessId>("openclaw");
   const [modelId, setModelId] = useState(defaultModelId);
   const [agentId, setAgentId] = useState(defaultAgentId);
-  const [thinkingEffort, setThinkingEffort] = useState<ChatThinkingEffort>("medium");
+  const [thinkingEffort, setThinkingEffort] = useState<ChatThinkingEffort>("minimal");
   const [chatMode, setChatMode] = useState<ChatMode>("chat");
   const [selectedRoleId, setSelectedRoleId] = useState("ceo");
   const [settingsCollapsed, setSettingsCollapsed] = useState(false);
@@ -598,7 +598,7 @@ export function ChatPage({
         updateActiveSessionViewMessages((current) =>
           current.map((item) =>
             item.id === assistantId && item.status === "streaming" && !item.content
-              ? { ...item, progressText: formatWaitingProgress(copy, elapsedSeconds) }
+              ? { ...item, progressText: formatWaitingProgress(copy, elapsedSeconds, Boolean(item.runtimeRef)) }
               : item
           )
         );
@@ -635,7 +635,7 @@ export function ChatPage({
         },
         {
           onEvent: (event) => {
-            applyChatEvent(assistantId, event, updateActiveSessionViewMessages);
+            applyChatEvent(assistantId, event, updateActiveSessionViewMessages, copy);
             if (event.type === "started" || event.type === "done") bindActiveSessionView(event);
             if (event.type === "inbox_item_created") onInboxItemCreated?.(event.item);
           }
@@ -1085,7 +1085,8 @@ function ChatSelect({
 function applyChatEvent(
   assistantId: string,
   event: ChatStreamEvent,
-  setMessages: Dispatch<SetStateAction<ChatMessage[]>>
+  setMessages: Dispatch<SetStateAction<ChatMessage[]>>,
+  copy: ReturnType<typeof chatCopy>
 ) {
   if (event.type === "delta") {
     setMessages((current) =>
@@ -1104,6 +1105,7 @@ function applyChatEvent(
         message.id === assistantId
           ? {
               ...message,
+              progressText: message.content ? undefined : copy.acceptedWaiting,
               runtimeRef: toRuntimeRef(event)
             }
           : message
@@ -1142,16 +1144,21 @@ function applyChatEvent(
   );
 }
 
-function formatWaitingProgress(copy: ReturnType<typeof chatCopy>, elapsedSeconds: number): string {
+function formatWaitingProgress(copy: ReturnType<typeof chatCopy>, elapsedSeconds: number, accepted: boolean): string {
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   const elapsed = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-  return `${copy.waiting} ${elapsed}`;
+  return `${accepted ? copy.acceptedWaiting : copy.waiting} ${elapsed}`;
 }
 
 function formatRuntimeTimings(timings: ChatStreamTimings, copy: ReturnType<typeof chatCopy>): string {
   const hivewardMs = timings.hivewardPreprocessMs + timings.hivewardPostprocessMs;
-  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} · ${copy.timingOpenClaw} ${formatDurationMs(timings.openclawMs)} · ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
+  const openclawDetails = [
+    `${copy.timingOpenClaw} ${formatDurationMs(timings.openclawMs)}`,
+    timings.openclawAcceptedMs === undefined ? undefined : `${copy.timingAccepted} ${formatDurationMs(timings.openclawAcceptedMs)}`,
+    timings.openclawFirstDeltaMs === undefined ? undefined : `${copy.timingFirstToken} ${formatDurationMs(timings.openclawFirstDeltaMs)}`
+  ].filter((item): item is string => Boolean(item));
+  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} · ${openclawDetails.join(" / ")} · ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
 }
 
 function formatDurationMs(value: number): string {
@@ -1601,6 +1608,7 @@ function chatCopy(language: Language) {
       streaming: "\u8f93\u51fa\u4e2d",
       failed: "\u5931\u8d25",
       waiting: "\u7b49\u5f85 OpenClaw \u8fd4\u56de...",
+      acceptedWaiting: "\u5df2\u53d1\u7ed9 OpenClaw\uff0c\u7b49\u5f85\u6a21\u578b\u6216\u5de5\u5177\u5b8c\u6210...",
       usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
       usageModel: "\u6a21\u578b",
       usageTokens: "Token \u6d88\u8017",
@@ -1614,6 +1622,8 @@ function chatCopy(language: Language) {
       timingTotal: "\u603b\u8017\u65f6",
       timingOpenClaw: "OpenClaw",
       timingHiveward: "Hiveward",
+      timingAccepted: "\u63a5\u53d7",
+      timingFirstToken: "\u9996\u6bb5",
       attachmentOnlyMessage: "\u5df2\u4e0a\u4f20\u6587\u4ef6",
       removeAttachment: "\u79fb\u9664\u9644\u4ef6",
       upload: "\u4e0a\u4f20\u6587\u4ef6",
@@ -1680,6 +1690,7 @@ function chatCopy(language: Language) {
     streaming: "Streaming",
     failed: "Failed",
     waiting: "Waiting for OpenClaw...",
+    acceptedWaiting: "Sent to OpenClaw. Waiting for the model or tools to finish...",
     usageSummary: "Model and token usage",
     usageModel: "Model",
     usageTokens: "Token usage",
@@ -1693,6 +1704,8 @@ function chatCopy(language: Language) {
     timingTotal: "Total",
     timingOpenClaw: "OpenClaw",
     timingHiveward: "Hiveward",
+    timingAccepted: "accepted",
+    timingFirstToken: "first chunk",
     attachmentOnlyMessage: "Uploaded files",
     removeAttachment: "Remove attachment",
     upload: "Upload files",

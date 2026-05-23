@@ -1,7 +1,10 @@
 import { Router, type Response } from "express";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
@@ -17,8 +20,13 @@ import type {
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
   CreateLeaderDelegationRequest,
+  HarnessId,
+  HarnessSkillId,
+  HarnessSkillStatusItem,
+  HarnessSkillStatusResponse,
   HarnessStatus,
   ImportBlueprintPackageRequest,
+  InstallHarnessSkillsResponse,
   RuntimeOverview,
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
@@ -45,7 +53,7 @@ import type {
   StartBlueprintRunRequest
 } from "@hiveward/shared";
 import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
-import { hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
@@ -77,8 +85,25 @@ type ChatInboxSubmissionBlock = {
   json: string;
 };
 
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const fallbackCodexDefaultModel = "gpt-5.4";
 const fallbackClaudeCodeDefaultModel = "inherit";
+const hivewardHarnessSkills: Array<{
+  id: HarnessSkillId;
+  label: string;
+  sourceDir: string;
+}> = [
+  {
+    id: "hiveward-ceo",
+    label: "HiveWard CEO",
+    sourceDir: join(repositoryRoot, "docs", "skills", "hiveward-ceo")
+  },
+  {
+    id: "hiveward-leader",
+    label: "HiveWard Leader",
+    sourceDir: join(repositoryRoot, "docs", "skills", "hiveward-leader")
+  }
+];
 
 export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
   const router = Router();
@@ -145,6 +170,24 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const [version, config] = await Promise.all([openClawConfigStore.getVersion(), openClawConfigStore.getState()]);
       res.json({ statuses: buildHarnessStatuses(version, config, resolveHarnessModelDefaults()) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/harness-skills/:harnessId", async (req, res, next) => {
+    try {
+      const harnessId = readHarnessId(req.params.harnessId);
+      res.json(await buildHarnessSkillStatusResponse(harnessId, openClawConfigStore));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/harness-skills/:harnessId/install", async (req, res, next) => {
+    try {
+      const harnessId = readHarnessId(req.params.harnessId);
+      res.status(201).json(await installHarnessSkills(harnessId, openClawConfigStore));
     } catch (error) {
       next(error);
     }
@@ -598,11 +641,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
 
     const config = await openClawConfigStore.getState();
-    const roleContext = await buildChatRoleContext(store, body.roleScope);
+    const roleSkillPrompt = await buildChatRoleSkillPrompt(store, body.roleScope);
     const agentId = body.agentId || selectDefaultAgentId(config.configuredAgents);
     const sessionKey = body.nativeSessionKey || buildOpenClawChatSessionKey(agentId);
     const chatMessageRequestId = `chat-message-${nanoid(8)}`;
-    const prompt = buildChatPrompt(body, roleContext);
+    const prompt = buildChatPrompt(body, roleSkillPrompt);
     const openclawStartedAtMs = Date.now();
 
     res.status(200);
@@ -619,6 +662,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       let doneEvent: ChatDoneEvent | undefined;
       let streamedOutput = "";
+      let openclawAcceptedAtMs: number | undefined;
+      let openclawFirstDeltaAtMs: number | undefined;
       await adapter.streamChatMessage(
         {
           sessionKey,
@@ -630,11 +675,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
           timeoutMs: 600_000
         },
         (event) => {
+          if (event.type === "started") {
+            openclawAcceptedAtMs ??= Date.now();
+          }
           if (event.type === "done") {
             doneEvent = event;
             return;
           }
           if (event.type === "delta") {
+            openclawFirstDeltaAtMs ??= Date.now();
             streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
           }
           writeChatStreamEvent(res, event, () => closed);
@@ -657,7 +706,16 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
             const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
             writeChatStreamEvent(res, { type: "delta", text: failedOutput, replace: true }, () => closed);
             writeChatStreamEvent(res, {
-              ...withChatStreamTimings(doneEvent, requestStartedAtMs, openclawStartedAtMs, openclawFinishedAtMs, postprocessStartedAtMs, inboxSubmissionMs),
+              ...withChatStreamTimings(
+                doneEvent,
+                requestStartedAtMs,
+                openclawStartedAtMs,
+                openclawFinishedAtMs,
+                postprocessStartedAtMs,
+                inboxSubmissionMs,
+                openclawAcceptedAtMs,
+                openclawFirstDeltaAtMs
+              ),
               status: "failed",
               output: failedOutput,
               error: message
@@ -679,7 +737,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
             openclawStartedAtMs,
             openclawFinishedAtMs,
             postprocessStartedAtMs,
-            inboxSubmissionMs
+            inboxSubmissionMs,
+            openclawAcceptedAtMs,
+            openclawFirstDeltaAtMs
           ), () => closed);
         } else {
           writeChatStreamEvent(res, withChatStreamTimings(
@@ -688,7 +748,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
             openclawStartedAtMs,
             openclawFinishedAtMs,
             postprocessStartedAtMs,
-            inboxSubmissionMs
+            inboxSubmissionMs,
+            openclawAcceptedAtMs,
+            openclawFirstDeltaAtMs
           ), () => closed);
         }
       }
@@ -925,58 +987,42 @@ function normalizeChatAttachments(value: unknown): ChatAttachment[] {
   });
 }
 
-async function buildChatRoleContext(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
+async function buildChatRoleSkillPrompt(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
   if (!scope) return undefined;
   try {
     const { roles } = await store.getRoleDirectory();
     const role = scope.role === "leader"
       ? roles.leaders.find((leader) => leader.id === scope.leaderId || leader.blueprintId === scope.blueprintId)
       : roles.ceo;
-    const leaderBlueprintId = role?.kind === "leader" ? role.blueprintId : scope.blueprintId;
-    const lines = [
-      "Hiveward role scope:",
-      `- mode: ${scope.role === "leader" ? "Leader" : "CEO"} ${scope.role === "leader" ? "(business blueprint owner)" : "(company command role)"}`,
-      `- roleId: ${role?.id ?? scope.leaderId ?? scope.role}`,
-      `- roleLabel: ${role?.label ?? scope.role}`,
-      `- companyId: ${scope.companyId ?? roles.companyId}`,
-      leaderBlueprintId ? `- blueprintId: ${leaderBlueprintId}` : undefined,
-      "",
-      "Role rules:",
-      "- CEO may discuss company direction, inspect summaries, and prepare leader delegation requests for the Hiveward inbox.",
-      "- CEO must not write or directly import business blueprint JSON or patches.",
-      "- Leader may read only the bound business blueprint scope and generate importable proposal packages for that blueprint.",
-      "- Leader must submit concrete proposal packages to the Hiveward inbox instead of changing official blueprints directly.",
-      "- Final state changes require Hiveward inbox approval and backend validation.",
-      "- Architecture blueprint is a management view; business blueprint is the executable workflow DAG.",
-      "",
-      "Hiveward inbox submit protocol:",
-      "- Chat has no implicit side effects. Saying you are ready to submit does not create an inbox item.",
-      "- Hiveward will parse this block, create the inbox item, and remove the block from the visible chat response.",
-      "- Do not say the item has been submitted unless you include the block.",
-      "",
-      hivewardInboxSubmissionContract
-    ];
-    return lines.filter((line): line is string => typeof line === "string").join("\n");
+    return buildHivewardRoleSkillPrompt({
+      role: scope.role,
+      roleId: role?.id ?? scope.leaderId ?? scope.role,
+      roleLabel: role?.label,
+      companyId: scope.companyId ?? roles.companyId,
+      blueprintId: role?.kind === "leader" ? role.blueprintId : scope.blueprintId,
+      skillFilePath: buildRoleSkillFilePath(scope.role)
+    });
   } catch {
-    return [
-      "Hiveward role scope:",
-      `- mode: ${scope.role}`,
-      scope.companyId ? `- companyId: ${scope.companyId}` : undefined,
-      scope.leaderId ? `- leaderId: ${scope.leaderId}` : undefined,
-      scope.blueprintId ? `- blueprintId: ${scope.blueprintId}` : undefined,
-      "",
-      "Role rules: state changes must go through Hiveward inbox approval and backend validation.",
-      "Hiveward inbox submit protocol:",
-      hivewardInboxSubmissionContract
-    ].filter((line): line is string => typeof line === "string").join("\n");
+    return buildHivewardRoleSkillPrompt({
+      role: scope.role,
+      roleId: scope.leaderId ?? scope.role,
+      companyId: scope.companyId,
+      blueprintId: scope.blueprintId,
+      skillFilePath: buildRoleSkillFilePath(scope.role)
+    });
   }
 }
 
-function buildChatPrompt(input: SendChatMessageRequest, roleContext?: string): string {
+function buildRoleSkillFilePath(role: ChatRoleScope["role"]): string {
+  const skillDirectory = role === "leader" ? "hiveward-leader" : "hiveward-ceo";
+  return join(repositoryRoot, "docs", "skills", skillDirectory, "SKILL.md");
+}
+
+function buildChatPrompt(input: SendChatMessageRequest, roleSkillPrompt?: string): string {
   const contextBlocks = [
     input.includePlatformContext ? hivewardPlatformContext : undefined,
-    roleContext,
-    input.mode === "blueprint" ? hivewardBlueprintDraftingContext : undefined
+    roleSkillPrompt,
+    input.mode === "blueprint" ? buildBlueprintDraftingContext(input.message) : undefined
   ].filter((block): block is string => Boolean(block));
   if (!contextBlocks.length) return input.message.trim();
   return [...contextBlocks, "", "User message:", input.message.trim()].join("\n");
@@ -1266,14 +1312,42 @@ const hivewardPlatformContext = [
   "Do not claim stored HiveWard data, blueprints, files, or external deliveries changed unless an actual tool or API performed that change."
 ].join("\n");
 
-const hivewardBlueprintDraftingContext = [
+const hivewardBlueprintDraftingGuidance = [
   "Blueprint drafting mode:",
   "When the user asks for a blueprint change, first align on direction in chat. For final approval, produce a concrete importable content package with proposal text, JSON or patch details, preview, and diff summary.",
-  "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed.",
+  "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed."
+].join("\n");
+
+const hivewardBlueprintSubmissionContext = [
+  hivewardBlueprintDraftingGuidance,
   "If the user explicitly asks to submit the proposal for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
   "",
   hivewardInboxSubmissionContract
 ].join("\n");
+
+function buildBlueprintDraftingContext(message: string): string {
+  return shouldIncludeBlueprintSubmissionContract(message)
+    ? hivewardBlueprintSubmissionContext
+    : hivewardBlueprintDraftingGuidance;
+}
+
+function shouldIncludeBlueprintSubmissionContract(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("submit") ||
+    normalized.includes("approval") ||
+    normalized.includes("approve") ||
+    normalized.includes("inbox") ||
+    normalized.includes("proposal") ||
+    normalized.includes("import") ||
+    message.includes("提交") ||
+    message.includes("审批") ||
+    message.includes("批准") ||
+    message.includes("收件箱") ||
+    message.includes("提案") ||
+    message.includes("导入")
+  );
+}
 
 function writeChatStreamEvent(
   res: Response,
@@ -1292,7 +1366,9 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
   openclawStartedAtMs: number,
   openclawFinishedAtMs: number,
   postprocessStartedAtMs: number,
-  inboxSubmissionMs: number | undefined
+  inboxSubmissionMs: number | undefined,
+  openclawAcceptedAtMs: number | undefined,
+  openclawFirstDeltaAtMs: number | undefined
 ): T {
   const completedAtMs = Date.now();
   return {
@@ -1302,7 +1378,9 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
       hivewardPreprocessMs: Math.max(0, openclawStartedAtMs - requestStartedAtMs),
       openclawMs: Math.max(0, openclawFinishedAtMs - openclawStartedAtMs),
       hivewardPostprocessMs: Math.max(0, completedAtMs - postprocessStartedAtMs),
-      inboxSubmissionMs
+      inboxSubmissionMs,
+      openclawAcceptedMs: openclawAcceptedAtMs === undefined ? undefined : Math.max(0, openclawAcceptedAtMs - openclawStartedAtMs),
+      openclawFirstDeltaMs: openclawFirstDeltaAtMs === undefined ? undefined : Math.max(0, openclawFirstDeltaAtMs - openclawStartedAtMs)
     }
   };
 }
@@ -1311,6 +1389,169 @@ function buildOpenClawChatSessionKey(agentId: string): string {
   const normalizedAgentId = agentId.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "main";
   if (normalizedAgentId.toLowerCase() === "main") return "main";
   return `agent:${normalizedAgentId}:main`;
+}
+
+function readHarnessId(value: string | undefined): HarnessId {
+  if (value === "openclaw" || value === "claudeCode" || value === "codex") return value;
+  throw new Error(`Unsupported harness id: ${value ?? ""}`);
+}
+
+async function buildHarnessSkillStatusResponse(
+  harnessId: HarnessId,
+  openClawConfigStore: OpenClawConfigStore
+): Promise<HarnessSkillStatusResponse> {
+  const checkedAt = new Date().toISOString();
+  if (harnessId !== "openclaw") {
+    return {
+      harnessId,
+      supported: false,
+      checkedAt,
+      skills: hivewardHarnessSkills.map((skill) => ({
+        id: skill.id,
+        label: skill.label,
+        sourcePath: join(skill.sourceDir, "SKILL.md"),
+        installed: false,
+        status: "unsupported",
+        error: "HiveWard has not wired native skill installation for this harness yet."
+      }))
+    };
+  }
+
+  const config = await openClawConfigStore.getState();
+  const installRoot = resolveOpenClawSkillInstallRoot(config);
+  const skills = await Promise.all(hivewardHarnessSkills.map((skill) => buildOpenClawSkillStatusItem(skill, installRoot)));
+  return {
+    harnessId,
+    supported: true,
+    checkedAt,
+    installRoot,
+    skills
+  };
+}
+
+async function installHarnessSkills(
+  harnessId: HarnessId,
+  openClawConfigStore: OpenClawConfigStore
+): Promise<InstallHarnessSkillsResponse> {
+  if (harnessId !== "openclaw") {
+    return {
+      ...(await buildHarnessSkillStatusResponse(harnessId, openClawConfigStore)),
+      installedCount: 0
+    };
+  }
+
+  const config = await openClawConfigStore.getState();
+  const installRoot = resolveOpenClawSkillInstallRoot(config);
+  await mkdir(installRoot, { recursive: true });
+
+  let installedCount = 0;
+  for (const skill of hivewardHarnessSkills) {
+    const targetDir = join(installRoot, skill.id);
+    await rm(targetDir, { recursive: true, force: true });
+    await cp(skill.sourceDir, targetDir, { recursive: true });
+    installedCount += 1;
+  }
+
+  return {
+    ...(await buildHarnessSkillStatusResponse(harnessId, openClawConfigStore)),
+    installedCount
+  };
+}
+
+function resolveOpenClawSkillInstallRoot(config: OpenClawConfigState): string {
+  void config;
+  return join(readEnvString(process.env, "OPENCLAW_HOME") ?? join(homedir(), ".openclaw"), "skills");
+}
+
+async function buildOpenClawSkillStatusItem(
+  skill: (typeof hivewardHarnessSkills)[number],
+  installRoot: string
+): Promise<HarnessSkillStatusItem> {
+  const sourcePath = join(skill.sourceDir, "SKILL.md");
+  const targetDir = join(installRoot, skill.id);
+  const targetPath = join(targetDir, "SKILL.md");
+
+  let sourceHash: string;
+  try {
+    sourceHash = await hashDirectory(skill.sourceDir);
+  } catch (error) {
+    return {
+      id: skill.id,
+      label: skill.label,
+      sourcePath,
+      targetPath,
+      installed: false,
+      status: "error",
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+
+  try {
+    const installedHash = await hashDirectory(targetDir);
+    const installed = installedHash === sourceHash;
+    return {
+      id: skill.id,
+      label: skill.label,
+      sourcePath,
+      targetPath,
+      installed,
+      status: installed ? "installed" : "stale",
+      sourceHash,
+      installedHash
+    };
+  } catch (error) {
+    if (isFileNotFoundError(error)) {
+      return {
+        id: skill.id,
+        label: skill.label,
+        sourcePath,
+        targetPath,
+        installed: false,
+        status: "missing",
+        sourceHash
+      };
+    }
+    return {
+      id: skill.id,
+      label: skill.label,
+      sourcePath,
+      targetPath,
+      installed: false,
+      status: "error",
+      sourceHash,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function hashDirectory(root: string): Promise<string> {
+  const hash = createHash("sha256");
+  await appendDirectoryHash(hash, root, "");
+  return hash.digest("hex");
+}
+
+async function appendDirectoryHash(hash: ReturnType<typeof createHash>, root: string, relativePath: string): Promise<void> {
+  const directory = relativePath ? join(root, relativePath) : root;
+  const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) => left.name.localeCompare(right.name));
+
+  for (const entry of entries) {
+    const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+    const childPath = join(root, childRelativePath);
+    if (entry.isDirectory()) {
+      hash.update(`dir:${childRelativePath}\0`);
+      await appendDirectoryHash(hash, root, childRelativePath);
+      continue;
+    }
+    if (entry.isFile()) {
+      hash.update(`file:${childRelativePath}\0`);
+      hash.update(await readFile(childPath));
+      hash.update("\0");
+    }
+  }
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "ENOENT";
 }
 
 function buildHarnessStatuses(

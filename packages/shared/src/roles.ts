@@ -2,6 +2,8 @@ import type { BlueprintRunStatus } from "./blueprint";
 
 export type CompanyRoleKind = "ceo" | "leader";
 
+export type RoleDriverHarnessId = "openclaw" | "codex" | "claude";
+
 export type RoleCapability =
   | "read_company"
   | "read_blueprint"
@@ -17,11 +19,22 @@ export interface CompanyRoleProfile {
   label: string;
   description?: string;
   blueprintId?: string;
-  defaultAgentId?: string;
-  modelId?: string;
-  workspacePath?: string;
+  defaultDriverBindingId?: string;
   capabilities: RoleCapability[];
   instructions?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoleDriverBinding {
+  id: string;
+  companyId: string;
+  roleId: string;
+  harnessId: RoleDriverHarnessId;
+  label: string;
+  agentId?: string;
+  modelId?: string;
+  workspacePath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -30,6 +43,7 @@ export interface CompanyRoleDirectory {
   companyId: string;
   ceo: CompanyRoleProfile;
   leaders: CompanyRoleProfile[];
+  driverBindings: RoleDriverBinding[];
   updatedAt: string;
 }
 
