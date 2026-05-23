@@ -6361,6 +6361,21 @@ html[data-theme="light"] .sidebar-nav .nav-system-toggle.active {
   text-align: right;
 }
 
+.harness-skills-card {
+  min-width: 0;
+}
+
+.harness-skills-card-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.harness-skills-card-head button {
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
 .openclaw-page-head {
   min-width: 0;
   display: flex;

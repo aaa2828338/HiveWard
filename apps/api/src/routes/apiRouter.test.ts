@@ -289,6 +289,71 @@ describe("apiRouter", () => {
     }
   });
 
+  it("reports and installs HiveWard skills into the OpenClaw home skill root", async () => {
+    const fixture = await createStoreFixture();
+    const openClawWorkspace = join(fixture.dir, "openclaw-workspace");
+    const openClawHome = join(fixture.dir, "openclaw-home");
+    const openClawConfigStore = createConfigStoreFixture(openClawWorkspace);
+    const previousOpenClawHome = process.env.OPENCLAW_HOME;
+    process.env.OPENCLAW_HOME = openClawHome;
+    try {
+      await withApiServer(
+        fixture.store,
+        async (baseUrl) => {
+          const initialResponse = await fetch(`${baseUrl}/api/harness-skills/openclaw`);
+          const initialBody = await readOkJson<{
+            supported: boolean;
+            installRoot?: string;
+            skills: Array<{ id: string; status: string; installed: boolean; targetPath?: string }>;
+          }>(initialResponse);
+
+          expect(initialBody.supported).toBe(true);
+          expect(initialBody.installRoot).toBe(join(openClawHome, "skills"));
+          expect(initialBody.skills.map((skill) => skill.status)).toEqual(["missing", "missing"]);
+
+          const installResponse = await fetch(`${baseUrl}/api/harness-skills/openclaw/install`, {
+            method: "POST"
+          });
+          const installBody = await readOkJson<{
+            installedCount: number;
+            skills: Array<{ id: string; status: string; installed: boolean }>;
+          }>(installResponse);
+
+          expect(installBody.installedCount).toBe(2);
+          expect(installBody.skills.map((skill) => [skill.id, skill.status, skill.installed])).toEqual([
+            ["hiveward-ceo", "installed", true],
+            ["hiveward-leader", "installed", true]
+          ]);
+          expect(existsSync(join(openClawHome, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(openClawHome, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
+        },
+        new TrackingAdapter(),
+        openClawConfigStore
+      );
+    } finally {
+      restoreEnv("OPENCLAW_HOME", previousOpenClawHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports unsupported native skill installation for harnesses without an installer", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-skills/codex`);
+        const body = await readOkJson<{ supported: boolean; skills: Array<{ status: string; installed: boolean }> }>(response);
+
+        expect(body.supported).toBe(false);
+        expect(body.skills.map((skill) => [skill.status, skill.installed])).toEqual([
+          ["unsupported", false],
+          ["unsupported", false]
+        ]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("streams OpenClaw chat responses through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
@@ -304,7 +369,10 @@ describe("apiRouter", () => {
             modelId: "openclaw/default",
             agentId: "main",
             thinkingEffort: "medium",
-            includePlatformContext: true
+            includePlatformContext: true,
+            roleScope: {
+              role: "ceo"
+            }
           })
         });
         const text = await response.text();
@@ -319,6 +387,11 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("main");
         expect(adapter.lastChatStreamInput?.message).toContain("System context:");
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard is a local company operations console");
+        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
+        expect(adapter.lastChatStreamInput?.message).toContain("Installed external skill:");
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("SKILL.md");
+        expect(adapter.lastChatStreamInput?.message).toContain("answer directly without reading files");
         expect(adapter.lastChatStreamInput?.message).toContain("User message:\nSay hello from chat.");
         expect(adapter.lastChatStreamInput?.message).not.toContain("Project context: HiveWard");
         expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward blueprint run");
@@ -403,7 +476,13 @@ describe("apiRouter", () => {
         expect(text).toContain("\"replace\":true");
         expect(text).toContain("Review generated blueprint package");
         expect(text).toContain("已提交到收件箱，请前往收件箱审批。");
-        expect(adapter.lastChatStreamInput?.message).toContain("Hiveward inbox submit protocol:");
+        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
+        expect(adapter.lastChatStreamInput?.message).toContain("Installed external skill:");
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-leader");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("SKILL.md");
+        expect(adapter.lastChatStreamInput?.message).toContain("Leader owns exactly one bound business blueprint");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("The Leader is the permanent role seat bound to exactly one business blueprint.");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward role scope:");
         expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
         expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
 
@@ -939,18 +1018,18 @@ async function readOkJson<T = unknown>(response: Response): Promise<T> {
   return JSON.parse(text) as T;
 }
 
-function createConfigStoreFixture(): OpenClawConfigStore {
+function createConfigStoreFixture(defaultWorkspace = "D:\\hiveward-test"): OpenClawConfigStore {
   const state: OpenClawConfigState = {
     configPath: "test-openclaw.json",
-    defaultWorkspace: "D:\\hiveward-test",
+    defaultWorkspace,
     defaultModelId: "openclaw/default",
     configuredModels: [{ id: "openclaw/default", label: "OpenClaw Default", provider: "openclaw" }],
     configuredAgents: [
       {
         id: "main",
         name: "main",
-        workspace: "D:\\hiveward-test",
-        agentDir: "D:\\hiveward-test\\.openclaw\\agents\\main",
+        workspace: defaultWorkspace,
+        agentDir: join(defaultWorkspace, ".openclaw", "agents", "main"),
         modelId: "openclaw/default",
         isDefault: true
       }

@@ -176,6 +176,34 @@ export interface HarnessStatusResponse {
   statuses: HarnessStatus[];
 }
 
+export type HarnessSkillId = "hiveward-ceo" | "hiveward-leader";
+
+export type HarnessSkillInstallStatus = "installed" | "missing" | "stale" | "unsupported" | "error";
+
+export interface HarnessSkillStatusItem {
+  id: HarnessSkillId;
+  label: string;
+  sourcePath: string;
+  targetPath?: string;
+  installed: boolean;
+  status: HarnessSkillInstallStatus;
+  sourceHash?: string;
+  installedHash?: string;
+  error?: string;
+}
+
+export interface HarnessSkillStatusResponse {
+  harnessId: HarnessId;
+  supported: boolean;
+  checkedAt: string;
+  installRoot?: string;
+  skills: HarnessSkillStatusItem[];
+}
+
+export interface InstallHarnessSkillsResponse extends HarnessSkillStatusResponse {
+  installedCount: number;
+}
+
 export interface ChatAttachment {
   id: string;
   name: string;
@@ -234,6 +262,8 @@ export interface ChatStreamTimings {
   openclawMs: number;
   hivewardPostprocessMs: number;
   inboxSubmissionMs?: number;
+  openclawAcceptedMs?: number;
+  openclawFirstDeltaMs?: number;
 }
 
 export type ChatStreamEvent =

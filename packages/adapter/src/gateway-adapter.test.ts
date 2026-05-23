@@ -150,6 +150,48 @@ describe("gateway adapter transcript extraction", () => {
     ]);
   });
 
+  it("hides the current HiveWard appointment prompt when reading chat history", async () => {
+    const adapter = new GatewayOpenClawAdapter({
+      url: "ws://127.0.0.1:1",
+      origin: "http://127.0.0.1:1",
+      locale: "zh-CN",
+      requestTimeoutMs: 1,
+      agentStartTimeoutMs: 1
+    });
+    const fakeSession = {
+      request: async () => ({
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            content: [
+              "HiveWard appointment:",
+              "You are the external harness agent powering the HiveWard role seat \"CEO\".",
+              "",
+              "Installed external skill:",
+              "- name: hiveward-ceo",
+              "",
+              "User message:",
+              "你好你是谁"
+            ].join("\n")
+          }
+        ]
+      })
+    };
+    (adapter as unknown as {
+      withSession: <T>(operation: (session: typeof fakeSession) => Promise<T>) => Promise<T>;
+    }).withSession = (operation) => operation(fakeSession);
+
+    await expect(adapter.getSessionMessages("agent:main:main")).resolves.toEqual([
+      {
+        id: "message-1",
+        role: "user",
+        content: "你好你是谁",
+        createdAt: expect.any(String)
+      }
+    ]);
+  });
+
   it("returns the final visible assistant output instead of an intermediate message", () => {
     const result = readAgentTranscriptMessages([
       { role: "user", content: "Hiveward node run: node-run-1\nDo the work." },

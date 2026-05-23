@@ -13,10 +13,13 @@ import type {
   DeleteBlueprintResponse,
   DeleteCompanyResponse,
   ExportBlueprintResponse,
+  HarnessId,
+  HarnessSkillStatusResponse,
   HarnessStatus,
   HarnessStatusResponse,
   ImportBlueprintPackageRequest,
   ImportBlueprintPackageResponse,
+  InstallHarnessSkillsResponse,
   LatestBlueprintRunResponse,
   ListPendingApprovalsResponse,
   ListBlueprintRunSummariesResponse,
@@ -175,6 +178,16 @@ export const api = {
   async getHarnessStatus(): Promise<HarnessStatus[]> {
     const response = await request<HarnessStatusResponse>("/api/harness-status");
     return response.statuses;
+  },
+
+  async getHarnessSkillStatus(harnessId: HarnessId): Promise<HarnessSkillStatusResponse> {
+    return request<HarnessSkillStatusResponse>(`/api/harness-skills/${encodeURIComponent(harnessId)}`);
+  },
+
+  async installHarnessSkills(harnessId: HarnessId): Promise<InstallHarnessSkillsResponse> {
+    return request<InstallHarnessSkillsResponse>(`/api/harness-skills/${encodeURIComponent(harnessId)}/install`, {
+      method: "POST"
+    });
   },
 
   async getOpenClawModelUsage(): Promise<OpenClawModelUsageSummary[]> {

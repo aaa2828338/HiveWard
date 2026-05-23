@@ -864,7 +864,12 @@ function normalizeChatHistoryContent(role: "user" | "assistant", content: string
   if (markerIndex < 0) return content;
 
   const platformPrompt = content.slice(0, markerIndex);
-  if (!platformPrompt.includes("Hiveward role scope:") && !platformPrompt.includes("Hiveward inbox submit protocol:")) {
+  if (
+    !platformPrompt.includes("Hiveward role scope:") &&
+    !platformPrompt.includes("Hiveward inbox submit protocol:") &&
+    !platformPrompt.includes("HiveWard appointment:") &&
+    !platformPrompt.includes("Required external skill:")
+  ) {
     return content;
   }
   return content.slice(markerIndex + userMessageMarker.length).trim();
