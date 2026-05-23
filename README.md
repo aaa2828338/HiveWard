@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <strong>让101个Agent连夜为你打工</strong>
+  <strong>让101个Agent合作为你打工</strong>
 </p>
 
 <p align="center">

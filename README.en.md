@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <strong>Put 101 agents to work for you overnight.</strong>
+  <strong>Put 101 agents to work together for you.</strong>
 </p>
 
 <p align="center">
