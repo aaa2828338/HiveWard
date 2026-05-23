@@ -52,6 +52,7 @@ Hiveward defaults to `OPENCLAW_ADAPTER=auto`.
 
 Common local variables:
 
+- `HIVEWARD_PORT`: single-port web/API dev server port, default `10101`
 - `PORT`: standalone API port, default `8787`
 - `VITE_API_BASE_URL`: browser API base URL when serving web and API separately
 - `OPENCLAW_CONFIG_FILE` / `OPENCLAW_CONFIG_PATH`: explicit OpenClaw config path

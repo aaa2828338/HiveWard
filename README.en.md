@@ -7,9 +7,7 @@
   </picture>
 </p>
 
-<p align="center">
-  <strong>Put 101 agents to work together for you.</strong>
-</p>
+<h2 align="center">Put 101 agents to work together for you.</h2>
 
 <p align="center">
   An open-source Agent Company workspace that organizes models, agents, blueprints, approvals, runs, and history into one managed operating system.
@@ -152,8 +150,8 @@ npm run check:env
 npm run dev
 ```
 
-- Web and API: `http://localhost:5173`
-- Health check: `http://localhost:5173/healthz`
+- Web and API: `http://localhost:10101`
+- Health check: `http://localhost:10101/healthz`
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
 
