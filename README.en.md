@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <strong>Not another chat window. A company-grade command surface for managing agent teams.</strong>
+  <strong>Put 101 agents to work together for you.</strong>
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 
 <p align="center">
   <a href="#what-is-hiveward">What is Hiveward?</a> ·
-  <a href="#why-hiveward">Why Hiveward?</a> ·
+  <a href="#what-is-a-blueprint">What is a blueprint?</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#product-surfaces">Product surfaces</a> ·
   <a href="#quick-start">Quick start</a>
@@ -32,6 +32,12 @@
 
 <p align="center">
   <strong>English</strong> | <a href="README.md">简体中文</a>
+</p>
+
+![Hiveward Manager blueprint canvas run state](docs/assets/screenshots/hiveward-manager-run-state.png)
+
+<p align="center">
+  <sub>A Manager blueprint dispatches Slots and agents on the canvas, with curved links showing the active coordination path while Hiveward tracks outputs and evidence. More product screenshots live on the <a href="docs/screenshots.md">screenshots page</a>.</sub>
 </p>
 
 ## What is Hiveward?
@@ -42,7 +48,17 @@ Think of it as an operations desk for the next generation of AI organizations: c
 
 Hiveward manages and displays company goals, blueprint structure, node configuration, model selection, run state, human approvals, and history. Real execution remains owned by OpenClaw and other agent runtimes, keeping Hiveward as a clean product layer instead of leaking runtime mechanics into the UI.
 
-![Hiveward blueprint studio](docs/assets/screenshots/hiveward-blueprint-studio.png)
+## What is a blueprint?
+
+A blueprint is not a static diagram. It is a runnable agent work definition that describes who does what, in which order, when work must be summarized or approved, and how results are delivered.
+
+A blueprint has three core parts:
+
+- Nodes: agents, managers, parallel lanes, summaries, approvals, and delivery steps.
+- Edges: success paths, failure paths, sequencing, and rollback routes between nodes.
+- Run records: node status, inputs, outputs, OpenClaw references, cost, and timing evidence for each execution.
+
+Manager nodes act as dispatchers inside a blueprint. They read upstream input and previous results, choose the next Slot, assign work to agents, request rework, or finish the workflow. This turns agents from one-off chat sessions into organized, managed, reviewable work units.
 
 ## Why Hiveward?
 
@@ -84,40 +100,19 @@ graph LR
 
 ## Product surfaces
 
-### Blueprint Studio
+The main README keeps one trusted run-state screenshot so new users see the core product loop first. Additional screenshots are maintained on the [screenshots page](docs/screenshots.md), including:
 
-Use a canvas to express how an agent team works. Requirements, architecture, tests, summaries, and human approval can all live in one runnable organization chart.
-
-![Hiveward blueprint studio](docs/assets/screenshots/hiveward-blueprint-studio.png)
-
-### Model Configuration
-
-Inspect available models, defaults, usage, and capability data from the OpenClaw catalog. Models become managed team resources instead of hidden config strings.
-
-![Hiveward model configuration](docs/assets/screenshots/hiveward-models.png)
-
-### Run Monitor
-
-Every blueprint run exposes node-level status, output previews, failure state, and execution evidence. You can watch agent work like project progress.
-
-![Hiveward run monitor](docs/assets/screenshots/hiveward-runs.png)
-
-### Inbox
-
-When a workflow needs human judgment, approval nodes land in the inbox. Hiveward is not blind full automation; it is automation with governance.
-
-![Hiveward inbox](docs/assets/screenshots/hiveward-inbox.png)
-
-### History
-
-Runs become an execution ledger. Success, failure, output summaries, and timing remain available for review and iteration.
-
-![Hiveward history](docs/assets/screenshots/hiveward-history.png)
+- Blueprint Studio: express how an agent team works on a runnable canvas.
+- Model Configuration: inspect models, defaults, usage, and OpenClaw catalog capabilities.
+- Run Monitor: watch node-level status, output previews, failure state, and execution evidence.
+- Inbox: handle workflow steps that require human judgment.
+- History: review successful runs, failed runs, output summaries, and timing.
 
 ## Core capabilities
 
 - Company context: organize goals, blueprints, runs, and approvals by company.
 - Blueprint orchestration: describe agent team structure with visual nodes.
+- Manager dispatch: let Manager nodes choose Slots, assign agents, request rework, or finish a workflow.
 - Agent team management: separate Hiveward display identity from real OpenClaw runtime identity.
 - Model resource pool: inspect models, defaults, usage, and provider state.
 - Human governance: handle judgment points through the inbox.
@@ -129,6 +124,25 @@ Runs become an execution ledger. Success, failure, output summaries, and timing 
 Current beta: `v0.1.0-beta.1`. The project is roughly 80% of the way to the intended formal release. Core product surfaces are ready for local demos and early use, while APIs and interaction details may still evolve.
 
 ## Quick start
+
+### npm CLI install
+
+Hiveward can be installed as a product command:
+
+```bash
+npm install -g @hiveward/cli
+hiveward setup
+hiveward start
+```
+
+You can also run it without a global install:
+
+```bash
+npx @hiveward/cli@beta setup
+npx @hiveward/cli@beta start
+```
+
+See [npm CLI Installation](docs/npm-cli-install.md) for `hiveward doctor`, `hiveward update`, and install directory options.
 
 ### Source checkout
 
@@ -142,18 +156,6 @@ npm run dev
 - Health check: `http://localhost:5173/healthz`
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
-
-### npm CLI install
-
-Hiveward can also be installed as a product command:
-
-```bash
-npm install -g @hiveward/cli
-hiveward setup
-hiveward start
-```
-
-See [npm CLI Installation](docs/npm-cli-install.md) for `hiveward doctor`, `hiveward update`, and install directory options.
 
 ## Development and repository hygiene
 
