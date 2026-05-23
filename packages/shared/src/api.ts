@@ -12,7 +12,8 @@ import type {
   OpenClawVersionInfo
 } from "./openclaw";
 import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
-import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
+import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
+import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -69,6 +70,51 @@ export interface ListBlueprintRunSummariesResponse {
 
 export interface ListPendingApprovalsResponse {
   approvals: PendingApprovalItem[];
+}
+
+export interface RoleDirectoryResponse {
+  roles: CompanyRoleDirectory;
+  architecture: ArchitectureBlueprintView;
+}
+
+export interface ListInboxItemsResponse {
+  items: InboxItem[];
+}
+
+export interface CreateLeaderDelegationRequest {
+  leaderId: string;
+  blueprintId?: string;
+  title?: string;
+  summary?: string;
+  createdByRoleId?: string;
+}
+
+export interface CreateBlueprintProposalRequest {
+  title: string;
+  summary: string;
+  blueprintId?: string;
+  blueprintPackage: PortableBlueprintPackage;
+  preview?: Record<string, unknown>;
+  diffSummary?: string;
+  createdByRoleId?: string;
+  targetRoleId?: string;
+}
+
+export interface InboxItemResponse {
+  item: InboxItem;
+}
+
+export interface ApproveInboxItemRequest {
+  comment?: string;
+}
+
+export interface RejectInboxItemRequest {
+  comment?: string;
+}
+
+export interface ApproveInboxItemResponse {
+  item: InboxItem;
+  importedBlueprints?: BlueprintDefinition[];
 }
 
 export interface ApproveBlueprintRunRequest {
@@ -156,17 +202,38 @@ export interface SendChatMessageRequest {
   nativeSessionKey?: string;
   thinkingEffort?: ChatThinkingEffort;
   includePlatformContext?: boolean;
+  mode?: "chat" | "blueprint";
+  roleScope?: ChatRoleScope;
 }
 
 export interface CreateChatSessionRequest {
   agentId?: string;
   parentSessionKey?: string;
+  roleScope?: ChatRoleScope;
 }
 
 export interface CreateChatSessionResponse {
   sessionKey: string;
   sessionId?: string;
   title?: string;
+}
+
+export interface UpdateChatSessionTitleRequest {
+  sessionKey: string;
+  title: string;
+}
+
+export interface UpdateChatSessionTitleResponse {
+  sessionKey: string;
+  title: string;
+}
+
+export interface ChatStreamTimings {
+  totalMs: number;
+  hivewardPreprocessMs: number;
+  openclawMs: number;
+  hivewardPostprocessMs: number;
+  inboxSubmissionMs?: number;
 }
 
 export type ChatStreamEvent =
@@ -194,7 +261,13 @@ export type ChatStreamEvent =
       output?: string;
       error?: string;
       usage?: OpenClawUsageFact;
+      timings?: ChatStreamTimings;
       updatedAt: string;
+    }
+  | {
+      type: "inbox_item_created";
+      item: InboxItem;
+      message: string;
     }
   | {
       type: "error";
@@ -203,6 +276,7 @@ export type ChatStreamEvent =
 
 export interface ChatSessionHistoryResponse {
   messages: ChatHistoryMessage[];
+  inboxItems?: InboxItem[];
 }
 
 export interface OpenClawConfigResponse {

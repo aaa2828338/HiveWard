@@ -22,6 +22,8 @@ import type {
   RuntimeAdapter,
   RuntimeChatSessionInput,
   RuntimeChatSessionResult,
+  RuntimeChatSessionTitleInput,
+  RuntimeChatSessionTitleResult,
   RuntimeChatStreamInput,
 } from "./index";
 import type { GatewayAdapterConfig } from "./gateway-config";
@@ -127,9 +129,26 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
     });
   }
 
+  async updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult> {
+    return this.withSession(async (session) => {
+      const title = input.title.trim();
+      const result = await session.request<Record<string, unknown>>("sessions.patch", {
+        key: input.sessionKey,
+        label: title
+      });
+      const entry = isRecord(result.entry) ? result.entry : result;
+      return {
+        sessionKey: readString(entry.key) ?? readString(entry.sessionKey) ?? input.sessionKey,
+        title: readString(entry.label) ?? readString(entry.displayName) ?? title
+      };
+    });
+  }
+
   async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
     const session = await this.getSession();
-    const runId = createGatewayId(input.idempotencyKey);
+    const requestedRunId = createGatewayId(input.idempotencyKey);
+    const knownRunIds = new Set([requestedRunId]);
+    let activeRunId = requestedRunId;
     const startedAt = new Date().toISOString();
     let output = "";
     let lastUsage: OpenClawUsageFact | undefined;
@@ -154,8 +173,8 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
       timer = setTimeout(() => {
         onEvent({
           type: "done",
-          taskId: runId,
-          runId,
+          taskId: activeRunId,
+          runId: activeRunId,
           sessionKey: input.sessionKey,
           source: "openclaw",
           status: "failed",
@@ -168,8 +187,12 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
       }, input.timeoutMs ?? this.config.agentStartTimeoutMs);
 
       unsubscribeChat = session.onEvent("chat", (payload) => {
-        const event = mapGatewayChatEvent(payload, runId, input.sessionKey, output, lastUsage);
+        const event = mapGatewayChatEvent(payload, knownRunIds, activeRunId, input.sessionKey, output, lastUsage);
         if (!event) return;
+        if (event.type === "started" || event.type === "done") {
+          knownRunIds.add(event.runId);
+          activeRunId = event.runId;
+        }
         if (event.type === "delta") {
           output = event.replace ? event.text : `${output}${event.text}`;
         }
@@ -190,9 +213,11 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
         ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
         thinking: input.thinking,
         timeoutMs: input.timeoutMs,
-        idempotencyKey: runId
+        idempotencyKey: requestedRunId
       }).then((result) => {
-        const acceptedRunId = readString(result.runId) ?? runId;
+        const acceptedRunId = readString(result.runId) ?? requestedRunId;
+        knownRunIds.add(acceptedRunId);
+        activeRunId = acceptedRunId;
         onEvent({
           type: "started",
           taskId: acceptedRunId,
@@ -822,7 +847,7 @@ function mapChatHistoryMessage(value: unknown, index: number): ChatHistoryMessag
   if (!isRecord(value)) return undefined;
   const role = readString(value.role);
   if (role !== "user" && role !== "assistant") return undefined;
-  const content = extractMessageText(value).trim();
+  const content = normalizeChatHistoryContent(role, extractMessageText(value).trim());
   if (!content) return undefined;
   return {
     id: readString(value.id) ?? readString(value.messageId) ?? `openclaw-message-${index}`,
@@ -832,16 +857,31 @@ function mapChatHistoryMessage(value: unknown, index: number): ChatHistoryMessag
   };
 }
 
+function normalizeChatHistoryContent(role: "user" | "assistant", content: string): string {
+  if (role !== "user") return content;
+  const userMessageMarker = "\nUser message:\n";
+  const markerIndex = content.lastIndexOf(userMessageMarker);
+  if (markerIndex < 0) return content;
+
+  const platformPrompt = content.slice(0, markerIndex);
+  if (!platformPrompt.includes("Hiveward role scope:") && !platformPrompt.includes("Hiveward inbox submit protocol:")) {
+    return content;
+  }
+  return content.slice(markerIndex + userMessageMarker.length).trim();
+}
+
 function mapGatewayChatEvent(
   payload: unknown,
-  runId: string,
+  knownRunIds: ReadonlySet<string>,
+  fallbackRunId: string,
   fallbackSessionKey: string,
   currentOutput: string,
   currentUsage: OpenClawUsageFact | undefined,
 ): ChatStreamEvent | undefined {
   if (!isRecord(payload)) return undefined;
-  const eventRunId = readString(payload.runId);
-  if (eventRunId !== runId) return undefined;
+  const eventRunId = readString(payload.runId) ?? readString(payload.taskId) ?? readString(payload.id);
+  if (eventRunId && !knownRunIds.has(eventRunId)) return undefined;
+  const runId = eventRunId ?? fallbackRunId;
   const sessionKey = readString(payload.sessionKey) ?? fallbackSessionKey;
   const usage = readUsageFact(payload.usage ?? payload.message, undefined, runId) ?? currentUsage;
   const state = readString(payload.state);

@@ -70,6 +70,33 @@ export interface PendingApprovalUpstreamItem {
   output: unknown;
 }
 
+export type InboxItemStatus = "pending" | "approved" | "rejected";
+
+export type InboxItemType =
+  | "leader_delegation"
+  | "blueprint_proposal"
+  | "run_request"
+  | "report"
+  | "company_config";
+
+export interface InboxItem {
+  id: string;
+  companyId: string;
+  type: InboxItemType;
+  status: InboxItemStatus;
+  title: string;
+  summary: string;
+  createdByRoleId: string;
+  targetRoleId?: string;
+  blueprintId?: string;
+  blueprintName?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  decisionComment?: string;
+}
+
 export interface WorkspaceDashboard {
   dashboardWidgets: DashboardWidget[];
   savedViews: SavedView[];

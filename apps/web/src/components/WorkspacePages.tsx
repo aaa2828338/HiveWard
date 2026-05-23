@@ -32,6 +32,7 @@ import type {
   CompanyOverview,
   DashboardWidget,
   DashboardWidgetType,
+  InboxItem,
   PendingApprovalItem,
   RuntimeOverview,
   WorkspaceDashboard,
@@ -48,6 +49,7 @@ import {
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
+  resolveRunViewStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -456,7 +458,7 @@ export function RunsPage({
       if (!current || startedAt >= current.lastUsedAt) {
         stats.set(runView.run.blueprintId, {
           latestRunId: runView.run.id,
-          latestStatus: runView.run.status,
+          latestStatus: resolveRunViewStatus(runView),
           lastUsedAt: startedAt
         });
       }
@@ -478,7 +480,7 @@ export function RunsPage({
         : activeIssue?.nodeRun?.error;
   const isActiveIssueError = activeIssue?.outputBody === undefined && activeIssue?.nodeRun?.output === undefined && Boolean(activeIssue?.nodeRun?.error);
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
-  const runFrameState = traceRunFrameState(activeRun?.run.status);
+  const runFrameState = traceRunFrameState(resolveRunViewStatus(activeRun));
 
   useEffect(() => {
     if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
@@ -693,17 +695,25 @@ export function RunsPage({
 
 export function ApprovalsPage({
   approvals,
+  inboxItems,
   language,
   t,
-  onApprove
+  onApprove,
+  onApproveInboxItem,
+  onRejectInboxItem
 }: {
   approvals: PendingApprovalItem[];
+  inboxItems: InboxItem[];
   language: Language;
   t: Messages;
   onApprove: (blueprintRunId: string, nodeRunId: string) => void;
+  onApproveInboxItem: (itemId: string) => void;
+  onRejectInboxItem: (itemId: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
   const inboxCopy = getInboxCopy(language);
+  const pendingInboxItems = inboxItems.filter((item) => item.status === "pending");
+  const totalPending = approvals.length + pendingInboxItems.length;
   const [selectedApprovalId, setSelectedApprovalId] = useState<string | undefined>(approvals[0]?.nodeRunId);
   const selectedApproval = approvals.find((approval) => approval.nodeRunId === selectedApprovalId) ?? approvals[0];
 
@@ -718,7 +728,7 @@ export function ApprovalsPage({
     <section className="page-grid trace-page-grid inbox-page-grid">
       <div className="trace-page-title inbox-page-title">
         <h2>{approvalsPage.title}</h2>
-        <p>{t.metrics.approvals(approvals.length)}</p>
+        <p>{t.metrics.approvals(totalPending)}</p>
       </div>
 
       <section className="trace-layout inbox-layout">
@@ -728,13 +738,50 @@ export function ApprovalsPage({
           </div>
           <div className="content-card stack-card inbox-list-column">
             <div className="inbox-list" role="list" aria-label={inboxCopy.listTitle}>
-              {approvals.length === 0 ? (
+              {totalPending === 0 ? (
                 <div className="inbox-empty-copy">
                   <strong>{inboxCopy.emptyListTitle}</strong>
                   <p>{inboxCopy.emptyListBody}</p>
                 </div>
               ) : (
-                approvals.map((approval, index) => {
+                <>
+                {pendingInboxItems.map((item, index) => (
+                  <article key={item.id} className="inbox-row inbox-formal-row" role="listitem">
+                    <button type="button" className="inbox-row-main" aria-pressed={false}>
+                      <span className="inbox-row-index">{index + 1}</span>
+                      <span className="inbox-row-content">
+                        <span className="inbox-row-topline">
+                          <strong>{item.title}</strong>
+                          <span className="status-pill status-waiting_approval">{formalInboxTypeLabel(item.type, language)}</span>
+                        </span>
+                        <span className="inbox-row-preview">{item.summary}</span>
+                        <span className="inbox-row-meta">
+                          <span>{item.blueprintName ?? item.targetRoleId ?? item.createdByRoleId}</span>
+                          <time dateTime={item.createdAt}>{formatDateTime(item.createdAt, language)}</time>
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="inbox-row-action primary-action"
+                      title={t.actions.approve}
+                      aria-label={t.actions.approve}
+                      onClick={() => onApproveInboxItem(item.id)}
+                    >
+                      <BadgeCheck size={16} />
+                    </button>
+                    <button
+                      type="button"
+                      className="inbox-row-action danger-action"
+                      title={inboxCopy.reject}
+                      aria-label={inboxCopy.reject}
+                      onClick={() => onRejectInboxItem(item.id)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </article>
+                ))}
+                {approvals.map((approval, index) => {
                   const selected = approval.nodeRunId === selectedApproval?.nodeRunId;
                   return (
                     <article key={approval.nodeRunId} className={`inbox-row${selected ? " selected" : ""}`} role="listitem">
@@ -744,7 +791,7 @@ export function ApprovalsPage({
                         aria-pressed={selected}
                         onClick={() => setSelectedApprovalId(approval.nodeRunId)}
                       >
-                        <span className="inbox-row-index">{index + 1}</span>
+                        <span className="inbox-row-index">{pendingInboxItems.length + index + 1}</span>
                         <span className="inbox-row-content">
                           <span className="inbox-row-topline">
                             <strong>{approvalSubject(approval)}</strong>
@@ -768,7 +815,8 @@ export function ApprovalsPage({
                       </button>
                     </article>
                   );
-                })
+                })}
+                </>
               )}
             </div>
           </div>
@@ -793,6 +841,7 @@ type InboxCopy = {
   emptyListTitle: string;
   listTitle: string;
   noUpstreamOutput: string;
+  reject: string;
 };
 
 type InboxContentBlock = {
@@ -808,7 +857,8 @@ function getInboxCopy(language: Language): InboxCopy {
       emptyListBody: "新的人工审批会按时间出现在这里。",
       emptyListTitle: "当前没有待审批收件",
       listTitle: "收件",
-      noUpstreamOutput: "没有拿到上一个节点输出。"
+      noUpstreamOutput: "没有拿到上一个节点输出。",
+      reject: "驳回"
     };
   }
 
@@ -817,8 +867,29 @@ function getInboxCopy(language: Language): InboxCopy {
     emptyListBody: "New human approvals will appear here by request time.",
     emptyListTitle: "No pending inbox items",
     listTitle: "Messages",
-    noUpstreamOutput: "No previous node output was captured."
+    noUpstreamOutput: "No previous node output was captured.",
+    reject: "Reject"
   };
+}
+
+function formalInboxTypeLabel(type: InboxItem["type"], language: Language): string {
+  const labels =
+    language === "zh-CN"
+      ? {
+          leader_delegation: "召集 Leader",
+          blueprint_proposal: "蓝图内容包",
+          run_request: "运行请求",
+          report: "报告",
+          company_config: "公司配置"
+        }
+      : {
+          leader_delegation: "Leader delegation",
+          blueprint_proposal: "Blueprint package",
+          run_request: "Run request",
+          report: "Report",
+          company_config: "Company config"
+        };
+  return labels[type];
 }
 
 function approvalSubject(approval: PendingApprovalItem): string {

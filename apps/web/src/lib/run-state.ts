@@ -1,4 +1,10 @@
-import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+import type {
+  BlueprintNodeRunStatus,
+  BlueprintRunStatus,
+  BlueprintRunSummary,
+  BlueprintRunView,
+  PendingApprovalItem
+} from "@hiveward/shared";
 
 export type RunPollingView = "blueprint" | "runs";
 export type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
@@ -17,16 +23,33 @@ export function selectRunPollingTarget({
   view: RunPollingView;
 }): string | undefined {
   const selectedRun = selectedRunId ? runs.find((runView) => runView.run.id === selectedRunId) : undefined;
-  if (view === "runs" && selectedRun && isPollingRunStatus(selectedRun.run.status)) {
+  if (view === "runs" && selectedRun && isActiveRunView(selectedRun)) {
     return selectedRun.run.id;
   }
 
   return runs.find((runView) => {
-    return runView.run.blueprintId === selectedBlueprintId && isPollingRunStatus(runView.run.status);
+    return runView.run.blueprintId === selectedBlueprintId && isActiveRunView(runView);
   })?.run.id;
 }
 
 export function isPollingRunStatus(status: BlueprintRunStatus): boolean {
+  return status === "queued" || status === "running" || status === "waiting_approval";
+}
+
+export function isActiveRunView(runView?: BlueprintRunView): boolean {
+  return Boolean(runView && (isPollingRunStatus(runView.run.status) || hasActiveNodeRun(runView)));
+}
+
+export function resolveRunViewStatus(runView?: BlueprintRunView): BlueprintRunStatus | undefined {
+  if (!runView) return undefined;
+  return isActiveRunView(runView) ? "running" : runView.run.status;
+}
+
+function hasActiveNodeRun(runView: BlueprintRunView): boolean {
+  return runView.nodeRuns.some((nodeRun) => isActiveNodeRunStatus(nodeRun.status));
+}
+
+function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
 }
 

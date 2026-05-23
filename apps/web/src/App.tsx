@@ -27,6 +27,9 @@ import type {
   ConfigureOpenClawModelAuthRequest,
   DashboardWidgetType,
   HarnessStatus,
+  ArchitectureBlueprintView,
+  CompanyRoleDirectory,
+  InboxItem,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   OpenClawModelUsageSummary,
@@ -42,7 +45,7 @@ import type {
 import { api } from "./lib/api";
 import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
-import { selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
+import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import hivewardPackage from "../../../package.json";
 import {
@@ -139,6 +142,9 @@ export function App() {
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
+  const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
+  const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
@@ -235,6 +241,8 @@ export function App() {
         nextHarnessStatuses,
         nextRunSummaries,
         nextApprovals,
+        nextRoles,
+        nextInboxItems,
         nextDashboard,
         nextRuntime
       ] = await Promise.all([
@@ -247,6 +255,8 @@ export function App() {
         api.getHarnessStatus().catch(() => []),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
+        api.getRoleDirectory().catch(() => undefined),
+        api.listInboxItems().catch(() => []),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
@@ -266,6 +276,9 @@ export function App() {
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
+      setRoleDirectory(nextRoles?.roles);
+      setArchitecture(nextRoles?.architecture);
+      setInboxItems(nextInboxItems);
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
       setDashboardDirty(false);
@@ -438,7 +451,7 @@ export function App() {
   useEffect(() => {
     if (section !== "runs" || runPageBlueprintId || runs.length === 0) return;
     const preferredRun =
-      runs.find((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)) ??
+      runs.find(isActiveRunView) ??
       (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined) ??
       runs[0];
     if (!preferredRun) return;
@@ -447,9 +460,10 @@ export function App() {
   }, [blueprint, runPageBlueprintId, runs, section]);
 
   const activeTaskCount = useMemo(
-    () => runs.filter((runView) => ["queued", "running", "waiting_approval"].includes(runView.run.status)).length,
+    () => runs.filter(isActiveRunView).length,
     [runs]
   );
+  const pendingInboxCount = useMemo(() => inboxItems.filter((item) => item.status === "pending").length, [inboxItems]);
   const pollingRunId = useMemo(
     () =>
       selectRunPollingTarget({
@@ -486,16 +500,17 @@ export function App() {
       company: companies.length,
       blueprint: blueprints.length,
       runs: activeTaskCount,
-      approvals: approvals.length,
+      approvals: approvals.length + pendingInboxCount,
       models: openClawConfig?.configuredModels.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? 0,
       skills: catalog?.tools.length ?? 0,
-      schedule: runs.length + approvals.length,
+      schedule: runs.length + approvals.length + pendingInboxCount,
       channels: openClawConfig?.configuredChannels.length ?? 0
     }),
     [
       companies.length,
       approvals.length,
+      pendingInboxCount,
       activeTaskCount,
       openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
@@ -764,6 +779,36 @@ export function App() {
     [applyRunView, latestRunForBlueprint?.run.id, withBusy]
   );
 
+  const approveInboxItem = useCallback(
+    (itemId: string) => {
+      void withBusy("approveInboxItem", async () => {
+        const result = await api.approveInboxItem(itemId);
+        await hydrateWorkspace({ blueprintId: result.importedBlueprints?.[0]?.id ?? blueprint?.id });
+      });
+    },
+    [blueprint?.id, hydrateWorkspace, withBusy]
+  );
+
+  const rejectInboxItem = useCallback(
+    (itemId: string) => {
+      void withBusy("rejectInboxItem", async () => {
+        await api.rejectInboxItem(itemId);
+        await hydrateWorkspace({ blueprintId: blueprint?.id });
+      });
+    },
+    [blueprint?.id, hydrateWorkspace, withBusy]
+  );
+
+  const handleChatInboxItemCreated = useCallback(
+    (item: InboxItem) => {
+      setInboxItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+      void hydrateWorkspace({ blueprintId: item.blueprintId ?? blueprint?.id }).catch((refreshError) => {
+        setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
+      });
+    },
+    [blueprint?.id, hydrateWorkspace]
+  );
+
   const addWidget = useCallback(
     (type: DashboardWidgetType) => {
       mutateDashboard((current) => ({
@@ -886,7 +931,12 @@ export function App() {
           openClawConfig={openClawConfig}
           harnessStatuses={harnessStatuses}
           runtime={runtime}
+          company={selectedCompany}
+          selectedCompanyId={selectedCompanyId}
+          blueprints={blueprints}
+          roleDirectory={roleDirectory}
           language={language}
+          onInboxItemCreated={handleChatInboxItemCreated}
         />
       );
     }
@@ -916,6 +966,8 @@ export function App() {
         <BlueprintStudioPage
           blueprint={blueprint}
           blueprints={blueprints}
+          architecture={architecture}
+          roleDirectory={roleDirectory}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
           runSummaries={runSummaries}
@@ -955,7 +1007,17 @@ export function App() {
       );
     }
     if (section === "approvals") {
-      return <ApprovalsPage approvals={approvals} language={language} t={t} onApprove={approveRun} />;
+      return (
+        <ApprovalsPage
+          approvals={approvals}
+          inboxItems={inboxItems}
+          language={language}
+          t={t}
+          onApprove={approveRun}
+          onApproveInboxItem={approveInboxItem}
+          onRejectInboxItem={rejectInboxItem}
+        />
+      );
     }
     if (section === "models") {
       return (

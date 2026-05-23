@@ -7,6 +7,8 @@ import type {
   CreateCompanyRequest,
   CreateOpenClawAgentRequest,
   CreateBlueprintRequest,
+  CreateBlueprintProposalRequest,
+  CreateLeaderDelegationRequest,
   DashboardStateResponse,
   DeleteBlueprintResponse,
   DeleteCompanyResponse,
@@ -34,11 +36,17 @@ import type {
   ChatSessionHistoryResponse,
   CreateChatSessionRequest,
   CreateChatSessionResponse,
+  UpdateChatSessionTitleRequest,
+  UpdateChatSessionTitleResponse,
   SendChatMessageRequest,
   ChatStreamEvent,
+  InboxItem,
+  InboxItemResponse,
+  ApproveInboxItemResponse,
   StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
+  RoleDirectoryResponse,
   OpenClawConfigState,
   PortableBlueprintPackage,
   WorkspaceDashboard,
@@ -47,14 +55,14 @@ import type {
   BlueprintRunResponse
 } from "@hiveward/shared";
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
 
 export interface ChatStreamHandlers {
   onEvent: (event: ChatStreamEvent) => void;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetchApi(path, {
     ...init,
     headers: {
       "content-type": "application/json",
@@ -71,6 +79,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(buildApiUrl(path), init);
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    if (apiBaseUrl) {
+      try {
+        return await fetch(path, init);
+      } catch (fallbackError) {
+        if (isAbortError(fallbackError)) throw fallbackError;
+      }
+    }
+    throw new Error("Cannot reach Hiveward API. Make sure the local Hiveward server is running.");
+  }
+}
+
+function buildApiUrl(path: string): string {
+  return apiBaseUrl ? `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}` : path;
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
+}
+
 export const api = {
   async createChatSession(input: CreateChatSessionRequest): Promise<CreateChatSessionResponse> {
     return request<CreateChatSessionResponse>("/api/chat/session", {
@@ -79,12 +111,20 @@ export const api = {
     });
   },
 
-  async streamChat(input: SendChatMessageRequest, handlers: ChatStreamHandlers): Promise<void> {
-    const response = await fetch(`${apiBaseUrl}/api/chat/stream`, {
+  async updateChatSessionTitle(input: UpdateChatSessionTitleRequest): Promise<UpdateChatSessionTitleResponse> {
+    return request<UpdateChatSessionTitleResponse>("/api/chat/session", {
+      method: "PATCH",
+      body: JSON.stringify(input satisfies UpdateChatSessionTitleRequest)
+    });
+  },
+
+  async streamChat(input: SendChatMessageRequest, handlers: ChatStreamHandlers, signal?: AbortSignal): Promise<void> {
+    const response = await fetchApi("/api/chat/stream", {
       method: "POST",
       headers: {
         "content-type": "application/json"
       },
+      signal,
       body: JSON.stringify(input)
     });
 
@@ -113,9 +153,8 @@ export const api = {
     consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
   },
 
-  async getChatSessionHistory(sessionKey: string): Promise<ChatSessionHistoryResponse["messages"]> {
-    const response = await request<ChatSessionHistoryResponse>(`/api/chat/history?sessionKey=${encodeURIComponent(sessionKey)}`);
-    return response.messages;
+  async getChatSessionHistory(sessionKey: string): Promise<ChatSessionHistoryResponse> {
+    return request<ChatSessionHistoryResponse>(`/api/chat/history?sessionKey=${encodeURIComponent(sessionKey)}`);
   },
 
   async getOpenClawConfig(): Promise<OpenClawConfigState> {
@@ -230,6 +269,46 @@ export const api = {
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {
     const response = await request<ListPendingApprovalsResponse>("/api/approvals/pending");
     return response.approvals;
+  },
+
+  async getRoleDirectory(): Promise<RoleDirectoryResponse> {
+    return request<RoleDirectoryResponse>("/api/roles");
+  },
+
+  async listInboxItems(): Promise<InboxItem[]> {
+    const response = await request<{ items: InboxItem[] }>("/api/inbox");
+    return response.items;
+  },
+
+  async createLeaderDelegation(input: CreateLeaderDelegationRequest): Promise<InboxItem> {
+    const response = await request<InboxItemResponse>("/api/inbox/delegations", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateLeaderDelegationRequest)
+    });
+    return response.item;
+  },
+
+  async createBlueprintProposal(input: CreateBlueprintProposalRequest): Promise<InboxItem> {
+    const response = await request<InboxItemResponse>("/api/inbox/blueprint-proposals", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateBlueprintProposalRequest)
+    });
+    return response.item;
+  },
+
+  async approveInboxItem(itemId: string, comment?: string): Promise<ApproveInboxItemResponse> {
+    return request<ApproveInboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    });
+  },
+
+  async rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem> {
+    const response = await request<InboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    });
+    return response.item;
   },
 
   async saveBlueprint(blueprint: BlueprintDefinition): Promise<BlueprintDefinition> {

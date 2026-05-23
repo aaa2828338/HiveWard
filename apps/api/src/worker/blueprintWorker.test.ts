@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { RuntimeAdapter, RuntimeChatSessionResult } from "@hiveward/adapter";
+import type { RuntimeAdapter, RuntimeChatSessionResult, RuntimeChatSessionTitleResult } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
   blueprintRunArchiveSchema,
@@ -68,6 +68,10 @@ class ScriptedAdapter implements RuntimeAdapter {
 
   async createChatSession(): Promise<RuntimeChatSessionResult> {
     throw new Error("Chat session creation is not used by blueprint worker tests.");
+  }
+
+  async updateChatSessionTitle(): Promise<RuntimeChatSessionTitleResult> {
+    throw new Error("Chat session title updates are not used by blueprint worker tests.");
   }
 
   async streamChatMessage(): Promise<void> {
@@ -150,6 +154,10 @@ class BlockingAdapter implements RuntimeAdapter {
 
   async createChatSession(): Promise<RuntimeChatSessionResult> {
     throw new Error("Chat session creation is not used by blueprint worker tests.");
+  }
+
+  async updateChatSessionTitle(): Promise<RuntimeChatSessionTitleResult> {
+    throw new Error("Chat session title updates are not used by blueprint worker tests.");
   }
 
   async streamChatMessage(): Promise<void> {

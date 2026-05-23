@@ -204,6 +204,40 @@ export interface PortableBlueprintPackage {
   blueprints: PortableBlueprintDefinition[];
 }
 
+const portableBlueprintNodeTypes = new Set<BlueprintNodeType>([
+  "agent",
+  "parallel_agents",
+  "manager",
+  "manager_slot",
+  "loop",
+  "condition",
+  "summary",
+  "approval",
+  "send",
+  "note",
+  "group"
+]);
+
+const agentRuntimeIds = new Set<AgentRuntimeId>(["openclaw", "codex", "claude"]);
+
+const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>([
+  "true",
+  "false",
+  "success",
+  "failure"
+]);
+
+const blueprintNodeResultRoles = new Set<BlueprintNodeResultRole>(["auto", "final", "ignore"]);
+const managerInHandlePrefix = "manager-in-";
+const managerOutHandlePrefix = "manager-out-";
+const managerSlotInHandle = "manager-slot-in";
+const managerSlotOutHandle = "manager-slot-out";
+const managerSlotInnerOutHandle = "manager-slot-inner-out";
+const managerSlotInnerInHandle = "manager-slot-inner-in";
+const maxManagerPortCount = 8;
+const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
+const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
+
 export interface BlueprintImportDefaults {
   openclawAgentId?: string;
   modelId?: string;
@@ -336,8 +370,6 @@ const resultProducingNodeTypes = new Set<BlueprintNodeType>([
   "manager",
   "summary"
 ]);
-
-const managerOutHandlePrefix = "manager-out-";
 
 export function resolveFinalRunResult(
   blueprint: BlueprintDefinition,
@@ -1536,20 +1568,238 @@ export function hydrateImportedBlueprint(
     name?: string;
   }
 ): BlueprintDefinition {
+  const edges = portableBlueprint.edges.map((edge) => ({ ...edge }));
+  const nodes = layoutImportedNodesIfNeeded(
+    portableBlueprint.nodes.map((node) => applyImportDefaultsToNode(toPortableBlueprintNode(node), options.defaults)),
+    edges
+  );
   return {
     id: options.id,
     companyId: options.companyId,
     name: normalizeBlueprintText(options.name ?? portableBlueprint.name, "Imported blueprint"),
     description: portableBlueprint.description,
     version: 1,
-    nodes: portableBlueprint.nodes.map((node) => applyImportDefaultsToNode(toPortableBlueprintNode(node), options.defaults)),
-    edges: portableBlueprint.edges.map((edge) => ({ ...edge })),
+    nodes,
+    edges,
     variables: { ...portableBlueprint.variables },
     display: {
-      viewport: portableBlueprint.display.viewport ? { ...portableBlueprint.display.viewport } : { x: 0, y: 0, zoom: 1 }
+      viewport: shouldAutoLayoutImportedNodes(portableBlueprint.nodes)
+        ? { x: 0, y: 0, zoom: 0.85 }
+        : portableBlueprint.display.viewport ? { ...portableBlueprint.display.viewport } : { x: 0, y: 0, zoom: 1 }
     },
     createdAt: options.now,
     updatedAt: options.now
+  };
+}
+
+function layoutImportedNodesIfNeeded(nodes: BlueprintNode[], edges: BlueprintEdge[]): BlueprintNode[] {
+  if (!shouldAutoLayoutImportedNodes(nodes)) return nodes;
+  if (nodes.some((node) => node.type === "manager_slot")) return layoutManagerSlotNodes(nodes, edges);
+  return layoutNodesByGraph(nodes, edges);
+}
+
+function shouldAutoLayoutImportedNodes(nodes: Array<Pick<BlueprintNode, "position">>): boolean {
+  if (nodes.length <= 1) return false;
+  const positions = nodes.map((node) => node.position);
+  if (positions.some((position) => !Number.isFinite(position.x) || !Number.isFinite(position.y))) return true;
+  const uniquePositions = new Set(positions.map((position) => `${Math.round(position.x)}:${Math.round(position.y)}`));
+  if (uniquePositions.size < positions.length) return true;
+
+  const xs = positions.map((position) => position.x);
+  const ys = positions.map((position) => position.y);
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  return width < 160 && height < 120;
+}
+
+function layoutNodesByGraph(nodes: BlueprintNode[], edges: BlueprintEdge[]): BlueprintNode[] {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const incomingCounts = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
+    incomingCounts.set(edge.target, (incomingCounts.get(edge.target) ?? 0) + 1);
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+  }
+
+  const depthById = new Map<string, number>();
+  const queue = nodes
+    .filter((node) => (incomingCounts.get(node.id) ?? 0) === 0)
+    .map((node) => node.id);
+  for (const nodeId of queue) {
+    depthById.set(nodeId, 0);
+  }
+
+  while (queue.length > 0) {
+    const source = queue.shift()!;
+    const sourceDepth = depthById.get(source) ?? 0;
+    for (const target of outgoing.get(source) ?? []) {
+      const nextDepth = Math.max(depthById.get(target) ?? 0, sourceDepth + 1);
+      depthById.set(target, nextDepth);
+      incomingCounts.set(target, Math.max(0, (incomingCounts.get(target) ?? 0) - 1));
+      if (incomingCounts.get(target) === 0) queue.push(target);
+    }
+  }
+
+  for (const [index, node] of nodes.entries()) {
+    if (!depthById.has(node.id)) depthById.set(node.id, Math.min(index, 6));
+  }
+
+  const nodesByDepth = new Map<number, BlueprintNode[]>();
+  for (const node of nodes) {
+    const depth = depthById.get(node.id) ?? 0;
+    nodesByDepth.set(depth, [...(nodesByDepth.get(depth) ?? []), node]);
+  }
+
+  const rowGap = 190;
+  const columnGap = 360;
+  const originX = 80;
+  const originY = 120;
+  return nodes.map((node) => {
+    const depth = depthById.get(node.id) ?? 0;
+    const depthNodes = nodesByDepth.get(depth) ?? [];
+    const row = Math.max(0, depthNodes.findIndex((candidate) => candidate.id === node.id));
+    const centeredOffset = ((depthNodes.length - 1) * rowGap) / 2;
+    return {
+      ...node,
+      position: {
+        x: originX + depth * columnGap,
+        y: originY + row * rowGap - centeredOffset
+      }
+    };
+  });
+}
+
+function layoutManagerSlotNodes(nodes: BlueprintNode[], edges: BlueprintEdge[]): BlueprintNode[] {
+  const managers = nodes.filter((node) => node.type === "manager");
+  const slots = nodes.filter((node) => node.type === "manager_slot");
+  const slotsByManager = new Map<string, BlueprintNode[]>();
+  for (const slotNode of slots) {
+    const managerNodeId = (slotNode.config as ManagerSlotNodeConfig).managerNodeId;
+    slotsByManager.set(managerNodeId, [...(slotsByManager.get(managerNodeId) ?? []), slotNode]);
+  }
+
+  const positioned = new Map<string, BlueprintNode>();
+  let groupOriginY = 80;
+  for (const managerNode of managers) {
+    const managerSlots = [...(slotsByManager.get(managerNode.id) ?? [])].sort(
+      (left, right) => (left.config as ManagerSlotNodeConfig).slot - (right.config as ManagerSlotNodeConfig).slot
+    );
+    const groupHeight = Math.max(300, managerSlots.length * 360);
+    positioned.set(managerNode.id, {
+      ...managerNode,
+      position: { x: 80, y: groupOriginY + Math.max(120, (groupHeight - 220) / 2) }
+    });
+
+    managerSlots.forEach((slotNode, index) => {
+      const childNodes = nodes.filter((node) => node.parentId === slotNode.id);
+      const layout = layoutManagerSlotChildNodes(slotNode, childNodes, edges);
+      const slotSize = {
+        width: Math.max(managerSlotDefaultSize.width, layout.requiredWidth),
+        height: Math.max(managerSlotDefaultSize.height, layout.requiredHeight)
+      };
+      positioned.set(slotNode.id, {
+        ...slotNode,
+        position: { x: 460, y: groupOriginY + index * 360 },
+        size: slotSize
+      });
+      for (const childNode of layout.nodes) {
+        positioned.set(childNode.id, childNode);
+      }
+    });
+
+    groupOriginY += groupHeight + 120;
+  }
+
+  const remainingTopLevelNodes = nodes.filter(
+    (node) => !positioned.has(node.id) && !node.parentId
+  );
+  remainingTopLevelNodes.forEach((node, index) => {
+    positioned.set(node.id, {
+      ...node,
+      position: { x: 460 + index * 360, y: groupOriginY }
+    });
+  });
+
+  for (const node of nodes) {
+    if (!positioned.has(node.id)) positioned.set(node.id, node);
+  }
+
+  return nodes.map((node) => positioned.get(node.id)!);
+}
+
+function layoutManagerSlotChildNodes(
+  slotNode: BlueprintNode,
+  childNodes: BlueprintNode[],
+  edges: BlueprintEdge[]
+): { nodes: BlueprintNode[]; requiredWidth: number; requiredHeight: number } {
+  if (childNodes.length === 0) {
+    return {
+      nodes: [],
+      requiredWidth: managerSlotDefaultSize.width,
+      requiredHeight: managerSlotDefaultSize.height
+    };
+  }
+
+  const childIds = new Set(childNodes.map((node) => node.id));
+  const incomingCounts = new Map(childNodes.map((node) => [node.id, 0]));
+  const outgoing = new Map<string, string[]>();
+  for (const edge of edges) {
+    if (!childIds.has(edge.target)) continue;
+    if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) continue;
+    if (!childIds.has(edge.source)) continue;
+    incomingCounts.set(edge.target, (incomingCounts.get(edge.target) ?? 0) + 1);
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
+  }
+
+  const depthById = new Map<string, number>();
+  const queue = childNodes
+    .filter((node) => (incomingCounts.get(node.id) ?? 0) === 0)
+    .map((node) => node.id);
+  for (const nodeId of queue) depthById.set(nodeId, 0);
+
+  while (queue.length > 0) {
+    const source = queue.shift()!;
+    const sourceDepth = depthById.get(source) ?? 0;
+    for (const target of outgoing.get(source) ?? []) {
+      depthById.set(target, Math.max(depthById.get(target) ?? 0, sourceDepth + 1));
+      incomingCounts.set(target, Math.max(0, (incomingCounts.get(target) ?? 0) - 1));
+      if (incomingCounts.get(target) === 0) queue.push(target);
+    }
+  }
+
+  for (const [index, node] of childNodes.entries()) {
+    if (!depthById.has(node.id)) depthById.set(node.id, Math.min(index, 6));
+  }
+
+  const nodesByDepth = new Map<number, BlueprintNode[]>();
+  for (const node of childNodes) {
+    const depth = depthById.get(node.id) ?? 0;
+    nodesByDepth.set(depth, [...(nodesByDepth.get(depth) ?? []), node]);
+  }
+
+  const childColumnGap = 300;
+  const childRowGap = 150;
+  const childOriginX = 72;
+  const childOriginY = 132;
+  const maxDepth = Math.max(...[...depthById.values()]);
+  const maxRows = Math.max(...[...nodesByDepth.values()].map((depthNodes) => depthNodes.length));
+  return {
+    nodes: childNodes.map((node) => {
+      const depth = depthById.get(node.id) ?? 0;
+      const depthNodes = nodesByDepth.get(depth) ?? [];
+      const row = Math.max(0, depthNodes.findIndex((candidate) => candidate.id === node.id));
+      const centeredOffset = ((depthNodes.length - 1) * childRowGap) / 2;
+      return {
+        ...node,
+        position: {
+          x: childOriginX + depth * childColumnGap,
+          y: childOriginY + row * childRowGap - centeredOffset
+        }
+      };
+    }),
+    requiredWidth: childOriginX + (maxDepth + 1) * childColumnGap + 160,
+    requiredHeight: childOriginY + maxRows * childRowGap + 80
   };
 }
 
@@ -1680,18 +1930,555 @@ function readPortableBlueprintDefinition(value: unknown): PortableBlueprintDefin
       }
     : undefined;
 
-  return {
+  const blueprint = {
     id: readRequiredString(value.id, "blueprint.id"),
     name: readRequiredString(value.name, "blueprint.name"),
     description: readOptionalString(value.description),
     version: readNumber(value.version, 1),
-    nodes: readArray(value.nodes, "blueprint.nodes") as BlueprintNode[],
-    edges: readArray(value.edges, "blueprint.edges") as BlueprintEdge[],
+    nodes: readArray(value.nodes, "blueprint.nodes").map(readPortableBlueprintNode),
+    edges: readArray(value.edges, "blueprint.edges").map(readPortableBlueprintEdge),
     variables: isRecord(value.variables) ? readStringRecord(value.variables) : {},
     display: {
       viewport
     }
   };
+
+  return normalizePortableBlueprintSpecialNodes(blueprint);
+}
+
+function readPortableBlueprintNode(value: unknown, index: number): BlueprintNode {
+  if (!isRecord(value)) {
+    throw new Error(`blueprint.nodes[${index}] must be an object.`);
+  }
+  const type = readRequiredString(value.type, `blueprint.nodes[${index}].type`);
+  if (!isBlueprintNodeType(type)) {
+    throw new Error(`Unsupported blueprint node type: ${type}.`);
+  }
+  const runtimeId = readOptionalAgentRuntimeId(value.runtimeId, `blueprint.nodes[${index}].runtimeId`);
+  return {
+    id: readRequiredString(value.id, `blueprint.nodes[${index}].id`),
+    type,
+    runtimeId: type === "agent" ? runtimeId ?? "openclaw" : runtimeId,
+    position: readPosition(value.position, `blueprint.nodes[${index}].position`),
+    size: isRecord(value.size)
+      ? {
+          width: readNumber(value.size.width, 0),
+          height: readNumber(value.size.height, 0)
+        }
+      : undefined,
+    config: readPortableBlueprintNodeConfig(type, value.config, `blueprint.nodes[${index}].config`),
+    parentId: readOptionalString(value.parentId),
+    disabled: value.disabled === true ? true : undefined
+  };
+}
+
+function readPortableBlueprintNodeConfig(
+  type: BlueprintNodeType,
+  value: unknown,
+  fieldName: string
+): BlueprintNodeConfig {
+  const config = readConfigRecord(value, fieldName);
+  const base = {
+    label: readRequiredString(config.label, `${fieldName}.label`),
+    description: readOptionalString(config.description),
+    resultRole: readOptionalResultRole(config.resultRole, `${fieldName}.resultRole`)
+  };
+
+  if (type === "agent") {
+    return readAgentNodeConfig(config, fieldName, base);
+  }
+  if (type === "parallel_agents") {
+    const agents = readArray(config.agents, `${fieldName}.agents`);
+    return {
+      ...config,
+      ...base,
+      agents: agents.map((agent, index) =>
+        readAgentNodeConfig(readConfigRecord(agent, `${fieldName}.agents[${index}]`), `${fieldName}.agents[${index}]`, {
+          label: readRequiredString((agent as Record<string, unknown>).label, `${fieldName}.agents[${index}].label`),
+          description: isRecord(agent) ? readOptionalString(agent.description) : undefined,
+          resultRole: isRecord(agent) ? readOptionalResultRole(agent.resultRole, `${fieldName}.agents[${index}].resultRole`) : undefined
+        })
+      ),
+      waitFor: config.waitFor === "first_success" ? "first_success" : "all"
+    } as ParallelAgentsNodeConfig;
+  }
+  if (type === "summary") {
+    const mode = config.mode === "openclaw_summary_agent" ? "openclaw_summary_agent" : "structured_merge";
+    return {
+      ...config,
+      ...base,
+      mode,
+      prompt: readOptionalString(config.prompt)
+    } as SummaryNodeConfig;
+  }
+  if (type === "manager") {
+    return {
+      ...base,
+      portCount: readBoundedInteger(config.portCount, 1, maxManagerPortCount, 1),
+      maxHandoffs: readBoundedInteger(config.maxHandoffs, 1, 50, 12),
+      instructions: readOptionalString(config.instructions),
+      openclawAgentId: readOptionalString(config.openclawAgentId),
+      agentName: readOptionalString(config.agentName),
+      modelId: readOptionalString(config.modelId),
+      permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
+      workingDirectory: readOptionalString(config.workingDirectory),
+      timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
+      tools: Array.isArray(config.tools) ? readStringArray(config.tools, `${fieldName}.tools`) : []
+    } as ManagerNodeConfig;
+  }
+  if (type === "manager_slot") {
+    return {
+      ...base,
+      managerNodeId: readOptionalString(config.managerNodeId) ?? "",
+      slot: readBoundedInteger(config.slot, 1, maxManagerPortCount, 1)
+    } as ManagerSlotNodeConfig;
+  }
+
+  return {
+    ...config,
+    ...base
+  } as BlueprintNodeConfig;
+}
+
+function readAgentNodeConfig(
+  config: Record<string, unknown>,
+  fieldName: string,
+  base: Pick<BlueprintNodeBaseConfig, "label" | "description" | "resultRole">
+): AgentNodeConfig {
+  return {
+    ...base,
+    openclawAgentId: readOptionalString(config.openclawAgentId),
+    profileId: readOptionalString(config.profileId),
+    agentName: readRequiredString(config.agentName, `${fieldName}.agentName`),
+    prompt: readRequiredString(config.prompt, `${fieldName}.prompt`),
+    modelId: readOptionalString(config.modelId),
+    permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
+    workingDirectory: readOptionalString(config.workingDirectory),
+    timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
+    outputSchema: isRecord(config.outputSchema) ? config.outputSchema : undefined,
+    tools: readStringArray(config.tools, `${fieldName}.tools`)
+  };
+}
+
+function readPortableBlueprintEdge(value: unknown, index: number): BlueprintEdge {
+  if (!isRecord(value)) {
+    throw new Error(`blueprint.edges[${index}] must be an object.`);
+  }
+  const source = readOptionalString(value.source) ?? readOptionalString(value.from);
+  const target = readOptionalString(value.target) ?? readOptionalString(value.to);
+  if (!source) {
+    throw new Error(`blueprint.edges[${index}].source must be a non-empty string.`);
+  }
+  if (!target) {
+    throw new Error(`blueprint.edges[${index}].target must be a non-empty string.`);
+  }
+  const condition = readOptionalString(value.condition);
+  if (condition && !blueprintEdgeConditions.has(condition as NonNullable<BlueprintEdge["condition"]>)) {
+    throw new Error(`Unsupported blueprint edge condition: ${condition}.`);
+  }
+  return {
+    id: readOptionalString(value.id) ?? `edge-${index + 1}-${source}-${target}`,
+    source,
+    target,
+    sourceHandle: readOptionalString(value.sourceHandle),
+    targetHandle: readOptionalString(value.targetHandle),
+    label: readOptionalString(value.label),
+    condition: condition as BlueprintEdge["condition"] | undefined
+  };
+}
+
+function normalizePortableBlueprintSpecialNodes(blueprint: PortableBlueprintDefinition): PortableBlueprintDefinition {
+  const nodes = blueprint.nodes.map((node) => ({
+    ...node,
+    position: { ...node.position },
+    size: node.size ? { ...node.size } : undefined,
+    config: { ...node.config } as BlueprintNodeConfig
+  }));
+  const edges = blueprint.edges.map((edge) => ({ ...edge }));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+
+  for (const edge of edges) {
+    if (!nodesById.has(edge.source)) {
+      throw new Error(`Blueprint edge ${edge.id} references missing source node ${edge.source}.`);
+    }
+    if (!nodesById.has(edge.target)) {
+      throw new Error(`Blueprint edge ${edge.id} references missing target node ${edge.target}.`);
+    }
+  }
+
+  const slotNodes = nodes.filter((node) => node.type === "manager_slot");
+  if (slotNodes.length === 0) {
+    return {
+      ...blueprint,
+      nodes,
+      edges
+    };
+  }
+
+  attachSlotChildNodesFromEdges(nodes, edges, nodesById);
+  normalizeManagerSlotConfigs(nodes, edges, nodesById);
+
+  const refreshedNodesById = new Map(nodes.map((node) => [node.id, node]));
+  const managersWithSlots = new Set(
+    nodes
+      .filter((node) => node.type === "manager_slot")
+      .map((node) => (node.config as ManagerSlotNodeConfig).managerNodeId)
+  );
+  let nextEdges = edges.reduce<BlueprintEdge[]>(
+    (normalizedEdges, edge) => appendNormalizedEdge(
+      normalizedEdges,
+      normalizeManagerSlotEdge(edge, refreshedNodesById, managersWithSlots)
+    ),
+    []
+  );
+
+  for (const slotNode of nodes.filter((node) => node.type === "manager_slot")) {
+    nextEdges = ensureManagerSlotEdges(nextEdges, nodes, slotNode);
+  }
+
+  return {
+    ...blueprint,
+    nodes,
+    edges: nextEdges
+  };
+}
+
+function attachSlotChildNodesFromEdges(
+  nodes: BlueprintNode[],
+  edges: BlueprintEdge[],
+  nodesById: Map<string, BlueprintNode>
+): void {
+  const slotIds = new Set(nodes.filter((node) => node.type === "manager_slot").map((node) => node.id));
+  for (const edge of edges) {
+    const sourceIsSlot = slotIds.has(edge.source);
+    const targetIsSlot = slotIds.has(edge.target);
+    if (sourceIsSlot === targetIsSlot) continue;
+
+    const slotId = sourceIsSlot ? edge.source : edge.target;
+    const childId = sourceIsSlot ? edge.target : edge.source;
+    const child = nodesById.get(childId);
+    if (!child || child.type === "manager" || child.type === "manager_slot") continue;
+    if (child.parentId && child.parentId !== slotId) {
+      throw new Error(`Node ${child.id} cannot be connected to manager slot ${slotId}; it already belongs to slot ${child.parentId}.`);
+    }
+    child.parentId = slotId;
+  }
+}
+
+function normalizeManagerSlotConfigs(
+  nodes: BlueprintNode[],
+  edges: BlueprintEdge[],
+  nodesById: Map<string, BlueprintNode>
+): void {
+  const managers = nodes.filter((node) => node.type === "manager");
+  const managerIds = new Set(managers.map((node) => node.id));
+  const slotsByManager = new Map<string, BlueprintNode[]>();
+
+  for (const slotNode of nodes.filter((node) => node.type === "manager_slot")) {
+    const config = slotNode.config as ManagerSlotNodeConfig;
+    const managerNodeId = resolveManagerSlotManagerId(slotNode, config, edges, nodesById, managerIds);
+    slotNode.config = {
+      ...config,
+      managerNodeId
+    };
+    slotNode.size = normalizeManagerSlotSize(slotNode.size);
+    slotsByManager.set(managerNodeId, [...(slotsByManager.get(managerNodeId) ?? []), slotNode]);
+  }
+
+  for (const [managerNodeId, slotNodes] of slotsByManager) {
+    const usedSlots = new Set<number>();
+    let highestSlot = 1;
+    for (const slotNode of slotNodes) {
+      const config = slotNode.config as ManagerSlotNodeConfig;
+      const edgeSlot = resolveManagerSlotNumberFromEdges(slotNode, managerNodeId, edges);
+      const requestedSlot = edgeSlot ?? normalizeManagerSlotNumber(config.slot, 1);
+      const slot = usedSlots.has(requestedSlot) ? nextAvailableSlotNumber(usedSlots) : requestedSlot;
+      usedSlots.add(slot);
+      highestSlot = Math.max(highestSlot, slot);
+      slotNode.config = {
+        ...config,
+        managerNodeId,
+        slot
+      };
+    }
+
+    const managerNode = nodesById.get(managerNodeId);
+    if (managerNode?.type !== "manager") continue;
+    const managerConfig = managerNode.config as ManagerNodeConfig;
+    managerNode.config = {
+      ...managerConfig,
+      portCount: Math.min(maxManagerPortCount, Math.max(managerConfig.portCount, highestSlot))
+    };
+  }
+}
+
+function resolveManagerSlotManagerId(
+  slotNode: BlueprintNode,
+  config: ManagerSlotNodeConfig,
+  edges: BlueprintEdge[],
+  nodesById: Map<string, BlueprintNode>,
+  managerIds: Set<string>
+): string {
+  if (config.managerNodeId && managerIds.has(config.managerNodeId)) return config.managerNodeId;
+
+  const edgeManagerIds = edges.flatMap((edge) => {
+    if (edge.target === slotNode.id) {
+      return nodesById.get(edge.source)?.type === "manager" ? [edge.source] : [];
+    }
+    if (edge.source === slotNode.id) {
+      return nodesById.get(edge.target)?.type === "manager" ? [edge.target] : [];
+    }
+    return [];
+  });
+  const uniqueEdgeManagerIds = [...new Set(edgeManagerIds)];
+  if (uniqueEdgeManagerIds.length === 1) return uniqueEdgeManagerIds[0]!;
+
+  const allManagerIds = [...managerIds];
+  if (allManagerIds.length === 1) return allManagerIds[0]!;
+
+  throw new Error(`Manager slot ${slotNode.id} must reference exactly one manager node through config.managerNodeId.`);
+}
+
+function resolveManagerSlotNumberFromEdges(
+  slotNode: BlueprintNode,
+  managerNodeId: string,
+  edges: BlueprintEdge[]
+): number | undefined {
+  for (const edge of edges) {
+    if (edge.source === managerNodeId && edge.target === slotNode.id) {
+      const slot = parseManagerPortHandle(edge.sourceHandle, managerOutHandlePrefix);
+      if (slot !== undefined) return slot;
+    }
+    if (edge.source === slotNode.id && edge.target === managerNodeId) {
+      const slot = parseManagerPortHandle(edge.targetHandle, managerInHandlePrefix);
+      if (slot !== undefined) return slot;
+    }
+  }
+  return undefined;
+}
+
+function normalizeManagerSlotEdge(
+  edge: BlueprintEdge,
+  nodesById: Map<string, BlueprintNode>,
+  managersWithSlots: Set<string>
+): BlueprintEdge {
+  const source = nodesById.get(edge.source);
+  const target = nodesById.get(edge.target);
+  if (!source || !target) return edge;
+
+  if (source.type === "manager" && target.type === "manager_slot") {
+    const slotConfig = target.config as ManagerSlotNodeConfig;
+    if (slotConfig.managerNodeId !== source.id) {
+      throw new Error(`Manager slot ${target.id} belongs to ${slotConfig.managerNodeId}, not ${source.id}.`);
+    }
+    return {
+      ...edge,
+      sourceHandle: `${managerOutHandlePrefix}${slotConfig.slot}`,
+      targetHandle: managerSlotInHandle,
+      condition: edge.condition ?? "success"
+    };
+  }
+
+  if (source.type === "manager_slot" && target.type === "manager") {
+    const slotConfig = source.config as ManagerSlotNodeConfig;
+    if (slotConfig.managerNodeId !== target.id) {
+      throw new Error(`Manager slot ${source.id} belongs to ${slotConfig.managerNodeId}, not ${target.id}.`);
+    }
+    return {
+      ...edge,
+      sourceHandle: managerSlotOutHandle,
+      targetHandle: `${managerInHandlePrefix}${slotConfig.slot}`,
+      condition: edge.condition ?? "success"
+    };
+  }
+
+  if (source.type === "manager_slot" || target.type === "manager_slot") {
+    return normalizeManagerSlotBoundaryEdge(edge, source, target);
+  }
+
+  if (source.type === "manager" && managersWithSlots.has(source.id) && edge.sourceHandle?.startsWith(managerOutHandlePrefix)) {
+    throw new Error(`Manager ${source.id} must send ${edge.sourceHandle} to a manager_slot node, not ${target.type} ${target.id}.`);
+  }
+  if (target.type === "manager" && managersWithSlots.has(target.id) && edge.targetHandle?.startsWith(managerInHandlePrefix)) {
+    throw new Error(`Manager ${target.id} must receive ${edge.targetHandle} from a manager_slot node, not ${source.type} ${source.id}.`);
+  }
+
+  return edge;
+}
+
+function normalizeManagerSlotBoundaryEdge(edge: BlueprintEdge, source: BlueprintNode, target: BlueprintNode): BlueprintEdge {
+  const slotNode = source.type === "manager_slot" ? source : target;
+  const otherNode = source.type === "manager_slot" ? target : source;
+
+  if (otherNode.type === "manager_slot") {
+    throw new Error(`Manager slots must not connect directly to each other (${source.id} -> ${target.id}).`);
+  }
+  if (otherNode.type === "manager") {
+    throw new Error(`Manager slot edge ${edge.id} must use canonical manager-slot handles.`);
+  }
+  if (otherNode.parentId !== slotNode.id) {
+    throw new Error(`Node ${otherNode.id} must set parentId to manager slot ${slotNode.id} before connecting to it.`);
+  }
+
+  if (source.type === "manager_slot") {
+    return {
+      ...edge,
+      sourceHandle: managerSlotInnerOutHandle,
+      condition: edge.condition ?? "success"
+    };
+  }
+  return {
+    ...edge,
+    targetHandle: managerSlotInnerInHandle,
+    condition: edge.condition ?? "success"
+  };
+}
+
+function ensureManagerSlotEdges(edges: BlueprintEdge[], nodes: BlueprintNode[], slotNode: BlueprintNode): BlueprintEdge[] {
+  const slotConfig = slotNode.config as ManagerSlotNodeConfig;
+  let nextEdges = appendNormalizedEdge(edges, {
+    id: `edge-${slotConfig.managerNodeId}-${slotNode.id}-slot-${slotConfig.slot}-out`,
+    source: slotConfig.managerNodeId,
+    sourceHandle: `${managerOutHandlePrefix}${slotConfig.slot}`,
+    target: slotNode.id,
+    targetHandle: managerSlotInHandle,
+    condition: "success"
+  });
+  nextEdges = appendNormalizedEdge(nextEdges, {
+    id: `edge-${slotNode.id}-${slotConfig.managerNodeId}-slot-${slotConfig.slot}-return`,
+    source: slotNode.id,
+    sourceHandle: managerSlotOutHandle,
+    target: slotConfig.managerNodeId,
+    targetHandle: `${managerInHandlePrefix}${slotConfig.slot}`,
+    condition: "success"
+  });
+
+  const childNodes = nodes.filter((node) => node.parentId === slotNode.id);
+  if (childNodes.length === 0) return nextEdges;
+
+  const childIds = new Set(childNodes.map((node) => node.id));
+  const hasSlotInputEdge = nextEdges.some((edge) => edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle);
+  const hasSlotOutputEdge = nextEdges.some((edge) => edge.target === slotNode.id && edge.targetHandle === managerSlotInnerInHandle);
+  const firstChild = childNodes.find(
+    (node) => !nextEdges.some((edge) => edge.target === node.id && (edge.source === slotNode.id || childIds.has(edge.source)))
+  ) ?? childNodes[0]!;
+  const lastChild = childNodes.find(
+    (node) => !nextEdges.some((edge) => edge.source === node.id && (edge.target === slotNode.id || childIds.has(edge.target)))
+  ) ?? childNodes[childNodes.length - 1]!;
+
+  if (!hasSlotInputEdge) {
+    nextEdges = appendNormalizedEdge(nextEdges, {
+      id: `edge-${slotNode.id}-${firstChild.id}-slot-input`,
+      source: slotNode.id,
+      sourceHandle: managerSlotInnerOutHandle,
+      target: firstChild.id,
+      condition: "success"
+    });
+  }
+  if (!hasSlotOutputEdge) {
+    nextEdges = appendNormalizedEdge(nextEdges, {
+      id: `edge-${lastChild.id}-${slotNode.id}-slot-output`,
+      source: lastChild.id,
+      target: slotNode.id,
+      targetHandle: managerSlotInnerInHandle,
+      condition: "success"
+    });
+  }
+  return nextEdges;
+}
+
+function appendNormalizedEdge(edges: BlueprintEdge[], edge: BlueprintEdge): BlueprintEdge[] {
+  if (
+    edges.some(
+      (candidate) =>
+        candidate.source === edge.source &&
+        candidate.target === edge.target &&
+        candidate.sourceHandle === edge.sourceHandle &&
+        candidate.targetHandle === edge.targetHandle
+    )
+  ) {
+    return edges;
+  }
+
+  const usedIds = new Set(edges.map((candidate) => candidate.id));
+  let id = edge.id;
+  let suffix = 2;
+  while (usedIds.has(id)) {
+    id = `${edge.id}-${suffix}`;
+    suffix += 1;
+  }
+  return [...edges, { ...edge, id }];
+}
+
+function normalizeManagerSlotSize(size?: CanvasSize): CanvasSize {
+  return {
+    width: normalizeCanvasSizeValue(size?.width, managerSlotDefaultSize.width, managerSlotMinSize.width),
+    height: normalizeCanvasSizeValue(size?.height, managerSlotDefaultSize.height, managerSlotMinSize.height)
+  };
+}
+
+function normalizeCanvasSizeValue(value: unknown, fallback: number, min: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.round(value)) : fallback;
+}
+
+function normalizeManagerSlotNumber(value: unknown, fallback: number): number {
+  return readBoundedInteger(value, 1, maxManagerPortCount, fallback);
+}
+
+function nextAvailableSlotNumber(usedSlots: Set<number>): number {
+  for (let slot = 1; slot <= maxManagerPortCount; slot += 1) {
+    if (!usedSlots.has(slot)) return slot;
+  }
+  return maxManagerPortCount;
+}
+
+function parseManagerPortHandle(handle: string | undefined, prefix: string): number | undefined {
+  if (!handle?.startsWith(prefix)) return undefined;
+  const parsed = Number.parseInt(handle.slice(prefix.length), 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > maxManagerPortCount) return undefined;
+  return parsed;
+}
+
+function readPosition(value: unknown, fieldName: string): CanvasPosition {
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+  return {
+    x: readNumber(value.x, 0),
+    y: readNumber(value.y, 0)
+  };
+}
+
+function readConfigRecord(value: unknown, fieldName: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+  return value;
+}
+
+function readStringArray(value: unknown, fieldName: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array.`);
+  }
+  return value.flatMap((item) => (typeof item === "string" ? [item] : []));
+}
+
+function readOptionalAgentRuntimeId(value: unknown, fieldName: string): AgentRuntimeId | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && agentRuntimeIds.has(value as AgentRuntimeId)) return value as AgentRuntimeId;
+  throw new Error(`${fieldName} must be openclaw, codex, or claude.`);
+}
+
+function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNodeResultRole | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && blueprintNodeResultRoles.has(value as BlueprintNodeResultRole)) {
+    return value as BlueprintNodeResultRole;
+  }
+  throw new Error(`${fieldName} must be auto, final, or ignore.`);
+}
+
+function isBlueprintNodeType(value: string): value is BlueprintNodeType {
+  return portableBlueprintNodeTypes.has(value as BlueprintNodeType);
 }
 
 function readArray(value: unknown, fieldName: string): unknown[] {
@@ -1714,6 +2501,11 @@ function readOptionalString(value: unknown): string | undefined {
 
 function readNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readBoundedInteger(value: unknown, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
 function readStringRecord(value: Record<string, unknown>): Record<string, string> {
