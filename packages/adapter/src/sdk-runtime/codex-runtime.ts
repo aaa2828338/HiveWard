@@ -1,7 +1,8 @@
 import { nanoid } from "nanoid";
-import { Codex, type ThreadOptions, type TurnOptions, type Usage } from "@openai/codex-sdk";
+import { Codex, type ThreadEvent, type ThreadOptions, type TurnOptions, type Usage } from "@openai/codex-sdk";
 import type {
   AgentTaskResult,
+  ChatStreamEvent,
   OpenClawUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -9,18 +10,21 @@ import type {
 } from "@hiveward/shared";
 import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapCodexSandbox, normalizePermissionProfile } from "./permissions";
+import { buildSdkChatPrompt, mapCodexReasoningEffort } from "./chat-envelope";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
-import type { AgentSdkRuntime } from "./types";
+import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { assertGitWorkspace, resolveSdkWorkingDirectory } from "./workspace";
 
 export interface CodexThreadLike {
   readonly id: string | null;
   run(input: string, turnOptions?: TurnOptions): Promise<{ finalResponse: string; usage: Usage | null }>;
+  runStreamed?(input: string, turnOptions?: TurnOptions): Promise<{ events: AsyncGenerator<ThreadEvent> }>;
 }
 
 export interface CodexClientLike {
   startThread(options?: ThreadOptions): CodexThreadLike;
+  resumeThread?(id: string, options?: ThreadOptions): CodexThreadLike;
 }
 
 export type CreateCodexClient = () => CodexClientLike;
@@ -35,6 +39,78 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     private readonly env: NodeJS.ProcessEnv = process.env
   ) {
     this.createCodexClient = createCodexClient ?? (() => new Codex({ apiKey: this.env.CODEX_API_KEY }));
+  }
+
+  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    const now = new Date().toISOString();
+    const taskId = `codex-chat-${nanoid(10)}`;
+    const runId = `codex-chat-run-${nanoid(10)}`;
+    let sessionKey = input.sessionKey || `codex-chat-session-${nanoid(10)}`;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort("timeout"), normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs));
+
+    onEvent({
+      type: "started",
+      taskId,
+      runId,
+      sessionKey,
+      source: "codex",
+      status: "running",
+      updatedAt: now
+    });
+
+    try {
+      requireConfiguredModel(input.modelId);
+      assertGitWorkspace(this.options.workspaceRoot, this.options.workspaceRoot);
+
+      const codex = this.createCodexClient();
+      const threadOptions: ThreadOptions = {
+        model: input.modelId,
+        workingDirectory: this.options.workspaceRoot,
+        sandboxMode: "read-only",
+        approvalPolicy: "never",
+        networkAccessEnabled: false,
+        webSearchMode: "disabled",
+        modelReasoningEffort: mapCodexReasoningEffort(input.thinking)
+      };
+      const thread = input.sessionKey && codex.resumeThread
+        ? codex.resumeThread(input.sessionKey, threadOptions)
+        : codex.startThread(threadOptions);
+      const prompt = buildSdkChatPrompt(input.message, input.attachments);
+      const output = thread.runStreamed
+        ? await this.runStreamedChatTurn(thread, prompt, { signal: abortController.signal }, onEvent, (nextSessionKey) => {
+            sessionKey = nextSessionKey;
+          })
+        : await this.runBufferedChatTurn(thread, prompt, { signal: abortController.signal }, onEvent);
+
+      sessionKey = thread.id ?? sessionKey;
+      onEvent({
+        type: "done",
+        taskId,
+        runId,
+        sessionKey,
+        source: "codex",
+        status: "succeeded",
+        output: output.text,
+        usage: output.usage ? mapCodexUsage({ modelId: input.modelId }, output.usage) : undefined,
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      onEvent({
+        type: "done",
+        taskId,
+        runId,
+        sessionKey,
+        source: "codex",
+        status: isAbortLikeError(error) || abortController.signal.aborted ? "cancelled" : "failed",
+        error: isAbortLikeError(error) || abortController.signal.aborted
+          ? formatAgentSdkError("cancelled", "Run was cancelled.")
+          : formatAgentSdkProviderError("Codex", error),
+        updatedAt: new Date().toISOString()
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
@@ -202,6 +278,57 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")
     });
   }
+
+  private async runBufferedChatTurn(
+    thread: CodexThreadLike,
+    prompt: string,
+    turnOptions: TurnOptions,
+    onEvent: (event: ChatStreamEvent) => void
+  ): Promise<{ text: string; usage: Usage | null }> {
+    const turn = await thread.run(prompt, turnOptions);
+    if (turn.finalResponse) {
+      onEvent({ type: "delta", text: turn.finalResponse });
+    }
+    return {
+      text: turn.finalResponse,
+      usage: turn.usage
+    };
+  }
+
+  private async runStreamedChatTurn(
+    thread: CodexThreadLike,
+    prompt: string,
+    turnOptions: TurnOptions,
+    onEvent: (event: ChatStreamEvent) => void,
+    onSessionKey: (sessionKey: string) => void
+  ): Promise<{ text: string; usage: Usage | null }> {
+    if (!thread.runStreamed) {
+      return this.runBufferedChatTurn(thread, prompt, turnOptions, onEvent);
+    }
+
+    const { events } = await thread.runStreamed(prompt, turnOptions);
+    let output = "";
+    let usage: Usage | null = null;
+    for await (const event of events) {
+      if (event.type === "thread.started") {
+        onSessionKey(event.thread_id);
+        continue;
+      }
+      if (event.type === "turn.completed") {
+        usage = event.usage;
+        continue;
+      }
+      if (event.type === "turn.failed") {
+        throw new Error(event.error.message);
+      }
+      if (event.type !== "item.completed" || event.item.type !== "agent_message" || !event.item.text) {
+        continue;
+      }
+      output = output ? `${output}\n${event.item.text}` : event.item.text;
+      onEvent({ type: "delta", text: event.item.text });
+    }
+    return { text: output, usage };
+  }
 }
 
 function requireConfiguredModel(modelId: string | undefined): void {
@@ -210,7 +337,7 @@ function requireConfiguredModel(modelId: string | undefined): void {
   }
 }
 
-function mapCodexUsage(input: StartAgentTaskInput, usage: Usage | null): OpenClawUsageFact {
+function mapCodexUsage(input: { modelId?: string }, usage: Usage | null): OpenClawUsageFact {
   return {
     id: `usage-${nanoid(10)}`,
     modelId: input.modelId ?? "codex",

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -289,13 +289,131 @@ describe("apiRouter", () => {
     }
   });
 
+  it("reports Codex models from the local Codex config and model cache", async () => {
+    const fixture = await createStoreFixture();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousHivewardCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
+    const previousCodexDefault = process.env.CODEX_DEFAULT_MODEL;
+    process.env.CODEX_HOME = codexHome;
+    delete process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
+    delete process.env.CODEX_DEFAULT_MODEL;
+
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.5"\n[profiles.fast]\nmodel = "gpt-5.3-codex-spark"\n');
+    writeFileSync(join(codexHome, "auth.json"), "{}");
+    writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({
+      models: [
+        {
+          slug: "gpt-5.4",
+          display_name: "GPT-5.4",
+          visibility: "list",
+          supported_in_api: true,
+          priority: 4,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "minimal" }, { effort: "high" }]
+        },
+        {
+          slug: "gpt-5.5",
+          display_name: "GPT-5.5",
+          visibility: "list",
+          supported_in_api: true,
+          priority: 9,
+          supported_reasoning_levels: [{ effort: "low" }, { effort: "medium" }, { effort: "xhigh" }]
+        },
+        {
+          slug: "internal-hidden-model",
+          display_name: "Hidden",
+          visibility: "hidden",
+          supported_in_api: true,
+          priority: 99
+        }
+      ]
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{ id: string; defaultModelId?: string; models?: Array<{ id: string; label: string; isDefault?: boolean; thinkingLevels?: string[] }> }>;
+        }>(response);
+        const codexStatus = body.statuses.find((status) => status.id === "codex");
+        const codexModelIds = codexStatus?.models?.map((model) => model.id) ?? [];
+
+        expect(codexStatus?.defaultModelId).toBe("gpt-5.5");
+        expect(codexStatus?.models?.[0]).toMatchObject({
+          id: "gpt-5.5",
+          label: "GPT-5.5",
+          isDefault: true
+        });
+        expect(codexModelIds).toEqual(expect.arrayContaining(["gpt-5.5", "gpt-5.4"]));
+        expect(codexModelIds).not.toContain("internal-hidden-model");
+        expect(codexStatus?.models?.find((model) => model.id === "gpt-5.4")?.thinkingLevels).toEqual(["low", "high"]);
+      });
+    } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousHivewardCodexDefault);
+      restoreEnv("CODEX_DEFAULT_MODEL", previousCodexDefault);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Claude Code model options from local Claude settings", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const previousHivewardClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    const previousClaudeDefault = process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    const previousHivewardClaudeModels = process.env.HIVEWARD_CLAUDE_CODE_MODELS;
+    const previousClaudeModels = process.env.CLAUDE_CODE_MODELS;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+    delete process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.HIVEWARD_CLAUDE_CODE_MODELS;
+    delete process.env.CLAUDE_CODE_MODELS;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-local",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-local",
+        UNRELATED_TOKEN: "not-a-model"
+      }
+    }));
+    writeFileSync(join(claudeHome, ".credentials.json"), "{}");
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{ id: string; defaultModelId?: string; models?: Array<{ id: string; isDefault?: boolean }> }>;
+        }>(response);
+        const claudeStatus = body.statuses.find((status) => status.id === "claudeCode");
+        const claudeModelIds = claudeStatus?.models?.map((model) => model.id) ?? [];
+
+        expect(claudeStatus?.defaultModelId).toBe("inherit");
+        expect(claudeStatus?.models?.[0]).toMatchObject({ id: "inherit", isDefault: true });
+        expect(claudeModelIds).toEqual(expect.arrayContaining(["inherit", "claude-haiku-local", "claude-sonnet-local"]));
+        expect(claudeModelIds).not.toContain("not-a-model");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousHivewardClaudeDefault);
+      restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      restoreEnv("HIVEWARD_CLAUDE_CODE_MODELS", previousHivewardClaudeModels);
+      restoreEnv("CLAUDE_CODE_MODELS", previousClaudeModels);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("reports and installs HiveWard skills into the OpenClaw home skill root", async () => {
     const fixture = await createStoreFixture();
     const openClawWorkspace = join(fixture.dir, "openclaw-workspace");
     const openClawHome = join(fixture.dir, "openclaw-home");
     const openClawConfigStore = createConfigStoreFixture(openClawWorkspace);
     const previousOpenClawHome = process.env.OPENCLAW_HOME;
+    const previousOpenClawStateDir = process.env.OPENCLAW_STATE_DIR;
     process.env.OPENCLAW_HOME = openClawHome;
+    delete process.env.OPENCLAW_STATE_DIR;
     try {
       await withApiServer(
         fixture.store,
@@ -304,11 +422,17 @@ describe("apiRouter", () => {
           const initialBody = await readOkJson<{
             supported: boolean;
             installRoot?: string;
+            installCandidates?: Array<{ root: string; source: string; selected: boolean; hasHiveWardSkills: boolean }>;
             skills: Array<{ id: string; status: string; installed: boolean; targetPath?: string }>;
           }>(initialResponse);
 
           expect(initialBody.supported).toBe(true);
           expect(initialBody.installRoot).toBe(join(openClawHome, "skills"));
+          expect(initialBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
+            root: join(openClawHome, "skills"),
+            source: "environment",
+            hasHiveWardSkills: false
+          });
           expect(initialBody.skills.map((skill) => skill.status)).toEqual(["missing", "missing"]);
 
           const installResponse = await fetch(`${baseUrl}/api/harness-skills/openclaw/install`, {
@@ -316,6 +440,7 @@ describe("apiRouter", () => {
           });
           const installBody = await readOkJson<{
             installedCount: number;
+            installCandidates?: Array<{ root: string; source: string; selected: boolean; hasHiveWardSkills: boolean }>;
             skills: Array<{ id: string; status: string; installed: boolean }>;
           }>(installResponse);
 
@@ -324,6 +449,11 @@ describe("apiRouter", () => {
             ["hiveward-ceo", "installed", true],
             ["hiveward-leader", "installed", true]
           ]);
+          expect(installBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
+            root: join(openClawHome, "skills"),
+            source: "environment",
+            hasHiveWardSkills: true
+          });
           expect(existsSync(join(openClawHome, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
           expect(existsSync(join(openClawHome, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
         },
@@ -332,24 +462,72 @@ describe("apiRouter", () => {
       );
     } finally {
       restoreEnv("OPENCLAW_HOME", previousOpenClawHome);
+      restoreEnv("OPENCLAW_STATE_DIR", previousOpenClawStateDir);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("reports unsupported native skill installation for harnesses without an installer", async () => {
+  it("reports and installs HiveWard skills into Codex and Claude Code skill roots", async () => {
     const fixture = await createStoreFixture();
+    const codexHome = join(fixture.dir, "codex-home");
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CODEX_HOME = codexHome;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/harness-skills/codex`);
-        const body = await readOkJson<{ supported: boolean; skills: Array<{ status: string; installed: boolean }> }>(response);
+        for (const [harnessId, root] of [
+          ["codex", codexHome],
+          ["claudeCode", claudeHome]
+        ] as const) {
+          const initialResponse = await fetch(`${baseUrl}/api/harness-skills/${harnessId}`);
+          const initialBody = await readOkJson<{
+            supported: boolean;
+            installRoot?: string;
+            installCandidates?: Array<{ root: string; source: string; selected: boolean; hasHiveWardSkills: boolean }>;
+            skills: Array<{ status: string; installed: boolean }>;
+          }>(initialResponse);
 
-        expect(body.supported).toBe(false);
-        expect(body.skills.map((skill) => [skill.status, skill.installed])).toEqual([
-          ["unsupported", false],
-          ["unsupported", false]
-        ]);
+          expect(initialBody.supported).toBe(true);
+          expect(initialBody.installRoot).toBe(join(root, "skills"));
+          expect(initialBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
+            root: join(root, "skills"),
+            source: "environment",
+            hasHiveWardSkills: false
+          });
+          expect(initialBody.installCandidates?.some((candidate) => candidate.source === "project")).toBe(true);
+          expect(initialBody.skills.map((skill) => [skill.status, skill.installed])).toEqual([
+            ["missing", false],
+            ["missing", false]
+          ]);
+
+          const installResponse = await fetch(`${baseUrl}/api/harness-skills/${harnessId}/install`, {
+            method: "POST"
+          });
+          const installBody = await readOkJson<{
+            installedCount: number;
+            installCandidates?: Array<{ root: string; source: string; selected: boolean; hasHiveWardSkills: boolean }>;
+            skills: Array<{ id: string; status: string; installed: boolean }>;
+          }>(installResponse);
+
+          expect(installBody.installedCount).toBe(2);
+          expect(installBody.skills.map((skill) => [skill.id, skill.status, skill.installed])).toEqual([
+            ["hiveward-ceo", "installed", true],
+            ["hiveward-leader", "installed", true]
+          ]);
+          expect(installBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
+            root: join(root, "skills"),
+            source: "environment",
+            hasHiveWardSkills: true
+          });
+          expect(existsSync(join(root, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(root, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
+        }
       });
     } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -397,6 +575,108 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward blueprint run");
         expect(adapter.lastChatStreamInput?.modelId).toBe("openclaw/default");
         expect(adapter.lastChatStreamInput?.thinking).toBe("medium");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams Codex and Claude Code chat responses through the selected harness source", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
+    const previousClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    process.env.HIVEWARD_CODEX_DEFAULT_MODEL = "codex/chat-default";
+    process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL = "inherit";
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const codexResponse = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            message: "Say hello from Codex.",
+            attachments: [],
+            thinkingEffort: "high",
+            includePlatformContext: false,
+            roleScope: {
+              role: "ceo"
+            }
+          })
+        });
+        const codexText = await codexResponse.text();
+
+        expect(codexResponse.status, codexText).toBe(200);
+        expect(codexText).toContain("main completed through Codex adapter");
+        expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.sessionKey).toBe("");
+        expect(adapter.lastChatStreamInput?.modelId).toBe("codex/chat-default");
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
+        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
+
+        const claudeResponse = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "claudeCode",
+            message: "Say hello from Claude Code.",
+            attachments: [],
+            modelId: "inherit",
+            thinkingEffort: "medium",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: "blueprint-test"
+            }
+          })
+        });
+        const claudeText = await claudeResponse.text();
+
+        expect(claudeResponse.status, claudeText).toBe(200);
+        expect(claudeText).toContain("main completed through Claude Code adapter");
+        expect(adapter.lastChatStreamInput?.source).toBe("claude");
+        expect(adapter.lastChatStreamInput?.sessionKey).toBe("");
+        expect(adapter.lastChatStreamInput?.modelId).toBeUndefined();
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-leader"]);
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-leader");
+      }, adapter);
+    } finally {
+      restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
+      restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the inbox submission contract for Chinese blueprint approval requests", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            message: "\u8bf7\u628a\u8fd9\u4e2a\u84dd\u56fe\u63d0\u6848\u63d0\u4ea4\u5230\u5ba1\u6279",
+            attachments: [],
+            modelId: "codex/test-default",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

@@ -135,10 +135,9 @@ export function ChatPage({
   onInboxItemCreated?: (item: InboxItem) => void;
 }) {
   const copy = chatCopy(language);
-  const openClawStatus = harnessStatuses.find((status) => status.id === "openclaw");
-  const modelOptions = useMemo(() => buildModelOptions(catalog, openClawConfig), [catalog, openClawConfig]);
+  const openClawModelOptions = useMemo(() => buildOpenClawModelOptions(catalog, openClawConfig), [catalog, openClawConfig]);
   const agentOptions = useMemo(() => buildAgentOptions(catalog, openClawConfig), [catalog, openClawConfig]);
-  const defaultModelId = openClawConfig?.defaultModelId ?? modelOptions[0]?.value ?? "";
+  const initialModelId = openClawConfig?.defaultModelId ?? openClawModelOptions[0]?.value ?? "";
   const defaultAgentId =
     openClawConfig?.configuredAgents.find((agent) => agent.isDefault)?.id ?? agentOptions[0]?.value ?? "main";
 
@@ -147,7 +146,7 @@ export function ChatPage({
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [harnessId, setHarnessId] = useState<HarnessId>("openclaw");
-  const [modelId, setModelId] = useState(defaultModelId);
+  const [modelId, setModelId] = useState(initialModelId);
   const [agentId, setAgentId] = useState(defaultAgentId);
   const [thinkingEffort, setThinkingEffort] = useState<ChatThinkingEffort>("minimal");
   const [chatMode, setChatMode] = useState<ChatMode>("chat");
@@ -166,11 +165,16 @@ export function ChatPage({
   const activeSessionView = sessionViews.find((sessionView) => sessionView.id === activeSessionViewId) ?? sessionViews[0];
   const messages = activeSessionView?.messages ?? [];
   const runtimeSessions = runtime?.sessions ?? [];
+  const isOpenClawHarness = harnessId === "openclaw";
   const selectedHarnessStatus = harnessStatuses.find((status) => status.id === harnessId);
   const selectedHarnessLabel = formatHarnessLabel(harnessId);
+  const modelOptions = useMemo(
+    () => buildHarnessModelOptions(harnessId, selectedHarnessStatus, openClawModelOptions, copy),
+    [copy, harnessId, openClawModelOptions, selectedHarnessStatus]
+  );
+  const defaultModelId = modelOptions[0]?.value ?? "";
   const selectedModelOption = modelOptions.find((option) => option.value === modelId);
   const selectedHarnessAvailable =
-    harnessId === "openclaw" &&
     (!selectedHarnessStatus ||
       selectedHarnessStatus.connectionState === "connected" ||
       selectedHarnessStatus.connectionState === "available");
@@ -258,15 +262,15 @@ export function ChatPage({
   }, [activeSessionView, copy.titleUpdateFailed, titleDraft]);
 
   const bindActiveSessionView = useCallback(
-    (event: Extract<ChatStreamEvent, { type: "started" | "done" }>) => {
+    (event: Extract<ChatStreamEvent, { type: "started" | "done" }>, eventHarnessId: HarnessId) => {
       updateActiveSessionView((sessionView) => ({
         ...sessionView,
-        harnessId,
-        nativeSessionId: event.sessionKey,
+        harnessId: eventHarnessId,
+        nativeSessionId: event.sessionKey || undefined,
         updatedAt: event.updatedAt
       }));
     },
-    [harnessId, updateActiveSessionView]
+    [updateActiveSessionView]
   );
 
   const createSessionView = useCallback(async () => {
@@ -274,7 +278,7 @@ export function ChatPage({
       try {
         const nativeSession = await api.createChatSession({
           agentId: agentId || undefined,
-          parentSessionKey: activeSessionView?.nativeSessionId
+          parentSessionKey: activeSessionView?.harnessId === "openclaw" ? activeSessionView.nativeSessionId : undefined
         });
         const nextSessionView = createHivewardSessionView(
           copy,
@@ -301,7 +305,7 @@ export function ChatPage({
     setDraft("");
     setAttachments([]);
     setError(undefined);
-  }, [activeSessionView?.nativeSessionId, agentId, copy, harnessId]);
+  }, [activeSessionView?.harnessId, activeSessionView?.nativeSessionId, agentId, copy, harnessId]);
 
   const loadNativeSessionHistory = useCallback(
     async (sessionViewId: string, sessionKey: string, force = false) => {
@@ -364,8 +368,9 @@ export function ChatPage({
   );
 
   useEffect(() => {
-    if (!modelId && defaultModelId) setModelId(defaultModelId);
-  }, [defaultModelId, modelId]);
+    if (modelOptions.some((option) => option.value === modelId)) return;
+    setModelId(defaultModelId);
+  }, [defaultModelId, modelId, modelOptions]);
 
   useEffect(() => {
     if (!agentId && defaultAgentId) setAgentId(defaultAgentId);
@@ -388,9 +393,15 @@ export function ChatPage({
   }, [activeSessionView?.id, sessionViews]);
 
   useEffect(() => {
-    if (!activeSessionView?.nativeSessionId || activeSessionView.messages.length > 0) return;
+    if (activeSessionView?.harnessId !== "openclaw" || !activeSessionView.nativeSessionId || activeSessionView.messages.length > 0) return;
     void loadNativeSessionHistory(activeSessionView.id, activeSessionView.nativeSessionId);
-  }, [activeSessionView?.id, activeSessionView?.messages.length, activeSessionView?.nativeSessionId, loadNativeSessionHistory]);
+  }, [
+    activeSessionView?.harnessId,
+    activeSessionView?.id,
+    activeSessionView?.messages.length,
+    activeSessionView?.nativeSessionId,
+    loadNativeSessionHistory
+  ]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
@@ -427,29 +438,35 @@ export function ChatPage({
             value: sessionView.id,
             label: sessionView.title
           })),
-        ...runtimeSessions
-          .filter((session) => isVisibleNativeChatSessionKey(session.id, agentId))
-          .filter((session) => !knownNativeSessionIds.has(session.id))
-          .map((session) => ({
-            value: `${nativeSessionOptionPrefix}${session.id}`,
-            label: formatNativeSessionLabel(session)
-          }))
+        ...(harnessId === "openclaw"
+          ? runtimeSessions
+              .filter((session) => isVisibleNativeChatSessionKey(session.id, agentId))
+              .filter((session) => !knownNativeSessionIds.has(session.id))
+              .map((session) => ({
+                value: `${nativeSessionOptionPrefix}${session.id}`,
+                label: formatNativeSessionLabel(session)
+              }))
+          : [])
       ];
     },
-    [agentId, copy, runtimeSessions, sessionViews]
+    [agentId, copy, harnessId, runtimeSessions, sessionViews]
   );
   const harnessOptions = useMemo<SelectOption[]>(
-    () => [
-      {
-        value: "openclaw",
-        label: "OpenClaw",
-        meta: formatHarnessStatusMeta(openClawStatus, copy),
-        disabled: openClawStatus?.connectionState === "needs_config" || openClawStatus?.connectionState === "unavailable"
-      },
-      { value: "codex", label: "Codex", meta: copy.soon, disabled: true },
-      { value: "claudeCode", label: "Claude Code", meta: copy.soon, disabled: true }
-    ],
-    [copy, openClawStatus]
+    () =>
+      ([
+        ["openclaw", "OpenClaw"],
+        ["codex", "Codex"],
+        ["claudeCode", "Claude Code"]
+      ] as const).map(([value, label]) => {
+        const status = harnessStatuses.find((item) => item.id === value);
+        return {
+          value,
+          label,
+          meta: formatHarnessStatusMeta(status, copy),
+          disabled: status?.connectionState === "needs_config" || status?.connectionState === "unavailable"
+        };
+      }),
+    [copy, harnessStatuses]
   );
   const thinkingOptions = useMemo<SelectOption[]>(
     () => buildThinkingOptions(selectedModelOption?.thinkingLevels, copy),
@@ -491,10 +508,8 @@ export function ChatPage({
       const nextSessionView = sessionViews.find((sessionView) => sessionView.id === sessionViewId);
       setActiveSessionViewId(sessionViewId);
       if (nextSessionView) setHarnessId(nextSessionView.harnessId);
-      if (nextSessionView?.nativeSessionId) {
+      if (nextSessionView?.harnessId === "openclaw" && nextSessionView.nativeSessionId) {
         setAgentId(readAgentIdFromSessionKey(nextSessionView.nativeSessionId) ?? defaultAgentId);
-      }
-      if (nextSessionView?.nativeSessionId) {
         void loadNativeSessionHistory(nextSessionView.id, nextSessionView.nativeSessionId, true);
       }
       setDraft("");
@@ -524,7 +539,7 @@ export function ChatPage({
       try {
         const nativeSession = await api.createChatSession({
           agentId: nextAgentId || undefined,
-          parentSessionKey: activeSessionView?.nativeSessionId
+          parentSessionKey: activeSessionView?.harnessId === "openclaw" ? activeSessionView.nativeSessionId : undefined
         });
         const nextSessionView = createHivewardSessionView(
           copy,
@@ -542,7 +557,7 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [activeSessionView?.nativeSessionId, agentId, copy, harnessId]
+    [activeSessionView?.harnessId, activeSessionView?.nativeSessionId, agentId, copy, harnessId]
   );
 
   const canSend =
@@ -559,6 +574,15 @@ export function ChatPage({
     const outgoingAttachments = attachments;
     const includePlatformContext = messages.length === 0;
     const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole);
+    const sendHarnessId = harnessId;
+    const sendHarnessLabel = formatHarnessLabel(sendHarnessId);
+    const sendIsOpenClawHarness = sendHarnessId === "openclaw";
+    const sendModelId = modelOptions.some((option) => option.value === modelId) ? modelId : defaultModelId;
+    const sendModelOption = modelOptions.find((option) => option.value === sendModelId);
+    const sendThinkingEffort = resolveSupportedThinkingEffort(
+      normalizeThinkingLevels(sendModelOption?.thinkingLevels),
+      thinkingEffort
+    );
     const now = new Date().toISOString();
     const userMessage: ChatMessage = {
       id: makeLocalId("chat-user"),
@@ -568,7 +592,7 @@ export function ChatPage({
       attachments: outgoingAttachments,
       status: "sent",
       speakerLabel: copy.you,
-      harnessId
+      harnessId: sendHarnessId
     };
     const assistantId = makeLocalId("chat-assistant");
     const assistantMessage: ChatMessage = {
@@ -577,10 +601,13 @@ export function ChatPage({
       content: "",
       createdAt: now,
       status: "streaming",
-      speakerLabel: `${selectedRoleLabel} / ${formatHarnessSpeaker(harnessId, agentId)}`,
-      harnessId,
-      agentId,
-      modelId
+      speakerLabel: `${selectedRoleLabel} / ${formatHarnessSpeaker(
+        sendHarnessId,
+        sendIsOpenClawHarness ? agentId : undefined
+      )}`,
+      harnessId: sendHarnessId,
+      agentId: sendIsOpenClawHarness ? agentId : undefined,
+      modelId: sendModelId
     };
 
     updateActiveSessionViewMessages((current) => [...current, userMessage, assistantMessage]);
@@ -598,14 +625,17 @@ export function ChatPage({
         updateActiveSessionViewMessages((current) =>
           current.map((item) =>
             item.id === assistantId && item.status === "streaming" && !item.content
-              ? { ...item, progressText: formatWaitingProgress(copy, elapsedSeconds, Boolean(item.runtimeRef)) }
+              ? {
+                  ...item,
+                  progressText: formatWaitingProgress(copy, elapsedSeconds, Boolean(item.runtimeRef), sendHarnessLabel)
+                }
               : item
           )
         );
       }, 10_000);
 
-      let nativeSessionKey = activeSessionView?.nativeSessionId;
-      if (harnessId === "openclaw" && !nativeSessionKey) {
+      let nativeSessionKey = activeSessionView?.harnessId === sendHarnessId ? activeSessionView.nativeSessionId : undefined;
+      if (sendIsOpenClawHarness && !nativeSessionKey) {
         const nativeSession = await api.createChatSession({ agentId: agentId || undefined, roleScope });
         nativeSessionKey = nativeSession.sessionKey;
         loadedNativeHistoryRef.current.add(nativeSession.sessionKey);
@@ -622,21 +652,21 @@ export function ChatPage({
 
       await api.streamChat(
         {
-          harnessId,
+          harnessId: sendHarnessId,
           message: content,
           attachments: outgoingAttachments,
-          modelId: modelId || undefined,
-          agentId: agentId || undefined,
+          modelId: sendModelId || undefined,
+          agentId: sendIsOpenClawHarness ? agentId || undefined : undefined,
           nativeSessionKey,
-          thinkingEffort: effectiveThinkingEffort,
+          thinkingEffort: sendThinkingEffort,
           includePlatformContext,
           mode: chatMode,
           roleScope
         },
         {
           onEvent: (event) => {
-            applyChatEvent(assistantId, event, updateActiveSessionViewMessages, copy);
-            if (event.type === "started" || event.type === "done") bindActiveSessionView(event);
+            applyChatEvent(assistantId, event, updateActiveSessionViewMessages, copy, sendHarnessId);
+            if (event.type === "started" || event.type === "done") bindActiveSessionView(event, sendHarnessId);
             if (event.type === "inbox_item_created") onInboxItemCreated?.(event.item);
           }
         },
@@ -691,7 +721,13 @@ export function ChatPage({
             {selectedRoleBlueprint ? ` / ${selectedRoleBlueprint.name}` : company?.name ? ` / ${company.name}` : ""}
           </p>
         </div>
-        <span className={`openclaw-panel-state ${openClawStatus?.connectionState === "connected" ? "online" : "offline"}`}>
+        <span
+          className={`openclaw-panel-state ${
+            selectedHarnessStatus?.connectionState === "connected" || selectedHarnessStatus?.connectionState === "available"
+              ? "online"
+              : "offline"
+          }`}
+        >
           {selectedHarnessLabel}
         </span>
       </div>
@@ -721,12 +757,16 @@ export function ChatPage({
                 <button type="button" title={copy.role} aria-label={copy.role} onClick={() => setSettingsCollapsed(false)}>
                   <Bot size={16} />
                 </button>
-                <button type="button" title={copy.agent} aria-label={copy.agent} onClick={() => setSettingsCollapsed(false)}>
-                  <Bot size={16} />
-                </button>
-                <button type="button" title={copy.sessionView} aria-label={copy.sessionView} onClick={() => setSettingsCollapsed(false)}>
-                  <MessageSquareText size={16} />
-                </button>
+                {isOpenClawHarness && (
+                  <>
+                    <button type="button" title={copy.agent} aria-label={copy.agent} onClick={() => setSettingsCollapsed(false)}>
+                      <Bot size={16} />
+                    </button>
+                    <button type="button" title={copy.sessionView} aria-label={copy.sessionView} onClick={() => setSettingsCollapsed(false)}>
+                      <MessageSquareText size={16} />
+                    </button>
+                  </>
+                )}
                 <button type="button" title={copy.model} aria-label={copy.model} onClick={() => setSettingsCollapsed(false)}>
                   <Sparkles size={16} />
                 </button>
@@ -755,21 +795,25 @@ export function ChatPage({
                   onChange={setSelectedRoleId}
                 />
 
-                <ChatSelect
-                  label={copy.agent}
-                  icon={<Bot size={14} />}
-                  value={agentId}
-                  options={agentOptions}
-                  onChange={(value) => void selectAgent(value)}
-                />
+                {isOpenClawHarness && (
+                  <>
+                    <ChatSelect
+                      label={copy.agent}
+                      icon={<Bot size={14} />}
+                      value={agentId}
+                      options={agentOptions}
+                      onChange={(value) => void selectAgent(value)}
+                    />
 
-                <ChatSelect
-                  label={copy.sessionView}
-                  icon={<MessageSquareText size={14} />}
-                  value={activeSessionView?.id ?? ""}
-                  options={sessionViewOptions}
-                  onChange={selectSessionView}
-                />
+                    <ChatSelect
+                      label={copy.sessionView}
+                      icon={<MessageSquareText size={14} />}
+                      value={activeSessionView?.id ?? ""}
+                      options={sessionViewOptions}
+                      onChange={selectSessionView}
+                    />
+                  </>
+                )}
 
                 <ChatSelect
                   label={copy.model}
@@ -829,6 +873,9 @@ export function ChatPage({
             ) : (
               <div className="chat-title-display">
                 <h3>{activeSessionView?.title || copy.noSessionView}</h3>
+                <button type="button" title={copy.newSessionView} aria-label={copy.newSessionView} onClick={() => void createSessionView()}>
+                  <Plus size={14} />
+                </button>
                 <button type="button" title={copy.editSessionTitle} aria-label={copy.editSessionTitle} onClick={startEditingTitle}>
                   <Pencil size={14} />
                 </button>
@@ -852,7 +899,10 @@ export function ChatPage({
                       key={message.id}
                       className={`chat-message-row chat-message-row-${message.role} ${message.status ?? ""}`}
                     >
-                      <div className={`chat-avatar chat-avatar-${message.role}`} aria-label={message.role === "user" ? copy.you : copy.assistant}>
+                      <div
+                        className={`chat-avatar chat-avatar-${message.role}`}
+                        aria-label={message.role === "user" ? copy.you : message.speakerLabel ?? copy.assistant}
+                      >
                         {message.role === "user" ? copy.youAvatar : <Bot size={16} />}
                       </div>
                       <div className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
@@ -861,7 +911,7 @@ export function ChatPage({
                         ) : (
                           <div className="chat-message-pending">
                             <Loader2 className="spin" size={15} />
-                            {message.progressText ?? copy.waiting}
+                            {message.progressText ?? copy.waiting(formatHarnessLabel(message.harnessId ?? harnessId))}
                           </div>
                         )}
                         {message.attachments?.length ? (
@@ -876,7 +926,9 @@ export function ChatPage({
                         ) : null}
                         {message.status === "failed" && <span className="chat-message-status">{copy.failed}</span>}
                         {message.runtimeRef?.timings ? (
-                          <span className="chat-message-runtime">{formatRuntimeTimings(message.runtimeRef.timings, copy)}</span>
+                          <span className="chat-message-runtime">
+                            {formatRuntimeTimings(message.runtimeRef.timings, message.runtimeRef.source, copy)}
+                          </span>
                         ) : null}
                       </div>
                     </article>
@@ -1086,7 +1138,8 @@ function applyChatEvent(
   assistantId: string,
   event: ChatStreamEvent,
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>,
-  copy: ReturnType<typeof chatCopy>
+  copy: ReturnType<typeof chatCopy>,
+  fallbackHarnessId: HarnessId
 ) {
   if (event.type === "delta") {
     setMessages((current) =>
@@ -1100,12 +1153,13 @@ function applyChatEvent(
   }
 
   if (event.type === "started") {
+    const harnessLabel = formatHarnessLabel(event.source || fallbackHarnessId);
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
           ? {
               ...message,
-              progressText: message.content ? undefined : copy.acceptedWaiting,
+              progressText: message.content ? undefined : copy.acceptedWaiting(harnessLabel),
               runtimeRef: toRuntimeRef(event)
             }
           : message
@@ -1144,21 +1198,26 @@ function applyChatEvent(
   );
 }
 
-function formatWaitingProgress(copy: ReturnType<typeof chatCopy>, elapsedSeconds: number, accepted: boolean): string {
+function formatWaitingProgress(
+  copy: ReturnType<typeof chatCopy>,
+  elapsedSeconds: number,
+  accepted: boolean,
+  harnessLabel: string
+): string {
   const minutes = Math.floor(elapsedSeconds / 60);
   const seconds = elapsedSeconds % 60;
   const elapsed = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-  return `${accepted ? copy.acceptedWaiting : copy.waiting} ${elapsed}`;
+  return `${accepted ? copy.acceptedWaiting(harnessLabel) : copy.waiting(harnessLabel)} ${elapsed}`;
 }
 
-function formatRuntimeTimings(timings: ChatStreamTimings, copy: ReturnType<typeof chatCopy>): string {
+function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: ReturnType<typeof chatCopy>): string {
   const hivewardMs = timings.hivewardPreprocessMs + timings.hivewardPostprocessMs;
-  const openclawDetails = [
-    `${copy.timingOpenClaw} ${formatDurationMs(timings.openclawMs)}`,
+  const harnessDetails = [
+    `${formatHarnessLabel(source)} ${formatDurationMs(timings.openclawMs)}`,
     timings.openclawAcceptedMs === undefined ? undefined : `${copy.timingAccepted} ${formatDurationMs(timings.openclawAcceptedMs)}`,
     timings.openclawFirstDeltaMs === undefined ? undefined : `${copy.timingFirstToken} ${formatDurationMs(timings.openclawFirstDeltaMs)}`
   ].filter((item): item is string => Boolean(item));
-  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} · ${openclawDetails.join(" / ")} · ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
+  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} · ${harnessDetails.join(" / ")} · ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
 }
 
 function formatDurationMs(value: number): string {
@@ -1213,6 +1272,7 @@ function readAgentIdFromSessionKey(sessionKey: string): string | undefined {
 }
 
 function isVisibleSessionView(sessionView: HivewardSessionView, agentId: string): boolean {
+  if (sessionView.harnessId !== "openclaw") return true;
   if (!sessionView.nativeSessionId) return true;
   return isVisibleNativeChatSessionKey(sessionView.nativeSessionId, agentId);
 }
@@ -1288,7 +1348,41 @@ function buildChatRoleScope(
   };
 }
 
-function buildModelOptions(catalog?: CatalogSnapshot, openClawConfig?: OpenClawConfigState): SelectOption[] {
+function buildHarnessModelOptions(
+  harnessId: HarnessId,
+  harnessStatus: HarnessStatus | undefined,
+  openClawModelOptions: SelectOption[],
+  copy: ReturnType<typeof chatCopy>
+): SelectOption[] {
+  if (harnessId === "openclaw") return openClawModelOptions;
+  const defaultModelId = harnessStatus?.defaultModelId;
+  const scannedOptions = harnessStatus?.models?.length
+    ? harnessStatus.models.map((model) => ({
+        value: model.id,
+        label: model.id === "inherit" ? `${formatHarnessLabel(harnessId)} ${copy.defaultModel}` : model.label || model.id,
+        meta: model.provider ?? harnessStatus.label,
+        thinkingLevels: model.thinkingLevels?.length ? model.thinkingLevels : getSdkHarnessThinkingLevels(harnessId)
+      }))
+    : [];
+  if (scannedOptions.length) return mergeOptions(scannedOptions);
+  if (!defaultModelId) return [];
+  return mergeOptions([
+    {
+      value: defaultModelId,
+      label: defaultModelId === "inherit" ? `${formatHarnessLabel(harnessId)} ${copy.defaultModel}` : defaultModelId,
+      meta: harnessStatus.label,
+      thinkingLevels: getSdkHarnessThinkingLevels(harnessId)
+    }
+  ]);
+}
+
+function getSdkHarnessThinkingLevels(harnessId: HarnessId): ChatThinkingEffort[] {
+  if (harnessId === "codex") return ["low", "medium", "high", "xhigh"];
+  if (harnessId === "claudeCode") return ["off", "low", "medium", "high", "xhigh", "max", "adaptive"];
+  return fallbackThinkingLevels;
+}
+
+function buildOpenClawModelOptions(catalog?: CatalogSnapshot, openClawConfig?: OpenClawConfigState): SelectOption[] {
   const catalogModelsById = new Map((catalog?.models ?? []).map((model) => [model.id, model]));
   const options = [
     ...(openClawConfig?.configuredModels.map((model) => ({
@@ -1387,9 +1481,9 @@ function resolveSupportedThinkingEffort(
   const levels = normalizeThinkingLevels(availableLevels);
   if (levels.includes(requestedLevel)) return requestedLevel;
   const requestedRank = thinkingEffortRank[requestedLevel];
-  const rankedDescending = [...levels].sort((left, right) => thinkingEffortRank[right] - thinkingEffortRank[left]);
-  return rankedDescending.find((level) => level !== "off" && thinkingEffortRank[level] <= requestedRank)
-    ?? rankedDescending.find((level) => level !== "off")
+  const rankedAscending = levels.filter((level) => level !== "off").sort((left, right) => thinkingEffortRank[left] - thinkingEffortRank[right]);
+  return [...rankedAscending].reverse().find((level) => thinkingEffortRank[level] <= requestedRank)
+    ?? rankedAscending[0]
     ?? "off";
 }
 
@@ -1489,7 +1583,7 @@ function normalizeSessionView(sessionView: Partial<HivewardSessionView>, copy: R
     ? sessionView.harnessId
     : "openclaw";
   const nativeSessionId = typeof sessionView.nativeSessionId === "string" ? sessionView.nativeSessionId : undefined;
-  if (nativeSessionId && !isPersistableNativeChatSessionKey(nativeSessionId)) return [];
+  if (harnessId === "openclaw" && nativeSessionId && !isPersistableNativeChatSessionKey(nativeSessionId)) return [];
   return [{
     id: sessionView.id,
     title: sessionView.title || copy.newSessionViewTitle,
@@ -1575,6 +1669,7 @@ function chatCopy(language: Language) {
       contextSummary: "\u4e0a\u4e0b\u6587\u6982\u89c8",
       noAgent: "\u672a\u9009 Agent",
       noModel: "\u672a\u9009\u6a21\u578b",
+      defaultModel: "\u9ed8\u8ba4\u6a21\u578b",
       harness: "Harness",
       harnessConnected: "\u5df2\u8fde\u63a5",
       harnessAvailable: "\u53ef\u7528",
@@ -1607,8 +1702,8 @@ function chatCopy(language: Language) {
       assistant: "OpenClaw",
       streaming: "\u8f93\u51fa\u4e2d",
       failed: "\u5931\u8d25",
-      waiting: "\u7b49\u5f85 OpenClaw \u8fd4\u56de...",
-      acceptedWaiting: "\u5df2\u53d1\u7ed9 OpenClaw\uff0c\u7b49\u5f85\u6a21\u578b\u6216\u5de5\u5177\u5b8c\u6210...",
+      waiting: (harnessLabel: string) => `\u7b49\u5f85 ${harnessLabel} \u8fd4\u56de...`,
+      acceptedWaiting: (harnessLabel: string) => `\u5df2\u53d1\u7ed9 ${harnessLabel}\uff0c\u7b49\u5f85\u6a21\u578b\u6216\u5de5\u5177\u5b8c\u6210...`,
       usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
       usageModel: "\u6a21\u578b",
       usageTokens: "Token \u6d88\u8017",
@@ -1657,6 +1752,7 @@ function chatCopy(language: Language) {
     contextSummary: "Context summary",
     noAgent: "No agent",
     noModel: "No model",
+    defaultModel: "default model",
     harness: "Harness",
     harnessConnected: "connected",
     harnessAvailable: "available",
@@ -1689,8 +1785,8 @@ function chatCopy(language: Language) {
     assistant: "OpenClaw",
     streaming: "Streaming",
     failed: "Failed",
-    waiting: "Waiting for OpenClaw...",
-    acceptedWaiting: "Sent to OpenClaw. Waiting for the model or tools to finish...",
+    waiting: (harnessLabel: string) => `Waiting for ${harnessLabel}...`,
+    acceptedWaiting: (harnessLabel: string) => `Sent to ${harnessLabel}. Waiting for the model or tools to finish...`,
     usageSummary: "Model and token usage",
     usageModel: "Model",
     usageTokens: "Token usage",

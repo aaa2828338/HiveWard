@@ -4,4 +4,4 @@ export { AgentSdkRuntimeRouter, createAgentSdkRuntime } from "./factory";
 export { mapClaudePermission, mapClaudeTools, mapCodexSandbox, normalizePermissionProfile } from "./permissions";
 export { buildPromptEnvelope, stableStringify, validateOutputSchema } from "./prompt-envelope";
 export { AgentSdkTaskRegistry } from "./task-registry";
-export { isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkRuntime } from "./types";
+export { isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkChatStreamInput, type AgentSdkRuntime } from "./types";

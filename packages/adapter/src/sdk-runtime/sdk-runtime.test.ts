@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { SDKMessage, Query } from "@anthropic-ai/claude-agent-sdk";
-import type { ThreadOptions, TurnOptions, Usage } from "@openai/codex-sdk";
+import type { ThreadEvent, ThreadOptions, TurnOptions, Usage } from "@openai/codex-sdk";
 import { ClaudeAgentSdkRuntime, type ClaudeQueryFn } from "./claude-runtime";
 import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from "./codex-runtime";
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
@@ -236,6 +236,248 @@ describe("agent SDK runtime", () => {
     expect(result.usage?.outputTokens).toBe(30);
   });
 
+  it("streams Codex chat through a read-only native thread", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    let turnOptions: TurnOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-thread-chat",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        onRunStreamed: (_prompt, options) => {
+          turnOptions = options;
+        },
+        streamEvents: [
+          { type: "thread.started", thread_id: "codex-thread-chat" },
+          { type: "item.completed", item: { id: "item-1", type: "agent_message", text: "hello from codex" } },
+          {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 3,
+              cached_input_tokens: 2,
+              output_tokens: 5,
+              reasoning_output_tokens: 7
+            }
+          }
+        ],
+        finalResponse: "unused",
+        usage: null
+      })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "codex",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [{ id: "a1", name: "note.txt", mediaType: "text/plain", size: 4, text: "note" }],
+        modelId: "test-model",
+        thinking: "high",
+        idempotencyKey: "chat-1"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(threadOptions).toMatchObject({
+      workingDirectory: workspace,
+      model: "test-model",
+      sandboxMode: "read-only",
+      approvalPolicy: "never",
+      modelReasoningEffort: "high"
+    });
+    expect(turnOptions?.signal).toBeInstanceOf(AbortSignal);
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "codex", status: "running" }),
+      { type: "delta", text: "hello from codex" },
+      expect.objectContaining({
+        type: "done",
+        source: "codex",
+        status: "succeeded",
+        sessionKey: "codex-thread-chat",
+        output: "hello from codex",
+        usage: expect.objectContaining({ inputTokens: 5, outputTokens: 12 })
+      })
+    ]);
+  });
+
+  it("maps Codex minimal chat reasoning to low for tool-compatible native threads", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-thread-minimal",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        streamEvents: [],
+        finalResponse: "",
+        usage: null
+      })
+    );
+
+    await runtime.streamChatMessage(
+      {
+        source: "codex",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "test-model",
+        thinking: "minimal",
+        idempotencyKey: "chat-minimal"
+      },
+      () => undefined
+    );
+
+    expect(threadOptions?.modelReasoningEffort).toBe("low");
+  });
+
+  it("streams Claude Code chat with the selected role skill enabled", async () => {
+    const workspace = createWorkspace();
+    let options: Parameters<ClaudeQueryFn>[0]["options"];
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      (params) => {
+        options = params.options;
+        return fakeClaudeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "hello from claude",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-chat",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage
+        ])(params);
+      }
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "claude-session-existing",
+        message: "Hello",
+        attachments: [],
+        modelId: "inherit",
+        thinking: "medium",
+        idempotencyKey: "chat-2",
+        skillIds: ["hiveward-leader"]
+      },
+      (event) => events.push(event)
+    );
+
+    expect(options).toMatchObject({
+      cwd: workspace,
+      permissionMode: "dontAsk",
+      resume: "claude-session-existing",
+      settingSources: ["user", "project"],
+      skills: ["hiveward-leader"],
+      effort: "medium"
+    });
+    expect(options?.model).toBeUndefined();
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "claude", status: "running" }),
+      { type: "delta", text: "hello from claude" },
+      expect.objectContaining({
+        type: "done",
+        source: "claude",
+        status: "succeeded",
+        sessionKey: "claude-session-chat",
+        output: "hello from claude"
+      })
+    ]);
+  });
+
+  it("maps Claude Code chat thinking controls to native SDK options", async () => {
+    const workspace = createWorkspace();
+    const capturedOptions: Array<Parameters<ClaudeQueryFn>[0]["options"]> = [];
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      (params) => {
+        capturedOptions.push(params.options);
+        return fakeClaudeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "ok",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-chat",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage
+        ])(params);
+      }
+    );
+
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "",
+        message: "Adaptive",
+        attachments: [],
+        modelId: "inherit",
+        thinking: "adaptive",
+        idempotencyKey: "chat-adaptive"
+      },
+      () => undefined
+    );
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "",
+        message: "Off",
+        attachments: [],
+        modelId: "inherit",
+        thinking: "off",
+        idempotencyKey: "chat-off"
+      },
+      () => undefined
+    );
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "",
+        message: "Minimal",
+        attachments: [],
+        modelId: "inherit",
+        thinking: "minimal",
+        idempotencyKey: "chat-minimal"
+      },
+      () => undefined
+    );
+
+    expect(capturedOptions[0]).toMatchObject({ thinking: { type: "adaptive" } });
+    expect(capturedOptions[0]?.effort).toBeUndefined();
+    expect(capturedOptions[1]).toMatchObject({ thinking: { type: "disabled" } });
+    expect(capturedOptions[1]?.effort).toBeUndefined();
+    expect(capturedOptions[2]?.thinking).toBeUndefined();
+    expect(capturedOptions[2]?.effort).toBe("low");
+  });
+
   it("rejects Codex output that does not match outputSchema", async () => {
     const workspace = createWorkspace({ git: true });
     const runtime = new CodexAgentSdkRuntime(
@@ -308,13 +550,17 @@ function fakeCodexClient({
   finalResponse,
   usage,
   onStartThread,
-  onRun
+  onRun,
+  onRunStreamed,
+  streamEvents
 }: {
   threadId: string;
   finalResponse: string;
   usage: Usage | null;
   onStartThread?: (options?: ThreadOptions) => void;
   onRun?: (prompt: string, options?: TurnOptions) => void;
+  onRunStreamed?: (prompt: string, options?: TurnOptions) => void;
+  streamEvents?: ThreadEvent[];
 }): CodexClientLike {
   const thread: CodexThreadLike = {
     id: threadId,
@@ -324,11 +570,25 @@ function fakeCodexClient({
         finalResponse,
         usage
       };
+    },
+    async runStreamed(prompt: string, options?: TurnOptions) {
+      onRunStreamed?.(prompt, options);
+      return {
+        events: (async function* () {
+          for (const event of streamEvents ?? []) {
+            yield event;
+          }
+        })()
+      };
     }
   };
 
   return {
     startThread(options?: ThreadOptions) {
+      onStartThread?.(options);
+      return thread;
+    },
+    resumeThread(_id: string, options?: ThreadOptions) {
       onStartThread?.(options);
       return thread;
     }

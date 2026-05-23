@@ -1,12 +1,22 @@
-import type { AgentTaskResult, StartAgentTaskInput, StartedAgentTaskResult, WaitForAgentTaskInput } from "@hiveward/shared";
+import type {
+  AgentTaskResult,
+  ChatStreamEvent,
+  StartAgentTaskInput,
+  StartedAgentTaskResult,
+  WaitForAgentTaskInput
+} from "@hiveward/shared";
 import { ClaudeAgentSdkRuntime } from "./claude-runtime";
 import { CodexAgentSdkRuntime } from "./codex-runtime";
 import { AgentSdkTaskRegistry } from "./task-registry";
-import type { AgentSdkRuntime, AgentSdkRuntimeOptions } from "./types";
+import type { AgentSdkChatStreamInput, AgentSdkRuntime, AgentSdkRuntimeOptions } from "./types";
 import { isAgentSdkProvider } from "./types";
 
 export class AgentSdkRuntimeRouter implements AgentSdkRuntime {
   constructor(private readonly runtimes: Record<"claude" | "codex", AgentSdkRuntime>) {}
+
+  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    return this.runtimes[input.source].streamChatMessage(input, onEvent);
+  }
 
   startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
     if (!isAgentSdkProvider(input.source)) {

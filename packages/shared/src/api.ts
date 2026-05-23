@@ -160,10 +160,20 @@ export interface HarnessStatusCheck {
   detail: string;
 }
 
+export interface HarnessModelOption {
+  id: string;
+  label: string;
+  provider?: string;
+  description?: string;
+  thinkingLevels?: ChatThinkingEffort[];
+  isDefault?: boolean;
+}
+
 export interface HarnessStatus {
   id: HarnessId;
   label: string;
   defaultModelId?: string;
+  models?: HarnessModelOption[];
   installed: boolean;
   environmentOk: boolean;
   connectionState: HarnessConnectionState;
@@ -179,6 +189,22 @@ export interface HarnessStatusResponse {
 export type HarnessSkillId = "hiveward-ceo" | "hiveward-leader";
 
 export type HarnessSkillInstallStatus = "installed" | "missing" | "stale" | "unsupported" | "error";
+
+export type HarnessSkillInstallCandidateSource =
+  | "environment"
+  | "existing_install"
+  | "existing_root"
+  | "project"
+  | "default";
+
+export interface HarnessSkillInstallCandidate {
+  root: string;
+  source: HarnessSkillInstallCandidateSource;
+  label: string;
+  exists: boolean;
+  hasHiveWardSkills: boolean;
+  selected: boolean;
+}
 
 export interface HarnessSkillStatusItem {
   id: HarnessSkillId;
@@ -197,6 +223,7 @@ export interface HarnessSkillStatusResponse {
   supported: boolean;
   checkedAt: string;
   installRoot?: string;
+  installCandidates?: HarnessSkillInstallCandidate[];
   skills: HarnessSkillStatusItem[];
 }
 

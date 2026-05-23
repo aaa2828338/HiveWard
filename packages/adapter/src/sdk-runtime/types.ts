@@ -1,6 +1,10 @@
 import type {
   AgentSdkProvider,
   AgentTaskResult,
+  ChatAttachment,
+  ChatStreamEvent,
+  ChatThinkingEffort,
+  HarnessSkillId,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
@@ -8,9 +12,22 @@ import type {
 import { resolve } from "node:path";
 
 export interface AgentSdkRuntime {
+  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void>;
   startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   cancelTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
+}
+
+export interface AgentSdkChatStreamInput {
+  source: AgentSdkProvider;
+  sessionKey: string;
+  message: string;
+  attachments: ChatAttachment[];
+  modelId?: string;
+  thinking?: ChatThinkingEffort;
+  idempotencyKey: string;
+  timeoutMs?: number;
+  skillIds?: HarnessSkillId[];
 }
 
 export interface AgentSdkTaskRecord {

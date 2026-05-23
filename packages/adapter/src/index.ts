@@ -11,6 +11,9 @@ import type {
   ChatAttachment,
   ChatStreamEvent,
   ChatThinkingEffort,
+  HarnessId,
+  HarnessSkillId,
+  OpenClawObjectSource,
   SendChannelInput,
   SendChannelResult,
   AgentTaskResult,
@@ -62,12 +65,14 @@ export interface RuntimeChatSessionTitleResult {
 
 export interface RuntimeChatStreamInput {
   sessionKey: string;
+  source?: OpenClawObjectSource;
   message: string;
   attachments: ChatAttachment[];
   modelId?: string;
   thinking?: ChatThinkingEffort;
   idempotencyKey: string;
   timeoutMs?: number;
+  skillIds?: HarnessSkillId[];
 }
 
 export class MockRuntimeAdapter implements RuntimeAdapter {
@@ -201,27 +206,28 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
   async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const runId = input.idempotencyKey;
+    const source = input.source ?? "openclaw";
     onEvent({
       type: "started",
       taskId: runId,
       runId,
       sessionKey: input.sessionKey,
-      source: "openclaw",
+      source,
       status: "running",
       updatedAt: now
     });
     onEvent({
       type: "delta",
-      text: `main completed through OpenClaw adapter. Prompt boundary stayed outside Hiveward runtime.`
+      text: `main completed through ${formatSourceLabel(source)} adapter. Prompt boundary stayed outside Hiveward runtime.`
     });
     onEvent({
       type: "done",
       taskId: runId,
       runId,
       sessionKey: input.sessionKey,
-      source: "openclaw",
+      source,
       status: "succeeded",
-      output: `main completed through OpenClaw adapter. Prompt boundary stayed outside Hiveward runtime.`,
+      output: `main completed through ${formatSourceLabel(source)} adapter. Prompt boundary stayed outside Hiveward runtime.`,
       updatedAt: now
     });
   }
@@ -331,7 +337,9 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
   }
 
   streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
-    return this.baseAdapter.streamChatMessage(input, onEvent);
+    return isAgentSdkProvider(input.source)
+      ? this.sdkRuntime.streamChatMessage({ ...input, source: input.source }, onEvent)
+      : this.baseAdapter.streamChatMessage(input, onEvent);
   }
 
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
@@ -374,3 +382,9 @@ export { GatewayOpenClawAdapter } from "./gateway-adapter";
 export { GatewayRequestError, GatewaySession } from "./gateway-client";
 export { resolveGatewayAdapterConfig, type GatewayAdapterConfig } from "./gateway-config";
 export { createAgentSdkRuntime, isAgentSdkProvider } from "./sdk-runtime";
+
+function formatSourceLabel(source: HarnessId | OpenClawObjectSource): string {
+  if (source === "codex") return "Codex";
+  if (source === "claude" || source === "claudeCode") return "Claude Code";
+  return "OpenClaw";
+}

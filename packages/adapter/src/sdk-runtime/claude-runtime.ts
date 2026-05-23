@@ -8,6 +8,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentTaskResult,
+  ChatStreamEvent,
   OpenClawUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -15,9 +16,10 @@ import type {
 } from "@hiveward/shared";
 import { AgentSdkError, formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
+import { buildSdkChatPrompt, mapClaudeEffort, mapClaudeThinking } from "./chat-envelope";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
-import type { AgentSdkRuntime } from "./types";
+import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { resolveSdkWorkingDirectory } from "./workspace";
 
 export type ClaudeQueryFn = (params: { prompt: string; options?: Options }) => Query;
@@ -28,6 +30,104 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     private readonly options: { defaultTimeoutMs: number; workspaceRoot: string },
     private readonly queryFn: ClaudeQueryFn = claudeQuery
   ) {}
+
+  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    const now = new Date().toISOString();
+    const taskId = `claude-chat-${nanoid(10)}`;
+    const runId = `claude-chat-run-${nanoid(10)}`;
+    let sessionKey = input.sessionKey || `claude-chat-session-${nanoid(10)}`;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort("timeout"), normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs));
+
+    onEvent({
+      type: "started",
+      taskId,
+      runId,
+      sessionKey,
+      source: "claude",
+      status: "running",
+      updatedAt: now
+    });
+
+    try {
+      const sdkOptions: Options = {
+        abortController,
+        cwd: this.options.workspaceRoot,
+        model: normalizeClaudeModel(input.modelId),
+        permissionMode: mapClaudePermission("read_only"),
+        tools: mapClaudeAvailableTools("read_only", []),
+        allowedTools: mapClaudeTools("read_only", []),
+        resume: input.sessionKey || undefined,
+        settingSources: ["user", "project"],
+        skills: input.skillIds?.length ? input.skillIds : undefined,
+        thinking: mapClaudeThinking(input.thinking),
+        effort: mapClaudeEffort(input.thinking)
+      };
+      const prompt = buildSdkChatPrompt(input.message, input.attachments);
+      let finalMessage: SDKResultMessage | undefined;
+
+      for await (const message of this.queryFn({ prompt, options: sdkOptions })) {
+        if (hasSessionId(message)) {
+          sessionKey = message.session_id;
+        }
+        if (message.type === "result") {
+          finalMessage = message;
+        }
+      }
+
+      if (!finalMessage) {
+        throw new Error(formatAgentSdkError("provider_error", "SDK did not return a result message."));
+      }
+      if (finalMessage.subtype !== "success") {
+        onEvent({
+          type: "done",
+          taskId,
+          runId,
+          sessionKey,
+          source: "claude",
+          status: "failed",
+          error: formatAgentSdkError("provider_error", finalMessage.errors.join("; ") || finalMessage.subtype),
+          usage: mapClaudeUsage({ modelId: input.modelId }, finalMessage),
+          updatedAt: new Date().toISOString()
+        });
+        return;
+      }
+
+      const output =
+        finalMessage.structured_output === undefined
+          ? finalMessage.result
+          : formatStructuredOutput(finalMessage.structured_output);
+      if (output) {
+        onEvent({ type: "delta", text: output });
+      }
+      onEvent({
+        type: "done",
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: "succeeded",
+        output,
+        usage: mapClaudeUsage({ modelId: input.modelId }, finalMessage),
+        updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      onEvent({
+        type: "done",
+        taskId,
+        runId,
+        sessionKey,
+        source: "claude",
+        status: isAbortLikeError(error) || abortController.signal.aborted ? "cancelled" : "failed",
+        error: isAbortLikeError(error) || abortController.signal.aborted
+          ? formatAgentSdkError("cancelled", "Run was cancelled.")
+          : formatAgentSdkProviderError("Claude Code", error),
+        updatedAt: new Date().toISOString()
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
 
   async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
@@ -116,7 +216,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     const sdkOptions: Options = {
       abortController,
       cwd: workingDirectory,
-      model: input.modelId,
+      model: normalizeClaudeModel(input.modelId),
       permissionMode: mapClaudePermission(permissionProfile),
       tools: mapClaudeAvailableTools(permissionProfile, input.tools),
       allowedTools: mapClaudeTools(permissionProfile, input.tools),
@@ -241,7 +341,12 @@ function requireConfiguredModel(modelId: string | undefined): void {
   }
 }
 
-function mapClaudeUsage(input: StartAgentTaskInput, result: SDKResultMessage): OpenClawUsageFact {
+function normalizeClaudeModel(modelId: string | undefined): string | undefined {
+  const trimmed = modelId?.trim();
+  return !trimmed || trimmed === "inherit" ? undefined : trimmed;
+}
+
+function mapClaudeUsage(input: { modelId?: string }, result: SDKResultMessage): OpenClawUsageFact {
   const modelUsageEntries = Object.entries(result.modelUsage);
   const inputTokens = modelUsageEntries.reduce(
     (sum, [, usage]) => sum + usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,

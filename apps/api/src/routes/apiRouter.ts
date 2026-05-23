@@ -1,6 +1,6 @@
 import { Router, type Response } from "express";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +21,9 @@ import type {
   CreateOpenClawModelRequest,
   CreateLeaderDelegationRequest,
   HarnessId,
+  HarnessModelOption,
+  HarnessSkillInstallCandidate,
+  HarnessSkillInstallCandidateSource,
   HarnessSkillId,
   HarnessSkillStatusItem,
   HarnessSkillStatusResponse,
@@ -31,6 +34,7 @@ import type {
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
   OpenClawConfigState,
+  OpenClawObjectSource,
   OpenClawVersionInfo,
   ManagerNodeConfig,
   ParallelAgentsNodeConfig,
@@ -73,6 +77,11 @@ interface RunModelDefaults {
   claude?: string;
 }
 
+interface HarnessModelDefaults extends Pick<RunModelDefaults, "codex" | "claude"> {
+  codexModels: HarnessModelOption[];
+  claudeModels: HarnessModelOption[];
+}
+
 type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
 
 type ChatInboxSubmissionResult = {
@@ -85,9 +94,22 @@ type ChatInboxSubmissionBlock = {
   json: string;
 };
 
+type HarnessSkillInstallCandidateInput = {
+  root: string;
+  source: HarnessSkillInstallCandidateSource;
+  label: string;
+};
+
+type HarnessSkillInstallTarget = {
+  root: string;
+  candidates: HarnessSkillInstallCandidate[];
+};
+
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const fallbackCodexDefaultModel = "gpt-5.4";
 const fallbackClaudeCodeDefaultModel = "inherit";
+const codexDefaultThinkingLevels: ChatThinkingEffort[] = ["low", "medium", "high", "xhigh"];
+const claudeCodeDefaultThinkingLevels: ChatThinkingEffort[] = ["off", "low", "medium", "high", "xhigh", "max", "adaptive"];
 const hivewardHarnessSkills: Array<{
   id: HarnessSkillId;
   label: string;
@@ -375,10 +397,12 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = req.body as StartBlueprintRunRequest;
+      const harnessDefaults = resolveHarnessModelDefaults();
       const run = await worker.startRun(
         withRunDefaults(blueprint, {
           openclaw: config.defaultModelId,
-          ...resolveHarnessModelDefaults()
+          codex: harnessDefaults.codex,
+          claude: harnessDefaults.claude
         }),
         body.startedBy ?? "local-user"
       );
@@ -630,22 +654,20 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       return;
     }
 
-    if (body.harnessId !== "openclaw") {
-      res.status(400).json({
-        error: {
-          code: "chat_harness_unavailable",
-          message: "Only the OpenClaw chat harness is available right now."
-        }
-      });
-      return;
-    }
-
     const config = await openClawConfigStore.getState();
+    const harnessDefaults = resolveHarnessModelDefaults();
+    const defaults = {
+      openclaw: config.defaultModelId,
+      codex: harnessDefaults.codex,
+      claude: harnessDefaults.claude
+    };
     const roleSkillPrompt = await buildChatRoleSkillPrompt(store, body.roleScope);
+    const source = sourceForChatHarness(body.harnessId);
     const agentId = body.agentId || selectDefaultAgentId(config.configuredAgents);
-    const sessionKey = body.nativeSessionKey || buildOpenClawChatSessionKey(agentId);
+    const sessionKey = body.nativeSessionKey || (body.harnessId === "openclaw" ? buildOpenClawChatSessionKey(agentId) : "");
     const chatMessageRequestId = `chat-message-${nanoid(8)}`;
     const prompt = buildChatPrompt(body, roleSkillPrompt);
+    const modelId = resolveChatModelId(body, config, defaults);
     const openclawStartedAtMs = Date.now();
 
     res.status(200);
@@ -667,12 +689,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       await adapter.streamChatMessage(
         {
           sessionKey,
+          source,
           message: prompt,
           attachments: body.attachments ?? [],
-          modelId: body.modelId,
+          modelId,
           thinking: body.thinkingEffort,
           idempotencyKey: chatMessageRequestId,
-          timeoutMs: 600_000
+          timeoutMs: 600_000,
+          skillIds: body.roleScope ? [roleSkillIdForRole(body.roleScope.role)] : undefined
         },
         (event) => {
           if (event.type === "started") {
@@ -1391,6 +1415,34 @@ function buildOpenClawChatSessionKey(agentId: string): string {
   return `agent:${normalizedAgentId}:main`;
 }
 
+function sourceForChatHarness(harnessId: HarnessId): OpenClawObjectSource {
+  if (harnessId === "claudeCode") return "claude";
+  return harnessId;
+}
+
+function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
+  return role === "leader" ? "hiveward-leader" : "hiveward-ceo";
+}
+
+function resolveChatModelId(
+  body: SendChatMessageRequest,
+  config: OpenClawConfigState,
+  defaults: RunModelDefaults
+): string | undefined {
+  if (body.harnessId === "openclaw") {
+    return body.modelId;
+  }
+
+  const requestedModel = body.modelId === config.defaultModelId ? undefined : body.modelId;
+  const modelId = body.harnessId === "codex"
+    ? requestedModel ?? defaults.codex
+    : requestedModel ?? defaults.claude;
+  if (body.harnessId === "claudeCode" && modelId === "inherit") {
+    return undefined;
+  }
+  return modelId;
+}
+
 function readHarnessId(value: string | undefined): HarnessId {
   if (value === "openclaw" || value === "claudeCode" || value === "codex") return value;
   throw new Error(`Unsupported harness id: ${value ?? ""}`);
@@ -1401,30 +1453,16 @@ async function buildHarnessSkillStatusResponse(
   openClawConfigStore: OpenClawConfigStore
 ): Promise<HarnessSkillStatusResponse> {
   const checkedAt = new Date().toISOString();
-  if (harnessId !== "openclaw") {
-    return {
-      harnessId,
-      supported: false,
-      checkedAt,
-      skills: hivewardHarnessSkills.map((skill) => ({
-        id: skill.id,
-        label: skill.label,
-        sourcePath: join(skill.sourceDir, "SKILL.md"),
-        installed: false,
-        status: "unsupported",
-        error: "HiveWard has not wired native skill installation for this harness yet."
-      }))
-    };
-  }
-
   const config = await openClawConfigStore.getState();
-  const installRoot = resolveOpenClawSkillInstallRoot(config);
-  const skills = await Promise.all(hivewardHarnessSkills.map((skill) => buildOpenClawSkillStatusItem(skill, installRoot)));
+  const installTarget = resolveHarnessSkillInstallTarget(harnessId, config);
+  const installRoot = installTarget.root;
+  const skills = await Promise.all(hivewardHarnessSkills.map((skill) => buildHarnessSkillStatusItem(skill, installRoot)));
   return {
     harnessId,
     supported: true,
     checkedAt,
     installRoot,
+    installCandidates: installTarget.candidates,
     skills
   };
 }
@@ -1433,15 +1471,8 @@ async function installHarnessSkills(
   harnessId: HarnessId,
   openClawConfigStore: OpenClawConfigStore
 ): Promise<InstallHarnessSkillsResponse> {
-  if (harnessId !== "openclaw") {
-    return {
-      ...(await buildHarnessSkillStatusResponse(harnessId, openClawConfigStore)),
-      installedCount: 0
-    };
-  }
-
   const config = await openClawConfigStore.getState();
-  const installRoot = resolveOpenClawSkillInstallRoot(config);
+  const installRoot = resolveHarnessSkillInstallTarget(harnessId, config).root;
   await mkdir(installRoot, { recursive: true });
 
   let installedCount = 0;
@@ -1458,12 +1489,154 @@ async function installHarnessSkills(
   };
 }
 
-function resolveOpenClawSkillInstallRoot(config: OpenClawConfigState): string {
-  void config;
-  return join(readEnvString(process.env, "OPENCLAW_HOME") ?? join(homedir(), ".openclaw"), "skills");
+function resolveHarnessSkillInstallTarget(harnessId: HarnessId, config: OpenClawConfigState): HarnessSkillInstallTarget {
+  const candidates = buildHarnessSkillInstallCandidates(harnessId, config);
+  const selected = selectHarnessSkillInstallCandidate(candidates);
+  const selectedRootKey = normalizePathKey(selected.root);
+  return {
+    root: selected.root,
+    candidates: candidates.map((candidate) => ({
+      ...candidate,
+      selected: normalizePathKey(candidate.root) === selectedRootKey
+    }))
+  };
 }
 
-async function buildOpenClawSkillStatusItem(
+function buildHarnessSkillInstallCandidates(
+  harnessId: HarnessId,
+  config: OpenClawConfigState
+): HarnessSkillInstallCandidate[] {
+  const candidates: HarnessSkillInstallCandidate[] = [];
+  const home = homedir();
+
+  if (harnessId === "codex") {
+    addEnvHomeSkillCandidate(candidates, "CODEX_HOME", "Codex CODEX_HOME skills");
+    addPersonalSkillCandidate(candidates, join(home, ".codex", "skills"), "Codex personal skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".codex", "skills"), "Codex project skills");
+    return candidates;
+  }
+
+  if (harnessId === "claudeCode") {
+    addEnvHomeSkillCandidate(candidates, "CLAUDE_CONFIG_DIR", "Claude Code CLAUDE_CONFIG_DIR skills");
+    addPersonalSkillCandidate(candidates, join(home, ".claude", "skills"), "Claude Code personal skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".claude", "skills"), "Claude Code project skills");
+    return candidates;
+  }
+
+  addEnvHomeSkillCandidate(candidates, "OPENCLAW_STATE_DIR", "OpenClaw OPENCLAW_STATE_DIR skills");
+  addEnvHomeSkillCandidate(candidates, "OPENCLAW_HOME", "OpenClaw OPENCLAW_HOME skills");
+  addConfigSiblingSkillCandidate(candidates, config.configPath, "OpenClaw config-adjacent skills");
+  addPersonalSkillCandidate(candidates, join(home, ".openclaw", "skills"), "OpenClaw personal skills");
+  addProjectSkillCandidate(candidates, join(repositoryRoot, ".openclaw", "skills"), "OpenClaw project skills");
+  return candidates;
+}
+
+function addEnvHomeSkillCandidate(
+  candidates: HarnessSkillInstallCandidate[],
+  envName: string,
+  label: string
+): void {
+  const envHome = readEnvString(process.env, envName);
+  if (!envHome) return;
+  addHarnessSkillInstallCandidate(candidates, {
+    root: join(expandHomePath(envHome), "skills"),
+    source: "environment",
+    label
+  });
+}
+
+function addPersonalSkillCandidate(
+  candidates: HarnessSkillInstallCandidate[],
+  root: string,
+  label: string
+): void {
+  const normalizedRoot = resolve(root);
+  const hasHiveWardSkills = hasHiveWardSkillInstall(normalizedRoot);
+  addHarnessSkillInstallCandidate(candidates, {
+    root: normalizedRoot,
+    source: hasHiveWardSkills ? "existing_install" : fileExists(normalizedRoot) ? "existing_root" : "default",
+    label
+  });
+}
+
+function addProjectSkillCandidate(
+  candidates: HarnessSkillInstallCandidate[],
+  root: string,
+  label: string
+): void {
+  addHarnessSkillInstallCandidate(candidates, {
+    root,
+    source: "project",
+    label
+  });
+}
+
+function addConfigSiblingSkillCandidate(
+  candidates: HarnessSkillInstallCandidate[],
+  configPath: string | undefined,
+  label: string
+): void {
+  if (!configPath) return;
+  const resolvedConfigPath = resolve(expandHomePath(configPath));
+  if (!fileExists(resolvedConfigPath) && !fileExists(dirname(resolvedConfigPath))) return;
+  addHarnessSkillInstallCandidate(candidates, {
+    root: join(dirname(resolvedConfigPath), "skills"),
+    source: "existing_root",
+    label
+  });
+}
+
+function addHarnessSkillInstallCandidate(
+  candidates: HarnessSkillInstallCandidate[],
+  input: HarnessSkillInstallCandidateInput
+): void {
+  const root = resolve(input.root);
+  const rootKey = normalizePathKey(root);
+  if (candidates.some((candidate) => normalizePathKey(candidate.root) === rootKey)) return;
+  candidates.push({
+    root,
+    source: input.source,
+    label: input.label,
+    exists: fileExists(root),
+    hasHiveWardSkills: hasHiveWardSkillInstall(root),
+    selected: false
+  });
+}
+
+function selectHarnessSkillInstallCandidate(
+  candidates: HarnessSkillInstallCandidate[]
+): HarnessSkillInstallCandidate {
+  return (
+    candidates.find((candidate) => candidate.source === "environment") ??
+    candidates.find((candidate) => candidate.source !== "project" && candidate.hasHiveWardSkills) ??
+    candidates.find((candidate) => candidate.source !== "project" && candidate.exists) ??
+    candidates.find((candidate) => candidate.source === "default") ??
+    candidates[0] ??
+    {
+      root: join(homedir(), ".openclaw", "skills"),
+      source: "default",
+      label: "Default personal skills",
+      exists: false,
+      hasHiveWardSkills: false,
+      selected: false
+    }
+  );
+}
+
+function hasHiveWardSkillInstall(root: string): boolean {
+  return hivewardHarnessSkills.some((skill) => fileExists(join(root, skill.id, "SKILL.md")));
+}
+
+function expandHomePath(value: string): string {
+  if (value === "~") return homedir();
+  return value.startsWith("~/") || value.startsWith("~\\") ? join(homedir(), value.slice(2)) : value;
+}
+
+function normalizePathKey(path: string): string {
+  return process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+}
+
+async function buildHarnessSkillStatusItem(
   skill: (typeof hivewardHarnessSkills)[number],
   installRoot: string
 ): Promise<HarnessSkillStatusItem> {
@@ -1557,13 +1730,13 @@ function isFileNotFoundError(error: unknown): boolean {
 function buildHarnessStatuses(
   version: OpenClawVersionInfo,
   config: OpenClawConfigState,
-  defaults: Pick<RunModelDefaults, "codex" | "claude">
+  defaults: HarnessModelDefaults
 ): HarnessStatus[] {
   const checkedAt = new Date().toISOString();
   return [
     buildOpenClawHarnessStatus(version, config, checkedAt),
-    buildClaudeCodeHarnessStatus(checkedAt, defaults.claude),
-    buildCodexHarnessStatus(checkedAt, defaults.codex)
+    buildClaudeCodeHarnessStatus(checkedAt, defaults.claude, defaults.claudeModels),
+    buildCodexHarnessStatus(checkedAt, defaults.codex, defaults.codexModels)
   ];
 }
 
@@ -1612,7 +1785,11 @@ function buildOpenClawHarnessStatus(
   };
 }
 
-function buildClaudeCodeHarnessStatus(checkedAt: string, defaultModelId: string | undefined): HarnessStatus {
+function buildClaudeCodeHarnessStatus(
+  checkedAt: string,
+  defaultModelId: string | undefined,
+  models: HarnessModelOption[]
+): HarnessStatus {
   const installed = canResolvePackage("@anthropic-ai/claude-agent-sdk");
   const apiKeyConfigured = hasEnvValue("ANTHROPIC_API_KEY");
   const oauthConfigured = hasEnvValue("CLAUDE_CODE_OAUTH_TOKEN");
@@ -1628,6 +1805,7 @@ function buildClaudeCodeHarnessStatus(checkedAt: string, defaultModelId: string 
     id: "claudeCode",
     label: "Claude code",
     defaultModelId,
+    models,
     installed,
     environmentOk: installed && configured && Boolean(defaultModelId),
     connectionState: !installed ? "unavailable" : configured ? "available" : "needs_config",
@@ -1668,13 +1846,17 @@ function buildClaudeCodeHarnessStatus(checkedAt: string, defaultModelId: string 
         id: "claude-default-model",
         label: "Default model",
         status: defaultModelId ? "pass" : "fail",
-        detail: defaultModelId ?? "No default Claude Code model was resolved."
+        detail: defaultModelId ? `${defaultModelId} (${models.length} model option${models.length === 1 ? "" : "s"} resolved).` : "No default Claude Code model was resolved."
       }
     ]
   };
 }
 
-function buildCodexHarnessStatus(checkedAt: string, defaultModelId: string | undefined): HarnessStatus {
+function buildCodexHarnessStatus(
+  checkedAt: string,
+  defaultModelId: string | undefined,
+  models: HarnessModelOption[]
+): HarnessStatus {
   const installed = canResolvePackage("@openai/codex-sdk");
   const apiKeyConfigured = Boolean(process.env.CODEX_API_KEY?.trim());
   const authFile = resolveConfigFile({
@@ -1689,6 +1871,7 @@ function buildCodexHarnessStatus(checkedAt: string, defaultModelId: string | und
     id: "codex",
     label: "Codex",
     defaultModelId,
+    models,
     installed,
     environmentOk: installed && configured && Boolean(defaultModelId),
     connectionState: !installed ? "unavailable" : configured ? "available" : "needs_config",
@@ -1717,7 +1900,7 @@ function buildCodexHarnessStatus(checkedAt: string, defaultModelId: string | und
         id: "codex-default-model",
         label: "Default model",
         status: defaultModelId ? "pass" : "fail",
-        detail: defaultModelId ?? "No default Codex model was resolved."
+        detail: defaultModelId ? `${defaultModelId} (${models.length} model option${models.length === 1 ? "" : "s"} scanned).` : "No default Codex model was resolved."
       }
     ]
   };
@@ -1847,14 +2030,238 @@ function defaultModelForAgentRuntime(runtimeId: "openclaw" | "codex" | "claude",
   return defaults.claude;
 }
 
-function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): Pick<RunModelDefaults, "codex" | "claude"> {
+function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): HarnessModelDefaults {
+  const codexModels = readCodexModelCache(env);
+  const codexConfiguredModel = readCodexConfiguredModel(env);
+  const codexDefaultModelId =
+    readEnvString(env, "HIVEWARD_CODEX_DEFAULT_MODEL") ??
+    readEnvString(env, "CODEX_DEFAULT_MODEL") ??
+    codexConfiguredModel ??
+    codexModels[0]?.id ??
+    fallbackCodexDefaultModel;
+
+  const claudeDefaultModelId =
+    readEnvString(env, "HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL") ??
+    readEnvString(env, "CLAUDE_CODE_DEFAULT_MODEL") ??
+    fallbackClaudeCodeDefaultModel;
+
   return {
-    codex: readEnvString(env, "HIVEWARD_CODEX_DEFAULT_MODEL") ?? readEnvString(env, "CODEX_DEFAULT_MODEL") ?? fallbackCodexDefaultModel,
-    claude:
-      readEnvString(env, "HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL") ??
-      readEnvString(env, "CLAUDE_CODE_DEFAULT_MODEL") ??
-      fallbackClaudeCodeDefaultModel
+    codex: codexDefaultModelId,
+    claude: claudeDefaultModelId,
+    codexModels: prepareHarnessModelOptions(codexModels, codexDefaultModelId, "codex", codexDefaultThinkingLevels),
+    claudeModels: prepareHarnessModelOptions(
+      readClaudeCodeModelOptions(env),
+      claudeDefaultModelId,
+      "claude",
+      claudeCodeDefaultThinkingLevels
+    )
   };
+}
+
+function readCodexConfiguredModel(env: NodeJS.ProcessEnv): string | undefined {
+  for (const root of resolveCodexConfigRoots(env)) {
+    const configPath = join(root, "config.toml");
+    if (!fileExists(configPath)) continue;
+    const model = readTopLevelTomlString(configPath, "model");
+    if (model) return model;
+  }
+  return undefined;
+}
+
+function readCodexModelCache(env: NodeJS.ProcessEnv): HarnessModelOption[] {
+  const entries: Array<HarnessModelOption & { priority: number }> = [];
+  for (const root of resolveCodexConfigRoots(env)) {
+    const cachePath = join(root, "models_cache.json");
+    const cache = readJsonFile(cachePath);
+    const models = isPlainRecord(cache) && Array.isArray(cache.models) ? cache.models : [];
+    for (const model of models) {
+      const option = readCodexCachedModel(model);
+      if (option) entries.push(option);
+    }
+  }
+
+  entries.sort((left, right) => right.priority - left.priority || left.label.localeCompare(right.label));
+  return mergeHarnessModelOptions(entries.map(({ priority: _priority, ...option }) => option));
+}
+
+function readCodexCachedModel(value: unknown): (HarnessModelOption & { priority: number }) | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const id = readOptionalString(value.slug);
+  if (!id) return undefined;
+
+  const visibility = readOptionalString(value.visibility);
+  if (visibility && visibility !== "list") return undefined;
+  if (value.supported_in_api === false) return undefined;
+
+  return {
+    id,
+    label: readOptionalString(value.display_name) ?? id,
+    provider: "codex",
+    description: readOptionalString(value.description),
+    thinkingLevels: readCodexThinkingLevels(value.supported_reasoning_levels),
+    priority: typeof value.priority === "number" ? value.priority : 0
+  };
+}
+
+function readCodexThinkingLevels(value: unknown): ChatThinkingEffort[] {
+  if (!Array.isArray(value)) return codexDefaultThinkingLevels;
+  const levels = value
+    .map((item) => (isPlainRecord(item) ? readOptionalString(item.effort) : undefined))
+    .filter((effort): effort is ChatThinkingEffort => isChatThinkingEffort(effort) && effort !== "minimal" && effort !== "off");
+  return levels.length ? [...new Set(levels)] : codexDefaultThinkingLevels;
+}
+
+function readEnvModelOptions(
+  env: NodeJS.ProcessEnv,
+  names: string[],
+  provider: string,
+  thinkingLevels: ChatThinkingEffort[]
+): HarnessModelOption[] {
+  for (const name of names) {
+    const value = readEnvString(env, name);
+    if (!value) continue;
+    return value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((id) => ({
+        id,
+        label: id,
+        provider,
+        thinkingLevels
+      }));
+  }
+  return [];
+}
+
+function readClaudeCodeModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[] {
+  return mergeHarnessModelOptions([
+    ...readEnvModelOptions(env, ["HIVEWARD_CLAUDE_CODE_MODELS", "CLAUDE_CODE_MODELS"], "claude", claudeCodeDefaultThinkingLevels),
+    ...readClaudeCodeSettingsModelOptions(env)
+  ]);
+}
+
+function readClaudeCodeSettingsModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[] {
+  const modelIds = new Set<string>();
+  for (const root of resolveClaudeCodeConfigRoots(env)) {
+    for (const fileName of ["settings.json", "settings.local.json"]) {
+      const settings = readJsonFile(join(root, fileName));
+      if (!isPlainRecord(settings)) continue;
+      const topLevelModel = readOptionalString(settings.model);
+      if (topLevelModel) modelIds.add(topLevelModel);
+      const settingsEnv = isPlainRecord(settings.env) ? settings.env : {};
+      for (const [key, value] of Object.entries(settingsEnv)) {
+        if (key === "ANTHROPIC_MODEL" || key === "CLAUDE_CODE_DEFAULT_MODEL" || /^ANTHROPIC_DEFAULT_.*_MODEL$/.test(key)) {
+          const modelId = readOptionalString(value);
+          if (modelId) modelIds.add(modelId);
+        }
+      }
+    }
+  }
+
+  return [...modelIds].map((id) => ({
+    id,
+    label: id,
+    provider: "claude",
+    thinkingLevels: claudeCodeDefaultThinkingLevels
+  }));
+}
+
+function prepareHarnessModelOptions(
+  scannedModels: HarnessModelOption[],
+  defaultModelId: string | undefined,
+  provider: string,
+  thinkingLevels: ChatThinkingEffort[]
+): HarnessModelOption[] {
+  const defaultOption = defaultModelId
+    ? [{
+        id: defaultModelId,
+        label: defaultModelId,
+        provider,
+        thinkingLevels
+      }]
+    : [];
+  const merged = mergeHarnessModelOptions([...defaultOption, ...scannedModels]);
+  return merged
+    .map((model) => ({
+      ...model,
+      isDefault: defaultModelId ? model.id === defaultModelId : undefined
+    }))
+    .sort((left, right) => Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)));
+}
+
+function mergeHarnessModelOptions(options: HarnessModelOption[]): HarnessModelOption[] {
+  const merged: HarnessModelOption[] = [];
+  const indexesById = new Map<string, number>();
+  for (const option of options) {
+    if (!option.id) continue;
+    const existingIndex = indexesById.get(option.id);
+    if (existingIndex === undefined) {
+      indexesById.set(option.id, merged.length);
+      merged.push(option);
+      continue;
+    }
+    const existing = merged[existingIndex]!;
+    merged[existingIndex] = {
+      ...existing,
+      ...option,
+      thinkingLevels: option.thinkingLevels?.length ? option.thinkingLevels : existing.thinkingLevels
+    };
+  }
+  return merged;
+}
+
+function resolveCodexConfigRoots(env: NodeJS.ProcessEnv): string[] {
+  const roots = [readEnvString(env, "CODEX_HOME"), join(homedir(), ".codex")].filter((root): root is string => Boolean(root));
+  return [...new Set(roots.map((root) => resolve(root)))];
+}
+
+function resolveClaudeCodeConfigRoots(env: NodeJS.ProcessEnv): string[] {
+  const roots = [readEnvString(env, "CLAUDE_CONFIG_DIR"), join(homedir(), ".claude")].filter((root): root is string => Boolean(root));
+  return [...new Set(roots.map((root) => resolve(root)))];
+}
+
+function readTopLevelTomlString(path: string, key: string): string | undefined {
+  let content: string;
+  try {
+    content = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  const pattern = new RegExp(`^${escapeRegExp(key)}\\s*=\\s*(?:"([^"]+)"|'([^']+)'|([^\\s#]+))`);
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) return undefined;
+    const match = pattern.exec(line);
+    const value = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (value?.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function readJsonFile(path: string): unknown {
+  if (!fileExists(path)) return undefined;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+function isChatThinkingEffort(value: string | undefined): value is ChatThinkingEffort {
+  return value === "off" ||
+    value === "minimal" ||
+    value === "low" ||
+    value === "medium" ||
+    value === "high" ||
+    value === "adaptive" ||
+    value === "xhigh" ||
+    value === "max";
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function readEnvString(env: NodeJS.ProcessEnv, name: string): string | undefined {
