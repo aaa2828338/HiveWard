@@ -41,11 +41,13 @@ import {
 import { isAgentBlueprintNode, type AgentRuntimeId } from "@hiveward/shared";
 import type {
   AgentNodeConfig,
+  ArchitectureBlueprintView,
   ApprovalNodeConfig,
   CanvasPosition,
   CanvasSize,
   CatalogSnapshot,
   ConditionNodeConfig,
+  CompanyRoleDirectory,
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
@@ -74,6 +76,7 @@ import {
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
+  resolveRunViewStatus,
   shouldShowBlueprintWorkspaceRunState,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
@@ -135,6 +138,8 @@ type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
 export function BlueprintStudioPage({
   blueprint,
   blueprints,
+  architecture,
+  roleDirectory,
   catalog,
   configuredAgents,
   runSummaries,
@@ -158,6 +163,8 @@ export function BlueprintStudioPage({
 }: {
   blueprint?: BlueprintDefinition;
   blueprints: BlueprintDefinition[];
+  architecture?: ArchitectureBlueprintView;
+  roleDirectory?: CompanyRoleDirectory;
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   runSummaries: BlueprintRunSummary[];
@@ -188,6 +195,7 @@ export function BlueprintStudioPage({
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number; placement?: "above" }>({ x: 88, y: 252 });
   const [blueprintDrawerOpen, setBlueprintDrawerOpen] = useState(false);
+  const [blueprintBoard, setBlueprintBoard] = useState<"business" | "architecture">("business");
   const [drawerSelectedBlueprintId, setDrawerSelectedBlueprintId] = useState<string | undefined>(blueprint?.id);
   const [blueprintSearch, setBlueprintSearch] = useState("");
   const [blueprintSortMode, setBlueprintSortMode] = useState<BlueprintSortMode>("recent");
@@ -226,12 +234,13 @@ export function BlueprintStudioPage({
     });
   }, []);
 
+  const workspaceRunStatus = resolveRunViewStatus(runView);
   const workspaceTerminalRunSeen = Boolean(
     runView?.run.id &&
-      isTerminalBlueprintRunStatus(runView.run.status) &&
+      isTerminalBlueprintRunStatus(workspaceRunStatus) &&
       acknowledgedTerminalRunIds.has(runView.run.id)
   );
-  const workspaceRunView = shouldShowBlueprintWorkspaceRunState(runView?.run.status, workspaceTerminalRunSeen) ? runView : undefined;
+  const workspaceRunView = shouldShowBlueprintWorkspaceRunState(workspaceRunStatus, workspaceTerminalRunSeen) ? runView : undefined;
   const statusByNode = useMemo(() => {
     const map = new Map<string, BlueprintNodeRun>();
     for (const nodeRun of workspaceRunView?.nodeRuns ?? []) {
@@ -298,6 +307,32 @@ export function BlueprintStudioPage({
           confirmDelete: "删除"
         };
   }, [t.navigation.blueprint]);
+  const boardCopy = useMemo(() => {
+    const english = t.navigation.blueprint === "Blueprint";
+    return english
+      ? {
+          architecture: "Architecture",
+          business: "Business",
+          architectureEmpty: "Create a business blueprint to generate its leader role.",
+          ceo: "CEO",
+          leader: "Leader",
+          pending: "pending",
+          latestRun: "latest run",
+          noRun: "no runs",
+          openBlueprint: "Open business blueprint"
+        }
+      : {
+          architecture: "\u67b6\u6784\u84dd\u56fe",
+          business: "\u4e1a\u52a1\u84dd\u56fe",
+          architectureEmpty: "\u65b0\u5efa\u4e1a\u52a1\u84dd\u56fe\u540e\u4f1a\u751f\u6210\u5bf9\u5e94 Leader\u3002",
+          ceo: "CEO",
+          leader: "Leader",
+          pending: "\u5f85\u5904\u7406",
+          latestRun: "\u6700\u8fd1\u8fd0\u884c",
+          noRun: "\u6682\u65e0\u8fd0\u884c",
+          openBlueprint: "\u6253\u5f00\u4e1a\u52a1\u84dd\u56fe"
+        };
+  }, [t.navigation.blueprint]);
   const blueprintRunStats = useMemo(() => {
     const stats = new Map<string, { lastUsedAt: number; latestRunId?: string; latestStatus?: BlueprintRunSummary["status"]; usageCount: number }>();
     for (const run of runSummaries) {
@@ -345,13 +380,15 @@ export function BlueprintStudioPage({
     return blueprintDrawerCopy.name;
   }, [blueprintDrawerCopy, blueprintSortMode]);
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
+  const currentBlueprintLatestStatus =
+    runView?.run.blueprintId === blueprint?.id ? resolveRunViewStatus(runView) : currentBlueprintRunStats?.latestStatus;
   const currentTerminalRunId =
-    currentBlueprintRunStats?.latestRunId && isTerminalBlueprintRunStatus(currentBlueprintRunStats.latestStatus)
+    currentBlueprintRunStats?.latestRunId && isTerminalBlueprintRunStatus(currentBlueprintLatestStatus)
       ? currentBlueprintRunStats.latestRunId
       : undefined;
   const currentTerminalRunSeen = Boolean(currentTerminalRunId && acknowledgedTerminalRunIds.has(currentTerminalRunId));
-  const currentBlueprintActivity = currentBlueprintRunStats
-    ? resolveBlueprintActivityState(currentBlueprintRunStats.latestStatus, currentTerminalRunSeen)
+  const currentBlueprintActivity = currentBlueprintLatestStatus
+    ? resolveBlueprintActivityState(currentBlueprintLatestStatus, currentTerminalRunSeen)
     : "idle";
   const isBlueprintInteractionLocked = currentBlueprintActivity === "running";
   const isRunButtonBusy = busyAction === "runBlueprint" || busyAction === "cancelBlueprintRun";
@@ -856,9 +893,28 @@ export function BlueprintStudioPage({
     [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
+  if (blueprintBoard === "architecture") {
+    return (
+      <section className="blueprint-shell compact-blueprint-shell architecture-blueprint-shell">
+        <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
+        <ArchitectureBlueprintPanel
+          architecture={architecture}
+          blueprints={blueprints}
+          roleDirectory={roleDirectory}
+          copy={boardCopy}
+          onOpenBlueprint={(blueprintId) => {
+            onSelectBlueprint(blueprintId);
+            setBlueprintBoard("business");
+          }}
+        />
+      </section>
+    );
+  }
+
   return (
     <ReactFlowProvider>
       <section className="blueprint-shell compact-blueprint-shell">
+        <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
         <section
           ref={canvasPanelRef}
           className={`blueprint-canvas-panel expanded-blueprint-panel blueprint-canvas-state-${currentBlueprintActivity}`}
@@ -1199,6 +1255,135 @@ export function BlueprintStudioPage({
       </section>
     </ReactFlowProvider>
   );
+}
+
+type BlueprintBoardCopy = {
+  architecture: string;
+  business: string;
+  architectureEmpty: string;
+  ceo: string;
+  leader: string;
+  pending: string;
+  latestRun: string;
+  noRun: string;
+  openBlueprint: string;
+};
+
+function BlueprintBoardSwitch({
+  board,
+  copy,
+  onChange
+}: {
+  board: "business" | "architecture";
+  copy: BlueprintBoardCopy;
+  onChange: (board: "business" | "architecture") => void;
+}) {
+  return (
+    <div className="blueprint-board-switch" role="tablist" aria-label="Blueprint board">
+      <button
+        type="button"
+        className={board === "architecture" ? "active" : ""}
+        onClick={() => onChange("architecture")}
+        aria-pressed={board === "architecture"}
+      >
+        <Network size={15} />
+        {copy.architecture}
+      </button>
+      <button
+        type="button"
+        className={board === "business" ? "active" : ""}
+        onClick={() => onChange("business")}
+        aria-pressed={board === "business"}
+      >
+        <LayoutTemplate size={15} />
+        {copy.business}
+      </button>
+    </div>
+  );
+}
+
+function ArchitectureBlueprintPanel({
+  architecture,
+  blueprints,
+  roleDirectory,
+  copy,
+  onOpenBlueprint
+}: {
+  architecture?: ArchitectureBlueprintView;
+  blueprints: BlueprintDefinition[];
+  roleDirectory?: CompanyRoleDirectory;
+  copy: BlueprintBoardCopy;
+  onOpenBlueprint: (blueprintId: string) => void;
+}) {
+  const ceoNode = architecture?.nodes.find((node) => node.kind === "ceo");
+  const leaderNodes = architecture?.nodes.filter((node) => node.kind === "leader") ?? [];
+  const leaderCount = roleDirectory?.leaders.length ?? leaderNodes.length;
+
+  return (
+    <section className="architecture-blueprint-panel">
+      <div className="architecture-blueprint-rail">
+        <div className="architecture-role-card architecture-ceo-card">
+          <span className="architecture-role-icon">
+            <ShieldCheck size={20} />
+          </span>
+          <div>
+            <span>{copy.ceo}</span>
+            <strong>{ceoNode?.label ?? roleDirectory?.ceo.label ?? "CEO"}</strong>
+          </div>
+          <div className="architecture-role-metrics">
+            <span>{ceoNode?.pendingApprovalCount ?? 0} {copy.pending}</span>
+            <span>{leaderCount} {copy.leader}</span>
+          </div>
+        </div>
+        <div className="architecture-spine" aria-hidden="true" />
+      </div>
+
+      {leaderNodes.length === 0 ? (
+        <div className="architecture-empty">{copy.architectureEmpty}</div>
+      ) : (
+        <div className="architecture-leader-grid">
+          {leaderNodes.map((node) => {
+            const blueprintId = node.blueprintId;
+            const blueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : undefined;
+            return (
+              <article key={node.id} className="architecture-role-card architecture-leader-card">
+                <span className="architecture-role-icon leader">
+                  <Bot size={19} />
+                </span>
+                <div className="architecture-role-main">
+                  <span>{copy.leader}</span>
+                  <strong>{node.label}</strong>
+                  <small>{node.blueprintName ?? blueprint?.name ?? blueprintId}</small>
+                </div>
+                <div className="architecture-role-metrics">
+                  <span>{node.pendingApprovalCount} {copy.pending}</span>
+                  <span>{node.latestRunStatus ? `${copy.latestRun}: ${node.latestRunStatus}` : copy.noRun}</span>
+                  {node.latestRunAt && <time dateTime={node.latestRunAt}>{formatArchitectureDate(node.latestRunAt)}</time>}
+                </div>
+                {blueprintId && (
+                  <button type="button" className="architecture-open-blueprint" onClick={() => onOpenBlueprint(blueprintId)}>
+                    <LayoutTemplate size={15} />
+                    {copy.openBlueprint}
+                  </button>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatArchitectureDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function NodeDetailModal({

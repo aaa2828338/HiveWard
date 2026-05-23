@@ -32,6 +32,7 @@ export interface RuntimeAdapter {
   getRuntimeOverview(): Promise<RuntimeOverview>;
   getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]>;
   createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult>;
+  updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult>;
   streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void>;
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
@@ -47,6 +48,16 @@ export interface RuntimeChatSessionResult {
   sessionKey: string;
   sessionId?: string;
   title?: string;
+}
+
+export interface RuntimeChatSessionTitleInput {
+  sessionKey: string;
+  title: string;
+}
+
+export interface RuntimeChatSessionTitleResult {
+  sessionKey: string;
+  title: string;
 }
 
 export interface RuntimeChatStreamInput {
@@ -180,6 +191,13 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     };
   }
 
+  async updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult> {
+    return {
+      sessionKey: input.sessionKey,
+      title: input.title
+    };
+  }
+
   async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const runId = input.idempotencyKey;
@@ -306,6 +324,10 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
 
   createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
     return this.baseAdapter.createChatSession(input);
+  }
+
+  updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult> {
+    return this.baseAdapter.updateChatSessionTitle(input);
   }
 
   streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {

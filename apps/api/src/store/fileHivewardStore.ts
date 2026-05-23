@@ -6,6 +6,11 @@ import type {
   CatalogSnapshot,
   CompanyOverview,
   CompanyProfile,
+  ArchitectureBlueprintView,
+  CompanyRoleDirectory,
+  CompanyRoleProfile,
+  InboxItem,
+  InboxItemType,
   PendingApprovalItem,
   PortableBlueprintPackage,
   WorkspaceDashboard,
@@ -27,6 +32,7 @@ import {
   defaultCompanyId,
   hydrateImportedBlueprint,
   normalizeWorkspaceDashboard,
+  readPortableBlueprintPackage,
   resolveFinalRunResult
 } from "@hiveward/shared";
 
@@ -50,10 +56,14 @@ interface HivewardStoreIndex {
   runIndex: BlueprintRunSummary[];
   catalogSnapshot?: CatalogSnapshot;
   companyDashboards: Record<string, WorkspaceDashboard>;
+  roleDirectories: Record<string, CompanyRoleDirectory>;
+  inboxItems: Record<string, InboxItem[]>;
 }
 
 type RawHivewardStoreIndex = Partial<HivewardStoreIndex> & {
   companyDashboards?: Record<string, Partial<WorkspaceDashboard>>;
+  roleDirectories?: Record<string, Partial<CompanyRoleDirectory>>;
+  inboxItems?: Record<string, InboxItem[]>;
 };
 
 type LegacyHivewardStoreState = Partial<RawHivewardStoreIndex> & {
@@ -101,8 +111,13 @@ export class FileHivewardStore {
           runIndex: [],
           companyDashboards: {
             [seededCompanyId]: createDefaultWorkspaceDashboard(now)
+          },
+          roleDirectories: {},
+          inboxItems: {
+            [seededCompanyId]: []
           }
         };
+        index.roleDirectories[seededCompanyId] = buildRoleDirectory(index, seededCompanyId, now);
         await Promise.all(blueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
         await this.writeIndexUnlocked(index);
       }
@@ -140,6 +155,8 @@ export class FileHivewardStore {
       index.companies.push(company);
       index.selectedCompanyId = company.id;
       index.companyDashboards[company.id] = createDefaultWorkspaceDashboard(now);
+      index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now);
+      index.inboxItems[company.id] = [];
       await this.writeIndexUnlocked(index);
 
       return {
@@ -187,6 +204,8 @@ export class FileHivewardStore {
       index.blueprintIndex = index.blueprintIndex.filter((blueprint) => blueprint.companyId !== companyId);
       index.runIndex = index.runIndex.filter((run) => run.companyId !== companyId);
       delete index.companyDashboards[companyId];
+      delete index.roleDirectories[companyId];
+      delete index.inboxItems[companyId];
 
       if (index.selectedCompanyId === companyId) {
         index.selectedCompanyId = index.companies[0]?.id ?? null;
@@ -252,6 +271,7 @@ export class FileHivewardStore {
         index.blueprintIndex.push(toBlueprintIndexEntry(nextBlueprint));
       }
 
+      index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, now);
       await this.writeIndexUnlocked(index);
       return nextBlueprint;
     });
@@ -272,6 +292,7 @@ export class FileHivewardStore {
 
       await this.writeBlueprintUnlocked(blueprint);
       index.blueprintIndex.push(toBlueprintIndexEntry(blueprint));
+      index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, now);
       await this.writeIndexUnlocked(index);
       return blueprint;
     });
@@ -287,6 +308,7 @@ export class FileHivewardStore {
       if (existingIndex < 0) return false;
 
       index.blueprintIndex.splice(existingIndex, 1);
+      index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, new Date().toISOString());
       await this.writeIndexUnlocked(index);
       await rm(this.blueprintPath(id), { force: true });
       return true;
@@ -300,27 +322,183 @@ export class FileHivewardStore {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.requireSelectedCompanyId(index);
-      const now = new Date().toISOString();
-      const imported: BlueprintDefinition[] = [];
-      const knownBlueprints = [...index.blueprintIndex];
-
-      for (const portableBlueprint of blueprintPackage.blueprints) {
-        const blueprint = hydrateImportedBlueprint(portableBlueprint, {
-          id: nextBlueprintId(knownBlueprints),
-          companyId,
-          now,
-          defaults,
-          name: nextImportedBlueprintName(knownBlueprints, portableBlueprint.name)
-        });
-        const entry = toBlueprintIndexEntry(blueprint);
-        knownBlueprints.push(entry);
-        await this.writeBlueprintUnlocked(blueprint);
-        index.blueprintIndex.push(entry);
-        imported.push(blueprint);
-      }
-
+      const imported = await this.importBlueprintPackageUnlocked(index, companyId, blueprintPackage, defaults);
       await this.writeIndexUnlocked(index);
       return imported;
+    });
+  }
+
+  async getRoleDirectory(): Promise<{ roles: CompanyRoleDirectory; architecture: ArchitectureBlueprintView }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const roles = buildRoleDirectory(index, companyId, new Date().toISOString(), index.roleDirectories[companyId]);
+      return {
+        roles,
+        architecture: buildArchitectureBlueprintView(index, companyId, roles)
+      };
+    });
+  }
+
+  async listInboxItems(): Promise<InboxItem[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      if (!companyId) return [];
+      return [...(index.inboxItems[companyId] ?? [])].sort(
+        (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+      );
+    });
+  }
+
+  async createLeaderDelegationRequest(input: {
+    leaderId: string;
+    blueprintId?: string;
+    title?: string;
+    summary?: string;
+    createdByRoleId?: string;
+  }): Promise<InboxItem> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const now = new Date().toISOString();
+      const roles = buildRoleDirectory(index, companyId, now);
+      const leader = roles.leaders.find((candidate) => candidate.id === input.leaderId);
+      if (!leader) {
+        throw new Error(`Leader not found: ${input.leaderId}`);
+      }
+      const blueprint = index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === (input.blueprintId ?? leader.blueprintId));
+      const item = createInboxItem({
+        companyId,
+        type: "leader_delegation",
+        title: input.title ?? `Call ${leader.label}`,
+        summary: input.summary ?? `Request approval to bring ${leader.label} into this conversation.`,
+        createdByRoleId: input.createdByRoleId ?? roles.ceo.id,
+        targetRoleId: leader.id,
+        blueprintId: blueprint?.id ?? leader.blueprintId,
+        blueprintName: blueprint?.name,
+        payload: {
+          leaderId: leader.id,
+          blueprintId: blueprint?.id ?? leader.blueprintId
+        },
+        now
+      });
+      index.roleDirectories[companyId] = roles;
+      index.inboxItems[companyId] = [item, ...(index.inboxItems[companyId] ?? [])];
+      await this.writeIndexUnlocked(index);
+      return item;
+    });
+  }
+
+  async createBlueprintProposal(input: {
+    title: string;
+    summary: string;
+    blueprintId?: string;
+    blueprintPackage?: PortableBlueprintPackage;
+    preview?: Record<string, unknown>;
+    diffSummary?: string;
+    createdByRoleId?: string;
+    targetRoleId?: string;
+  }): Promise<InboxItem> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const now = new Date().toISOString();
+      const roles = buildRoleDirectory(index, companyId, now);
+      if (!input.blueprintPackage) {
+        throw new Error("Blueprint proposal requires an importable blueprintPackage.");
+      }
+      const blueprint = input.blueprintId
+        ? index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === input.blueprintId)
+        : undefined;
+      const item = createInboxItem({
+        companyId,
+        type: "blueprint_proposal",
+        title: readOptionalString(input.title) ?? "Blueprint proposal",
+        summary: readOptionalString(input.summary) ?? "A leader generated importable blueprint package for approval.",
+        createdByRoleId: input.createdByRoleId ?? inferLeaderRoleId(roles, input.blueprintId) ?? roles.ceo.id,
+        targetRoleId: input.targetRoleId,
+        blueprintId: blueprint?.id ?? input.blueprintId,
+        blueprintName: blueprint?.name,
+        payload: {
+          blueprintPackage: input.blueprintPackage,
+          preview: input.preview,
+          diffSummary: input.diffSummary
+        },
+        now
+      });
+      index.roleDirectories[companyId] = roles;
+      index.inboxItems[companyId] = [item, ...(index.inboxItems[companyId] ?? [])];
+      await this.writeIndexUnlocked(index);
+      return item;
+    });
+  }
+
+  async approveInboxItem(
+    itemId: string,
+    defaults: BlueprintImportDefaults = {},
+    comment?: string
+  ): Promise<{ item: InboxItem; importedBlueprints?: BlueprintDefinition[] }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const items = index.inboxItems[companyId] ?? [];
+      const itemIndex = items.findIndex((item) => item.id === itemId);
+      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
+      const item = items[itemIndex]!;
+      if (item.status !== "pending") {
+        return { item };
+      }
+      let importedBlueprints: BlueprintDefinition[] | undefined;
+      const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
+      if (item.type === "blueprint_proposal" && !blueprintPackage) {
+        throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
+      }
+      if (item.type === "blueprint_proposal") {
+        const importableBlueprintPackage = blueprintPackage;
+        if (!importableBlueprintPackage) {
+          throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
+        }
+        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, importableBlueprintPackage, defaults);
+      }
+      const now = new Date().toISOString();
+      const approved: InboxItem = {
+        ...item,
+        status: "approved",
+        updatedAt: now,
+        decidedAt: now,
+        decisionComment: readOptionalString(comment)
+      };
+      items[itemIndex] = approved;
+      index.inboxItems[companyId] = items;
+      await this.writeIndexUnlocked(index);
+      return { item: approved, importedBlueprints };
+    });
+  }
+
+  async rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const items = index.inboxItems[companyId] ?? [];
+      const itemIndex = items.findIndex((item) => item.id === itemId);
+      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
+      const item = items[itemIndex]!;
+      if (item.status !== "pending") {
+        return item;
+      }
+      const now = new Date().toISOString();
+      const rejected: InboxItem = {
+        ...item,
+        status: "rejected",
+        updatedAt: now,
+        decidedAt: now,
+        decisionComment: readOptionalString(comment)
+      };
+      items[itemIndex] = rejected;
+      index.inboxItems[companyId] = items;
+      await this.writeIndexUnlocked(index);
+      return rejected;
     });
   }
 
@@ -620,6 +798,35 @@ export class FileHivewardStore {
     await safeWriteJson(this.runArchivePath(archive.run.id), archive);
   }
 
+  private async importBlueprintPackageUnlocked(
+    index: HivewardStoreIndex,
+    companyId: string,
+    blueprintPackage: PortableBlueprintPackage,
+    defaults: BlueprintImportDefaults
+  ): Promise<BlueprintDefinition[]> {
+    const now = new Date().toISOString();
+    const imported: BlueprintDefinition[] = [];
+    const knownBlueprints = [...index.blueprintIndex];
+
+    for (const portableBlueprint of blueprintPackage.blueprints) {
+      const blueprint = hydrateImportedBlueprint(portableBlueprint, {
+        id: nextBlueprintId(knownBlueprints),
+        companyId,
+        now,
+        defaults,
+        name: nextImportedBlueprintName(knownBlueprints, portableBlueprint.name)
+      });
+      const entry = toBlueprintIndexEntry(blueprint);
+      knownBlueprints.push(entry);
+      await this.writeBlueprintUnlocked(blueprint);
+      index.blueprintIndex.push(entry);
+      imported.push(blueprint);
+    }
+
+    index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, now);
+    return imported;
+  }
+
   private blueprintPath(id: string): string {
     return join(this.blueprintsDir, `${id}.json`);
   }
@@ -634,20 +841,28 @@ export class FileHivewardStore {
     const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
     const selectedCompanyId = normalizeSelectedCompanyId(rawIndex.selectedCompanyId, companies, primaryCompanyId);
     const companyDashboards = normalizeCompanyDashboards(rawIndex.companyDashboards, companies, now);
-
-    return {
+    const blueprintIndex = Array.isArray(rawIndex.blueprintIndex)
+      ? rawIndex.blueprintIndex.map((entry) => normalizeBlueprintIndexEntry(entry, primaryCompanyId, now))
+      : [];
+    const runIndex = Array.isArray(rawIndex.runIndex)
+      ? rawIndex.runIndex.map((run) => normalizeRunSummary(run, primaryCompanyId))
+      : [];
+    const index: HivewardStoreIndex = {
       schema: storeIndexSchema,
       companies,
       selectedCompanyId,
-      blueprintIndex: Array.isArray(rawIndex.blueprintIndex)
-        ? rawIndex.blueprintIndex.map((entry) => normalizeBlueprintIndexEntry(entry, primaryCompanyId, now))
-        : [],
-      runIndex: Array.isArray(rawIndex.runIndex)
-        ? rawIndex.runIndex.map((run) => normalizeRunSummary(run, primaryCompanyId))
-        : [],
+      blueprintIndex,
+      runIndex,
       catalogSnapshot: rawIndex.catalogSnapshot,
-      companyDashboards
+      companyDashboards,
+      roleDirectories: {},
+      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now)
     };
+    for (const company of companies) {
+      index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, rawIndex.roleDirectories?.[company.id]);
+    }
+
+    return index;
   }
 
   private async migrateLegacyStateUnlocked(state: LegacyHivewardStoreState): Promise<HivewardStoreIndex> {
@@ -680,8 +895,13 @@ export class FileHivewardStore {
         return toBlueprintRunSummary(run, blueprint);
       }),
       catalogSnapshot: state.catalogSnapshot,
-      companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now)
+      companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now),
+      roleDirectories: {},
+      inboxItems: normalizeInboxItems(state.inboxItems, companies, now)
     };
+    for (const company of companies) {
+      index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, state.roleDirectories?.[company.id]);
+    }
 
     await Promise.all(normalizedBlueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
     for (const run of index.runIndex) {
@@ -714,6 +934,7 @@ export class FileHivewardStore {
     return index.companies.map((company) => {
       const blueprints = index.blueprintIndex.filter((blueprint) => blueprint.companyId === company.id);
       const runs = index.runIndex.filter((run) => run.companyId === company.id);
+      const pendingInboxCount = (index.inboxItems[company.id] ?? []).filter((item) => item.status === "pending").length;
       const dashboard = index.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
       return {
         ...company,
@@ -724,7 +945,7 @@ export class FileHivewardStore {
         dashboardWidgetCount: dashboard.dashboardWidgets.length,
         savedViewCount: dashboard.savedViews.length,
         noteCount: dashboard.notes.length,
-        activeApprovalCount: runs.filter((run) => run.status === "waiting_approval").length,
+        activeApprovalCount: runs.filter((run) => run.status === "waiting_approval").length + pendingInboxCount,
         latestRunAt: maxTimestamp(runs.map((run) => run.endedAt ?? run.startedAt))
       };
     });
@@ -767,6 +988,221 @@ function normalizeCompanyDashboards(
     companyDashboards[company.id] = normalizeWorkspaceDashboard(rawDashboard as Partial<WorkspaceDashboard> | undefined, now);
   }
   return companyDashboards;
+}
+
+function normalizeInboxItems(value: unknown, companies: CompanyProfile[], now: string): Record<string, InboxItem[]> {
+  const inboxItems: Record<string, InboxItem[]> = {};
+  for (const company of companies) {
+    const companyItems = isRecord(value) ? value[company.id] : undefined;
+    const rawItems: unknown[] = Array.isArray(companyItems) ? companyItems : [];
+    inboxItems[company.id] = rawItems.flatMap((item) => {
+      if (!isRecord(item)) return [];
+      const id = readString(item.id) ?? `inbox-${nanoid(8)}`;
+      const type = normalizeInboxItemType(item.type);
+      const status = item.status === "approved" || item.status === "rejected" ? item.status : "pending";
+      const title = readString(item.title) ?? "Inbox item";
+      const summary = readString(item.summary) ?? "";
+      return [{
+        id,
+        companyId: company.id,
+        type,
+        status,
+        title,
+        summary,
+        createdByRoleId: readString(item.createdByRoleId) ?? "ceo",
+        targetRoleId: readString(item.targetRoleId),
+        blueprintId: readString(item.blueprintId),
+        blueprintName: readString(item.blueprintName),
+        payload: isRecord(item.payload) ? item.payload : undefined,
+        createdAt: readString(item.createdAt) ?? now,
+        updatedAt: readString(item.updatedAt) ?? now,
+        decidedAt: readString(item.decidedAt),
+        decisionComment: readString(item.decisionComment)
+      }];
+    });
+  }
+  return inboxItems;
+}
+
+function normalizeInboxItemType(value: unknown): InboxItemType {
+  if (
+    value === "leader_delegation" ||
+    value === "blueprint_proposal" ||
+    value === "run_request" ||
+    value === "report" ||
+    value === "company_config"
+  ) {
+    return value;
+  }
+  return "report";
+}
+
+function buildRoleDirectory(
+  index: HivewardStoreIndex,
+  companyId: string,
+  now: string,
+  rawDirectory?: Partial<CompanyRoleDirectory>
+): CompanyRoleDirectory {
+  const company = index.companies.find((candidate) => candidate.id === companyId);
+  const existingCeo = rawDirectory?.ceo;
+  const ceo: CompanyRoleProfile = {
+    id: existingCeo?.id || "ceo",
+    companyId,
+    kind: "ceo",
+    label: existingCeo?.label || "CEO",
+    description: existingCeo?.description || `Company-level command role for ${company?.name ?? companyId}.`,
+    defaultAgentId: existingCeo?.defaultAgentId,
+    modelId: existingCeo?.modelId,
+    workspacePath: existingCeo?.workspacePath,
+    capabilities: ["read_company", "discuss", "delegate_leader", "submit_inbox"],
+    instructions: existingCeo?.instructions,
+    createdAt: existingCeo?.createdAt || now,
+    updatedAt: now
+  };
+  const previousLeaders = Array.isArray(rawDirectory?.leaders) ? rawDirectory.leaders : [];
+  const blueprints = index.blueprintIndex
+    .filter((blueprint) => blueprint.companyId === companyId)
+    .slice()
+    .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }));
+  const leaders = blueprints.map((blueprint) => {
+    const existing =
+      previousLeaders.find((leader) => leader.blueprintId === blueprint.id) ??
+      previousLeaders.find((leader) => leader.id === `leader-${safeRoleIdSegment(blueprint.id)}`);
+    return {
+      id: existing?.id || `leader-${safeRoleIdSegment(blueprint.id)}`,
+      companyId,
+      kind: "leader",
+      label: existing?.label || `${blueprint.name} Leader`,
+      description: existing?.description || `Leader role bound to ${blueprint.name}.`,
+      blueprintId: blueprint.id,
+      defaultAgentId: existing?.defaultAgentId,
+      modelId: existing?.modelId,
+      workspacePath: existing?.workspacePath,
+      capabilities: ["read_blueprint", "discuss", "create_blueprint_proposal", "submit_inbox"],
+      instructions: existing?.instructions,
+      createdAt: existing?.createdAt || now,
+      updatedAt: now
+    } satisfies CompanyRoleProfile;
+  });
+
+  return {
+    companyId,
+    ceo,
+    leaders,
+    updatedAt: now
+  };
+}
+
+function buildArchitectureBlueprintView(
+  index: HivewardStoreIndex,
+  companyId: string,
+  roles: CompanyRoleDirectory
+): ArchitectureBlueprintView {
+  const companyRuns = index.runIndex.filter((run) => run.companyId === companyId);
+  const companyInbox = index.inboxItems[companyId] ?? [];
+  const pendingInboxCount = companyInbox.filter((item) => item.status === "pending").length;
+  const ceoNode = {
+    id: roles.ceo.id,
+    roleId: roles.ceo.id,
+    kind: "ceo" as const,
+    label: roles.ceo.label,
+    pendingApprovalCount: pendingInboxCount + companyRuns.filter((run) => run.status === "waiting_approval").length,
+    latestRunStatus: latestRun(companyRuns)?.status,
+    latestRunAt: latestRun(companyRuns)?.startedAt,
+    position: { x: 0, y: 0 }
+  };
+  const leaderSpacing = 280;
+  const leaders = roles.leaders.map((leader, indexOffset) => {
+    const blueprint = leader.blueprintId
+      ? index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === leader.blueprintId)
+      : undefined;
+    const runs = leader.blueprintId ? companyRuns.filter((run) => run.blueprintId === leader.blueprintId) : [];
+    const latest = latestRun(runs);
+    return {
+      id: leader.id,
+      roleId: leader.id,
+      kind: "leader" as const,
+      label: leader.label,
+      blueprintId: leader.blueprintId,
+      blueprintName: blueprint?.name,
+      pendingApprovalCount:
+        runs.filter((run) => run.status === "waiting_approval").length +
+        companyInbox.filter((item) => item.status === "pending" && item.blueprintId === leader.blueprintId).length,
+      latestRunStatus: latest?.status,
+      latestRunAt: latest?.startedAt,
+      lastImportAt: blueprint?.updatedAt,
+      position: {
+        x: (indexOffset - (roles.leaders.length - 1) / 2) * leaderSpacing,
+        y: 220
+      }
+    };
+  });
+
+  return {
+    companyId,
+    rootRoleId: roles.ceo.id,
+    nodes: [ceoNode, ...leaders],
+    edges: leaders.map((leader) => ({
+      id: `${roles.ceo.id}-${leader.id}`,
+      source: roles.ceo.id,
+      target: leader.id,
+      label: "delegates"
+    })),
+    updatedAt: roles.updatedAt
+  };
+}
+
+function latestRun(runs: BlueprintRunSummary[]): BlueprintRunSummary | undefined {
+  return runs
+    .slice()
+    .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
+}
+
+function createInboxItem(input: {
+  companyId: string;
+  type: InboxItemType;
+  title: string;
+  summary: string;
+  createdByRoleId: string;
+  targetRoleId?: string;
+  blueprintId?: string;
+  blueprintName?: string;
+  payload?: Record<string, unknown>;
+  now: string;
+}): InboxItem {
+  return {
+    id: `inbox-${nanoid(10)}`,
+    companyId: input.companyId,
+    type: input.type,
+    status: "pending",
+    title: input.title,
+    summary: input.summary,
+    createdByRoleId: input.createdByRoleId,
+    targetRoleId: input.targetRoleId,
+    blueprintId: input.blueprintId,
+    blueprintName: input.blueprintName,
+    payload: input.payload,
+    createdAt: input.now,
+    updatedAt: input.now
+  };
+}
+
+function readBlueprintPackagePayload(value: unknown): PortableBlueprintPackage | undefined {
+  if (!value) return undefined;
+  try {
+    return readPortableBlueprintPackage(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function inferLeaderRoleId(roles: CompanyRoleDirectory, blueprintId: string | undefined): string | undefined {
+  if (!blueprintId) return undefined;
+  return roles.leaders.find((leader) => leader.blueprintId === blueprintId)?.id;
+}
+
+function safeRoleIdSegment(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || nanoid(8);
 }
 
 function normalizeBlueprintIndexEntry(

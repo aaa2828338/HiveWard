@@ -5,14 +5,18 @@ import { join } from "node:path";
 import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
+  ApproveInboxItemRequest,
   CatalogSnapshot,
+  ChatRoleScope,
   CreateCompanyRequest,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawChannelRequest,
   CreateBlueprintRequest,
+  CreateBlueprintProposalRequest,
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
+  CreateLeaderDelegationRequest,
   HarnessStatus,
   ImportBlueprintPackageRequest,
   RuntimeOverview,
@@ -28,15 +32,20 @@ import type {
   SaveDashboardStateRequest,
   SaveBlueprintRequest,
   ChatAttachment,
+  ChatHistoryMessage,
   ChatThinkingEffort,
   ApproveBlueprintRunRequest,
   CreateChatSessionRequest,
+  InboxItem,
+  RejectInboxItemRequest,
+  UpdateChatSessionTitleRequest,
   SendChatMessageRequest,
   ChatStreamEvent,
   BlueprintDefinition,
   StartBlueprintRunRequest
 } from "@hiveward/shared";
 import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
+import { hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
@@ -55,6 +64,18 @@ interface RunModelDefaults {
   codex?: string;
   claude?: string;
 }
+
+type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
+
+type ChatInboxSubmissionResult = {
+  item: InboxItem;
+  output: string;
+};
+
+type ChatInboxSubmissionBlock = {
+  fullMatch: string;
+  json: string;
+};
 
 const fallbackCodexDefaultModel = "gpt-5.4";
 const fallbackClaudeCodeDefaultModel = "inherit";
@@ -387,6 +408,63 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.get("/api/roles", async (_req, res, next) => {
+    try {
+      res.json(await store.getRoleDirectory());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/inbox", async (_req, res, next) => {
+    try {
+      res.json({ items: await store.listInboxItems() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/inbox/delegations", async (req, res, next) => {
+    try {
+      const body = normalizeCreateLeaderDelegationRequest(req.body);
+      res.status(201).json({ item: await store.createLeaderDelegationRequest(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/inbox/blueprint-proposals", async (req, res, next) => {
+    try {
+      const body = normalizeCreateBlueprintProposalRequest(req.body);
+      res.status(201).json({ item: await store.createBlueprintProposal(body) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/inbox/:itemId/approve", async (req, res, next) => {
+    try {
+      const body = normalizeApproveInboxItemRequest(req.body);
+      const config = await openClawConfigStore.getState();
+      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), {
+        openclawAgentId: selectDefaultAgentId(config.configuredAgents),
+        modelId: config.defaultModelId,
+        channelId: selectDefaultChannelId(config.configuredChannels)
+      }, body.comment));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/inbox/:itemId/reject", async (req, res, next) => {
+    try {
+      const body = normalizeRejectInboxItemRequest(req.body);
+      res.json({ item: await store.rejectInboxItem(readRouteParam(req.params.itemId, "itemId"), body.comment) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/dashboard-state", async (_req, res, next) => {
     try {
       res.json({ dashboard: await store.getDashboardState() });
@@ -443,6 +521,32 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.patch("/api/chat/session", async (req, res) => {
+    let body: UpdateChatSessionTitleRequest;
+    try {
+      body = normalizeUpdateChatSessionTitleRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "chat_session_title_request_invalid",
+          message: error instanceof Error ? error.message : "Invalid chat session title request."
+        }
+      });
+      return;
+    }
+
+    try {
+      res.json(await adapter.updateChatSessionTitle(body));
+    } catch (error) {
+      res.status(502).json({
+        error: {
+          code: "chat_session_title_unavailable",
+          message: error instanceof Error ? error.message : "OpenClaw chat session title update is unavailable."
+        }
+      });
+    }
+  });
+
   router.get("/api/chat/history", async (req, res) => {
     const sessionKey = readOptionalString(req.query.sessionKey);
     if (!sessionKey) {
@@ -456,7 +560,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
 
     try {
-      res.json({ messages: await adapter.getSessionMessages(sessionKey) });
+      const messages = await adapter.getSessionMessages(sessionKey);
+      res.json(await syncChatHistoryInboxSubmissions(store, messages));
     } catch (error) {
       res.status(502).json({
         error: {
@@ -468,6 +573,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   });
 
   router.post("/api/chat/stream", async (req, res) => {
+    const requestStartedAtMs = Date.now();
     let body: SendChatMessageRequest;
     try {
       body = normalizeChatRequest(req.body);
@@ -492,9 +598,12 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
 
     const config = await openClawConfigStore.getState();
+    const roleContext = await buildChatRoleContext(store, body.roleScope);
     const agentId = body.agentId || selectDefaultAgentId(config.configuredAgents);
     const sessionKey = body.nativeSessionKey || buildOpenClawChatSessionKey(agentId);
     const chatMessageRequestId = `chat-message-${nanoid(8)}`;
+    const prompt = buildChatPrompt(body, roleContext);
+    const openclawStartedAtMs = Date.now();
 
     res.status(200);
     res.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -508,10 +617,12 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     });
 
     try {
+      let doneEvent: ChatDoneEvent | undefined;
+      let streamedOutput = "";
       await adapter.streamChatMessage(
         {
           sessionKey,
-          message: buildChatPrompt(body),
+          message: prompt,
           attachments: body.attachments ?? [],
           modelId: body.modelId,
           thinking: body.thinkingEffort,
@@ -519,9 +630,68 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
           timeoutMs: 600_000
         },
         (event) => {
+          if (event.type === "done") {
+            doneEvent = event;
+            return;
+          }
+          if (event.type === "delta") {
+            streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
+          }
           writeChatStreamEvent(res, event, () => closed);
         }
       );
+      if (doneEvent) {
+        const openclawFinishedAtMs = Date.now();
+        const postprocessStartedAtMs = Date.now();
+        const finalOutput = doneEvent.output ?? streamedOutput;
+        const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
+        let submission: ChatInboxSubmissionResult | undefined;
+        let inboxSubmissionMs: number | undefined;
+        if (doneEvent.status === "succeeded" && submissionBlock) {
+          try {
+            const submissionStartedAtMs = Date.now();
+            submission = await materializeChatInboxSubmission(store, body, finalOutput, submissionBlock);
+            inboxSubmissionMs = Date.now() - submissionStartedAtMs;
+          } catch (submissionError) {
+            const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
+            const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
+            writeChatStreamEvent(res, { type: "delta", text: failedOutput, replace: true }, () => closed);
+            writeChatStreamEvent(res, {
+              ...withChatStreamTimings(doneEvent, requestStartedAtMs, openclawStartedAtMs, openclawFinishedAtMs, postprocessStartedAtMs, inboxSubmissionMs),
+              status: "failed",
+              output: failedOutput,
+              error: message
+            }, () => closed);
+            res.end();
+            return;
+          }
+        }
+        if (submission) {
+          writeChatStreamEvent(res, { type: "delta", text: submission.output, replace: true }, () => closed);
+          writeChatStreamEvent(res, {
+            type: "inbox_item_created",
+            item: submission.item,
+            message: `Created Hiveward inbox item ${submission.item.id}.`
+          }, () => closed);
+          writeChatStreamEvent(res, withChatStreamTimings(
+            { ...doneEvent, output: submission.output },
+            requestStartedAtMs,
+            openclawStartedAtMs,
+            openclawFinishedAtMs,
+            postprocessStartedAtMs,
+            inboxSubmissionMs
+          ), () => closed);
+        } else {
+          writeChatStreamEvent(res, withChatStreamTimings(
+            doneEvent,
+            requestStartedAtMs,
+            openclawStartedAtMs,
+            openclawFinishedAtMs,
+            postprocessStartedAtMs,
+            inboxSubmissionMs
+          ), () => closed);
+        }
+      }
       res.end();
     } catch (error) {
       writeChatStreamEvent(res, {
@@ -593,6 +763,79 @@ function normalizeCreateChatSessionRequest(value: unknown): CreateChatSessionReq
   };
 }
 
+function normalizeUpdateChatSessionTitleRequest(value: unknown): UpdateChatSessionTitleRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Chat session title request must be a JSON object.");
+  }
+  const sessionKey = readOptionalString(value.sessionKey);
+  const title = readOptionalString(value.title);
+  if (!sessionKey) throw new Error("Chat session title request requires sessionKey.");
+  if (!title) throw new Error("Chat session title request requires title.");
+  return {
+    sessionKey,
+    title: title.slice(0, 120)
+  };
+}
+
+function normalizeCreateLeaderDelegationRequest(value: unknown): CreateLeaderDelegationRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Leader delegation request must be a JSON object.");
+  }
+  const leaderId = readOptionalString(value.leaderId);
+  if (!leaderId) throw new Error("Leader delegation request requires leaderId.");
+  return {
+    leaderId,
+    blueprintId: readOptionalString(value.blueprintId),
+    title: readOptionalString(value.title),
+    summary: readOptionalString(value.summary),
+    createdByRoleId: readOptionalString(value.createdByRoleId)
+  };
+}
+
+function normalizeCreateBlueprintProposalRequest(value: unknown): CreateBlueprintProposalRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Blueprint proposal request must be a JSON object.");
+  }
+  const title = readOptionalString(value.title);
+  const summary = readOptionalString(value.summary);
+  if (!title) throw new Error("Blueprint proposal request requires title.");
+  if (!summary) throw new Error("Blueprint proposal request requires summary.");
+  if (!value.blueprintPackage) {
+    throw new Error("Blueprint proposal request requires blueprintPackage.");
+  }
+  const blueprintPackage = readPortableBlueprintPackage(value.blueprintPackage);
+  return {
+    title,
+    summary,
+    blueprintId: readOptionalString(value.blueprintId),
+    blueprintPackage,
+    preview: isPlainRecord(value.preview) ? value.preview : undefined,
+    diffSummary: readOptionalString(value.diffSummary),
+    createdByRoleId: readOptionalString(value.createdByRoleId),
+    targetRoleId: readOptionalString(value.targetRoleId)
+  };
+}
+
+function normalizeApproveInboxItemRequest(value: unknown): ApproveInboxItemRequest {
+  if (value === undefined || value === null) return {};
+  if (!isPlainRecord(value)) {
+    throw new Error("Inbox approval request must be a JSON object.");
+  }
+  return {
+    comment: readOptionalString(value.comment)
+  };
+}
+
+function normalizeRejectInboxItemRequest(value: unknown): RejectInboxItemRequest {
+  if (value === undefined || value === null) return {};
+  if (!isPlainRecord(value)) {
+    throw new Error("Inbox rejection request must be a JSON object.");
+  }
+  return {
+    comment: readOptionalString(value.comment)
+  };
+}
+
 function normalizeChatRequest(value: unknown): SendChatMessageRequest {
   if (!isPlainRecord(value)) {
     throw new Error("Chat request must be a JSON object.");
@@ -623,7 +866,25 @@ function normalizeChatRequest(value: unknown): SendChatMessageRequest {
     agentId: readOptionalString(value.agentId),
     nativeSessionKey: readOptionalString(value.nativeSessionKey),
     thinkingEffort,
-    includePlatformContext: value.includePlatformContext === true
+    includePlatformContext: value.includePlatformContext === true,
+    mode: normalizeChatMode(value.mode),
+    roleScope: normalizeChatRoleScope(value.roleScope)
+  };
+}
+
+function normalizeChatMode(value: unknown): SendChatMessageRequest["mode"] {
+  return value === "blueprint" ? "blueprint" : "chat";
+}
+
+function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
+  if (!isPlainRecord(value)) return undefined;
+  const role = readOptionalString(value.role);
+  if (role !== "ceo" && role !== "leader") return undefined;
+  return {
+    role,
+    companyId: readOptionalString(value.companyId),
+    leaderId: readOptionalString(value.leaderId),
+    blueprintId: readOptionalString(value.blueprintId)
   };
 }
 
@@ -664,10 +925,337 @@ function normalizeChatAttachments(value: unknown): ChatAttachment[] {
   });
 }
 
-function buildChatPrompt(input: SendChatMessageRequest): string {
-  return input.includePlatformContext
-    ? [hivewardPlatformContext, "", "User message:", input.message.trim()].join("\n")
-    : input.message.trim();
+async function buildChatRoleContext(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
+  if (!scope) return undefined;
+  try {
+    const { roles } = await store.getRoleDirectory();
+    const role = scope.role === "leader"
+      ? roles.leaders.find((leader) => leader.id === scope.leaderId || leader.blueprintId === scope.blueprintId)
+      : roles.ceo;
+    const leaderBlueprintId = role?.kind === "leader" ? role.blueprintId : scope.blueprintId;
+    const lines = [
+      "Hiveward role scope:",
+      `- mode: ${scope.role === "leader" ? "Leader" : "CEO"} ${scope.role === "leader" ? "(business blueprint owner)" : "(company command role)"}`,
+      `- roleId: ${role?.id ?? scope.leaderId ?? scope.role}`,
+      `- roleLabel: ${role?.label ?? scope.role}`,
+      `- companyId: ${scope.companyId ?? roles.companyId}`,
+      leaderBlueprintId ? `- blueprintId: ${leaderBlueprintId}` : undefined,
+      "",
+      "Role rules:",
+      "- CEO may discuss company direction, inspect summaries, and prepare leader delegation requests for the Hiveward inbox.",
+      "- CEO must not write or directly import business blueprint JSON or patches.",
+      "- Leader may read only the bound business blueprint scope and generate importable proposal packages for that blueprint.",
+      "- Leader must submit concrete proposal packages to the Hiveward inbox instead of changing official blueprints directly.",
+      "- Final state changes require Hiveward inbox approval and backend validation.",
+      "- Architecture blueprint is a management view; business blueprint is the executable workflow DAG.",
+      "",
+      "Hiveward inbox submit protocol:",
+      "- Chat has no implicit side effects. Saying you are ready to submit does not create an inbox item.",
+      "- Hiveward will parse this block, create the inbox item, and remove the block from the visible chat response.",
+      "- Do not say the item has been submitted unless you include the block.",
+      "",
+      hivewardInboxSubmissionContract
+    ];
+    return lines.filter((line): line is string => typeof line === "string").join("\n");
+  } catch {
+    return [
+      "Hiveward role scope:",
+      `- mode: ${scope.role}`,
+      scope.companyId ? `- companyId: ${scope.companyId}` : undefined,
+      scope.leaderId ? `- leaderId: ${scope.leaderId}` : undefined,
+      scope.blueprintId ? `- blueprintId: ${scope.blueprintId}` : undefined,
+      "",
+      "Role rules: state changes must go through Hiveward inbox approval and backend validation.",
+      "Hiveward inbox submit protocol:",
+      hivewardInboxSubmissionContract
+    ].filter((line): line is string => typeof line === "string").join("\n");
+  }
+}
+
+function buildChatPrompt(input: SendChatMessageRequest, roleContext?: string): string {
+  const contextBlocks = [
+    input.includePlatformContext ? hivewardPlatformContext : undefined,
+    roleContext,
+    input.mode === "blueprint" ? hivewardBlueprintDraftingContext : undefined
+  ].filter((block): block is string => Boolean(block));
+  if (!contextBlocks.length) return input.message.trim();
+  return [...contextBlocks, "", "User message:", input.message.trim()].join("\n");
+}
+
+async function syncChatHistoryInboxSubmissions(
+  store: FileHivewardStore,
+  messages: ChatHistoryMessage[]
+): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
+  let knownInboxItems: InboxItem[] | undefined;
+  const syncedItems = new Map<string, InboxItem>();
+  const syncedMessages: ChatHistoryMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      syncedMessages.push(message);
+      continue;
+    }
+
+    const block = extractChatInboxSubmissionBlock(message.content);
+    if (!block) {
+      syncedMessages.push(message);
+      continue;
+    }
+
+    try {
+      const parsed = parseChatInboxSubmissionBlock(block);
+      knownInboxItems ??= await store.listInboxItems();
+      const existing = findExistingChatInboxSubmission(knownInboxItems, parsed);
+      if (existing) {
+        syncedItems.set(existing.id, existing);
+        const output = buildChatInboxSubmissionSuccessOutput(stripChatInboxSubmissionBlock(message.content, block.fullMatch), existing);
+        syncedMessages.push({ ...message, content: output });
+        continue;
+      }
+
+      const submission = await materializeChatInboxSubmission(
+        store,
+        buildHistoryInboxChatRequest(parsed),
+        message.content,
+        block
+      );
+      if (submission) {
+        knownInboxItems = [submission.item, ...knownInboxItems];
+        syncedItems.set(submission.item.id, submission.item);
+        syncedMessages.push({ ...message, content: submission.output });
+        continue;
+      }
+
+      syncedMessages.push(message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Invalid Hiveward inbox submission.";
+      syncedMessages.push({
+        ...message,
+        content: buildChatInboxSubmissionFailureOutput(message.content, block.fullMatch, errorMessage)
+      });
+    }
+  }
+
+  return {
+    messages: syncedMessages,
+    inboxItems: [...syncedItems.values()]
+  };
+}
+
+function buildHistoryInboxChatRequest(parsed: Record<string, unknown>): SendChatMessageRequest {
+  const type = readOptionalString(parsed.type);
+  const leaderId = readOptionalString(parsed.leaderId) ?? readOptionalString(parsed.targetRoleId);
+  const blueprintId = readOptionalString(parsed.blueprintId);
+  return {
+    harnessId: "openclaw",
+    message: "",
+    attachments: [],
+    includePlatformContext: false,
+    mode: "blueprint",
+    roleScope: {
+      role: type === "leader_delegation" ? "ceo" : "leader",
+      leaderId,
+      blueprintId
+    }
+  };
+}
+
+function findExistingChatInboxSubmission(items: InboxItem[], parsed: Record<string, unknown>): InboxItem | undefined {
+  const type = readOptionalString(parsed.type);
+  if (type !== "leader_delegation" && type !== "blueprint_proposal") return undefined;
+
+  const title = readOptionalString(parsed.title);
+  const blueprintId = readOptionalString(parsed.blueprintId);
+  const leaderId = readOptionalString(parsed.leaderId);
+  const firstBlueprintId = readBlueprintPackageFirstBlueprintId(parsed.blueprintPackage);
+  const diffSummary = readOptionalString(parsed.diffSummary);
+
+  return items.find((item) => {
+    if (item.type !== type) return false;
+    if (title && item.title !== title) return false;
+    if (blueprintId && item.blueprintId && item.blueprintId !== blueprintId) return false;
+
+    if (type === "leader_delegation") {
+      return !leaderId || readPayloadString(item.payload, "leaderId") === leaderId;
+    }
+
+    const itemFirstBlueprintId = readBlueprintPackageFirstBlueprintId(item.payload?.blueprintPackage);
+    if (firstBlueprintId) return itemFirstBlueprintId === firstBlueprintId;
+    if (diffSummary) return readPayloadString(item.payload, "diffSummary") === diffSummary;
+    return Boolean(title || blueprintId);
+  });
+}
+
+function readPayloadString(payload: Record<string, unknown> | undefined, key: string): string | undefined {
+  return isPlainRecord(payload) ? readOptionalString(payload[key]) : undefined;
+}
+
+function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefined {
+  if (!isPlainRecord(value) || !Array.isArray(value.blueprints)) return undefined;
+  const firstBlueprint = value.blueprints[0];
+  return isPlainRecord(firstBlueprint) ? readOptionalString(firstBlueprint.id) : undefined;
+}
+
+async function materializeChatInboxSubmission(
+  store: FileHivewardStore,
+  chatRequest: SendChatMessageRequest,
+  output: string,
+  block = extractChatInboxSubmissionBlock(output)
+): Promise<ChatInboxSubmissionResult | undefined> {
+  if (!block) return undefined;
+  const parsed = parseChatInboxSubmissionBlock(block);
+
+  const type = readOptionalString(parsed.type);
+  const createdByRoleId =
+    readOptionalString(parsed.createdByRoleId) ??
+    chatRequest.roleScope?.leaderId ??
+    (chatRequest.roleScope?.role === "ceo" ? "ceo" : undefined);
+  const blueprintId = readOptionalString(parsed.blueprintId) ?? chatRequest.roleScope?.blueprintId;
+  const outputWithoutBlock = stripChatInboxSubmissionBlock(output, block.fullMatch);
+
+  if (type === "leader_delegation") {
+    const item = await store.createLeaderDelegationRequest(normalizeCreateLeaderDelegationRequest({
+      ...parsed,
+      blueprintId,
+      createdByRoleId
+    }));
+    return { item, output: buildChatInboxSubmissionSuccessOutput(outputWithoutBlock, item) };
+  }
+
+  if (type === "blueprint_proposal") {
+    const item = await store.createBlueprintProposal(normalizeCreateBlueprintProposalRequest({
+      ...parsed,
+      blueprintId,
+      createdByRoleId,
+      targetRoleId: readOptionalString(parsed.targetRoleId) ?? chatRequest.roleScope?.leaderId
+    }));
+    return { item, output: buildChatInboxSubmissionSuccessOutput(outputWithoutBlock, item) };
+  }
+
+  throw new Error("Hiveward inbox submission type must be leader_delegation or blueprint_proposal.");
+}
+
+function buildChatInboxSubmissionSuccessOutput(outputWithoutBlock: string, item: InboxItem): string {
+  const visibleOutput = outputWithoutBlock.trim() || `已提交「${item.title}」到收件箱。`;
+  const approvalHint = "已提交到收件箱，请前往收件箱审批。";
+  if (visibleOutput.includes(approvalHint)) return visibleOutput;
+  return [visibleOutput, "", approvalHint].join("\n").trim();
+}
+
+function parseChatInboxSubmissionBlock(block: ChatInboxSubmissionBlock): Record<string, unknown> {
+  const parsed = parseChatInboxSubmissionJson(block.json);
+  if (!isPlainRecord(parsed)) {
+    throw new Error("Hiveward inbox submission block must contain a JSON object.");
+  }
+  validateChatInboxSubmissionSchema(parsed);
+  return parsed;
+}
+
+function validateChatInboxSubmissionSchema(parsed: Record<string, unknown>): void {
+  const schema = readOptionalString(parsed.schema);
+  if (schema && schema !== hivewardInboxSubmissionSchema) {
+    throw new Error(`Unsupported Hiveward inbox submission schema: ${schema}. Expected ${hivewardInboxSubmissionSchema}.`);
+  }
+}
+
+function parseChatInboxSubmissionJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch (error) {
+    const repaired = repairExtraJsonObjectClosers(value);
+    if (repaired !== value) {
+      try {
+        return JSON.parse(repaired) as unknown;
+      } catch {
+        // Keep the original parser error because its location matches the model output.
+      }
+    }
+    throw error;
+  }
+}
+
+function repairExtraJsonObjectClosers(value: string): string {
+  const stack: string[] = [];
+  let repaired = "";
+  let inString = false;
+  let escaped = false;
+
+  for (const char of value) {
+    repaired += char;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      stack.push("{");
+      continue;
+    }
+    if (char === "[") {
+      stack.push("[");
+      continue;
+    }
+    if (char === "}") {
+      if (stack.at(-1) === "{") {
+        stack.pop();
+        continue;
+      }
+      repaired = repaired.slice(0, -1);
+      continue;
+    }
+    if (char === "]") {
+      if (stack.at(-1) === "[") stack.pop();
+    }
+  }
+
+  return repaired;
+}
+
+function extractChatInboxSubmissionBlock(output: string): ChatInboxSubmissionBlock | undefined {
+  const matches = [
+    /```hiveward-inbox\s*([\s\S]*?)```/i.exec(output),
+    /(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n```(?:json)?\s*([\s\S]*?)```/i.exec(output),
+    /(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n(\{[\s\S]*\})\s*$/i.exec(output)
+  ];
+  const match = matches.find(Boolean);
+  if (!match) return undefined;
+  return {
+    fullMatch: match[0],
+    json: normalizeChatInboxSubmissionJson(match[1] ?? "")
+  };
+}
+
+function normalizeChatInboxSubmissionJson(value: string): string {
+  return value
+    .trim()
+    .replace(/^json\s*\n/i, "")
+    .trim();
+}
+
+function stripChatInboxSubmissionBlock(output: string, block: string): string {
+  return output
+    .replace(block, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function buildChatInboxSubmissionFailureOutput(output: string, block: string, errorMessage: string): string {
+  const visibleOutput = stripChatInboxSubmissionBlock(output, block);
+  return [
+    visibleOutput || "Hiveward inbox submission failed.",
+    "",
+    `Inbox submission failed: ${errorMessage}`
+  ].join("\n").trim();
 }
 
 const hivewardPlatformContext = [
@@ -676,6 +1264,15 @@ const hivewardPlatformContext = [
   "In Chat, HiveWard is only the user interface and dispatch channel. OpenClaw owns runtime execution, agents, tools, skills, sessions, transcripts, reasoning, and usage facts.",
   "Use OpenClaw-native tools and skills when they are available. If the user asks to create or change HiveWard blueprints, workflows, company structure, or visual assets, help turn the request into concrete platform actions and use real runtime tools/APIs when required.",
   "Do not claim stored HiveWard data, blueprints, files, or external deliveries changed unless an actual tool or API performed that change."
+].join("\n");
+
+const hivewardBlueprintDraftingContext = [
+  "Blueprint drafting mode:",
+  "When the user asks for a blueprint change, first align on direction in chat. For final approval, produce a concrete importable content package with proposal text, JSON or patch details, preview, and diff summary.",
+  "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed.",
+  "If the user explicitly asks to submit the proposal for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
+  "",
+  hivewardInboxSubmissionContract
 ].join("\n");
 
 function writeChatStreamEvent(
@@ -687,6 +1284,27 @@ function writeChatStreamEvent(
   res.write(`event: ${event.type}\n`);
   res.write(`data: ${JSON.stringify(event)}\n\n`);
   return !isClosed();
+}
+
+function withChatStreamTimings<T extends ChatDoneEvent>(
+  event: T,
+  requestStartedAtMs: number,
+  openclawStartedAtMs: number,
+  openclawFinishedAtMs: number,
+  postprocessStartedAtMs: number,
+  inboxSubmissionMs: number | undefined
+): T {
+  const completedAtMs = Date.now();
+  return {
+    ...event,
+    timings: {
+      totalMs: Math.max(0, completedAtMs - requestStartedAtMs),
+      hivewardPreprocessMs: Math.max(0, openclawStartedAtMs - requestStartedAtMs),
+      openclawMs: Math.max(0, openclawFinishedAtMs - openclawStartedAtMs),
+      hivewardPostprocessMs: Math.max(0, completedAtMs - postprocessStartedAtMs),
+      inboxSubmissionMs
+    }
+  };
 }
 
 function buildOpenClawChatSessionKey(agentId: string): string {

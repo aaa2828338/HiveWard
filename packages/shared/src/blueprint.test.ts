@@ -241,6 +241,179 @@ describe("blueprint contracts", () => {
     expect(importedSendConfig.target).toBe("");
   });
 
+  it("auto-layouts imported blueprints when model coordinates are compressed", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-23T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "model-generated",
+          name: "Model generated",
+          version: 1,
+          nodes: [
+            createContractNode("fetch", "agent", "Fetch", undefined, { x: 0, y: 0 }),
+            createContractNode("parse", "agent", "Parse", undefined, { x: 0, y: 1 }),
+            createContractNode("render", "agent", "Render", undefined, { x: 0, y: 2 })
+          ],
+          edges: [
+            { id: "fetch-parse", source: "fetch", target: "parse" },
+            { id: "parse-render", source: "parse", target: "render" }
+          ],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const imported = hydrateImportedBlueprint(blueprintPackage.blueprints[0]!, {
+      id: "blueprint-imported",
+      companyId: "company-local",
+      now: "2026-05-23T00:00:00.000Z"
+    });
+
+    expect(imported.nodes.map((node) => node.position.x)).toEqual([80, 440, 800]);
+    expect(new Set(imported.nodes.map((node) => `${node.position.x}:${node.position.y}`))).toHaveLength(3);
+    expect(imported.display.viewport?.zoom).toBe(0.85);
+  });
+
+  it("normalizes imported manager-slot structures with canonical handles and nested children", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-23T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "manager-generated",
+          name: "Manager generated",
+          version: 1,
+          nodes: [
+            {
+              id: "manager",
+              type: "manager",
+              position: { x: 0, y: 0 },
+              config: { label: "HTML Delivery Manager", portCount: 1, maxHandoffs: 4 }
+            },
+            {
+              id: "slot-1",
+              type: "manager_slot",
+              position: { x: 0, y: 0 },
+              config: { label: "Slot 1", slot: 1 }
+            },
+            createContractNode("research", "agent", "News Research", undefined, { x: 0, y: 0 }),
+            createContractNode("build", "agent", "HTML Build", undefined, { x: 0, y: 0 })
+          ],
+          edges: [
+            { id: "manager-to-slot", source: "manager", target: "slot-1" },
+            { id: "slot-to-research", source: "slot-1", target: "research" },
+            { id: "research-to-build", source: "research", target: "build" },
+            { id: "build-to-slot", source: "build", target: "slot-1" },
+            { id: "slot-to-manager", source: "slot-1", target: "manager" }
+          ],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const portable = blueprintPackage.blueprints[0]!;
+    const slot = portable.nodes.find((node) => node.id === "slot-1")!;
+    const research = portable.nodes.find((node) => node.id === "research")!;
+    const build = portable.nodes.find((node) => node.id === "build")!;
+
+    expect(slot.config).toMatchObject({ managerNodeId: "manager", slot: 1 });
+    expect(slot.size).toEqual({ width: 560, height: 300 });
+    expect(research.parentId).toBe("slot-1");
+    expect(build.parentId).toBe("slot-1");
+    expect(portable.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "manager",
+        sourceHandle: "manager-out-1",
+        target: "slot-1",
+        targetHandle: "manager-slot-in"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-out",
+        target: "manager",
+        targetHandle: "manager-in-1"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-inner-out",
+        target: "research"
+      }),
+      expect.objectContaining({
+        source: "build",
+        target: "slot-1",
+        targetHandle: "manager-slot-inner-in"
+      })
+    ]));
+
+    const imported = hydrateImportedBlueprint(portable, {
+      id: "blueprint-imported",
+      companyId: "company-local",
+      now: "2026-05-23T00:00:00.000Z"
+    });
+    const importedManager = imported.nodes.find((node) => node.id === "manager")!;
+    const importedSlot = imported.nodes.find((node) => node.id === "slot-1")!;
+    const importedResearch = imported.nodes.find((node) => node.id === "research")!;
+    const importedBuild = imported.nodes.find((node) => node.id === "build")!;
+
+    expect(importedManager.position.x).toBe(80);
+    expect(importedSlot.position.x).toBe(460);
+    expect(importedSlot.size?.width).toBeGreaterThanOrEqual(832);
+    expect(importedResearch.position.x).toBeLessThan(importedBuild.position.x);
+    expect(imported.display.viewport?.zoom).toBe(0.85);
+  });
+
+  it("allows empty manager slots as explicit planning containers", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-23T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "empty-manager-slot",
+          name: "Empty manager slot",
+          version: 1,
+          nodes: [
+            {
+              id: "manager",
+              type: "manager",
+              position: { x: 0, y: 0 },
+              config: { label: "Manager", portCount: 1, maxHandoffs: 4 }
+            },
+            {
+              id: "slot-1",
+              type: "manager_slot",
+              position: { x: 0, y: 0 },
+              config: { label: "Slot 1", managerNodeId: "manager", slot: 1 }
+            }
+          ],
+          edges: [
+            { id: "manager-to-slot", source: "manager", target: "slot-1" },
+            { id: "slot-to-manager", source: "slot-1", target: "manager" }
+          ],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    expect(blueprintPackage.blueprints[0]?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "manager",
+        sourceHandle: "manager-out-1",
+        target: "slot-1",
+        targetHandle: "manager-slot-in"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-out",
+        target: "manager",
+        targetHandle: "manager-in-1"
+      })
+    ]));
+  });
+
   it("resolves explicit final results without relying on node labels", () => {
     const brief = createContractNode("brief", "agent", "Final Report");
     const chosen = createContractNode("chosen", "agent", "Implementation Notes", {
@@ -512,13 +685,14 @@ function createContractNode(
   id: string,
   type: BlueprintNode["type"],
   label: string,
-  config: Partial<BlueprintNode["config"]> = {}
+  config: Partial<BlueprintNode["config"]> = {},
+  position = { x: 0, y: 0 }
 ): BlueprintNode {
   return {
     id,
     type,
     runtimeId: type === "agent" ? "openclaw" : undefined,
-    position: { x: 0, y: 0 },
+    position,
     config: {
       ...createContractNodeConfig(type, label),
       ...config

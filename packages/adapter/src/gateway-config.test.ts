@@ -26,7 +26,7 @@ describe("resolveGatewayAdapterConfig", () => {
     delete process.env.OPENCLAW_AGENT_START_TIMEOUT_MS;
 
     const config = resolveGatewayAdapterConfig();
-    expect(config?.agentStartTimeoutMs).toBe(20_000);
+    expect(config?.agentStartTimeoutMs).toBe(120_000);
   });
 
   it("uses OPENCLAW_AGENT_START_TIMEOUT_MS for agent start timeout", () => {

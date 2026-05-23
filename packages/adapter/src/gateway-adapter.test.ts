@@ -1,7 +1,155 @@
 import { describe, expect, it } from "vitest";
-import { formatAgentMessage, readAgentTranscriptMessages } from "./gateway-adapter";
+import type { ChatStreamEvent } from "@hiveward/shared";
+import { GatewayOpenClawAdapter, formatAgentMessage, readAgentTranscriptMessages } from "./gateway-adapter";
 
 describe("gateway adapter transcript extraction", () => {
+  it("updates native session titles through the official sessions.patch label field", async () => {
+    const adapter = new GatewayOpenClawAdapter({
+      url: "ws://127.0.0.1:1",
+      origin: "http://127.0.0.1:1",
+      locale: "zh-CN",
+      requestTimeoutMs: 1,
+      agentStartTimeoutMs: 1
+    });
+    const requests: Array<{ method: string; params?: unknown }> = [];
+    const fakeSession = {
+      request: async (method: string, params?: unknown) => {
+        requests.push({ method, params });
+        return {
+          entry: {
+            key: "agent:main:main",
+            label: "Renamed chat"
+          }
+        };
+      }
+    };
+    (adapter as unknown as {
+      withSession: <T>(operation: (session: typeof fakeSession) => Promise<T>) => Promise<T>;
+    }).withSession = (operation) => operation(fakeSession);
+
+    const result = await adapter.updateChatSessionTitle({
+      sessionKey: "agent:main:main",
+      title: " Renamed chat "
+    });
+
+    expect(requests).toEqual([
+      {
+        method: "sessions.patch",
+        params: {
+          key: "agent:main:main",
+          label: "Renamed chat"
+        }
+      }
+    ]);
+    expect(result).toEqual({
+      sessionKey: "agent:main:main",
+      title: "Renamed chat"
+    });
+  });
+
+  it("keeps chat streams open for the accepted Gateway run id", async () => {
+    const adapter = new GatewayOpenClawAdapter({
+      url: "ws://127.0.0.1:1",
+      origin: "http://127.0.0.1:1",
+      locale: "zh-CN",
+      requestTimeoutMs: 1,
+      agentStartTimeoutMs: 50
+    });
+    let chatHandler: ((payload: unknown) => void) | undefined;
+    const fakeSession = {
+      request: async (method: string) => {
+        if (method === "sessions.patch") return {};
+        if (method === "chat.send") {
+          setTimeout(() => {
+            chatHandler?.({
+              runId: "gateway-run-accepted",
+              sessionKey: "agent:main:main",
+              state: "final",
+              message: { content: "final blueprint proposal" }
+            });
+          }, 0);
+          return {
+            runId: "gateway-run-accepted",
+            status: "accepted"
+          };
+        }
+        throw new Error(`Unexpected method ${method}.`);
+      },
+      onEvent: (eventName: string, handler: (payload: unknown) => void) => {
+        expect(eventName).toBe("chat");
+        chatHandler = handler;
+        return () => {
+          chatHandler = undefined;
+        };
+      }
+    };
+    (adapter as unknown as { getSession: () => Promise<typeof fakeSession> }).getSession = async () => fakeSession;
+    const events: ChatStreamEvent[] = [];
+
+    await adapter.streamChatMessage(
+      {
+        sessionKey: "agent:main:main",
+        message: "Generate a blueprint proposal.",
+        attachments: [],
+        idempotencyKey: "local-request-id",
+        timeoutMs: 100
+      },
+      (event) => events.push(event)
+    );
+
+    expect(events.find((event) => event.type === "started")).toMatchObject({
+      type: "started",
+      runId: "gateway-run-accepted"
+    });
+    expect(events.find((event) => event.type === "done")).toMatchObject({
+      type: "done",
+      runId: "gateway-run-accepted",
+      output: "final blueprint proposal"
+    });
+  });
+
+  it("shows only the user's original message when reading Hiveward chat history", async () => {
+    const adapter = new GatewayOpenClawAdapter({
+      url: "ws://127.0.0.1:1",
+      origin: "http://127.0.0.1:1",
+      locale: "zh-CN",
+      requestTimeoutMs: 1,
+      agentStartTimeoutMs: 1
+    });
+    const fakeSession = {
+      request: async () => ({
+        messages: [
+          {
+            id: "message-1",
+            role: "user",
+            content: [
+              "Hiveward role scope:",
+              "- mode: CEO (company command role)",
+              "",
+              "Hiveward inbox submit protocol:",
+              "- Chat has no implicit side effects.",
+              "",
+              "User message:",
+              "再创建一个x的热点收集，生成html的蓝图"
+            ].join("\n")
+          }
+        ]
+      })
+    };
+    (adapter as unknown as {
+      withSession: <T>(operation: (session: typeof fakeSession) => Promise<T>) => Promise<T>;
+    }).withSession = (operation) => operation(fakeSession);
+
+    await expect(adapter.getSessionMessages("agent:main:main")).resolves.toEqual([
+      {
+        id: "message-1",
+        role: "user",
+        content: "再创建一个x的热点收集，生成html的蓝图",
+        createdAt: expect.any(String)
+      }
+    ]);
+  });
+
   it("returns the final visible assistant output instead of an intermediate message", () => {
     const result = readAgentTranscriptMessages([
       { role: "user", content: "Hiveward node run: node-run-1\nDo the work." },

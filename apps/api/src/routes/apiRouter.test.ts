@@ -4,16 +4,23 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { describe, expect, it } from "vitest";
-import { MockRuntimeAdapter, type RuntimeChatSessionInput, type RuntimeChatStreamInput } from "@hiveward/adapter";
+import {
+  MockRuntimeAdapter,
+  type RuntimeChatSessionInput,
+  type RuntimeChatSessionTitleInput,
+  type RuntimeChatStreamInput
+} from "@hiveward/adapter";
 import type {
   AgentNodeConfig,
   BlueprintDefinition,
+  ChatHistoryMessage,
   ChatStreamEvent,
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
   StartAgentTaskInput
 } from "@hiveward/shared";
+import { hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
@@ -23,6 +30,7 @@ class TrackingAdapter extends MockRuntimeAdapter {
   runtimeOverviewCalls = 0;
   lastStartInput: StartAgentTaskInput | undefined;
   lastChatSessionInput: RuntimeChatSessionInput | undefined;
+  lastChatSessionTitleInput: RuntimeChatSessionTitleInput | undefined;
   lastChatStreamInput: RuntimeChatStreamInput | undefined;
 
   override async startAgentTask(input: StartAgentTaskInput) {
@@ -40,9 +48,59 @@ class TrackingAdapter extends MockRuntimeAdapter {
     return super.createChatSession(input);
   }
 
+  override async updateChatSessionTitle(input: RuntimeChatSessionTitleInput) {
+    this.lastChatSessionTitleInput = input;
+    return super.updateChatSessionTitle(input);
+  }
+
   override async getRuntimeOverview(): Promise<RuntimeOverview> {
     this.runtimeOverviewCalls += 1;
     throw new Error("runtime overview is not on the run read path");
+  }
+}
+
+class ChatOutputAdapter extends TrackingAdapter {
+  constructor(private readonly output: string) {
+    super();
+  }
+
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+    this.lastChatStreamInput = input;
+    const now = new Date().toISOString();
+    const runId = input.idempotencyKey;
+    onEvent({
+      type: "started",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey,
+      source: "openclaw",
+      status: "running",
+      updatedAt: now
+    });
+    onEvent({
+      type: "delta",
+      text: this.output
+    });
+    onEvent({
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey,
+      source: "openclaw",
+      status: "succeeded",
+      output: this.output,
+      updatedAt: now
+    });
+  }
+}
+
+class ChatHistoryAdapter extends TrackingAdapter {
+  constructor(private readonly messages: ChatHistoryMessage[]) {
+    super();
+  }
+
+  override async getSessionMessages(): Promise<ChatHistoryMessage[]> {
+    return this.messages;
   }
 }
 
@@ -272,6 +330,406 @@ describe("apiRouter", () => {
     }
   });
 
+  it("turns formal chat inbox submission blocks into pending inbox items", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const output = [
+      "I prepared the concrete package and submitted it for inbox approval.",
+      "```hiveward-inbox",
+      JSON.stringify({
+        schema: hivewardInboxSubmissionSchema,
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "Review generated blueprint package",
+        summary: "Approve the generated package before Hiveward imports it.",
+        diffSummary: "Creates a pending package review from chat.",
+        blueprintPackage: {
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-23T00:00:00.000Z",
+          blueprints: [
+            {
+              id: "review-generated-blueprint-package",
+              name: "Review generated blueprint package",
+              description: "A test blueprint package submitted from chat.",
+              version: 1,
+              nodes: [
+                {
+                  id: "brief",
+                  type: "agent",
+                  runtimeId: "openclaw",
+                  position: { x: 0, y: 0 },
+                  config: {
+                    label: "Brief",
+                    agentName: "brief-agent",
+                    prompt: "Write a brief.",
+                    tools: []
+                  }
+                }
+              ],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        }
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatOutputAdapter(output);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            message: "Submit this blueprint package for approval.",
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("event: inbox_item_created");
+        expect(text).toContain("\"replace\":true");
+        expect(text).toContain("Review generated blueprint package");
+        expect(text).toContain("已提交到收件箱，请前往收件箱审批。");
+        expect(adapter.lastChatStreamInput?.message).toContain("Hiveward inbox submit protocol:");
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+
+        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
+        const inboxBody = await readOkJson<{ items: Array<{ id: string; title: string; status: string; type: string; blueprintId?: string }> }>(inboxResponse);
+        expect(inboxBody.items[0]).toMatchObject({
+          title: "Review generated blueprint package",
+          status: "pending",
+          type: "blueprint_proposal",
+          blueprintId: blueprint.id
+        });
+
+        const approveResponse = await fetch(`${baseUrl}/api/inbox/${inboxBody.items[0]!.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const approveBody = await readOkJson<{ importedBlueprints?: Array<{ name: string }> }>(approveResponse);
+        expect(approveBody.importedBlueprints?.[0]).toMatchObject({
+          name: "Review generated blueprint package"
+        });
+
+        const blueprintsResponse = await fetch(`${baseUrl}/api/blueprints`);
+        const blueprintsBody = await readOkJson<{ blueprints: Array<{ name: string }> }>(blueprintsResponse);
+        expect(blueprintsBody.blueprints.some((item) => item.name === "Review generated blueprint package")).toBe(true);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports invalid chat inbox submission blocks without creating inbox items", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const output = [
+      "Okay, submitting this package for approval.",
+      "HIVEWARD-INBOX",
+      "```json",
+      JSON.stringify({
+        schema: hivewardInboxSubmissionSchema,
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "Incomplete package",
+        summary: "This should not become an inbox item."
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatOutputAdapter(output);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            message: "Submit this incomplete package for approval.",
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("\"replace\":true");
+        expect(text).toContain("\"status\":\"failed\"");
+        expect(text).toContain("Blueprint proposal request requires blueprintPackage.");
+        expect(text).not.toContain("event: inbox_item_created");
+
+        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
+        const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
+        expect(inboxBody.items).toEqual([]);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unsupported Hiveward inbox submission schema versions", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const output = [
+      "Okay, submitting this package for approval.",
+      "```hiveward-inbox",
+      JSON.stringify({
+        schema: "hiveward.inbox-submission/v0",
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "Old schema package",
+        summary: "This should not become an inbox item.",
+        blueprintPackage: {
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-23T00:00:00.000Z",
+          blueprints: [
+            {
+              id: "old-schema-blueprint",
+              name: "Old schema package",
+              version: 1,
+              nodes: [],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        }
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatOutputAdapter(output);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            message: "Submit this old schema package for approval.",
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("\"status\":\"failed\"");
+        expect(text).toContain(`Expected ${hivewardInboxSubmissionSchema}.`);
+        expect(text).not.toContain("event: inbox_item_created");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects chat blueprint proposals that use unsupported Hiveward node types", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const output = [
+      "Okay, submitting this package for approval.",
+      "```hiveward-inbox",
+      JSON.stringify({
+        schema: hivewardInboxSubmissionSchema,
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "Unsupported node proposal",
+        summary: "This should fail before it becomes an inbox item.",
+        blueprintPackage: {
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-23T00:00:00.000Z",
+          blueprints: [
+            {
+              id: "unsupported-node-blueprint",
+              name: "Unsupported node proposal",
+              version: 1,
+              nodes: [
+                {
+                  id: "fetch",
+                  type: "http.get",
+                  position: { x: 0, y: 0 },
+                  config: { label: "Fetch" }
+                }
+              ],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        }
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatOutputAdapter(output);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            message: "Submit this unsupported package for approval.",
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("\"status\":\"failed\"");
+        expect(text).toContain("Unsupported blueprint node type: http.get.");
+        expect(text).not.toContain("event: inbox_item_created");
+
+        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
+        const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
+        expect(inboxBody.items).toEqual([]);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs common model JSON and edge-shape mistakes in chat blueprint proposals", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const validSubmission = {
+      schema: hivewardInboxSubmissionSchema,
+      type: "blueprint_proposal",
+      blueprintId: blueprint.id,
+      title: "Repaired X blueprint proposal",
+      summary: "This proposal has a common extra closing brace and from/to edges.",
+      blueprintPackage: {
+        schema: "hiveward.blueprint-package/v1",
+        exportedAt: "2026-05-23T00:00:00.000Z",
+        blueprints: [
+          {
+            id: "repaired-x-blueprint",
+            name: "Repaired X blueprint proposal",
+            version: 1,
+            nodes: [
+              {
+                id: "fetch",
+                type: "agent",
+                runtimeId: "openclaw",
+                position: { x: 0, y: 0 },
+                config: {
+                  label: "Fetch",
+                  agentName: "fetch-agent",
+                  prompt: "Fetch X trending data.",
+                  tools: []
+                }
+              },
+              {
+                id: "render",
+                type: "agent",
+                runtimeId: "openclaw",
+                position: { x: 320, y: 0 },
+                config: {
+                  label: "Render",
+                  agentName: "render-agent",
+                  prompt: "Render an HTML report from upstream data.",
+                  tools: []
+                }
+              }
+            ],
+            edges: [{ from: "fetch", to: "render" }],
+            variables: {},
+            display: { viewport: { x: 0, y: 0, zoom: 1 } }
+          }
+        ]
+      }
+    };
+    const malformedSubmission = JSON.stringify(validSubmission).replace(/}]}}$/, "}}]}}");
+    const adapter = new ChatOutputAdapter([
+      "Okay, submitting this package for approval.",
+      "```hiveward-inbox",
+      malformedSubmission,
+      "```"
+    ].join("\n"));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            message: "Submit this package for approval.",
+            attachments: [],
+            modelId: "openclaw/default",
+            agentId: "main",
+            thinkingEffort: "medium",
+            mode: "blueprint",
+            roleScope: {
+              role: "leader",
+              leaderId: "leader-test",
+              blueprintId: blueprint.id
+            }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("event: inbox_item_created");
+        expect(text).not.toContain("Inbox submission failed");
+
+        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
+        const inboxBody = await readOkJson<{ items: Array<{ id: string; title: string }> }>(inboxResponse);
+        expect(inboxBody.items[0]).toMatchObject({ title: "Repaired X blueprint proposal" });
+
+        const approveResponse = await fetch(`${baseUrl}/api/inbox/${inboxBody.items[0]!.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const approveBody = await readOkJson<{ importedBlueprints?: Array<{ edges: Array<{ source: string; target: string }> }> }>(approveResponse);
+        expect(approveBody.importedBlueprints?.[0]?.edges[0]).toMatchObject({
+          source: "fetch",
+          target: "render"
+        });
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("proxies OpenClaw native chat history by session key", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -285,6 +743,97 @@ describe("apiRouter", () => {
           content: "Mock OpenClaw session history."
         });
       });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs Hiveward inbox submissions from native chat history without duplicates", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const now = new Date().toISOString();
+    const output = [
+      "I prepared the package for approval.",
+      "```hiveward-inbox",
+      JSON.stringify({
+        schema: hivewardInboxSubmissionSchema,
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "History synced blueprint package",
+        summary: "Created from a native OpenClaw history response.",
+        diffSummary: "Adds a history-synced blueprint package.",
+        blueprintPackage: {
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-23T00:00:00.000Z",
+          blueprints: [
+            {
+              id: "history-synced-blueprint",
+              name: "History synced blueprint package",
+              description: "Valid proposal recovered from native history.",
+              version: 1,
+              nodes: [
+                {
+                  id: "brief",
+                  type: "agent",
+                  runtimeId: "openclaw",
+                  position: { x: 0, y: 0 },
+                  config: {
+                    label: "Brief",
+                    agentName: "brief-agent",
+                    prompt: "Write a brief.",
+                    tools: []
+                  }
+                }
+              ],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        }
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatHistoryAdapter([
+      {
+        id: "history-sync-user",
+        role: "user",
+        content: "Submit this package for approval.",
+        createdAt: now
+      },
+      {
+        id: "history-sync-assistant",
+        role: "assistant",
+        content: output,
+        createdAt: now
+      }
+    ]);
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const firstResponse = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("agent:main:dashboard:history-sync")}`);
+        const firstBody = await readOkJson<{
+          messages: Array<{ role: string; content: string }>;
+          inboxItems?: Array<{ id: string; title: string; status: string; type: string }>;
+        }>(firstResponse);
+
+        expect(firstBody.messages[1]?.content).toContain("I prepared the package for approval.");
+        expect(firstBody.messages[1]?.content).toContain("已提交到收件箱，请前往收件箱审批。");
+        expect(firstBody.messages[1]?.content).not.toContain("hiveward-inbox");
+        expect(firstBody.inboxItems?.[0]).toMatchObject({
+          title: "History synced blueprint package",
+          status: "pending",
+          type: "blueprint_proposal"
+        });
+
+        const secondResponse = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("agent:main:dashboard:history-sync")}`);
+        const secondBody = await readOkJson<{ inboxItems?: Array<{ id: string }> }>(secondResponse);
+        expect(secondBody.inboxItems?.[0]?.id).toBe(firstBody.inboxItems?.[0]?.id);
+
+        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
+        const inboxBody = await readOkJson<{ items: Array<{ title: string }> }>(inboxResponse);
+        expect(inboxBody.items.filter((item) => item.title === "History synced blueprint package")).toHaveLength(1);
+      }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -310,6 +859,35 @@ describe("apiRouter", () => {
         expect(adapter.lastChatSessionInput).toEqual({
           agentId: "main",
           parentSessionKey: "main"
+        });
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("updates native OpenClaw chat session titles through the runtime adapter", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/session`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            sessionKey: "agent:main:main",
+            title: "Renamed chat"
+          })
+        });
+        const body = await readOkJson<{ sessionKey: string; title: string }>(response);
+
+        expect(body).toEqual({
+          sessionKey: "agent:main:main",
+          title: "Renamed chat"
+        });
+        expect(adapter.lastChatSessionTitleInput).toEqual({
+          sessionKey: "agent:main:main",
+          title: "Renamed chat"
         });
       }, adapter);
     } finally {

@@ -8840,13 +8840,83 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-columns: 230px minmax(0, 1fr);
   gap: var(--content-gap);
-  transition: grid-template-columns 160ms ease;
+  transition: grid-template-columns 280ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: grid-template-columns;
 }
 
 .chat-page-grid.chat-settings-collapsed .chat-workspace {
   grid-template-columns: 52px minmax(0, 1fr);
+}
+
+.chat-settings-column,
+.chat-window-column {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+  overflow: hidden;
+}
+
+.chat-settings-column.collapsed {
+  justify-items: center;
+}
+
+.chat-column-header {
+  min-width: 0;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.chat-column-header h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--title-section-size);
+  font-weight: var(--title-weight);
+  line-height: var(--title-line-height);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-title-display,
+.chat-title-edit-form {
+  min-width: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-title-display h3 {
+  flex: 0 1 auto;
+}
+
+.chat-title-display button,
+.chat-title-edit-form button {
+  width: 30px;
+  min-width: 30px;
+  min-height: 30px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+}
+
+.chat-title-edit-form input {
+  min-width: 0;
+  height: 34px;
+  padding: 6px 9px;
+}
+
+.chat-settings-column.collapsed .chat-column-header {
+  justify-content: center;
+  width: 100%;
 }
 
 .chat-settings-panel {
@@ -8854,11 +8924,17 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   align-content: start;
   overflow: auto;
   transition:
-    padding 160ms ease,
-    border-color 160ms ease;
+    opacity 180ms ease,
+    padding 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 240ms ease,
+    transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform, opacity;
 }
 
 .chat-settings-panel.collapsed {
+  width: 100%;
+  justify-items: center;
+  gap: 10px;
   overflow: hidden;
   padding: 8px;
 }
@@ -8892,23 +8968,44 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   white-space: nowrap;
 }
 
-.chat-settings-panel.collapsed .chat-settings-collapse-button {
+.chat-settings-collapse-button:hover:not(:disabled) {
+  transform: none;
+}
+
+.chat-settings-column.collapsed .chat-settings-collapse-button {
   width: 34px;
   min-width: 34px;
   padding: 0;
 }
 
-.chat-settings-panel.collapsed .chat-settings-collapse-button span {
+.chat-settings-column.collapsed .chat-settings-collapse-button span {
   display: none;
+}
+
+.chat-settings-icon-rail {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  animation: chat-rail-enter 180ms ease;
+}
+
+.chat-settings-icon-rail button {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: var(--radius-sm);
 }
 
 .chat-settings-body {
   display: grid;
+  gap: 10px;
   min-width: 0;
+  animation: chat-settings-body-enter 180ms ease;
 }
 
 .chat-settings-body > * + * {
-  margin-top: 14px;
+  margin-top: 0;
 }
 
 .chat-control-group,
@@ -8916,7 +9013,7 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-select-field,
 .chat-toggle-field {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .chat-control-group + .chat-control-group,
@@ -8946,9 +9043,9 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 
 .chat-select-button {
   width: 100%;
-  min-height: 42px;
+  min-height: 38px;
   justify-content: space-between;
-  padding: 7px 10px;
+  padding: 6px 9px;
   border-color: var(--line-strong);
   border-radius: 6px;
   background: var(--paper-raised, var(--paper-strong));
@@ -8973,7 +9070,6 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-select-value {
   min-width: 0;
   display: grid;
-  gap: 2px;
   text-align: left;
 }
 
@@ -8997,11 +9093,8 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 }
 
 .chat-select-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
-  left: 0;
-  z-index: 35;
+  position: fixed;
+  z-index: 80;
   display: grid;
   gap: 4px;
   max-height: 268px;
@@ -9011,11 +9104,22 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   border-radius: 6px;
   background: #111722;
   box-shadow: 0 18px 42px rgb(0 0 0 / 0.34);
+  transform-origin: left top;
+  animation: chat-select-menu-enter 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-select-arrow {
+  flex: 0 0 auto;
+  transition: transform 160ms ease;
+}
+
+.chat-select-button.open .chat-select-arrow {
+  transform: translateX(2px);
 }
 
 .chat-select-option {
   width: 100%;
-  min-height: 36px;
+  min-height: 34px;
   justify-content: space-between;
   padding: 7px 8px;
   border-color: transparent;
@@ -9084,7 +9188,7 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-window-card {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -9305,6 +9409,13 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   font-weight: 650;
 }
 
+.chat-message-runtime {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 8px;
+}
+
 .chat-message-attachments span,
 .chat-attachment-chip {
   min-width: 0;
@@ -9386,8 +9497,8 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 }
 
 .chat-file-button {
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--paper-strong);
@@ -9395,14 +9506,28 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 }
 
 .chat-composer textarea {
-  min-height: 44px;
-  max-height: 180px;
-  resize: vertical;
+  height: 42px;
+  min-height: 42px;
+  max-height: 132px;
+  overflow-y: hidden;
+  resize: none;
 }
 
 .chat-send-button {
   min-width: 92px;
-  min-height: 38px;
+  min-height: 42px;
+  align-self: end;
+}
+
+.chat-stop-button {
+  border-color: rgb(239 68 68 / 0.64);
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.chat-stop-button:hover:not(:disabled) {
+  border-color: #ef4444;
+  background: #ef4444;
 }
 
 .chat-attachment-list {
@@ -9423,6 +9548,39 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-inline-error {
   color: var(--semantic-red);
   font-size: 13px;
+}
+
+@keyframes chat-settings-body-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes chat-rail-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes chat-select-menu-enter {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
 }
 
 html[data-theme="light"] .chat-message {
@@ -9510,4 +9668,199 @@ html[data-theme="light"] .chat-avatar-assistant {
   .chat-message-row {
     width: 100%;
   }
+}
+
+.blueprint-shell {
+  position: relative;
+}
+
+.blueprint-board-switch {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 12;
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgb(11 18 23 / 0.82);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 0.18);
+}
+
+.blueprint-board-switch button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.83rem;
+}
+
+.blueprint-board-switch button.active {
+  color: var(--text);
+  background: rgb(255 255 255 / 0.1);
+}
+
+.architecture-blueprint-shell {
+  position: relative;
+  min-height: 720px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgb(255 255 255 / 0.035) 1px, transparent 1px),
+    #0b1217;
+  background-size: 36px 36px;
+}
+
+.architecture-blueprint-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  min-height: 100%;
+  padding: 92px 32px 40px;
+}
+
+.architecture-blueprint-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+.architecture-spine {
+  width: 2px;
+  height: 42px;
+  background: linear-gradient(180deg, rgb(72 187 180 / 0.88), rgb(245 158 11 / 0.72));
+}
+
+.architecture-leader-grid {
+  display: grid;
+  width: min(1040px, 100%);
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 18px;
+}
+
+.architecture-role-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid rgb(255 255 255 / 0.12);
+  border-radius: 8px;
+  background: rgb(13 25 32 / 0.88);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.18);
+}
+
+.architecture-ceo-card {
+  width: min(420px, 88vw);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.architecture-leader-card {
+  position: relative;
+}
+
+.architecture-role-icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: #f8fafc;
+  background: #0f766e;
+}
+
+.architecture-role-icon.leader {
+  background: #92400e;
+}
+
+.architecture-role-main,
+.architecture-role-card > div {
+  min-width: 0;
+}
+
+.architecture-role-card span,
+.architecture-role-card small {
+  color: var(--muted);
+}
+
+.architecture-role-card strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.architecture-role-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  font-size: 0.78rem;
+}
+
+.architecture-role-metrics span,
+.architecture-role-metrics time {
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: rgb(255 255 255 / 0.07);
+}
+
+.architecture-open-blueprint {
+  justify-content: center;
+  width: 100%;
+  min-height: 34px;
+}
+
+.architecture-empty {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px dashed rgb(255 255 255 / 0.18);
+  border-radius: 8px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.inbox-formal-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.inbox-formal-row .danger-action {
+  min-width: 36px;
+  padding: 0;
+}
+
+html[data-theme="light"] .blueprint-board-switch {
+  background: rgb(255 255 255 / 0.9);
+}
+
+html[data-theme="light"] .blueprint-board-switch button.active {
+  background: #e2e8f0;
+}
+
+html[data-theme="light"] .architecture-blueprint-shell {
+  background:
+    linear-gradient(90deg, rgb(15 23 42 / 0.055) 1px, transparent 1px),
+    linear-gradient(180deg, rgb(15 23 42 / 0.055) 1px, transparent 1px),
+    #f8fafc;
+}
+
+html[data-theme="light"] .architecture-role-card {
+  background: rgb(255 255 255 / 0.92);
+  border-color: rgb(15 23 42 / 0.1);
+}
+
+html[data-theme="light"] .architecture-role-metrics span,
+html[data-theme="light"] .architecture-role-metrics time {
+  background: #f1f5f9;
 }
