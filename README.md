@@ -191,3 +191,7 @@ Hiveward owns blueprint definitions, canvas state, node configuration, run views
 Current beta: `v0.1.0-beta.1`
 
 This beta is intended for early repository presentation, local demos, and continued product hardening before a formal stable release.
+
+## Repository Hygiene / 仓库卫生
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the pre-push checklist and rules for keeping secrets, local run data, generated output, and internal working notes out of the public repository.
