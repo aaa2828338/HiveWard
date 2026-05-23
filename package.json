@@ -3,14 +3,21 @@
   "version": "0.1.0-beta.1",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.8.0",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0",
+    "npm": ">=11.0.0 <12"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
+    "setup": "npm install && npm run check:env",
     "dev": "npm run dev -w @hiveward/web",
-    "build": "npm run build -w @hiveward/web && npm run typecheck -w @hiveward/api && npm run typecheck -w @hiveward/shared && npm run typecheck -w @hiveward/adapter",
-    "check": "npm run check:boundaries && npm run typecheck -ws --if-present",
+    "build": "npm run build -w @hiveward/web && npm run typecheck -w @hiveward/api && npm run typecheck -w @hiveward/shared && npm run typecheck -w @hiveward/adapter && npm run build -w @hiveward/cli",
+    "check": "npm run check:env && npm run check:boundaries && npm run typecheck --workspaces --if-present",
+    "check:env": "node scripts/check-env.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
     "test": "vitest run"
   },

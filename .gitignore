@@ -13,6 +13,7 @@ tmp/
 !data/runs/.gitkeep
 .env
 .env.*
+!.env.example
 *.local
 *.log
 *.tsbuildinfo
