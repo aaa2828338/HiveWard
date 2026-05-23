@@ -153,8 +153,8 @@ npm run check:env
 npm run dev
 ```
 
-- Web 与 API：`http://localhost:5173`
-- 健康检查：`http://localhost:5173/healthz`
+- Web 与 API：`http://localhost:10101`
+- 健康检查：`http://localhost:10101/healthz`
 
 默认 `OPENCLAW_ADAPTER=auto`。当本机能解析 OpenClaw Gateway 配置时，Hiveward 会连接真实 OpenClaw；否则会使用 mock 模式，方便本地演示和 UI 开发。
 

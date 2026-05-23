@@ -150,8 +150,8 @@ npm run check:env
 npm run dev
 ```
 
-- Web and API: `http://localhost:5173`
-- Health check: `http://localhost:5173/healthz`
+- Web and API: `http://localhost:10101`
+- Health check: `http://localhost:10101/healthz`
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
 
