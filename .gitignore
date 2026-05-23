@@ -2,6 +2,8 @@ node_modules/
 dist/
 .vite/
 coverage/
+.codex/
+.omx/
 data/*.json
 data/blueprints/*.json
 data/runs/*.json
@@ -11,5 +13,16 @@ tmp/
 !data/runs/.gitkeep
 .env
 .env.*
+*.local
 *.log
 *.tsbuildinfo
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.csr
+*.token
+*.secret
+AGENTS.md
+DESIGN.md
