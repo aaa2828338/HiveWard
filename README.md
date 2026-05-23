@@ -17,6 +17,7 @@
 
 <p align="center">
   <img alt="Beta" src="https://img.shields.io/badge/beta-v0.1.0--beta.1-f59e0b">
+  <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Multi-agent" src="https://img.shields.io/badge/multi--agent-blueprints-0ea5e9">
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-OpenClaw-111827">
 </p>
@@ -129,8 +130,33 @@ graph LR
 
 ## 快速开始
 
+### 产品安装（npm CLI）
+
+```bash
+npm install -g @hiveward/cli
+hiveward setup
+hiveward start
+```
+
+也可以不做全局安装，直接用 npx：
+
+```bash
+npx @hiveward/cli@beta setup
+npx @hiveward/cli@beta start
+```
+
+常用命令：
+
+- `hiveward doctor`：检查 Node.js、npm、安装目录、依赖和端口。
+- `hiveward update`：检查 npm 上是否有新版 Hiveward CLI。
+
+更多安装和更新规则见 [npm CLI Installation](docs/npm-cli-install.md)。
+
+### 源码开发
+
 ```bash
 npm install
+npm run check:env
 npm run dev
 ```
 
@@ -140,6 +166,8 @@ npm run dev
 默认 `OPENCLAW_ADAPTER=auto`。当本机能解析 OpenClaw Gateway 配置时，Hiveward 会连接真实 OpenClaw；否则会使用 mock 模式，方便本地演示和 UI 开发。
 
 ## 开发与仓库卫生
+
+开发环境版本、环境变量模板和 runtime 配置见 [Development Setup](docs/development-setup.md)。
 
 ```bash
 npm run check

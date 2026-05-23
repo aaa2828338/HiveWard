@@ -18,6 +18,12 @@ Allowed public assets include source files, package metadata, README/CHANGELOG c
 
 ## Pre-Push Checklist
 
+Confirm the local toolchain first:
+
+```bash
+npm run check:env
+```
+
 Run these checks before pushing:
 
 ```bash

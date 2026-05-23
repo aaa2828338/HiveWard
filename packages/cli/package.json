@@ -1,0 +1,37 @@
+{
+  "name": "@hiveward/cli",
+  "version": "0.1.0-beta.1",
+  "description": "Hiveward command-line installer and local runtime helper.",
+  "type": "module",
+  "bin": {
+    "hiveward": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "prebuild": "node scripts/clean-dist.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0",
+    "npm": ">=11.0.0 <12"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org",
+    "tag": "beta"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Chaunyzhang/HiveWard.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/Chaunyzhang/HiveWard/issues"
+  },
+  "homepage": "https://github.com/Chaunyzhang/HiveWard#readme"
+}

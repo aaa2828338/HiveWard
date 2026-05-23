@@ -17,6 +17,7 @@
 
 <p align="center">
   <img alt="Beta" src="https://img.shields.io/badge/beta-v0.1.0--beta.1-f59e0b">
+  <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Multi-agent" src="https://img.shields.io/badge/multi--agent-blueprints-0ea5e9">
   <img alt="Runtime" src="https://img.shields.io/badge/runtime-OpenClaw-111827">
 </p>
@@ -129,8 +130,11 @@ Current beta: `v0.1.0-beta.1`. The project is roughly 80% of the way to the inte
 
 ## Quick start
 
+### Source checkout
+
 ```bash
 npm install
+npm run check:env
 npm run dev
 ```
 
@@ -139,7 +143,21 @@ npm run dev
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
 
+### npm CLI install
+
+Hiveward can also be installed as a product command:
+
+```bash
+npm install -g @hiveward/cli
+hiveward setup
+hiveward start
+```
+
+See [npm CLI Installation](docs/npm-cli-install.md) for `hiveward doctor`, `hiveward update`, and install directory options.
+
 ## Development and repository hygiene
+
+See [Development Setup](docs/development-setup.md) for the supported Node.js/npm versions, local environment template, and runtime configuration variables.
 
 ```bash
 npm run check
