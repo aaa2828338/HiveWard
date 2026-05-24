@@ -5249,8 +5249,12 @@ html[data-theme="light"] .node-output-row pre {
 .blueprint-canvas-panel {
   height: calc(100vh - 32px);
   --blueprint-selector-width: clamp(195px, 20.8vw, 299px);
-  --blueprint-dock-edge: 18px;
-  --blueprint-dock-padding: 6px;
+  --blueprint-dock-edge: 6px;
+  --blueprint-dock-padding: 2px;
+  --blueprint-dock-height: 37px;
+  --blueprint-dock-control-size: calc(var(--blueprint-dock-height) - (var(--blueprint-dock-padding) * 2) - 2px);
+  --blueprint-dock-gap: 6px;
+  --blueprint-dock-icon-size: 14px;
   --blueprint-dock-panel-gap: 8px;
   --blueprint-running-color: var(--semantic-blue);
   --blueprint-succeeded-color: var(--semantic-green);
@@ -5289,12 +5293,13 @@ html[data-theme="light"] .node-output-row pre {
   bottom: var(--blueprint-dock-edge);
   left: auto;
   width: fit-content;
-  max-width: calc(100% - 36px);
+  max-width: calc(100% - var(--blueprint-dock-edge) - var(--blueprint-dock-edge));
+  height: var(--blueprint-dock-height);
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  gap: 8px;
-  padding: 6px;
+  gap: var(--blueprint-dock-gap);
+  padding: var(--blueprint-dock-padding);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: rgb(15 19 26 / 0.96);
@@ -5304,8 +5309,15 @@ html[data-theme="light"] .node-output-row pre {
 
 .blueprint-action-dock button {
   flex: 0 0 auto;
-  min-height: 36px;
+  height: var(--blueprint-dock-control-size);
+  min-height: 0;
   white-space: nowrap;
+}
+
+.blueprint-action-dock svg {
+  width: var(--blueprint-dock-icon-size);
+  height: var(--blueprint-dock-icon-size);
+  flex: 0 0 auto;
 }
 
 .blueprint-selector-button {
@@ -5313,8 +5325,8 @@ html[data-theme="light"] .node-output-row pre {
   width: var(--blueprint-selector-width);
   min-width: 0;
   justify-content: flex-start;
-  gap: 8px;
-  padding: 0 12px;
+  gap: var(--blueprint-dock-gap);
+  padding: 0 9px;
 }
 
 .blueprint-selector-button span {
@@ -5325,15 +5337,16 @@ html[data-theme="light"] .node-output-row pre {
 }
 
 .blueprint-dock-add {
-  width: 38px;
+  width: var(--blueprint-dock-control-size);
+  min-width: var(--blueprint-dock-control-size);
   padding: 0;
   color: var(--accent-strong);
 }
 
 .blueprint-dock-batch {
-  gap: 6px;
-  min-width: 48px;
-  padding: 0 10px;
+  gap: 4px;
+  min-width: 36px;
+  padding: 0 7px;
   color: var(--accent-strong);
 }
 
@@ -5343,7 +5356,9 @@ html[data-theme="light"] .node-output-row pre {
 }
 
 .blueprint-run-button {
-  min-width: 132px;
+  gap: var(--blueprint-dock-gap);
+  min-width: 100px;
+  padding: 0 10px;
 }
 
 .blueprint-side-panel {
@@ -5351,7 +5366,7 @@ html[data-theme="light"] .node-output-row pre {
   z-index: 9;
   top: auto;
   right: calc(var(--blueprint-dock-edge) + var(--blueprint-dock-padding));
-  bottom: calc(var(--blueprint-dock-edge) + 50px + var(--blueprint-dock-panel-gap));
+  bottom: calc(var(--blueprint-dock-edge) + var(--blueprint-dock-height) + var(--blueprint-dock-panel-gap));
   left: auto;
   width: min(var(--blueprint-selector-width), calc(100% - 36px));
   max-height: min(620px, calc(100% - 104px));
@@ -5893,9 +5908,9 @@ html[data-theme="light"] .node-menu-item:hover:not(:disabled) {
   }
 
   .blueprint-action-dock {
-    right: 12px;
-    bottom: 12px;
-    left: 12px;
+    right: var(--blueprint-dock-edge);
+    bottom: var(--blueprint-dock-edge);
+    left: var(--blueprint-dock-edge);
     width: auto;
     justify-content: flex-start;
   }
@@ -9955,13 +9970,13 @@ html[data-theme="light"] .architecture-role-metrics time {
 }
 
 .blueprint-canvas-panel {
-  --blueprint-corner-edge: 12px;
-  --blueprint-corner-gap: 12px;
+  --blueprint-corner-edge: 6px;
+  --blueprint-corner-gap: 6px;
   --blueprint-control-button-size: 32px;
   --blueprint-controls-width: var(--blueprint-control-button-size);
   --blueprint-corner-height: 128px;
   --blueprint-minimap-width: 192px;
-  --blueprint-corner-stack-width: 248px;
+  --blueprint-corner-stack-width: 230px;
   --blueprint-switch-height: 74px;
 }
 
@@ -9982,6 +9997,8 @@ html[data-theme="light"] .architecture-role-metrics time {
   width: 100%;
   height: var(--blueprint-switch-height);
   align-items: stretch;
+  gap: 2px;
+  padding: 2px;
   border-radius: var(--radius-lg);
   pointer-events: auto;
 }
@@ -9991,9 +10008,9 @@ html[data-theme="light"] .architecture-role-metrics time {
   min-width: 0;
   min-height: 0;
   height: 100%;
-  padding: 0 6px;
+  padding: 0 3px;
   border-radius: var(--radius-sm);
-  gap: 4px;
+  gap: 2px;
   font-size: 11px;
 }
 
@@ -10089,16 +10106,17 @@ html[data-theme="light"] .architecture-role-metrics time {
 
 @media (max-width: 760px) {
   .blueprint-canvas-panel {
-    --blueprint-corner-edge: 8px;
-    --blueprint-corner-gap: 8px;
+    --blueprint-corner-edge: 4px;
+    --blueprint-corner-gap: 4px;
+    --blueprint-dock-edge: 4px;
     --blueprint-control-button-size: 28px;
     --blueprint-corner-height: 112px;
     --blueprint-switch-height: 64px;
   }
 
   .blueprint-action-dock {
-    right: 12px;
-    left: 12px;
+    right: var(--blueprint-dock-edge);
+    left: var(--blueprint-dock-edge);
   }
 
   .blueprint-side-panel {

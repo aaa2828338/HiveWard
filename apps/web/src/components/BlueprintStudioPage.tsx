@@ -414,7 +414,7 @@ export function BlueprintStudioPage({
   const blueprintCornerStyle = useMemo<CSSProperties>(() => {
     const compact = canvasViewportSize.width <= 760;
     const buttonSize = compact ? 14 : 20;
-    const gap = compact ? 8 : 12;
+    const gap = compact ? 4 : 6;
     const switchHeight = compact ? 32 : 37;
     const cornerHeight = buttonSize * 4;
     const miniMapWidth = Math.round(cornerHeight * (blueprintCanvasWorld.viewportWidth / blueprintCanvasWorld.viewportHeight));
@@ -424,6 +424,7 @@ export function BlueprintStudioPage({
       "--blueprint-controls-width": `${buttonSize}px`,
       "--blueprint-corner-gap": `${gap}px`,
       "--blueprint-corner-height": `${cornerHeight}px`,
+      "--blueprint-dock-height": `${switchHeight}px`,
       "--blueprint-switch-height": `${switchHeight}px`,
       "--blueprint-minimap-width": `${miniMapWidth}px`,
       "--blueprint-corner-stack-width": `${buttonSize + gap + miniMapWidth}px`
@@ -1024,6 +1025,7 @@ export function BlueprintStudioPage({
         <section
           ref={canvasPanelRef}
           className={`blueprint-canvas-panel expanded-blueprint-panel blueprint-canvas-state-${currentBlueprintActivity}`}
+          style={blueprintCornerStyle}
           onPointerDownCapture={(event) => {
             if (isBlueprintInteractionLocked) return;
             if (event.button !== 2) return;
