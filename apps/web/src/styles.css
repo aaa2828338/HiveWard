@@ -9855,6 +9855,15 @@ html[data-theme="light"] .chat-avatar-assistant {
   stroke: rgb(148 163 184 / 0.76);
 }
 
+.architecture-blueprint-edge .architecture-distributor-edge-path {
+  stroke-linecap: butt;
+  stroke-linejoin: miter;
+}
+
+.architecture-blueprint-edge .architecture-distributor-edge-path.selected {
+  stroke: var(--accent);
+}
+
 .architecture-blueprint-panel {
   display: flex;
   flex-direction: column;

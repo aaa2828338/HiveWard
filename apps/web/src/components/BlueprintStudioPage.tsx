@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   applyNodeChanges,
   Background,
+  BaseEdge,
   Controls,
   Handle,
   ReactFlow,
@@ -11,6 +12,8 @@ import {
   type Connection,
   type CoordinateExtent,
   type Edge,
+  type EdgeProps,
+  type EdgeTypes,
   type EdgeMouseHandler,
   type Node,
   type NodeChange,
@@ -101,6 +104,10 @@ const nodeTypes = {
   architectureRole: ArchitectureRoleNodeCard
 };
 
+const edgeTypes: EdgeTypes = {
+  architectureDistributor: ArchitectureDistributorEdge
+};
+
 type BlueprintCanvasWorld = {
   extent: CoordinateExtent;
   minX: number;
@@ -149,6 +156,8 @@ const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 const architectureCeoNodeSize: CanvasSize = { width: 420, height: 86 };
 const architectureLeaderNodeSize: CanvasSize = { width: 340, height: 220 };
+const defaultBlueprintViewport = { x: 0, y: 0, zoom: 1 };
+type BlueprintViewport = typeof defaultBlueprintViewport;
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
 type BlueprintDrawerAnchor = {
   left: number;
@@ -167,6 +176,13 @@ interface ArchitectureRoleNodeData extends Record<string, unknown> {
   leaderCount?: number;
   copy: BlueprintBoardCopy;
   onOpenBlueprint: (blueprintId: string) => void;
+}
+
+interface ArchitectureDistributorEdgeData extends Record<string, unknown> {
+  drawsRootAndTrunk: boolean;
+  trunkLeft: number;
+  trunkRight: number;
+  trunkY: number;
 }
 
 export function BlueprintStudioPage({
@@ -229,6 +245,9 @@ export function BlueprintStudioPage({
   const [batchEditorOpen, setBatchEditorOpen] = useState(false);
   const [localNodes, setLocalNodes] = useState<Node<BlueprintNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
+  const [businessViewport, setBusinessViewport] = useState<BlueprintViewport>(blueprint?.display.viewport ?? defaultBlueprintViewport);
+  const [architectureFlowNodes, setArchitectureFlowNodes] = useState<Node<ArchitectureRoleNodeData>[]>([]);
+  const [selectedArchitectureNodeId, setSelectedArchitectureNodeId] = useState<string | undefined>();
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number; placement?: "above" }>({ x: 88, y: 252 });
   const [blueprintDrawerOpen, setBlueprintDrawerOpen] = useState(false);
@@ -295,6 +314,10 @@ export function BlueprintStudioPage({
   useEffect(() => {
     setLocalEdges(buildFlowEdges(blueprint, workspaceRunView?.run.status));
   }, [workspaceRunView?.run.status, blueprint]);
+
+  useEffect(() => {
+    setBusinessViewport(blueprint?.display.viewport ?? defaultBlueprintViewport);
+  }, [blueprint?.display.viewport?.x, blueprint?.display.viewport?.y, blueprint?.display.viewport?.zoom, blueprint?.id]);
 
   useEffect(() => {
     setDrawerSelectedBlueprintId(blueprint?.id);
@@ -461,11 +484,29 @@ export function BlueprintStudioPage({
     },
     [onSelectBlueprint]
   );
-  const architectureFlowNodes = useMemo(
+  const generatedArchitectureFlowNodes = useMemo(
     () => buildArchitectureFlowNodes(architecture, roleDirectory, blueprints, boardCopy, openArchitectureBlueprint),
     [architecture, blueprints, boardCopy, openArchitectureBlueprint, roleDirectory]
   );
-  const architectureFlowEdges = useMemo(() => buildArchitectureFlowEdges(architecture), [architecture]);
+  const selectedArchitectureNode = useMemo(
+    () => architectureFlowNodes.find((node) => node.id === selectedArchitectureNodeId),
+    [architectureFlowNodes, selectedArchitectureNodeId]
+  );
+  const architectureFlowEdges = useMemo(
+    () => buildArchitectureFlowEdges(architecture, architectureFlowNodes, blueprintCanvasWorld),
+    [architecture, architectureFlowNodes, blueprintCanvasWorld]
+  );
+
+  useEffect(() => {
+    setArchitectureFlowNodes((current) => mergeArchitectureFlowNodes(generatedArchitectureFlowNodes, current));
+  }, [generatedArchitectureFlowNodes]);
+
+  useEffect(() => {
+    if (!selectedArchitectureNodeId) return;
+    if (architectureFlowNodes.some((node) => node.id === selectedArchitectureNodeId)) return;
+    setSelectedArchitectureNodeId(undefined);
+  }, [architectureFlowNodes, selectedArchitectureNodeId]);
+
   const updateBlueprintDrawerAnchor = useCallback(() => {
     const button = blueprintSelectorButtonRef.current;
     const panel = canvasPanelRef.current;
@@ -691,6 +732,10 @@ export function BlueprintStudioPage({
     [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
+  const onArchitectureNodesChange: OnNodesChange<Node<ArchitectureRoleNodeData>> = useCallback((changes) => {
+    setArchitectureFlowNodes((current) => applyNodeChanges(changes, current));
+  }, []);
+
   const onConnect = useCallback(
     (connection: Connection) => {
       if (isBlueprintInteractionLocked) return;
@@ -709,8 +754,15 @@ export function BlueprintStudioPage({
         const blueprintWithUniqueIds = ensureUniqueBlueprintNodeIds(current);
         const selectedSlot =
           selectedNodeId ? blueprintWithUniqueIds.nodes.find((node) => node.id === selectedNodeId && node.type === "manager_slot") : undefined;
+        const nodeSize = initialBlueprintNodeSize(type);
+        const topLevelPosition = resolveViewportCenterNodePosition(
+          businessViewport,
+          canvasViewportSize,
+          nodeSize,
+          blueprintCanvasWorld.extent
+        );
         if (type === "manager_slot") {
-          return addManagerSlotFromMenu(blueprintWithUniqueIds, selectedNodeId, t);
+          return addManagerSlotFromMenu(blueprintWithUniqueIds, selectedNodeId, topLevelPosition, t);
         }
         const shouldNest = Boolean(selectedSlot && type !== "manager");
         const id = nextBlueprintNodeId(blueprintWithUniqueIds, type, shouldNest ? selectedSlot?.id : undefined);
@@ -720,8 +772,8 @@ export function BlueprintStudioPage({
           runtimeId: type === "agent" || type === "manager" || type === "parallel_agents" ? "openclaw" : undefined,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
-            ? managerSlotChildInitialPosition(selectedSlot!, blueprintWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
-            : { x: 180 + blueprintWithUniqueIds.nodes.length * 42, y: 188 + blueprintWithUniqueIds.nodes.length * 22 },
+            ? managerSlotChildCenterPosition(selectedSlot!, nodeSize)
+            : topLevelPosition,
           config: defaultConfig(type, t)
         };
         const next = {
@@ -732,7 +784,7 @@ export function BlueprintStudioPage({
       });
       setNodeMenuOpen(false);
     },
-    [isBlueprintInteractionLocked, onUpdateBlueprint, selectedNodeId, t]
+    [blueprintCanvasWorld.extent, businessViewport, canvasViewportSize, isBlueprintInteractionLocked, onUpdateBlueprint, selectedNodeId, t]
   );
 
   const openNodeMenuAt = useCallback(
@@ -777,6 +829,14 @@ export function BlueprintStudioPage({
     onSelectNode(undefined);
   }, [onSelectNode, setSelectedCanvasNodeIdsIfChanged]);
 
+  const clearArchitectureSelection = useCallback(() => {
+    setSelectedArchitectureNodeId(undefined);
+    setArchitectureFlowNodes((current) => {
+      if (!current.some((node) => node.selected)) return current;
+      return current.map((node) => (node.selected ? { ...node, selected: false } : node));
+    });
+  }, []);
+
   useEffect(() => {
     const hasFloatingUi =
       nodeMenuOpen ||
@@ -785,6 +845,7 @@ export function BlueprintStudioPage({
       Boolean(blueprintCardContextMenu) ||
       Boolean(deleteCandidateBlueprintId) ||
       Boolean(selectedNodeId) ||
+      Boolean(selectedArchitectureNodeId) ||
       selectedCanvasNodeIds.length > 0;
     if (!hasFloatingUi) return;
 
@@ -825,13 +886,14 @@ export function BlueprintStudioPage({
       }
 
       if (
-        (selectedNodeId || selectedCanvasNodeIds.length > 0) &&
+        (selectedNodeId || selectedArchitectureNodeId || selectedCanvasNodeIds.length > 0) &&
         !target.closest(".react-flow__node") &&
         !target.closest(".node-modal") &&
         !target.closest(".node-menu-popover") &&
         !target.closest(".node-context-menu")
       ) {
         clearCanvasSelection();
+        clearArchitectureSelection();
       }
     };
 
@@ -840,12 +902,14 @@ export function BlueprintStudioPage({
   }, [
     blueprintCardContextMenu,
     blueprintDrawerOpen,
+    clearArchitectureSelection,
     clearCanvasSelection,
     closeNodeContextMenu,
     closeNodeMenu,
     deleteCandidateBlueprintId,
     nodeContextMenu.open,
     nodeMenuOpen,
+    selectedArchitectureNodeId,
     selectedCanvasNodeIds.length,
     selectedNodeId
   ]);
@@ -1096,11 +1160,19 @@ export function BlueprintStudioPage({
               nodes={architectureFlowNodes}
               edges={architectureFlowEdges}
               nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
               translateExtent={blueprintCanvasWorld.extent}
               nodeExtent={blueprintCanvasWorld.extent}
-              nodesDraggable={false}
+              onNodeClick={(_event, node) => setSelectedArchitectureNodeId(node.id)}
+              onPaneClick={clearArchitectureSelection}
+              onSelectionChange={({ nodes }) => setSelectedArchitectureNodeId(nodes.length === 1 ? nodes[0]?.id : undefined)}
+              onNodesChange={onArchitectureNodesChange}
+              nodesDraggable
               nodesConnectable={false}
+              selectionOnDrag
+              selectionMode={SelectionMode.Partial}
               panOnDrag={[1, 2]}
+              deleteKeyCode={null}
               minZoom={0.35}
               maxZoom={1.5}
               fitView
@@ -1117,6 +1189,9 @@ export function BlueprintStudioPage({
                 onChange={setBlueprintBoard}
               />
             </ReactFlow>
+            {selectedArchitectureNode && (
+              <ArchitectureRoleDetailSidebar node={selectedArchitectureNode} onClose={clearArchitectureSelection} />
+            )}
           </section>
         </section>
       </ReactFlowProvider>
@@ -1183,13 +1258,14 @@ export function BlueprintStudioPage({
             nodes={localNodes}
             edges={localEdges}
             nodeTypes={nodeTypes}
-            defaultViewport={blueprint?.display.viewport ?? { x: 0, y: 0, zoom: 1 }}
+            defaultViewport={blueprint?.display.viewport ?? defaultBlueprintViewport}
             translateExtent={blueprintCanvasWorld.extent}
             nodeExtent={blueprintCanvasWorld.extent}
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
             onConnectEnd={onConnectEnd}
+            onMoveEnd={(_event, viewport) => setBusinessViewport(viewport)}
             onPaneClick={() => {
               if (suppressNextPaneClickRef.current) {
                 suppressNextPaneClickRef.current = false;
@@ -1623,6 +1699,99 @@ function ArchitectureRoleNodeCard({ data, selected }: NodeProps) {
       )}
       <Handle id="architecture-role-out" className="node-handle architecture-role-handle" type="source" position={Position.Bottom} />
     </article>
+  );
+}
+
+function ArchitectureRoleDetailSidebar({
+  node,
+  onClose
+}: {
+  node: Node<ArchitectureRoleNodeData>;
+  onClose: () => void;
+}) {
+  const nodeData = node.data;
+  const isCeo = nodeData.roleKind === "ceo";
+  const blueprintLabel = nodeData.blueprintName ?? nodeData.blueprintId;
+
+  return (
+    <aside className="node-modal node-detail-sidebar" aria-label={nodeData.label} onPointerDown={(event) => event.stopPropagation()}>
+      <header className="node-modal-header">
+        <div>
+          <span className="hero-eyebrow modal-eyebrow">{isCeo ? nodeData.copy.ceo : nodeData.copy.leader}</span>
+          <h3>{nodeData.label}</h3>
+        </div>
+        <button type="button" className="icon-button node-modal-close" onClick={onClose}>
+          <X size={18} />
+        </button>
+      </header>
+
+      <div className="node-modal-grid">
+        <div className="node-modal-main">
+          <div className="node-modal-section">
+            <h4>{nodeData.copy.latestRun}</h4>
+            <div className="config-form node-modal-form">
+              <label>
+                <span>{nodeData.copy.pending}</span>
+                <input value={String(nodeData.pendingApprovalCount)} readOnly />
+              </label>
+              {isCeo ? (
+                <label>
+                  <span>{nodeData.copy.leader}</span>
+                  <input value={String(nodeData.leaderCount ?? 0)} readOnly />
+                </label>
+              ) : (
+                <label>
+                  <span>{nodeData.copy.latestRun}</span>
+                  <input value={nodeData.latestRunStatus ?? nodeData.copy.noRun} readOnly />
+                </label>
+              )}
+              {!isCeo && blueprintLabel && (
+                <label>
+                  <span>{nodeData.copy.business}</span>
+                  <input value={blueprintLabel} readOnly />
+                </label>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function ArchitectureDistributorEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  data,
+  style,
+  markerStart,
+  markerEnd,
+  interactionWidth,
+  selected
+}: EdgeProps) {
+  const edgeData = data as ArchitectureDistributorEdgeData | undefined;
+  const fallbackTrunkY = sourceY + (targetY - sourceY) / 2;
+  const trunkY = typeof edgeData?.trunkY === "number" ? edgeData.trunkY : fallbackTrunkY;
+  const trunkLeft = typeof edgeData?.trunkLeft === "number" ? edgeData.trunkLeft : Math.min(sourceX, targetX);
+  const trunkRight = typeof edgeData?.trunkRight === "number" ? edgeData.trunkRight : Math.max(sourceX, targetX);
+  const dropPath = `M ${targetX},${trunkY} L ${targetX},${targetY}`;
+  const path = edgeData?.drawsRootAndTrunk
+    ? `M ${sourceX},${sourceY} L ${sourceX},${trunkY} M ${trunkLeft},${trunkY} L ${trunkRight},${trunkY} ${dropPath}`
+    : dropPath;
+
+  return (
+    <BaseEdge
+      id={id}
+      path={path}
+      className={`architecture-distributor-edge-path${selected ? " selected" : ""}`}
+      style={style}
+      markerStart={markerStart}
+      markerEnd={markerEnd}
+      interactionWidth={interactionWidth}
+    />
   );
 }
 
@@ -2804,13 +2973,16 @@ function managerSlotChildExtent(slotNode: BlueprintNode): CoordinateExtent {
   ];
 }
 
-function managerSlotChildInitialPosition(slotNode: BlueprintNode, childIndex: number): CanvasPosition {
+function managerSlotChildCenterPosition(slotNode: BlueprintNode, childSize: CanvasSize): CanvasPosition {
   const extent = managerSlotChildExtent(slotNode);
-  const position = {
-    x: MANAGER_SLOT_FRAME.side + 48 + childIndex * 28,
-    y: MANAGER_SLOT_FRAME.top + 52
-  };
-  return clampPositionToExtent(position, extent, defaultChildNodeSize);
+  return clampPositionToExtent(
+    {
+      x: (extent[0][0] + extent[1][0]) / 2 - childSize.width / 2,
+      y: (extent[0][1] + extent[1][1]) / 2 - childSize.height / 2
+    },
+    extent,
+    childSize
+  );
 }
 
 function clampPositionToManagerSlotFrame(position: CanvasPosition, slotNode: BlueprintNode, childSize: CanvasSize): CanvasPosition {
@@ -2824,7 +2996,37 @@ function clampPositionToExtent(position: CanvasPosition, extent: CoordinateExten
   };
 }
 
-function addManagerSlotFromMenu(blueprint: BlueprintDefinition, selectedNodeId: string | undefined, t: Messages): BlueprintDefinition {
+function initialBlueprintNodeSize(type: BlueprintNodeType): CanvasSize {
+  return type === "manager_slot" ? MANAGER_SLOT_DEFAULT_SIZE : defaultChildNodeSize;
+}
+
+function resolveViewportCenterNodePosition(
+  viewport: BlueprintViewport,
+  viewportSize: CanvasSize,
+  childSize: CanvasSize,
+  extent: CoordinateExtent
+): CanvasPosition {
+  const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : defaultBlueprintViewport.zoom;
+  const center = {
+    x: (viewportSize.width / 2 - viewport.x) / zoom,
+    y: (viewportSize.height / 2 - viewport.y) / zoom
+  };
+  return clampPositionToExtent(
+    {
+      x: center.x - childSize.width / 2,
+      y: center.y - childSize.height / 2
+    },
+    extent,
+    childSize
+  );
+}
+
+function addManagerSlotFromMenu(
+  blueprint: BlueprintDefinition,
+  selectedNodeId: string | undefined,
+  topLevelPosition: CanvasPosition,
+  t: Messages
+): BlueprintDefinition {
   const selectedNode = selectedNodeId ? blueprint.nodes.find((node) => node.id === selectedNodeId) : undefined;
   const selectedSlot = selectedNode?.type === "manager_slot" ? selectedNode : undefined;
   const selectedManager =
@@ -2837,9 +3039,7 @@ function addManagerSlotFromMenu(blueprint: BlueprintDefinition, selectedNodeId: 
   const slot = assignableSlot ?? nextManagerSlotNumber(blueprint);
   const position = selectedSlot
     ? { x: selectedSlot.position.x + 44, y: selectedSlot.position.y + 44 }
-    : selectedManager
-      ? { x: selectedManager.position.x + 360, y: selectedManager.position.y + (slot - 1) * 340 }
-      : { x: 180 + blueprint.nodes.length * 42, y: 188 + blueprint.nodes.length * 22 };
+    : topLevelPosition;
   const node: BlueprintNode = {
     id: nextBlueprintNodeId(blueprint, "manager_slot"),
     type: "manager_slot",
@@ -3166,16 +3366,92 @@ function buildArchitectureFlowNodes(
   });
 }
 
-function buildArchitectureFlowEdges(architecture: ArchitectureBlueprintView | undefined): Edge[] {
-  return (architecture?.edges ?? []).map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    sourceHandle: "architecture-role-out",
-    targetHandle: "architecture-role-in",
-    className: "blueprint-edge architecture-blueprint-edge",
-    style: { strokeWidth: 3.5 }
-  }));
+function mergeArchitectureFlowNodes(
+  nextNodes: Node<ArchitectureRoleNodeData>[],
+  currentNodes: Node<ArchitectureRoleNodeData>[]
+): Node<ArchitectureRoleNodeData>[] {
+  if (currentNodes.length === 0) return nextNodes;
+  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
+  return nextNodes.map((node) => {
+    const current = currentById.get(node.id);
+    if (!current) return node;
+    return {
+      ...node,
+      position: current.position,
+      selected: current.selected,
+      dragging: current.dragging,
+      width: current.width,
+      height: current.height,
+      measured: current.measured
+    };
+  });
+}
+
+function buildArchitectureFlowEdges(
+  architecture: ArchitectureBlueprintView | undefined,
+  nodes: Node<ArchitectureRoleNodeData>[],
+  canvasWorld: BlueprintCanvasWorld
+): Edge[] {
+  if (!architecture) return [];
+
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const edgesBySource = new Map<string, ArchitectureBlueprintView["edges"]>();
+  for (const edge of architecture.edges) {
+    const edges = edgesBySource.get(edge.source) ?? [];
+    edges.push(edge);
+    edgesBySource.set(edge.source, edges);
+  }
+
+  return architecture.edges.map((edge) => {
+    const sourceGroup = edgesBySource.get(edge.source) ?? [edge];
+    const firstSourceEdge = sourceGroup[0];
+    const sourceNode = nodesById.get(edge.source);
+    const targetNodes = sourceGroup.map((sourceEdge) => nodesById.get(sourceEdge.target)).filter((node): node is NonNullable<typeof node> => Boolean(node));
+    const sourcePoint = sourceNode ? resolveArchitectureFlowHandlePoint(sourceNode, "out", canvasWorld) : undefined;
+    const targetPoints = targetNodes.map((targetNode) => resolveArchitectureFlowHandlePoint(targetNode, "in", canvasWorld));
+    const targetYs = targetPoints.map((point) => point.y);
+    const trunkY = sourcePoint ? resolveArchitectureDistributorTrunkY(sourcePoint.y, targetYs) : 0;
+    const trunkXs = sourcePoint ? [sourcePoint.x, ...targetPoints.map((point) => point.x)] : targetPoints.map((point) => point.x);
+
+    return {
+      id: edge.id,
+      type: "architectureDistributor",
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: "architecture-role-out",
+      targetHandle: "architecture-role-in",
+      className: "blueprint-edge architecture-blueprint-edge",
+      data: {
+        drawsRootAndTrunk: edge.id === firstSourceEdge?.id,
+        trunkLeft: trunkXs.length > 0 ? Math.min(...trunkXs) : 0,
+        trunkRight: trunkXs.length > 0 ? Math.max(...trunkXs) : 0,
+        trunkY
+      } satisfies ArchitectureDistributorEdgeData,
+      style: { strokeWidth: 3.5 }
+    };
+  });
+}
+
+function resolveArchitectureFlowHandlePoint(
+  node: Node<ArchitectureRoleNodeData>,
+  handle: "in" | "out",
+  canvasWorld: BlueprintCanvasWorld
+): CanvasPosition {
+  const size = resolveFlowNodeSize(node);
+  const position = {
+    x: clampNumber(node.position.x, canvasWorld.minX, canvasWorld.maxX),
+    y: clampNumber(node.position.y, canvasWorld.minY, canvasWorld.maxY)
+  };
+  return {
+    x: position.x + size.width / 2,
+    y: position.y + (handle === "out" ? size.height : 0)
+  };
+}
+
+function resolveArchitectureDistributorTrunkY(sourceY: number, targetYs: number[]): number {
+  const nearestLowerTargetY = targetYs.filter((targetY) => targetY > sourceY).sort((left, right) => left - right)[0];
+  if (nearestLowerTargetY === undefined) return sourceY + 64;
+  return sourceY + (nearestLowerTargetY - sourceY) / 2;
 }
 
 function resolveManagerSlotLaneCount(
