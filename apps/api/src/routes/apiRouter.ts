@@ -45,15 +45,22 @@ import type {
   SaveBlueprintRequest,
   ChatAttachment,
   ChatHistoryMessage,
+  ChatMode,
+  ChatRuntimeRef,
+  ChatSessionStatus,
   ChatThinkingEffort,
   ApproveBlueprintRunRequest,
   CreateChatSessionRequest,
+  CreateHivewardChatSessionRequest,
   InboxItem,
   RejectInboxItemRequest,
+  SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
-  SendChatMessageRequest,
+  UpdateHivewardChatSessionRequest,
   ChatStreamEvent,
   BlueprintDefinition,
+  HivewardChatMessage,
+  HivewardChatSession,
   StartBlueprintRunRequest
 } from "@hiveward/shared";
 import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
@@ -92,6 +99,29 @@ type ChatInboxSubmissionResult = {
 type ChatInboxSubmissionBlock = {
   fullMatch: string;
   json: string;
+};
+
+type StreamHivewardChatSessionInput = {
+  sessionId: string;
+  body: SendChatSessionMessageRequest;
+  requestStartedAtMs: number;
+  store: FileHivewardStore;
+  openClawConfigStore: OpenClawConfigStore;
+  adapter: RuntimeAdapter;
+  res: Response;
+};
+
+type ResolvedChatSessionMessage = {
+  harnessId: HarnessId;
+  message: string;
+  attachments?: ChatAttachment[];
+  modelId?: string;
+  agentId?: string;
+  nativeSessionKey?: string;
+  thinkingEffort?: ChatThinkingEffort;
+  includePlatformContext?: boolean;
+  mode?: ChatMode;
+  roleScope?: ChatRoleScope;
 };
 
 type HarnessSkillInstallCandidateInput = {
@@ -557,6 +587,140 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.get("/api/chat/sessions", async (_req, res, next) => {
+    try {
+      res.json({ sessions: await store.listChatSessions() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/chat/sessions", async (req, res) => {
+    let body: CreateHivewardChatSessionRequest;
+    try {
+      body = normalizeCreateHivewardChatSessionRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "hiveward_chat_session_request_invalid",
+          message: error instanceof Error ? error.message : "Invalid HiveWard chat session request."
+        }
+      });
+      return;
+    }
+
+    try {
+      res.status(201).json({ session: await store.createChatSession(body) });
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: "hiveward_chat_session_create_failed",
+          message: error instanceof Error ? error.message : "HiveWard chat session creation failed."
+        }
+      });
+    }
+  });
+
+  router.get("/api/chat/sessions/:sessionId", async (req, res, next) => {
+    try {
+      const session = await store.getChatSession(readRouteParam(req.params.sessionId, "sessionId"));
+      if (!session) {
+        res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+        return;
+      }
+      res.json({ session });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.patch("/api/chat/sessions/:sessionId", async (req, res) => {
+    let body: UpdateHivewardChatSessionRequest;
+    try {
+      body = normalizeUpdateHivewardChatSessionRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "hiveward_chat_session_update_invalid",
+          message: error instanceof Error ? error.message : "Invalid HiveWard chat session update."
+        }
+      });
+      return;
+    }
+
+    try {
+      const session = await store.updateChatSession(readRouteParam(req.params.sessionId, "sessionId"), body);
+      if (!session) {
+        res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+        return;
+      }
+      if (session.harnessId === "openclaw" && session.nativeSessionId && body.title) {
+        await adapter.updateChatSessionTitle({ sessionKey: session.nativeSessionId, title: body.title }).catch(() => undefined);
+      }
+      res.json({ session });
+    } catch (error) {
+      res.status(500).json({
+        error: {
+          code: "hiveward_chat_session_update_failed",
+          message: error instanceof Error ? error.message : "HiveWard chat session update failed."
+        }
+      });
+    }
+  });
+
+  router.get("/api/chat/sessions/:sessionId/messages", async (req, res, next) => {
+    try {
+      const sessionId = readRouteParam(req.params.sessionId, "sessionId");
+      const session = await store.getChatSession(sessionId);
+      if (!session) {
+        res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+        return;
+      }
+      res.json({ messages: await store.listChatMessages(sessionId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/chat/sessions/:sessionId/end", async (req, res, next) => {
+    try {
+      const session = await store.endChatSession(readRouteParam(req.params.sessionId, "sessionId"));
+      if (!session) {
+        res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+        return;
+      }
+      res.json({ session });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/chat/sessions/:sessionId/messages/stream", async (req, res) => {
+    const requestStartedAtMs = Date.now();
+    let body: SendChatSessionMessageRequest;
+    try {
+      body = normalizeSessionChatRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "chat_request_invalid",
+          message: error instanceof Error ? error.message : "Invalid chat request."
+        }
+      });
+      return;
+    }
+
+    await streamHivewardChatSession({
+      sessionId: readRouteParam(req.params.sessionId, "sessionId"),
+      body,
+      requestStartedAtMs,
+      store,
+      openClawConfigStore,
+      adapter,
+      res
+    });
+  });
+
   router.post("/api/chat/session", async (req, res) => {
     let body: CreateChatSessionRequest;
     try {
@@ -639,155 +803,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
-  router.post("/api/chat/stream", async (req, res) => {
-    const requestStartedAtMs = Date.now();
-    let body: SendChatMessageRequest;
-    try {
-      body = normalizeChatRequest(req.body);
-    } catch (error) {
-      res.status(400).json({
-        error: {
-          code: "chat_request_invalid",
-          message: error instanceof Error ? error.message : "Invalid chat request."
-        }
-      });
-      return;
-    }
-
-    const config = await openClawConfigStore.getState();
-    const harnessDefaults = resolveHarnessModelDefaults();
-    const defaults = {
-      openclaw: config.defaultModelId,
-      codex: harnessDefaults.codex,
-      claude: harnessDefaults.claude
-    };
-    const roleSkillPrompt = await buildChatRoleSkillPrompt(store, body.roleScope);
-    const source = sourceForChatHarness(body.harnessId);
-    const agentId = body.agentId || selectDefaultAgentId(config.configuredAgents);
-    const sessionKey = body.nativeSessionKey || (body.harnessId === "openclaw" ? buildOpenClawChatSessionKey(agentId) : "");
-    const chatMessageRequestId = `chat-message-${nanoid(8)}`;
-    const prompt = buildChatPrompt(body, roleSkillPrompt);
-    const modelId = resolveChatModelId(body, config, defaults);
-    const openclawStartedAtMs = Date.now();
-
-    res.status(200);
-    res.setHeader("content-type", "text/event-stream; charset=utf-8");
-    res.setHeader("cache-control", "no-cache, no-transform");
-    res.setHeader("connection", "keep-alive");
-    res.flushHeaders?.();
-
-    let closed = false;
-    req.on("close", () => {
-      closed = true;
-    });
-
-    try {
-      let doneEvent: ChatDoneEvent | undefined;
-      let streamedOutput = "";
-      let openclawAcceptedAtMs: number | undefined;
-      let openclawFirstDeltaAtMs: number | undefined;
-      await adapter.streamChatMessage(
-        {
-          sessionKey,
-          source,
-          message: prompt,
-          attachments: body.attachments ?? [],
-          modelId,
-          thinking: body.thinkingEffort,
-          idempotencyKey: chatMessageRequestId,
-          timeoutMs: 600_000,
-          skillIds: body.roleScope ? [roleSkillIdForRole(body.roleScope.role)] : undefined
-        },
-        (event) => {
-          if (event.type === "started") {
-            openclawAcceptedAtMs ??= Date.now();
-          }
-          if (event.type === "done") {
-            doneEvent = event;
-            return;
-          }
-          if (event.type === "delta") {
-            openclawFirstDeltaAtMs ??= Date.now();
-            streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
-          }
-          writeChatStreamEvent(res, event, () => closed);
-        }
-      );
-      if (doneEvent) {
-        const openclawFinishedAtMs = Date.now();
-        const postprocessStartedAtMs = Date.now();
-        const finalOutput = doneEvent.output ?? streamedOutput;
-        const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
-        let submission: ChatInboxSubmissionResult | undefined;
-        let inboxSubmissionMs: number | undefined;
-        if (doneEvent.status === "succeeded" && submissionBlock) {
-          try {
-            const submissionStartedAtMs = Date.now();
-            submission = await materializeChatInboxSubmission(store, body, finalOutput, submissionBlock);
-            inboxSubmissionMs = Date.now() - submissionStartedAtMs;
-          } catch (submissionError) {
-            const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
-            const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
-            writeChatStreamEvent(res, { type: "delta", text: failedOutput, replace: true }, () => closed);
-            writeChatStreamEvent(res, {
-              ...withChatStreamTimings(
-                doneEvent,
-                requestStartedAtMs,
-                openclawStartedAtMs,
-                openclawFinishedAtMs,
-                postprocessStartedAtMs,
-                inboxSubmissionMs,
-                openclawAcceptedAtMs,
-                openclawFirstDeltaAtMs
-              ),
-              status: "failed",
-              output: failedOutput,
-              error: message
-            }, () => closed);
-            res.end();
-            return;
-          }
-        }
-        if (submission) {
-          writeChatStreamEvent(res, { type: "delta", text: submission.output, replace: true }, () => closed);
-          writeChatStreamEvent(res, {
-            type: "inbox_item_created",
-            item: submission.item,
-            message: `Created Hiveward inbox item ${submission.item.id}.`
-          }, () => closed);
-          writeChatStreamEvent(res, withChatStreamTimings(
-            { ...doneEvent, output: submission.output },
-            requestStartedAtMs,
-            openclawStartedAtMs,
-            openclawFinishedAtMs,
-            postprocessStartedAtMs,
-            inboxSubmissionMs,
-            openclawAcceptedAtMs,
-            openclawFirstDeltaAtMs
-          ), () => closed);
-        } else {
-          writeChatStreamEvent(res, withChatStreamTimings(
-            doneEvent,
-            requestStartedAtMs,
-            openclawStartedAtMs,
-            openclawFinishedAtMs,
-            postprocessStartedAtMs,
-            inboxSubmissionMs,
-            openclawAcceptedAtMs,
-            openclawFirstDeltaAtMs
-          ), () => closed);
-        }
-      }
-      res.end();
-    } catch (error) {
-      writeChatStreamEvent(res, {
-        type: "error",
-        message: error instanceof Error ? error.message : "Chat request failed."
-      }, () => closed);
-      res.end();
-    }
-  });
-
   router.post("/api/blueprint-runs/:runId/approve", async (req, res, next) => {
     try {
       const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
@@ -846,6 +861,58 @@ function normalizeCreateChatSessionRequest(value: unknown): CreateChatSessionReq
   return {
     agentId: readOptionalString(value.agentId),
     parentSessionKey: readOptionalString(value.parentSessionKey)
+  };
+}
+
+function normalizeCreateHivewardChatSessionRequest(value: unknown): CreateHivewardChatSessionRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("HiveWard chat session request must be a JSON object.");
+  }
+  const harnessId = readHarnessId(readOptionalString(value.harnessId));
+  const rawThinkingEffort = readOptionalString(value.thinkingEffort);
+  const thinkingEffort = rawThinkingEffort ? normalizeChatThinkingEffort(rawThinkingEffort) : undefined;
+  if (rawThinkingEffort && !thinkingEffort) {
+    throw new Error("Chat thinkingEffort must be off, minimal, low, medium, high, adaptive, xhigh, or max.");
+  }
+  return {
+    harnessId,
+    title: readOptionalString(value.title)?.slice(0, 120),
+    nativeSessionId: readOptionalString(value.nativeSessionId),
+    modelId: readOptionalString(value.modelId),
+    agentId: readOptionalString(value.agentId),
+    thinkingEffort,
+    mode: normalizeChatMode(value.mode),
+    roleScope: normalizeChatRoleScope(value.roleScope)
+  };
+}
+
+function normalizeUpdateHivewardChatSessionRequest(value: unknown): UpdateHivewardChatSessionRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("HiveWard chat session update must be a JSON object.");
+  }
+  const rawThinkingEffort = readOptionalString(value.thinkingEffort);
+  const thinkingEffort = rawThinkingEffort ? normalizeChatThinkingEffort(rawThinkingEffort) : undefined;
+  if (rawThinkingEffort && !thinkingEffort) {
+    throw new Error("Chat thinkingEffort must be off, minimal, low, medium, high, adaptive, xhigh, or max.");
+  }
+  const status = normalizeChatSessionStatus(value.status);
+  if (value.status !== undefined && !status) {
+    throw new Error("Chat session status must be active, ended, native_missing, or failed.");
+  }
+  const nativeSessionState = normalizeNativeSessionState(value.nativeSessionState);
+  if (value.nativeSessionState !== undefined && !nativeSessionState) {
+    throw new Error("Native session state must be unknown, resumable, or missing.");
+  }
+  return {
+    title: readOptionalString(value.title)?.slice(0, 120),
+    nativeSessionId: readOptionalString(value.nativeSessionId),
+    nativeSessionState,
+    modelId: readOptionalString(value.modelId),
+    agentId: readOptionalString(value.agentId),
+    thinkingEffort,
+    mode: value.mode === undefined ? undefined : normalizeChatMode(value.mode),
+    roleScope: normalizeChatRoleScope(value.roleScope),
+    status
   };
 }
 
@@ -922,19 +989,14 @@ function normalizeRejectInboxItemRequest(value: unknown): RejectInboxItemRequest
   };
 }
 
-function normalizeChatRequest(value: unknown): SendChatMessageRequest {
+function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequest {
   if (!isPlainRecord(value)) {
     throw new Error("Chat request must be a JSON object.");
   }
 
-  const harnessId = readOptionalString(value.harnessId);
-  if (harnessId !== "openclaw" && harnessId !== "claudeCode" && harnessId !== "codex") {
-    throw new Error("Chat harnessId must be openclaw, claudeCode, or codex.");
-  }
-
   const rawThinkingEffort = readOptionalString(value.thinkingEffort);
-  const thinkingEffort = rawThinkingEffort ? normalizeChatThinkingEffort(rawThinkingEffort) : "medium";
-  if (!thinkingEffort) {
+  const thinkingEffort = rawThinkingEffort ? normalizeChatThinkingEffort(rawThinkingEffort) : undefined;
+  if (rawThinkingEffort && !thinkingEffort) {
     throw new Error("Chat thinkingEffort must be off, minimal, low, medium, high, adaptive, xhigh, or max.");
   }
 
@@ -945,20 +1007,19 @@ function normalizeChatRequest(value: unknown): SendChatMessageRequest {
   }
 
   return {
-    harnessId,
     message: message.slice(0, maxChatMessageChars),
     attachments,
     modelId: readOptionalString(value.modelId),
     agentId: readOptionalString(value.agentId),
-    nativeSessionKey: readOptionalString(value.nativeSessionKey),
     thinkingEffort,
-    includePlatformContext: value.includePlatformContext === true,
-    mode: normalizeChatMode(value.mode),
-    roleScope: normalizeChatRoleScope(value.roleScope)
+    includePlatformContext: typeof value.includePlatformContext === "boolean" ? value.includePlatformContext : undefined,
+    mode: value.mode === undefined ? undefined : normalizeChatMode(value.mode),
+    roleScope: normalizeChatRoleScope(value.roleScope),
+    rebuildFromHivewardHistory: value.rebuildFromHivewardHistory === true
   };
 }
 
-function normalizeChatMode(value: unknown): SendChatMessageRequest["mode"] {
+function normalizeChatMode(value: unknown): ChatMode {
   return value === "blueprint" ? "blueprint" : "chat";
 }
 
@@ -990,6 +1051,14 @@ function normalizeChatThinkingEffort(value: string | undefined): ChatThinkingEff
     return normalized;
   }
   return undefined;
+}
+
+function normalizeChatSessionStatus(value: unknown): ChatSessionStatus | undefined {
+  return value === "active" || value === "ended" || value === "native_missing" || value === "failed" ? value : undefined;
+}
+
+function normalizeNativeSessionState(value: unknown): HivewardChatSession["nativeSessionState"] | undefined {
+  return value === "unknown" || value === "resumable" || value === "missing" ? value : undefined;
 }
 
 function normalizeChatAttachments(value: unknown): ChatAttachment[] {
@@ -1042,10 +1111,248 @@ function buildRoleSkillFilePath(role: ChatRoleScope["role"]): string {
   return join(repositoryRoot, "docs", "skills", skillDirectory, "SKILL.md");
 }
 
-function buildChatPrompt(input: SendChatMessageRequest, roleSkillPrompt?: string): string {
+async function streamHivewardChatSession({
+  sessionId,
+  body,
+  requestStartedAtMs,
+  store,
+  openClawConfigStore,
+  adapter,
+  res
+}: StreamHivewardChatSessionInput): Promise<void> {
+  let session = await store.getChatSession(sessionId);
+  if (!session) {
+    res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+    return;
+  }
+  if (session.status === "ended") {
+    res.status(409).json({ error: { code: "chat_session_ended", message: "This chat session has ended. Create a new session to continue." } });
+    return;
+  }
+  if (session.status === "native_missing" && !("rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory)) {
+    res.status(409).json({
+      error: {
+        code: "chat_session_native_missing",
+        message: "The native session is not recoverable. Create a new session or explicitly rebuild from HiveWard history."
+      }
+    });
+    return;
+  }
+
+  const config = await openClawConfigStore.getState();
+  const harnessDefaults = resolveHarnessModelDefaults();
+  const defaults = {
+    openclaw: config.defaultModelId,
+    codex: harnessDefaults.codex,
+    claude: harnessDefaults.claude
+  };
+  const messagesBefore = await store.listChatMessages(session.id);
+  const shouldRebuildFromHivewardHistory = "rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory === true;
+  const rebuildContext = shouldRebuildFromHivewardHistory ? buildHivewardHistoryContext(messagesBefore) : undefined;
+  if (shouldRebuildFromHivewardHistory) {
+    session = await store.updateChatSession(session.id, {
+      nativeSessionId: undefined,
+      nativeSessionState: "unknown",
+      status: "active"
+    }) ?? session;
+  }
+
+  const requestBody: ResolvedChatSessionMessage = {
+    harnessId: session.harnessId,
+    message: body.message,
+    attachments: body.attachments ?? [],
+    modelId: body.modelId ?? session.modelId,
+    agentId: body.agentId ?? session.agentId,
+    nativeSessionKey: shouldRebuildFromHivewardHistory ? undefined : session.nativeSessionId,
+    thinkingEffort: body.thinkingEffort ?? session.thinkingEffort ?? "medium",
+    includePlatformContext: body.includePlatformContext ?? messagesBefore.length === 0,
+    mode: body.mode ?? session.mode,
+    roleScope: body.roleScope ?? session.roleScope
+  };
+  const source = sourceForChatHarness(requestBody.harnessId);
+  const agentId = requestBody.agentId || selectDefaultAgentId(config.configuredAgents);
+  const modelId = resolveChatModelId(requestBody, config, defaults);
+  const userMessage = await store.appendChatMessage({
+    sessionId: session.id,
+    role: "user",
+    content: requestBody.message || "Uploaded files",
+    attachments: requestBody.attachments,
+    harnessId: requestBody.harnessId,
+    modelId: requestBody.modelId,
+    status: "sent"
+  });
+  const assistantMessage = await store.appendChatMessage({
+    sessionId: session.id,
+    role: "assistant",
+    content: "",
+    harnessId: requestBody.harnessId,
+    modelId: requestBody.modelId,
+    status: "streaming"
+  });
+  session = await store.updateChatSession(session.id, {
+    modelId: requestBody.modelId,
+    agentId,
+    thinkingEffort: requestBody.thinkingEffort,
+    mode: requestBody.mode,
+    roleScope: requestBody.roleScope,
+    status: "active"
+  }) ?? session;
+
+  res.status(200);
+  res.setHeader("content-type", "text/event-stream; charset=utf-8");
+  res.setHeader("cache-control", "no-cache, no-transform");
+  res.setHeader("connection", "keep-alive");
+  res.flushHeaders?.();
+
+  const isClosed = () => res.writableEnded || res.destroyed;
+  let doneEvent: ChatDoneEvent | undefined;
+  let streamedOutput = "";
+  let openclawAcceptedAtMs: number | undefined;
+  let openclawFirstDeltaAtMs: number | undefined;
+  let nativeSessionKey = requestBody.nativeSessionKey ?? "";
+  const attemptedNativeResume = Boolean(nativeSessionKey) && !shouldRebuildFromHivewardHistory;
+  const openclawStartedAtMs = Date.now();
+
+  try {
+    if (requestBody.harnessId === "openclaw" && !nativeSessionKey) {
+      const nativeSession = await adapter.createChatSession({ agentId });
+      nativeSessionKey = nativeSession.sessionKey;
+      requestBody.nativeSessionKey = nativeSessionKey;
+      session = await store.updateChatSession(session.id, {
+        nativeSessionId: nativeSessionKey,
+        nativeSessionState: "resumable"
+      }) ?? session;
+    }
+
+    const roleSkillPrompt = await buildChatRoleSkillPrompt(store, requestBody.roleScope);
+    const prompt = buildChatPrompt(requestBody, roleSkillPrompt, rebuildContext);
+    await adapter.streamChatMessage(
+      {
+        sessionKey: nativeSessionKey,
+        source,
+        message: prompt,
+        attachments: requestBody.attachments ?? [],
+        modelId,
+        thinking: requestBody.thinkingEffort,
+        idempotencyKey: userMessage.id,
+        timeoutMs: 600_000,
+        skillIds: requestBody.roleScope ? [roleSkillIdForRole(requestBody.roleScope.role)] : undefined
+      },
+      (event) => {
+        if (event.type === "started") {
+          openclawAcceptedAtMs ??= Date.now();
+        }
+        if (event.type === "done") {
+          doneEvent = event;
+          return;
+        }
+        if (event.type === "delta") {
+          openclawFirstDeltaAtMs ??= Date.now();
+          streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
+        }
+        writeChatStreamEvent(res, event, isClosed);
+      }
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Chat request failed.";
+    await store.updateChatMessage(session.id, assistantMessage.id, {
+      content: message,
+      status: "failed"
+    });
+    await store.updateChatSession(session.id, {
+      status: attemptedNativeResume && isNativeResumeFailure(message) ? "native_missing" : "failed",
+      nativeSessionState: attemptedNativeResume && isNativeResumeFailure(message) ? "missing" : session.nativeSessionState
+    });
+    writeChatStreamEvent(res, { type: "error", message }, isClosed);
+    res.end();
+    return;
+  }
+
+  const openclawFinishedAtMs = Date.now();
+  const postprocessStartedAtMs = Date.now();
+  if (!doneEvent) {
+    const message = "Chat request completed without a final runtime event.";
+    await store.updateChatMessage(session.id, assistantMessage.id, {
+      content: streamedOutput || message,
+      status: streamedOutput ? "sent" : "failed"
+    });
+    writeChatStreamEvent(res, { type: "error", message }, isClosed);
+    res.end();
+    return;
+  }
+
+  const finalOutput = doneEvent.output ?? streamedOutput;
+  const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
+  let submission: ChatInboxSubmissionResult | undefined;
+  let inboxSubmissionMs: number | undefined;
+  let finalDoneEvent: ChatDoneEvent = doneEvent;
+  let assistantOutput = finalOutput || doneEvent.error || "";
+
+  if (doneEvent.status === "succeeded" && submissionBlock) {
+    try {
+      const submissionStartedAtMs = Date.now();
+      submission = await materializeChatInboxSubmission(store, requestBody, finalOutput, submissionBlock);
+      inboxSubmissionMs = Date.now() - submissionStartedAtMs;
+    } catch (submissionError) {
+      const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
+      const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
+      writeChatStreamEvent(res, { type: "delta", text: failedOutput, replace: true }, isClosed);
+      finalDoneEvent = {
+        ...doneEvent,
+        status: "failed",
+        output: failedOutput,
+        error: message
+      };
+      assistantOutput = failedOutput;
+    }
+  }
+
+  if (submission) {
+    assistantOutput = submission.output;
+    writeChatStreamEvent(res, { type: "delta", text: submission.output, replace: true }, isClosed);
+    writeChatStreamEvent(res, {
+      type: "inbox_item_created",
+      item: submission.item,
+      message: `Created Hiveward inbox item ${submission.item.id}.`
+    }, isClosed);
+    finalDoneEvent = { ...doneEvent, output: submission.output };
+  }
+
+  const finalEventWithTimings = withChatStreamTimings(
+    finalDoneEvent,
+    requestStartedAtMs,
+    openclawStartedAtMs,
+    openclawFinishedAtMs,
+    postprocessStartedAtMs,
+    inboxSubmissionMs,
+    openclawAcceptedAtMs,
+    openclawFirstDeltaAtMs
+  );
+  const runtimeRef = toChatRuntimeRef(finalEventWithTimings);
+  const nativeMissing = attemptedNativeResume && finalEventWithTimings.status === "failed" && isNativeResumeFailure(finalEventWithTimings.error);
+  await store.updateChatMessage(session.id, assistantMessage.id, {
+    content: assistantOutput,
+    status: finalEventWithTimings.status === "failed" || finalEventWithTimings.status === "cancelled" ? "failed" : "sent",
+    runtimeRef,
+    modelId: requestBody.modelId
+  });
+  const sessionPatch: UpdateHivewardChatSessionRequest = {
+    status: nativeMissing ? "native_missing" : "active",
+    nativeSessionState: nativeMissing ? "missing" : finalEventWithTimings.sessionKey ? "resumable" : session.nativeSessionState
+  };
+  if (finalEventWithTimings.sessionKey) {
+    sessionPatch.nativeSessionId = finalEventWithTimings.sessionKey;
+  }
+  await store.updateChatSession(session.id, sessionPatch);
+  writeChatStreamEvent(res, finalEventWithTimings, isClosed);
+  res.end();
+}
+
+function buildChatPrompt(input: ResolvedChatSessionMessage, roleSkillPrompt?: string, rebuildContext?: string): string {
   const contextBlocks = [
     input.includePlatformContext ? hivewardPlatformContext : undefined,
     roleSkillPrompt,
+    rebuildContext,
     input.mode === "blueprint" ? buildBlueprintDraftingContext(input.message) : undefined
   ].filter((block): block is string => Boolean(block));
   if (!contextBlocks.length) return input.message.trim();
@@ -1112,7 +1419,7 @@ async function syncChatHistoryInboxSubmissions(
   };
 }
 
-function buildHistoryInboxChatRequest(parsed: Record<string, unknown>): SendChatMessageRequest {
+function buildHistoryInboxChatRequest(parsed: Record<string, unknown>): ResolvedChatSessionMessage {
   const type = readOptionalString(parsed.type);
   const leaderId = readOptionalString(parsed.leaderId) ?? readOptionalString(parsed.targetRoleId);
   const blueprintId = readOptionalString(parsed.blueprintId);
@@ -1168,7 +1475,7 @@ function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefine
 
 async function materializeChatInboxSubmission(
   store: FileHivewardStore,
-  chatRequest: SendChatMessageRequest,
+  chatRequest: ResolvedChatSessionMessage,
   output: string,
   block = extractChatInboxSubmissionBlock(output)
 ): Promise<ChatInboxSubmissionResult | undefined> {
@@ -1409,10 +1716,47 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
   };
 }
 
-function buildOpenClawChatSessionKey(agentId: string): string {
-  const normalizedAgentId = agentId.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "main";
-  if (normalizedAgentId.toLowerCase() === "main") return "main";
-  return `agent:${normalizedAgentId}:main`;
+function toChatRuntimeRef(event: ChatDoneEvent): ChatRuntimeRef {
+  return {
+    taskId: event.taskId,
+    runId: event.runId,
+    sessionKey: event.sessionKey,
+    source: event.source,
+    status: event.status,
+    updatedAt: event.updatedAt,
+    error: event.error,
+    usage: event.usage,
+    timings: event.timings
+  };
+}
+
+function buildHivewardHistoryContext(messages: HivewardChatMessage[]): string {
+  const maxMessages = 40;
+  const maxChars = 24_000;
+  const visibleMessages = messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .slice(-maxMessages)
+    .map((message) => `${message.role}: ${message.content.trim() || "[empty message]"}`);
+  let history = visibleMessages.join("\n\n");
+  if (history.length > maxChars) {
+    history = history.slice(history.length - maxChars);
+  }
+  return [
+    "HiveWard visible conversation history:",
+    history || "[no prior visible messages]",
+    "",
+    "The native provider session was not recoverable. Use this explicit HiveWard transcript only as user-visible context; do not describe this as native recovery."
+  ].join("\n");
+}
+
+function isNativeResumeFailure(message: string | undefined): boolean {
+  if (!message) return false;
+  const normalized = message.toLowerCase();
+  return (
+    /(resume|resum|session|thread).*(missing|not found|invalid|expired|deleted|unavailable|cannot|could not|failed)/.test(normalized) ||
+    /(missing|not found|invalid|expired|deleted).*(session|thread)/.test(normalized) ||
+    normalized.includes("no conversation found")
+  );
 }
 
 function sourceForChatHarness(harnessId: HarnessId): OpenClawObjectSource {
@@ -1425,7 +1769,7 @@ function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
 }
 
 function resolveChatModelId(
-  body: SendChatMessageRequest,
+  body: ResolvedChatSessionMessage,
   config: OpenClawConfigState,
   defaults: RunModelDefaults
 ): string | undefined {

@@ -9563,6 +9563,20 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 .chat-inline-error {
   color: var(--semantic-red);
   font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chat-inline-error button {
+  border: 1px solid color-mix(in srgb, var(--semantic-red) 38%, transparent);
+  background: color-mix(in srgb, var(--semantic-red) 8%, transparent);
+  color: var(--semantic-red);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 700;
 }
 
 @keyframes chat-settings-body-enter {

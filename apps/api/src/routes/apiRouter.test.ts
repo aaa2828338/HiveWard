@@ -15,6 +15,8 @@ import type {
   BlueprintDefinition,
   ChatHistoryMessage,
   ChatStreamEvent,
+  HivewardChatMessage,
+  HivewardChatSession,
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
@@ -101,6 +103,79 @@ class ChatHistoryAdapter extends TrackingAdapter {
 
   override async getSessionMessages(): Promise<ChatHistoryMessage[]> {
     return this.messages;
+  }
+}
+
+class NativeSessionTrackingAdapter extends TrackingAdapter {
+  readonly chatInputs: RuntimeChatStreamInput[] = [];
+
+  constructor(
+    private readonly nativeSessionId: string,
+    private readonly output = "native session response"
+  ) {
+    super();
+  }
+
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+    this.chatInputs.push(input);
+    this.lastChatStreamInput = input;
+    const now = new Date().toISOString();
+    const sessionKey = input.sessionKey || this.nativeSessionId;
+    onEvent({
+      type: "started",
+      taskId: input.idempotencyKey,
+      runId: input.idempotencyKey,
+      sessionKey,
+      source: input.source ?? "codex",
+      status: "running",
+      updatedAt: now
+    });
+    onEvent({ type: "delta", text: this.output });
+    onEvent({
+      type: "done",
+      taskId: input.idempotencyKey,
+      runId: input.idempotencyKey,
+      sessionKey,
+      source: input.source ?? "codex",
+      status: "succeeded",
+      output: this.output,
+      updatedAt: now
+    });
+  }
+}
+
+class NativeMissingAdapter extends TrackingAdapter {
+  readonly chatInputs: RuntimeChatStreamInput[] = [];
+
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+    this.chatInputs.push(input);
+    this.lastChatStreamInput = input;
+    const now = new Date().toISOString();
+    if (input.sessionKey === "missing-native-session") {
+      onEvent({
+        type: "done",
+        taskId: input.idempotencyKey,
+        runId: input.idempotencyKey,
+        sessionKey: input.sessionKey,
+        source: input.source ?? "codex",
+        status: "failed",
+        error: "Cannot resume thread: session not found",
+        updatedAt: now
+      });
+      return;
+    }
+    const sessionKey = input.sessionKey || "rebuilt-native-session";
+    onEvent({ type: "delta", text: "rebuilt response" });
+    onEvent({
+      type: "done",
+      taskId: input.idempotencyKey,
+      runId: input.idempotencyKey,
+      sessionKey,
+      source: input.source ?? "codex",
+      status: "succeeded",
+      output: "rebuilt response",
+      updatedAt: now
+    });
   }
 }
 
@@ -537,21 +612,18 @@ describe("apiRouter", () => {
     const adapter = new TrackingAdapter();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Say hello from chat.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            includePlatformContext: true,
-            roleScope: {
-              role: "ceo"
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Say hello from chat.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          includePlatformContext: true,
+          roleScope: {
+            role: "ceo"
+          }
         });
         const text = await response.text();
 
@@ -581,6 +653,23 @@ describe("apiRouter", () => {
     }
   });
 
+  it("does not expose the old generic chat stream route", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+
+        expect(response.status).toBe(404);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("streams Codex and Claude Code chat responses through the selected harness source", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
@@ -590,19 +679,15 @@ describe("apiRouter", () => {
     process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL = "inherit";
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const codexResponse = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "codex",
-            message: "Say hello from Codex.",
-            attachments: [],
-            thinkingEffort: "high",
-            includePlatformContext: false,
-            roleScope: {
-              role: "ceo"
-            }
-          })
+        const codexResponse = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "Say hello from Codex.",
+          attachments: [],
+          thinkingEffort: "high",
+          includePlatformContext: false,
+          roleScope: {
+            role: "ceo"
+          }
         });
         const codexText = await codexResponse.text();
 
@@ -615,21 +700,17 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
 
-        const claudeResponse = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "claudeCode",
-            message: "Say hello from Claude Code.",
-            attachments: [],
-            modelId: "inherit",
-            thinkingEffort: "medium",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: "blueprint-test"
-            }
-          })
+        const claudeResponse = await streamSessionChat(baseUrl, {
+          harnessId: "claudeCode",
+          message: "Say hello from Claude Code.",
+          attachments: [],
+          modelId: "inherit",
+          thinkingEffort: "medium",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: "blueprint-test"
+          }
         });
         const claudeText = await claudeResponse.text();
 
@@ -654,22 +735,18 @@ describe("apiRouter", () => {
     const blueprint = (await fixture.store.listBlueprints())[0]!;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "codex",
-            message: "\u8bf7\u628a\u8fd9\u4e2a\u84dd\u56fe\u63d0\u6848\u63d0\u4ea4\u5230\u5ba1\u6279",
-            attachments: [],
-            modelId: "codex/test-default",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "\u8bf7\u628a\u8fd9\u4e2a\u84dd\u56fe\u63d0\u6848\u63d0\u4ea4\u5230\u5ba1\u6279",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -731,23 +808,20 @@ describe("apiRouter", () => {
     const adapter = new ChatOutputAdapter(output);
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Submit this blueprint package for approval.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Submit this blueprint package for approval.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -813,23 +887,20 @@ describe("apiRouter", () => {
     const adapter = new ChatOutputAdapter(output);
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Submit this incomplete package for approval.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Submit this incomplete package for approval.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -881,23 +952,20 @@ describe("apiRouter", () => {
     const adapter = new ChatOutputAdapter(output);
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Submit this old schema package for approval.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Submit this old schema package for approval.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -951,23 +1019,20 @@ describe("apiRouter", () => {
     const adapter = new ChatOutputAdapter(output);
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Submit this unsupported package for approval.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Submit this unsupported package for approval.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -1045,23 +1110,20 @@ describe("apiRouter", () => {
 
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/stream`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            harnessId: "openclaw",
-            message: "Submit this package for approval.",
-            attachments: [],
-            modelId: "openclaw/default",
-            agentId: "main",
-            thinkingEffort: "medium",
-            mode: "blueprint",
-            roleScope: {
-              role: "leader",
-              leaderId: "leader-test",
-              blueprintId: blueprint.id
-            }
-          })
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          nativeSessionId: "main",
+          message: "Submit this package for approval.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
         });
         const text = await response.text();
 
@@ -1253,6 +1315,127 @@ describe("apiRouter", () => {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
+
+  it("persists Codex chat sessions and resumes the native session id on the next turn", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new NativeSessionTrackingAdapter("codex-native-session-1", "codex persisted response");
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const createResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Codex persistence",
+            modelId: "codex/test-default",
+            thinkingEffort: "high"
+          })
+        });
+        const created = await readOkJson<{ session: HivewardChatSession }>(createResponse);
+
+        const firstResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "First Codex turn." })
+        });
+        expect(firstResponse.status).toBe(200);
+        await firstResponse.text();
+
+        const afterFirst = await readOkJson<{ session: HivewardChatSession }>(
+          await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}`)
+        );
+        expect(afterFirst.session.nativeSessionId).toBe("codex-native-session-1");
+        expect(afterFirst.session.nativeSessionState).toBe("resumable");
+
+        const secondResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Second Codex turn." })
+        });
+        expect(secondResponse.status).toBe(200);
+        await secondResponse.text();
+
+        expect(adapter.chatInputs).toHaveLength(2);
+        expect(adapter.chatInputs[0]?.sessionKey).toBe("");
+        expect(adapter.chatInputs[1]?.sessionKey).toBe("codex-native-session-1");
+
+        const messages = await readOkJson<{ messages: HivewardChatMessage[] }>(
+          await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages`)
+        );
+        expect(messages.messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+        expect(messages.messages[1]).toMatchObject({
+          harnessId: "codex",
+          content: "codex persisted response",
+          status: "sent"
+        });
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks missing native sessions and requires explicit HiveWard history rebuild", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new NativeMissingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const createResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Missing native",
+            nativeSessionId: "missing-native-session",
+            modelId: "codex/test-default"
+          })
+        });
+        const created = await readOkJson<{ session: HivewardChatSession }>(createResponse);
+
+        const failedResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Try to resume." })
+        });
+        expect(failedResponse.status).toBe(200);
+        await failedResponse.text();
+
+        const afterFailure = await readOkJson<{ session: HivewardChatSession }>(
+          await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}`)
+        );
+        expect(afterFailure.session.status).toBe("native_missing");
+        expect(afterFailure.session.nativeSessionState).toBe("missing");
+
+        const blockedResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Continue without permission." })
+        });
+        expect(blockedResponse.status).toBe(409);
+
+        const rebuiltResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: "Continue with history.",
+            rebuildFromHivewardHistory: true
+          })
+        });
+        expect(rebuiltResponse.status).toBe(200);
+        await rebuiltResponse.text();
+
+        expect(adapter.chatInputs.at(-1)?.sessionKey).toBe("");
+        expect(adapter.chatInputs.at(-1)?.message).toContain("HiveWard visible conversation history:");
+
+        const afterRebuild = await readOkJson<{ session: HivewardChatSession }>(
+          await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}`)
+        );
+        expect(afterRebuild.session.status).toBe("active");
+        expect(afterRebuild.session.nativeSessionId).toBe("rebuilt-native-session");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardStore }> {
@@ -1296,6 +1479,55 @@ async function readOkJson<T = unknown>(response: Response): Promise<T> {
   const text = await response.text();
   expect([200, 201], text).toContain(response.status);
   return JSON.parse(text) as T;
+}
+
+type StreamSessionChatTestInput = {
+  harnessId: HivewardChatSession["harnessId"];
+  title?: string;
+  nativeSessionId?: string;
+  message: string;
+  attachments?: unknown[];
+  modelId?: string;
+  agentId?: string;
+  thinkingEffort?: HivewardChatSession["thinkingEffort"];
+  includePlatformContext?: boolean;
+  mode?: HivewardChatSession["mode"];
+  roleScope?: HivewardChatSession["roleScope"];
+  rebuildFromHivewardHistory?: boolean;
+};
+
+async function streamSessionChat(baseUrl: string, input: StreamSessionChatTestInput): Promise<Response> {
+  const createResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      harnessId: input.harnessId,
+      title: input.title ?? input.message,
+      nativeSessionId: input.nativeSessionId,
+      modelId: input.modelId,
+      agentId: input.agentId,
+      thinkingEffort: input.thinkingEffort,
+      mode: input.mode,
+      roleScope: input.roleScope
+    })
+  });
+  const created = await readOkJson<{ session: HivewardChatSession }>(createResponse);
+
+  return fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      message: input.message,
+      attachments: input.attachments ?? [],
+      modelId: input.modelId,
+      agentId: input.agentId,
+      thinkingEffort: input.thinkingEffort,
+      includePlatformContext: input.includePlatformContext,
+      mode: input.mode,
+      roleScope: input.roleScope,
+      rebuildFromHivewardHistory: input.rebuildFromHivewardHistory
+    })
+  });
 }
 
 function createConfigStoreFixture(defaultWorkspace = "D:\\hiveward-test"): OpenClawConfigStore {

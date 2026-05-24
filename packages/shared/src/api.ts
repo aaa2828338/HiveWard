@@ -248,17 +248,69 @@ export interface ChatHistoryMessage {
   attachments?: ChatAttachment[];
 }
 
-export interface SendChatMessageRequest {
+export type ChatSessionStatus = "active" | "ended" | "native_missing" | "failed";
+
+export type ChatNativeSessionState = "unknown" | "resumable" | "missing";
+
+export type ChatMessageStatus = "sent" | "streaming" | "failed";
+
+export type ChatMode = "chat" | "blueprint";
+
+export interface ChatRuntimeRef {
+  taskId: string;
+  runId: string;
+  sessionKey: string;
+  source: OpenClawObjectSource;
+  status: string;
+  updatedAt: string;
+  error?: string;
+  usage?: OpenClawUsageFact;
+  timings?: ChatStreamTimings;
+}
+
+export interface HivewardChatSession {
+  id: string;
+  companyId?: string;
   harnessId: HarnessId;
+  roleScope?: ChatRoleScope;
+  title: string;
+  nativeSessionId?: string;
+  nativeSessionState?: ChatNativeSessionState;
+  modelId?: string;
+  agentId?: string;
+  thinkingEffort?: ChatThinkingEffort;
+  mode: ChatMode;
+  status: ChatSessionStatus;
+  createdAt: string;
+  updatedAt: string;
+  endedAt?: string;
+}
+
+export interface HivewardChatMessage {
+  id: string;
+  sessionId: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  attachments?: ChatAttachment[];
+  harnessId: HarnessId;
+  modelId?: string;
+  nativeMessageId?: string;
+  status: ChatMessageStatus;
+  runtimeRef?: ChatRuntimeRef;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface SendChatSessionMessageRequest {
   message: string;
   attachments?: ChatAttachment[];
   modelId?: string;
   agentId?: string;
-  nativeSessionKey?: string;
   thinkingEffort?: ChatThinkingEffort;
   includePlatformContext?: boolean;
-  mode?: "chat" | "blueprint";
+  mode?: ChatMode;
   roleScope?: ChatRoleScope;
+  rebuildFromHivewardHistory?: boolean;
 }
 
 export interface CreateChatSessionRequest {
@@ -281,6 +333,41 @@ export interface UpdateChatSessionTitleRequest {
 export interface UpdateChatSessionTitleResponse {
   sessionKey: string;
   title: string;
+}
+
+export interface CreateHivewardChatSessionRequest {
+  harnessId: HarnessId;
+  title?: string;
+  nativeSessionId?: string;
+  modelId?: string;
+  agentId?: string;
+  thinkingEffort?: ChatThinkingEffort;
+  mode?: ChatMode;
+  roleScope?: ChatRoleScope;
+}
+
+export interface UpdateHivewardChatSessionRequest {
+  title?: string;
+  nativeSessionId?: string;
+  nativeSessionState?: ChatNativeSessionState;
+  modelId?: string;
+  agentId?: string;
+  thinkingEffort?: ChatThinkingEffort;
+  mode?: ChatMode;
+  roleScope?: ChatRoleScope;
+  status?: ChatSessionStatus;
+}
+
+export interface ListChatSessionsResponse {
+  sessions: HivewardChatSession[];
+}
+
+export interface HivewardChatSessionResponse {
+  session: HivewardChatSession;
+}
+
+export interface ChatSessionMessagesResponse {
+  messages: HivewardChatMessage[];
 }
 
 export interface ChatStreamTimings {

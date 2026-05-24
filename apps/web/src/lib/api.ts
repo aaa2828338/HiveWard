@@ -37,15 +37,21 @@ import type {
   SelectCompanyRequest,
   ApproveBlueprintRunRequest,
   ChatSessionHistoryResponse,
+  ChatSessionMessagesResponse,
   CreateChatSessionRequest,
   CreateChatSessionResponse,
+  CreateHivewardChatSessionRequest,
   UpdateChatSessionTitleRequest,
   UpdateChatSessionTitleResponse,
-  SendChatMessageRequest,
+  UpdateHivewardChatSessionRequest,
+  SendChatSessionMessageRequest,
   ChatStreamEvent,
+  HivewardChatSession,
+  HivewardChatSessionResponse,
   InboxItem,
   InboxItemResponse,
   ApproveInboxItemResponse,
+  ListChatSessionsResponse,
   StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
   PendingApprovalItem,
@@ -106,23 +112,67 @@ function isAbortError(error: unknown): boolean {
   return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
 }
 
+async function consumeChatStreamResponse(response: Response, handlers: ChatStreamHandlers): Promise<void> {
+  if (!response.body) {
+    throw new Error("Chat stream response did not include a body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeChatStreamBuffer(buffer, handlers);
+  }
+
+  buffer += decoder.decode();
+  consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
+}
+
 export const api = {
-  async createChatSession(input: CreateChatSessionRequest): Promise<CreateChatSessionResponse> {
-    return request<CreateChatSessionResponse>("/api/chat/session", {
+  async listChatSessions(): Promise<HivewardChatSession[]> {
+    const response = await request<ListChatSessionsResponse>("/api/chat/sessions");
+    return response.sessions;
+  },
+
+  async createHivewardChatSession(input: CreateHivewardChatSessionRequest): Promise<HivewardChatSession> {
+    const response = await request<HivewardChatSessionResponse>("/api/chat/sessions", {
       method: "POST",
-      body: JSON.stringify(input satisfies CreateChatSessionRequest)
+      body: JSON.stringify(input satisfies CreateHivewardChatSessionRequest)
     });
+    return response.session;
   },
 
-  async updateChatSessionTitle(input: UpdateChatSessionTitleRequest): Promise<UpdateChatSessionTitleResponse> {
-    return request<UpdateChatSessionTitleResponse>("/api/chat/session", {
+  async updateHivewardChatSession(sessionId: string, input: UpdateHivewardChatSessionRequest): Promise<HivewardChatSession> {
+    const response = await request<HivewardChatSessionResponse>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
       method: "PATCH",
-      body: JSON.stringify(input satisfies UpdateChatSessionTitleRequest)
+      body: JSON.stringify(input satisfies UpdateHivewardChatSessionRequest)
     });
+    return response.session;
   },
 
-  async streamChat(input: SendChatMessageRequest, handlers: ChatStreamHandlers, signal?: AbortSignal): Promise<void> {
-    const response = await fetchApi("/api/chat/stream", {
+  async endHivewardChatSession(sessionId: string): Promise<HivewardChatSession> {
+    const response = await request<HivewardChatSessionResponse>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/end`, {
+      method: "POST"
+    });
+    return response.session;
+  },
+
+  async getHivewardChatMessages(sessionId: string): Promise<ChatSessionMessagesResponse["messages"]> {
+    const response = await request<ChatSessionMessagesResponse>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
+    return response.messages;
+  },
+
+  async streamSessionChat(
+    sessionId: string,
+    input: SendChatSessionMessageRequest,
+    handlers: ChatStreamHandlers,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const response = await fetchApi(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages/stream`, {
       method: "POST",
       headers: {
         "content-type": "application/json"
@@ -141,19 +191,21 @@ export const api = {
       throw new Error("Chat stream response did not include a body.");
     }
 
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
+    await consumeChatStreamResponse(response, handlers);
+  },
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      buffer = consumeChatStreamBuffer(buffer, handlers);
-    }
+  async createChatSession(input: CreateChatSessionRequest): Promise<CreateChatSessionResponse> {
+    return request<CreateChatSessionResponse>("/api/chat/session", {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateChatSessionRequest)
+    });
+  },
 
-    buffer += decoder.decode();
-    consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
+  async updateChatSessionTitle(input: UpdateChatSessionTitleRequest): Promise<UpdateChatSessionTitleResponse> {
+    return request<UpdateChatSessionTitleResponse>("/api/chat/session", {
+      method: "PATCH",
+      body: JSON.stringify(input satisfies UpdateChatSessionTitleRequest)
+    });
   },
 
   async getChatSessionHistory(sessionKey: string): Promise<ChatSessionHistoryResponse> {

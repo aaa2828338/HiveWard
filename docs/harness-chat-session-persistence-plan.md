@@ -2,43 +2,37 @@
 
 ## 背景
 
-HiveWard 已经支持把 CEO / Leader 聊天路由到 OpenClaw、Codex、Claude Code。OpenClaw 有比较完整的 Agent / Session / History 结构；Codex 和 Claude Code 的 SDK 更偏向 native thread/session：
+HiveWard 已经能把 CEO / Leader 聊天路由到 OpenClaw、Codex、Claude Code，但三者的会话能力不是同一类东西：
 
-- Codex SDK 通过 `startThread()` 创建会话，通过 `resumeThread(threadId)` 恢复会话。thread 状态由 Codex 保存在自己的本地会话目录中。
-- Claude Code SDK 通过 `query(..., { resume: sessionId })` 恢复会话，并有自己的本地 session persistence。
-- HiveWard 当前可以拿到 native session id，但还没有把 Codex / Claude Code 的聊天会话作为 HiveWard 后端实体持久化，因此刷新、切页或重启后 UI 历史不稳定。
+- OpenClaw 自己有 Agent / Session / History 接口，是一条 OpenClaw 原生路线。
+- Codex 通过 SDK `startThread()` 创建 thread，通过 `resumeThread(threadId)` 恢复 thread。
+- Claude Code 通过 SDK `query(..., { resume: sessionId })` 恢复 session。
 
-## 目标
+所以目标不是把 OpenClaw、Codex、Claude Code 强行合成一种内部模型，而是让每种运行时走自己该走的路线，并保证同一个产品功能只有一条实现链路。
 
-做一套轻量的 HiveWard ChatSession 层，让 Codex / Claude Code 的会话体验接近“只要我没有主动结束，就可以回来继续”。
+## 目标状态
 
-这套系统不接管 Codex / Claude Code 的记忆，也不冒充它们的桌面端历史系统。HiveWard 只保存自己发起的会话索引和 UI transcript，并保存 native session id 以便优先恢复原生上下文。
+Codex / Claude Code 使用 HiveWard ChatSession 作为产品层会话实体。HiveWard 持久化会话索引、UI transcript、native session id；真正的模型上下文仍由 Codex / Claude Code 自己保存。
+
+OpenClaw 保持自己的原生 Agent / Session / History 路线。OpenClaw 已经有可查询、可创建、可改名的 native session 能力，不把它包装成 Codex / Claude Code 那种 Harness Session。
+
+聊天页的通用发送功能只走一条链路：
+
+```text
+HiveWard ChatSession -> POST /api/chat/sessions/:sessionId/messages/stream -> Runtime adapter -> transcript persistence
+```
+
+原通用发送入口 `/api/chat/stream` 已退出目标状态。OpenClaw 的 `/api/chat/session` 和 `/api/chat/history` 不是通用发送链路，它们是 OpenClaw 自己的 native session/history 边界。
 
 ## 非目标
 
 - 不做 Codex / Claude Code 的记忆插件。
 - 不直接读写 Codex / Claude Code 的内部 session 文件作为主数据源。
-- 不承诺永久恢复 native session；native 记录被清理、换机器、换用户、版本迁移失败时，HiveWard 只能展示自己的历史记录。
-- 不把 Codex / Claude Code 包装成 OpenClaw Agent。Codex / Claude Code 只有 Harness Session，不显示 OpenClaw 的 Agent / Session 概念。
-
-## 选型
-
-默认采用方案 A：SDK native session。
-
-- Codex：保存 `thread.id`，继续时调用 `resumeThread(threadId)`。
-- Claude Code：保存 `session_id`，继续时传 `resume: sessionId`。
-- HiveWard 自己保存 UI transcript，用于聊天列表和历史展示。
-
-方案 B：PTY / terminal process 长驻模式暂不作为默认方案。它更像嵌入真实 CLI 终端，能保留“进程活着则上下文活着”的体验，但跨平台、ANSI 输出解析、交互提示、取消、权限和错误处理成本更高。可以以后作为高级模式加入。
+- 不承诺永久恢复 native session。native 记录被清理、换机器、换用户或版本迁移失败时，HiveWard 只能展示自己的 UI 历史。
+- 不把 Codex / Claude Code 包装成 OpenClaw Agent。
+- 不做 PTY / terminal process 长驻模式。它以后可以作为高级模式重新评估。
 
 ## 存储边界
-
-两边都保存，但保存内容不同：
-
-- Codex / Claude Code 保存 native 会话状态：模型原生续接需要的 transcript、工具状态、thread/session 文件。
-- HiveWard 保存产品层索引和展示记录：会话属于哪个 company、role、harness、model，以及用户在 HiveWard 里看到的消息。
-
-可以理解为：
 
 ```text
 HiveWard chatSessionId -> nativeSessionId
@@ -47,95 +41,70 @@ Codex / Claude Code nativeSessionId -> native thread/session state
 
 `nativeSessionId` 是钥匙，不是记忆本体。钥匙存在且 native 房间还在，才能原生恢复。
 
-## 数据模型草案
+HiveWard 保存：
 
-```ts
-type ChatSessionStatus = "active" | "ended" | "native_missing" | "failed";
+- company / role / harness / model / mode 等产品层索引。
+- 用户在 HiveWard 里看到的 user / assistant transcript。
+- native session id 和 native session 状态。
 
-interface HivewardChatSession {
-  id: string;
-  companyId?: string;
-  harnessId: "openclaw" | "codex" | "claudeCode";
-  roleScope?: ChatRoleScope;
-  title: string;
-  nativeSessionId?: string;
-  nativeSessionState?: "unknown" | "resumable" | "missing";
-  modelId?: string;
-  thinkingEffort?: ChatThinkingEffort;
-  mode: "chat" | "blueprint";
-  status: ChatSessionStatus;
-  createdAt: string;
-  updatedAt: string;
-  endedAt?: string;
-}
+Codex / Claude Code 保存：
 
-interface HivewardChatMessage {
-  id: string;
-  sessionId: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  attachments?: ChatAttachment[];
-  harnessId: HarnessId;
-  modelId?: string;
-  nativeMessageId?: string;
-  status: "sent" | "streaming" | "failed";
-  runtimeRef?: ChatRuntimeRef;
-  createdAt: string;
-}
-```
+- 原生 thread/session transcript。
+- 工具状态。
+- provider 自己需要的本地 session 文件。
 
-## API 草案
+## API
+
+目标发送链路：
 
 ```text
 GET  /api/chat/sessions
 POST /api/chat/sessions
 GET  /api/chat/sessions/:sessionId
+PATCH /api/chat/sessions/:sessionId
 GET  /api/chat/sessions/:sessionId/messages
 POST /api/chat/sessions/:sessionId/messages/stream
 POST /api/chat/sessions/:sessionId/end
 ```
 
-兼容期可以保留当前 `/api/chat/stream`，但新前端应逐步切到 session-bound stream。
+OpenClaw 原生边界：
+
+```text
+POST  /api/chat/session
+PATCH /api/chat/session
+GET   /api/chat/history
+```
 
 ## 发送流程
 
 1. 前端选择或创建 HiveWard ChatSession。
-2. 用户发送消息到 `POST /api/chat/sessions/:sessionId/messages/stream`。
-3. 后端先持久化 user message。
+2. 用户消息发送到 `POST /api/chat/sessions/:sessionId/messages/stream`。
+3. 后端先落库 user message，并创建 streaming assistant message。
 4. 如果 session 有 `nativeSessionId`：
-   - Codex 调用 `resumeThread(nativeSessionId)`。
-   - Claude Code 调用 `resume: nativeSessionId`。
-5. 如果没有 `nativeSessionId`，创建新的 native session。
-6. SDK 返回或更新 native session id 时，写回 HiveWard ChatSession。
-7. assistant 输出流式写入 UI，同时最终落库为 assistant message。
-8. 如果 native resume 失败：
-   - session 标记为 `native_missing`。
-   - UI 显示“原生会话不可恢复，仅可查看 HiveWard 历史”。
-   - 不默认伪装成同一个 native 会话。
+   - Codex 用该 id resume thread。
+   - Claude Code 用该 id resume session。
+   - OpenClaw 用该 session key 继续自己的 native session。
+5. 如果没有 `nativeSessionId`，按 harness 创建新的 native session。
+6. SDK 返回或更新 native session id 后写回 HiveWard ChatSession。
+7. assistant 输出边流式返回 UI，边最终落库为 assistant message。
+8. native resume 失败时，session 标记为 `native_missing`，UI 只展示 HiveWard 历史，不声称原生恢复仍然有效。
 
-## UI 行为
+## 风险规避
 
-- Codex / Claude Code 设置面板显示“会话”，不显示 OpenClaw Agent。
-- 会话列表来自 HiveWard API，而不是前端 localStorage。
-- 切换页面、刷新页面、重启前端后，聊天记录仍可展示。
-- 用户可以手动结束会话；结束后不再默认 resume。
-- native session 失效时，历史仍可查看，但继续发送需要新建会话或用户明确选择“用历史重建上下文”。
+- native resume 失败不静默降级。只有明确识别 resume/session/thread missing、invalid、expired、deleted 等错误时才标记 `native_missing`。
+- stream 中途失败也落库。用户消息先保存，assistant 占位消息失败时更新为 `failed`，刷新后能看到失败原因。
+- `native_missing` 默认禁止继续发送。用户只能新建 session，或显式选择“使用 HiveWard 历史重建上下文”。
+- 历史重建不冒充原生恢复。重建会清空失效 native key，创建新的 native session，并在 prompt 中标明这是 HiveWard visible conversation history。
+- 正常 native resume 成功时不注入完整 HiveWard transcript，避免 token 膨胀和上下文越界。
+- 手动结束 session 后不再默认 resume；历史仍可查看，继续需要新建 session。
 
-## 上下文重建策略
+## 单链路策略
 
-默认不把完整历史强行注入 prompt，避免越界和 token 膨胀。
-
-只有在 native resume 失败且用户明确选择继续时，才使用 HiveWard transcript 生成显式上下文包：
-
-```text
-HiveWard visible conversation history:
-...
-
-Current user message:
-...
-```
-
-这应在 UI 上标识为“使用 HiveWard 历史重建上下文”，不能称为 Codex / Claude 原生恢复。
+- Codex / Claude Code 聊天发送只有 session-bound stream 一条链路。
+- OpenClaw 在聊天页发送也走 session-bound stream，保证 UI transcript 和 HiveWard ChatSession 一致。
+- OpenClaw 的 native session 创建、改名、history 查询属于 OpenClaw 专属能力，不承担通用发送功能。
+- 前端聊天页会话列表和消息历史只来自 HiveWard API，不再依赖 localStorage session view。
+- store 迁移只做数据形状补齐：没有 `chatSessions` / `chatMessages` 的既有 store 自动补空集合。
 
 ## 验收测试
 
@@ -144,15 +113,6 @@ Current user message:
 - 刷新页面后，HiveWard 会话列表和消息历史仍存在。
 - 切到蓝图页再回来，当前会话不丢。
 - 重启 HiveWard 后，能展示历史，并能尝试 native resume。
-- 手动结束会话后，继续发送会要求新建或显式恢复。
+- 手动结束会话后，继续发送会要求新建或显式重建。
 - native resume 失败时，session 状态变为 `native_missing`，UI 不声称原生会话仍然有效。
-
-## 推荐实施顺序
-
-1. 在 `FileHivewardStore` 增加 `chatSessions` 和 `chatMessages` 持久化。
-2. 增加 chat session API。
-3. 调整前端聊天页从 API 读取会话和消息，移除 Codex / Claude Code 对 localStorage session view 的依赖。
-4. 调整 `/api/chat/stream` 或新增 session-bound stream，保存 native session id 和 transcript。
-5. 加 Codex / Claude Code resume 回归测试。
-6. 加 native resume 失败的状态和 UI 提示。
-7. 后续再评估 PTY terminal session 作为高级模式。
+- `/api/chat/stream` 不存在；通用发送只走 session-bound stream。

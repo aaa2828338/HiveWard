@@ -34,8 +34,9 @@ import type {
   BlueprintDefinition,
   CatalogSnapshot,
   ChatAttachment,
-  ChatHistoryMessage,
+  ChatMode,
   ChatRoleScope,
+  ChatRuntimeRef,
   ChatStreamEvent,
   ChatStreamTimings,
   ChatThinkingEffort,
@@ -43,6 +44,8 @@ import type {
   CompanyRoleDirectory,
   HarnessId,
   HarnessStatus,
+  HivewardChatMessage,
+  HivewardChatSession,
   InboxItem,
   OpenClawConfigState,
   RuntimeOverview
@@ -51,31 +54,12 @@ import type { Language } from "../lib/i18n";
 import { api } from "../lib/api";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
-type ChatMessage = ChatHistoryMessage & {
+type ChatMessage = HivewardChatMessage & {
   status?: "sent" | "streaming" | "failed";
   runtimeRef?: ChatRuntimeRef;
   progressText?: string;
   speakerLabel?: string;
-  harnessId?: HarnessId;
   agentId?: string;
-  modelId?: string;
-};
-
-type ChatRuntimeRef = {
-  taskId: string;
-  runId: string;
-  sessionKey: string;
-  source: string;
-  status: string;
-  updatedAt: string;
-  error?: string;
-  usage?: {
-    modelId: string;
-    inputTokens: number;
-    outputTokens: number;
-    costUsd: number;
-  };
-  timings?: ChatStreamTimings;
 };
 
 type SelectOption = {
@@ -87,27 +71,14 @@ type SelectOption = {
   thinkingLevels?: ChatThinkingEffort[];
 };
 
-type HivewardSessionView = {
-  id: string;
-  title: string;
-  harnessId: HarnessId;
-  nativeSessionId?: string;
+type HivewardSessionView = HivewardChatSession & {
   messages: ChatMessage[];
-  createdAt: string;
-  updatedAt: string;
 };
-
-type ChatMode = "chat" | "blueprint";
 
 const maxReadableFileChars = 24_000;
 const maxUploadFiles = 6;
 const composerMinHeightPx = 42;
 const composerMaxHeightPx = 132;
-const sessionViewsStorageKey = "hiveward.chat.sessionViews.v2";
-const activeSessionViewStorageKey = "hiveward.chat.activeSessionView.v1";
-const legacySessionViewsStorageKey = "hiveward.chat.sessionViews.v1";
-const legacyChatSessionsStorageKey = "hiveward.chat.sessions.v1";
-const legacyChatActiveSessionStorageKey = "hiveward.chat.activeSession.v1";
 const newSessionViewOptionValue = "__new_session_view__";
 const nativeSessionOptionPrefix = "__native_openclaw_session__:";
 
@@ -141,8 +112,8 @@ export function ChatPage({
   const defaultAgentId =
     openClawConfig?.configuredAgents.find((agent) => agent.isDefault)?.id ?? agentOptions[0]?.value ?? "main";
 
-  const [sessionViews, setSessionViews] = useState<HivewardSessionView[]>(() => loadSessionViews(copy));
-  const [activeSessionViewId, setActiveSessionViewId] = useState(() => loadActiveSessionViewId());
+  const [sessionViews, setSessionViews] = useState<HivewardSessionView[]>([]);
+  const [activeSessionViewId, setActiveSessionViewId] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [harnessId, setHarnessId] = useState<HarnessId>("openclaw");
@@ -158,10 +129,11 @@ export function ChatPage({
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [historyLoadingSessionKey, setHistoryLoadingSessionKey] = useState<string | undefined>();
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [rebuildFromHivewardHistory, setRebuildFromHivewardHistory] = useState(false);
   const threadRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
-  const loadedNativeHistoryRef = useRef(new Set<string>());
   const activeSessionView = sessionViews.find((sessionView) => sessionView.id === activeSessionViewId) ?? sessionViews[0];
   const messages = activeSessionView?.messages ?? [];
   const runtimeSessions = runtime?.sessions ?? [];
@@ -187,6 +159,64 @@ export function ChatPage({
     ? blueprints.find((blueprint) => blueprint.id === selectedRole.blueprintId)
     : undefined;
   const selectedRoleLabel = selectedRole?.label ?? copy.ceoRole;
+
+  const loadChatSessions = useCallback(
+    async (preferredSessionId?: string) => {
+      setSessionsLoading(true);
+      setError(undefined);
+      try {
+        let sessions = await api.listChatSessions();
+        if (sessions.length === 0) {
+          const created = await api.createHivewardChatSession({
+            harnessId,
+            title: copy.newSessionViewTitle,
+            modelId: defaultModelId || undefined,
+            agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
+            thinkingEffort,
+            mode: chatMode,
+            roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+          });
+          sessions = [created];
+        }
+        const nextActiveId =
+          preferredSessionId && sessions.some((session) => session.id === preferredSessionId)
+            ? preferredSessionId
+            : activeSessionViewId && sessions.some((session) => session.id === activeSessionViewId)
+              ? activeSessionViewId
+              : sessions[0]?.id;
+        const activeMessages = nextActiveId ? await api.getHivewardChatMessages(nextActiveId) : [];
+        const nextSessionViews = sessions.map((session) => ({
+          ...session,
+          messages: session.id === nextActiveId ? activeMessages.map((message) => decorateHivewardMessage(message, copy)) : []
+        }));
+        setSessionViews(nextSessionViews);
+        setActiveSessionViewId(nextActiveId);
+        const nextActiveSession = nextSessionViews.find((session) => session.id === nextActiveId);
+        if (nextActiveSession) {
+          setHarnessId(nextActiveSession.harnessId);
+          if (nextActiveSession.modelId) setModelId(nextActiveSession.modelId);
+          if (nextActiveSession.agentId) setAgentId(nextActiveSession.agentId);
+          if (nextActiveSession.thinkingEffort) setThinkingEffort(nextActiveSession.thinkingEffort);
+          setChatMode(nextActiveSession.mode);
+        }
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : copy.historyLoadFailed);
+      } finally {
+        setSessionsLoading(false);
+      }
+    },
+    [
+      activeSessionViewId,
+      agentId,
+      chatMode,
+      copy,
+      defaultModelId,
+      harnessId,
+      selectedCompanyId,
+      selectedRole,
+      thinkingEffort
+    ]
+  );
 
   const updateActiveSessionView = useCallback(
     (update: (sessionView: HivewardSessionView) => HivewardSessionView) => {
@@ -236,18 +266,13 @@ export function ChatPage({
     setTitleSaving(true);
     setError(undefined);
     try {
-      const titleResult = activeSessionView.nativeSessionId
-        ? await api.updateChatSessionTitle({
-            sessionKey: activeSessionView.nativeSessionId,
-            title: nextTitle
-          })
-        : { sessionKey: activeSessionView.id, title: nextTitle };
+      const titleResult = await api.updateHivewardChatSession(activeSessionView.id, { title: nextTitle });
       setSessionViews((current) =>
         current.map((sessionView) =>
           sessionView.id === activeSessionView.id
             ? {
-                ...sessionView,
-                title: titleResult.title,
+                ...titleResult,
+                messages: sessionView.messages,
                 updatedAt: new Date().toISOString()
               }
             : sessionView
@@ -261,12 +286,34 @@ export function ChatPage({
     }
   }, [activeSessionView, copy.titleUpdateFailed, titleDraft]);
 
+  const endActiveSession = useCallback(async () => {
+    if (!activeSessionView || activeSessionView.status === "ended") return;
+    setError(undefined);
+    try {
+      const ended = await api.endHivewardChatSession(activeSessionView.id);
+      setSessionViews((current) =>
+        current.map((sessionView) =>
+          sessionView.id === ended.id
+            ? {
+                ...ended,
+                messages: sessionView.messages
+              }
+            : sessionView
+        )
+      );
+      setRebuildFromHivewardHistory(false);
+    } catch (endError) {
+      setError(endError instanceof Error ? endError.message : copy.sessionEndFailed);
+    }
+  }, [activeSessionView, copy.sessionEndFailed]);
+
   const bindActiveSessionView = useCallback(
     (event: Extract<ChatStreamEvent, { type: "started" | "done" }>, eventHarnessId: HarnessId) => {
       updateActiveSessionView((sessionView) => ({
         ...sessionView,
         harnessId: eventHarnessId,
         nativeSessionId: event.sessionKey || undefined,
+        nativeSessionState: event.sessionKey ? "resumable" : sessionView.nativeSessionState,
         updatedAt: event.updatedAt
       }));
     },
@@ -274,53 +321,40 @@ export function ChatPage({
   );
 
   const createSessionView = useCallback(async () => {
-    if (harnessId === "openclaw") {
-      try {
-        const nativeSession = await api.createChatSession({
-          agentId: agentId || undefined,
-          parentSessionKey: activeSessionView?.harnessId === "openclaw" ? activeSessionView.nativeSessionId : undefined
-        });
-        const nextSessionView = createHivewardSessionView(
-          copy,
-          harnessId,
-          nativeSession.sessionKey,
-          nativeSession.title || nativeSession.sessionKey
-        );
-        setSessionViews((current) => [nextSessionView, ...current]);
-        setActiveSessionViewId(nextSessionView.id);
-        loadedNativeHistoryRef.current.add(nativeSession.sessionKey);
-        setDraft("");
-        setAttachments([]);
-        setError(undefined);
-        return;
-      } catch (sessionError) {
-        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
-        return;
-      }
+    try {
+      const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole);
+      const nextSession = await api.createHivewardChatSession({
+        harnessId,
+        title: copy.newSessionViewTitle,
+        modelId: modelId || undefined,
+        agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
+        thinkingEffort,
+        mode: chatMode,
+        roleScope
+      });
+      const nextSessionView: HivewardSessionView = { ...nextSession, messages: [] };
+      setSessionViews((current) => [nextSessionView, ...current]);
+      setActiveSessionViewId(nextSessionView.id);
+      setRebuildFromHivewardHistory(false);
+      setDraft("");
+      setAttachments([]);
+      setError(undefined);
+    } catch (sessionError) {
+      setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
     }
+  }, [agentId, chatMode, copy, harnessId, modelId, selectedCompanyId, selectedRole, thinkingEffort]);
 
-    const nextSessionView = createHivewardSessionView(copy, harnessId);
-    setSessionViews((current) => [nextSessionView, ...current]);
-    setActiveSessionViewId(nextSessionView.id);
-    setDraft("");
-    setAttachments([]);
-    setError(undefined);
-  }, [activeSessionView?.harnessId, activeSessionView?.nativeSessionId, agentId, copy, harnessId]);
-
-  const loadNativeSessionHistory = useCallback(
-    async (sessionViewId: string, sessionKey: string, force = false) => {
-      if (!force && loadedNativeHistoryRef.current.has(sessionKey)) return;
-      loadedNativeHistoryRef.current.add(sessionKey);
-      setHistoryLoadingSessionKey(sessionKey);
+  const loadSessionMessages = useCallback(
+    async (sessionViewId: string) => {
+      setHistoryLoadingSessionKey(sessionViewId);
       try {
-        const history = await api.getChatSessionHistory(sessionKey);
-        history.inboxItems?.forEach((item) => onInboxItemCreated?.(item));
+        const messages = await api.getHivewardChatMessages(sessionViewId);
         setSessionViews((current) =>
           current.map((sessionView) =>
             sessionView.id === sessionViewId
               ? {
                   ...sessionView,
-                  messages: history.messages.map((message) => decorateNativeHistoryMessage(message, copy)),
+                  messages: messages.map((message) => decorateHivewardMessage(message, copy)),
                   updatedAt: new Date().toISOString()
                 }
               : sessionView
@@ -329,42 +363,39 @@ export function ChatPage({
       } catch (historyError) {
         setError(historyError instanceof Error ? historyError.message : copy.historyLoadFailed);
       } finally {
-        setHistoryLoadingSessionKey((current) => (current === sessionKey ? undefined : current));
+        setHistoryLoadingSessionKey((current) => (current === sessionViewId ? undefined : current));
       }
     },
     [copy]
   );
 
   const activateNativeSession = useCallback(
-    (sessionKey: string) => {
+    async (sessionKey: string) => {
       const nativeSession = runtimeSessions.find((session) => session.id === sessionKey);
-      const now = new Date().toISOString();
-      const sessionViewId = makeNativeSessionViewId(sessionKey);
-      setSessionViews((current) => {
-        const existing = current.find((sessionView) => sessionView.id === sessionViewId);
-        if (existing) return current;
-        return [
-          {
-            id: sessionViewId,
-            title: nativeSession ? formatNativeSessionLabel(nativeSession) : sessionKey,
-            harnessId: "openclaw",
-            nativeSessionId: sessionKey,
-            messages: [],
-            createdAt: nativeSession?.updatedAt ?? now,
-            updatedAt: nativeSession?.updatedAt ?? now
-          },
-          ...current
-        ];
-      });
-      setActiveSessionViewId(sessionViewId);
-      setHarnessId("openclaw");
-      setAgentId(readAgentIdFromSessionKey(sessionKey) ?? defaultAgentId);
-      setDraft("");
-      setAttachments([]);
-      setError(undefined);
-      void loadNativeSessionHistory(sessionViewId, sessionKey, true);
+      try {
+        const session = await api.createHivewardChatSession({
+          harnessId: "openclaw",
+          nativeSessionId: sessionKey,
+          title: nativeSession ? formatNativeSessionLabel(nativeSession) : sessionKey,
+          agentId: readAgentIdFromSessionKey(sessionKey) ?? defaultAgentId,
+          modelId: modelId || undefined,
+          thinkingEffort,
+          mode: chatMode,
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+        });
+        setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
+        setActiveSessionViewId(session.id);
+        setHarnessId("openclaw");
+        setAgentId(session.agentId ?? defaultAgentId);
+        setRebuildFromHivewardHistory(false);
+        setDraft("");
+        setAttachments([]);
+        setError(undefined);
+      } catch (sessionError) {
+        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
+      }
     },
-    [defaultAgentId, loadNativeSessionHistory, runtimeSessions]
+    [chatMode, copy.sessionCreateFailed, defaultAgentId, modelId, runtimeSessions, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   useEffect(() => {
@@ -382,26 +413,8 @@ export function ChatPage({
   }, [roleOptions, selectedRoleId]);
 
   useEffect(() => {
-    if (activeSessionView) return;
-    const nextSessionView = createHivewardSessionView(copy, harnessId, harnessId === "openclaw" ? "main" : undefined, "main");
-    setSessionViews([nextSessionView]);
-    setActiveSessionViewId(nextSessionView.id);
-  }, [activeSessionView, copy, harnessId]);
-
-  useEffect(() => {
-    persistSessionViews(sessionViews, activeSessionView?.id);
-  }, [activeSessionView?.id, sessionViews]);
-
-  useEffect(() => {
-    if (activeSessionView?.harnessId !== "openclaw" || !activeSessionView.nativeSessionId || activeSessionView.messages.length > 0) return;
-    void loadNativeSessionHistory(activeSessionView.id, activeSessionView.nativeSessionId);
-  }, [
-    activeSessionView?.harnessId,
-    activeSessionView?.id,
-    activeSessionView?.messages.length,
-    activeSessionView?.nativeSessionId,
-    loadNativeSessionHistory
-  ]);
+    void loadChatSessions();
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight });
@@ -433,10 +446,12 @@ export function ChatPage({
             variant: "create"
           },
         ...sessionViews
+          .filter((sessionView) => sessionView.harnessId === harnessId)
           .filter((sessionView) => isVisibleSessionView(sessionView, agentId))
           .map((sessionView) => ({
             value: sessionView.id,
-            label: sessionView.title
+            label: sessionView.status === "ended" ? `${sessionView.title} / ${copy.ended}` : sessionView.title,
+            meta: sessionView.status === "native_missing" ? copy.nativeSessionMissing : undefined
           })),
         ...(harnessId === "openclaw"
           ? runtimeSessions
@@ -502,34 +517,52 @@ export function ChatPage({
       }
       const nativeSessionKey = readNativeSessionOptionValue(sessionViewId);
       if (nativeSessionKey) {
-        activateNativeSession(nativeSessionKey);
+        void activateNativeSession(nativeSessionKey);
         return;
       }
       const nextSessionView = sessionViews.find((sessionView) => sessionView.id === sessionViewId);
       setActiveSessionViewId(sessionViewId);
       if (nextSessionView) setHarnessId(nextSessionView.harnessId);
-      if (nextSessionView?.harnessId === "openclaw" && nextSessionView.nativeSessionId) {
-        setAgentId(readAgentIdFromSessionKey(nextSessionView.nativeSessionId) ?? defaultAgentId);
-        void loadNativeSessionHistory(nextSessionView.id, nextSessionView.nativeSessionId, true);
-      }
+      if (nextSessionView?.agentId) setAgentId(nextSessionView.agentId);
+      if (nextSessionView?.modelId) setModelId(nextSessionView.modelId);
+      if (nextSessionView?.thinkingEffort) setThinkingEffort(nextSessionView.thinkingEffort);
+      if (nextSessionView?.mode) setChatMode(nextSessionView.mode);
+      void loadSessionMessages(sessionViewId);
+      setRebuildFromHivewardHistory(false);
       setDraft("");
       setAttachments([]);
       setError(undefined);
     },
-    [activateNativeSession, createSessionView, defaultAgentId, loadNativeSessionHistory, sessionViews]
+    [activateNativeSession, createSessionView, loadSessionMessages, sessionViews]
   );
 
   const selectHarness = useCallback(
-    (nextHarnessId: HarnessId) => {
+    async (nextHarnessId: HarnessId) => {
       setHarnessId(nextHarnessId);
-      updateActiveSessionView((sessionView) => ({
-        ...sessionView,
-        harnessId: nextHarnessId,
-        nativeSessionId: sessionView.harnessId === nextHarnessId ? sessionView.nativeSessionId : undefined,
-        updatedAt: new Date().toISOString()
-      }));
+      const existing = sessionViews.find((sessionView) => sessionView.harnessId === nextHarnessId && sessionView.status !== "ended");
+      if (existing) {
+        setActiveSessionViewId(existing.id);
+        void loadSessionMessages(existing.id);
+        return;
+      }
+      try {
+        const session = await api.createHivewardChatSession({
+          harnessId: nextHarnessId,
+          title: copy.newSessionViewTitle,
+          modelId: modelId || undefined,
+          agentId: nextHarnessId === "openclaw" ? agentId || undefined : undefined,
+          thinkingEffort,
+          mode: chatMode,
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+        });
+        setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
+        setActiveSessionViewId(session.id);
+        setRebuildFromHivewardHistory(false);
+      } catch (sessionError) {
+        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
+      }
     },
-    [updateActiveSessionView]
+    [agentId, chatMode, copy, loadSessionMessages, modelId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
   );
 
   const selectAgent = useCallback(
@@ -537,19 +570,19 @@ export function ChatPage({
       setAgentId(nextAgentId);
       if (harnessId !== "openclaw" || nextAgentId === agentId) return;
       try {
-        const nativeSession = await api.createChatSession({
+        const session = await api.createHivewardChatSession({
+          harnessId: "openclaw",
+          title: copy.newSessionViewTitle,
+          modelId: modelId || undefined,
           agentId: nextAgentId || undefined,
-          parentSessionKey: activeSessionView?.harnessId === "openclaw" ? activeSessionView.nativeSessionId : undefined
+          thinkingEffort,
+          mode: chatMode,
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
         });
-        const nextSessionView = createHivewardSessionView(
-          copy,
-          "openclaw",
-          nativeSession.sessionKey,
-          nativeSession.title || nativeSession.sessionKey
-        );
+        const nextSessionView: HivewardSessionView = { ...session, messages: [] };
         setSessionViews((current) => [nextSessionView, ...current]);
         setActiveSessionViewId(nextSessionView.id);
-        loadedNativeHistoryRef.current.add(nativeSession.sessionKey);
+        setRebuildFromHivewardHistory(false);
         setDraft("");
         setAttachments([]);
         setError(undefined);
@@ -557,14 +590,16 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [activeSessionView?.harnessId, activeSessionView?.nativeSessionId, agentId, copy, harnessId]
+    [agentId, chatMode, copy, harnessId, modelId, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   const canSend =
     !isSending &&
     selectedHarnessAvailable &&
     (draft.trim().length > 0 || attachments.length > 0) &&
-    Boolean(activeSessionView);
+    Boolean(activeSessionView) &&
+    activeSessionView?.status !== "ended" &&
+    (activeSessionView?.status !== "native_missing" || rebuildFromHivewardHistory);
 
   const sendMessage = async () => {
     if (!canSend) return;
@@ -586,6 +621,7 @@ export function ChatPage({
     const now = new Date().toISOString();
     const userMessage: ChatMessage = {
       id: makeLocalId("chat-user"),
+      sessionId: activeSessionView!.id,
       role: "user",
       content: content || copy.attachmentOnlyMessage,
       createdAt: now,
@@ -597,6 +633,7 @@ export function ChatPage({
     const assistantId = makeLocalId("chat-assistant");
     const assistantMessage: ChatMessage = {
       id: assistantId,
+      sessionId: activeSessionView!.id,
       role: "assistant",
       content: "",
       createdAt: now,
@@ -634,34 +671,20 @@ export function ChatPage({
         );
       }, 10_000);
 
-      let nativeSessionKey = activeSessionView?.harnessId === sendHarnessId ? activeSessionView.nativeSessionId : undefined;
-      if (sendIsOpenClawHarness && !nativeSessionKey) {
-        const nativeSession = await api.createChatSession({ agentId: agentId || undefined, roleScope });
-        nativeSessionKey = nativeSession.sessionKey;
-        loadedNativeHistoryRef.current.add(nativeSession.sessionKey);
-        updateActiveSessionView((sessionView) => ({
-          ...sessionView,
-          nativeSessionId: nativeSession.sessionKey,
-          title: sessionView.title === copy.newSessionViewTitle
-            ? nativeSession.title || sessionView.title
-            : sessionView.title,
-          updatedAt: new Date().toISOString()
-        }));
-      }
       if (controller.signal.aborted) throw new DOMException(copy.stopped, "AbortError");
 
-      await api.streamChat(
+      await api.streamSessionChat(
+        activeSessionView!.id,
         {
-          harnessId: sendHarnessId,
           message: content,
           attachments: outgoingAttachments,
           modelId: sendModelId || undefined,
           agentId: sendIsOpenClawHarness ? agentId || undefined : undefined,
-          nativeSessionKey,
           thinkingEffort: sendThinkingEffort,
           includePlatformContext,
           mode: chatMode,
-          roleScope
+          roleScope,
+          rebuildFromHivewardHistory
         },
         {
           onEvent: (event) => {
@@ -672,6 +695,8 @@ export function ChatPage({
         },
         controller.signal
       );
+      setRebuildFromHivewardHistory(false);
+      void loadChatSessions(activeSessionView!.id);
     } catch (streamError) {
       if (controller.signal.aborted) {
         updateActiveSessionViewMessages((current) =>
@@ -758,15 +783,13 @@ export function ChatPage({
                   <Bot size={16} />
                 </button>
                 {isOpenClawHarness && (
-                  <>
-                    <button type="button" title={copy.agent} aria-label={copy.agent} onClick={() => setSettingsCollapsed(false)}>
-                      <Bot size={16} />
-                    </button>
-                    <button type="button" title={copy.sessionView} aria-label={copy.sessionView} onClick={() => setSettingsCollapsed(false)}>
-                      <MessageSquareText size={16} />
-                    </button>
-                  </>
+                  <button type="button" title={copy.agent} aria-label={copy.agent} onClick={() => setSettingsCollapsed(false)}>
+                    <Bot size={16} />
+                  </button>
                 )}
+                <button type="button" title={copy.sessionView} aria-label={copy.sessionView} onClick={() => setSettingsCollapsed(false)}>
+                  <MessageSquareText size={16} />
+                </button>
                 <button type="button" title={copy.model} aria-label={copy.model} onClick={() => setSettingsCollapsed(false)}>
                   <Sparkles size={16} />
                 </button>
@@ -784,7 +807,7 @@ export function ChatPage({
                   icon={<Wrench size={14} />}
                   value={harnessId}
                   options={harnessOptions}
-                  onChange={(value) => selectHarness(value as HarnessId)}
+                  onChange={(value) => void selectHarness(value as HarnessId)}
                 />
 
                 <ChatSelect
@@ -796,24 +819,22 @@ export function ChatPage({
                 />
 
                 {isOpenClawHarness && (
-                  <>
-                    <ChatSelect
-                      label={copy.agent}
-                      icon={<Bot size={14} />}
-                      value={agentId}
-                      options={agentOptions}
-                      onChange={(value) => void selectAgent(value)}
-                    />
-
-                    <ChatSelect
-                      label={copy.sessionView}
-                      icon={<MessageSquareText size={14} />}
-                      value={activeSessionView?.id ?? ""}
-                      options={sessionViewOptions}
-                      onChange={selectSessionView}
-                    />
-                  </>
+                  <ChatSelect
+                    label={copy.agent}
+                    icon={<Bot size={14} />}
+                    value={agentId}
+                    options={agentOptions}
+                    onChange={(value) => void selectAgent(value)}
+                  />
                 )}
+
+                <ChatSelect
+                  label={copy.sessionView}
+                  icon={<MessageSquareText size={14} />}
+                  value={activeSessionView?.id ?? ""}
+                  options={sessionViewOptions}
+                  onChange={selectSessionView}
+                />
 
                 <ChatSelect
                   label={copy.model}
@@ -879,6 +900,15 @@ export function ChatPage({
                 <button type="button" title={copy.editSessionTitle} aria-label={copy.editSessionTitle} onClick={startEditingTitle}>
                   <Pencil size={14} />
                 </button>
+                <button
+                  type="button"
+                  title={copy.endSession}
+                  aria-label={copy.endSession}
+                  disabled={!activeSessionView || activeSessionView.status === "ended"}
+                  onClick={() => void endActiveSession()}
+                >
+                  <Square size={14} />
+                </button>
               </div>
             )}
           </div>
@@ -938,6 +968,16 @@ export function ChatPage({
             </div>
 
             <div className="chat-composer">
+              {sessionsLoading && <div className="chat-inline-error">{copy.sessionsLoading}</div>}
+              {activeSessionView?.status === "native_missing" && (
+                <div className="chat-inline-error">
+                  {copy.nativeSessionMissing}
+                  <button type="button" className="secondary-action" onClick={() => setRebuildFromHivewardHistory(true)}>
+                    {rebuildFromHivewardHistory ? copy.rebuildFromHistoryEnabled : copy.rebuildFromHistory}
+                  </button>
+                </div>
+              )}
+              {activeSessionView?.status === "ended" && <div className="chat-inline-error">{copy.sessionEnded}</div>}
               {error && <div className="chat-inline-error">{error}</div>}
               {attachments.length > 0 && (
                 <div className="chat-attachment-list">
@@ -1248,17 +1288,12 @@ function toRuntimeRef(event: Extract<ChatStreamEvent, { type: "started" | "done"
   };
 }
 
-function decorateNativeHistoryMessage(message: ChatHistoryMessage, copy: ReturnType<typeof chatCopy>): ChatMessage {
+function decorateHivewardMessage(message: HivewardChatMessage, copy: ReturnType<typeof chatCopy>): ChatMessage {
   return {
     ...message,
-    status: "sent",
-    harnessId: "openclaw",
-    speakerLabel: message.role === "user" ? copy.you : "OpenClaw"
+    status: message.status,
+    speakerLabel: message.role === "user" ? copy.you : formatHarnessLabel(message.harnessId)
   };
-}
-
-function makeNativeSessionViewId(sessionKey: string): string {
-  return `openclaw-session-view:${sessionKey}`;
 }
 
 function readNativeSessionOptionValue(value: string): string | undefined {
@@ -1273,8 +1308,11 @@ function readAgentIdFromSessionKey(sessionKey: string): string | undefined {
 
 function isVisibleSessionView(sessionView: HivewardSessionView, agentId: string): boolean {
   if (sessionView.harnessId !== "openclaw") return true;
+  const selectedAgentId = normalizeSessionAgentId(agentId);
+  if (sessionView.agentId) return normalizeSessionAgentId(sessionView.agentId) === selectedAgentId;
   if (!sessionView.nativeSessionId) return true;
-  return isVisibleNativeChatSessionKey(sessionView.nativeSessionId, agentId);
+  const parsed = parseAgentSessionKey(sessionView.nativeSessionId);
+  return parsed ? normalizeSessionAgentId(parsed.agentId) === selectedAgentId : selectedAgentId === "main";
 }
 
 function isVisibleNativeChatSessionKey(sessionKey: string, agentId: string): boolean {
@@ -1284,12 +1322,6 @@ function isVisibleNativeChatSessionKey(sessionKey: string, agentId: string): boo
   if (!parsed) return false;
   if (normalizeSessionAgentId(parsed.agentId) !== selectedAgentId) return false;
   return isPrimaryChatSessionRest(parsed.rest);
-}
-
-function isPersistableNativeChatSessionKey(sessionKey: string): boolean {
-  if (sessionKey === "main") return true;
-  const parsed = parseAgentSessionKey(sessionKey);
-  return parsed ? isPrimaryChatSessionRest(parsed.rest) : false;
 }
 
 function parseAgentSessionKey(sessionKey: string): { agentId: string; rest: string } | undefined {
@@ -1526,86 +1558,6 @@ function isReadableTextFile(file: File): boolean {
   );
 }
 
-function createHivewardSessionView(
-  copy: ReturnType<typeof chatCopy>,
-  harnessId: HarnessId,
-  nativeSessionId?: string,
-  title?: string
-): HivewardSessionView {
-  const now = new Date().toISOString();
-  return {
-    id: makeLocalId("hiveward-session-view"),
-    title: title || copy.newSessionViewTitle,
-    harnessId,
-    nativeSessionId,
-    messages: [],
-    createdAt: now,
-    updatedAt: now
-  };
-}
-
-function loadSessionViews(copy: ReturnType<typeof chatCopy>): HivewardSessionView[] {
-  if (typeof window === "undefined") return [createHivewardSessionView(copy, "openclaw", "main", "main")];
-  try {
-    const raw =
-      window.localStorage.getItem(sessionViewsStorageKey) ??
-      window.localStorage.getItem(legacySessionViewsStorageKey) ??
-      window.localStorage.getItem(legacyChatSessionsStorageKey);
-    if (!raw) return [createHivewardSessionView(copy, "openclaw", "main", "main")];
-    const parsed = JSON.parse(raw) as Array<Partial<HivewardSessionView>>;
-    const sessionViews = parsed.flatMap((sessionView) => normalizeSessionView(sessionView, copy));
-    return sessionViews.length > 0 ? sessionViews : [createHivewardSessionView(copy, "openclaw", "main", "main")];
-  } catch {
-    return [createHivewardSessionView(copy, "openclaw", "main", "main")];
-  }
-}
-
-function loadActiveSessionViewId(): string | undefined {
-  if (typeof window === "undefined") return undefined;
-  return window.localStorage.getItem(activeSessionViewStorageKey) ?? window.localStorage.getItem(legacyChatActiveSessionStorageKey) ?? undefined;
-}
-
-function persistSessionViews(sessionViews: HivewardSessionView[], activeSessionViewId?: string) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(sessionViewsStorageKey, JSON.stringify(sessionViews.map(toPersistedSessionView)));
-    if (activeSessionViewId) {
-      window.localStorage.setItem(activeSessionViewStorageKey, activeSessionViewId);
-    }
-  } catch {
-    // Session view persistence should not block chat if browser storage is unavailable.
-  }
-}
-
-function normalizeSessionView(sessionView: Partial<HivewardSessionView>, copy: ReturnType<typeof chatCopy>): HivewardSessionView[] {
-  if (!sessionView.id) return [];
-  const harnessId = sessionView.harnessId === "codex" || sessionView.harnessId === "claudeCode"
-    ? sessionView.harnessId
-    : "openclaw";
-  const nativeSessionId = typeof sessionView.nativeSessionId === "string" ? sessionView.nativeSessionId : undefined;
-  if (harnessId === "openclaw" && nativeSessionId && !isPersistableNativeChatSessionKey(nativeSessionId)) return [];
-  return [{
-    id: sessionView.id,
-    title: sessionView.title || copy.newSessionViewTitle,
-    harnessId,
-    nativeSessionId,
-    messages: [],
-    createdAt: sessionView.createdAt || new Date().toISOString(),
-    updatedAt: sessionView.updatedAt || sessionView.createdAt || new Date().toISOString()
-  }];
-}
-
-function toPersistedSessionView(sessionView: HivewardSessionView): Omit<HivewardSessionView, "messages"> {
-  return {
-    id: sessionView.id,
-    title: sessionView.title,
-    harnessId: sessionView.harnessId,
-    nativeSessionId: sessionView.nativeSessionId,
-    createdAt: sessionView.createdAt,
-    updatedAt: sessionView.updatedAt
-  };
-}
-
 function deriveSessionViewTitle(sessionView: HivewardSessionView, messages: ChatMessage[], copy: ReturnType<typeof chatCopy>): string {
   if (sessionView.messages.length > 0 && sessionView.title !== copy.newSessionViewTitle) return sessionView.title;
   const firstUserMessage = messages.find((message) => message.role === "user")?.content.trim();
@@ -1654,18 +1606,26 @@ function chatCopy(language: Language) {
       expandSettings: "\u5c55\u5f00",
       sessionView: "\u4f1a\u8bdd",
       noSessionView: "\u6682\u65e0\u4f1a\u8bdd",
+      sessionsLoading: "\u6b63\u5728\u8bfb\u53d6\u4f1a\u8bdd",
       editSessionTitle: "\u4fee\u6539\u4f1a\u8bdd\u540d\u79f0",
       saveSessionTitle: "\u4fdd\u5b58\u4f1a\u8bdd\u540d\u79f0",
       cancelEditSessionTitle: "\u53d6\u6d88\u4fee\u6539",
       titleUpdateFailed: "\u4fee\u6539\u4f1a\u8bdd\u540d\u79f0\u5931\u8d25\u3002",
+      endSession: "\u7ed3\u675f\u4f1a\u8bdd",
+      ended: "\u5df2\u7ed3\u675f",
+      sessionEnded: "\u8fd9\u4e2a\u4f1a\u8bdd\u5df2\u7ed3\u675f\uff0c\u9700\u8981\u65b0\u5efa\u4f1a\u8bdd\u540e\u7ee7\u7eed\u3002",
+      sessionEndFailed: "\u7ed3\u675f\u4f1a\u8bdd\u5931\u8d25\u3002",
       newSessionView: "\u65b0\u4f1a\u8bdd",
       newSessionViewTitle: "\u65b0\u804a\u5929",
       messagesUnit: "\u6761\u6d88\u606f",
       nativeSessionBound: "\u5df2\u7ed1\u5b9a\u539f\u751f\u4f1a\u8bdd",
       nativeSessionDraft: "\u8349\u7a3f\u89c6\u56fe",
+      nativeSessionMissing: "\u539f\u751f\u4f1a\u8bdd\u4e0d\u53ef\u6062\u590d\uff0c\u53ea\u80fd\u67e5\u770b HiveWard \u5386\u53f2\u6216\u660e\u786e\u7528\u5386\u53f2\u91cd\u5efa\u4e0a\u4e0b\u6587\u3002",
+      rebuildFromHistory: "\u7528 HiveWard \u5386\u53f2\u91cd\u5efa",
+      rebuildFromHistoryEnabled: "\u4e0b\u6b21\u53d1\u9001\u5c06\u91cd\u5efa",
       historyLoading: "\u6b63\u5728\u8bfb\u53d6\u539f\u751f\u5386\u53f2",
       historyLoadFailed: "\u8bfb\u53d6\u539f\u751f\u5386\u53f2\u5931\u8d25\u3002",
-      sessionCreateFailed: "\u65b0\u5efa OpenClaw \u4f1a\u8bdd\u5931\u8d25\u3002",
+      sessionCreateFailed: "\u65b0\u5efa\u4f1a\u8bdd\u5931\u8d25\u3002",
       contextSummary: "\u4e0a\u4e0b\u6587\u6982\u89c8",
       noAgent: "\u672a\u9009 Agent",
       noModel: "\u672a\u9009\u6a21\u578b",
@@ -1737,18 +1697,26 @@ function chatCopy(language: Language) {
     expandSettings: "Expand",
     sessionView: "Chat session",
     noSessionView: "No session",
+    sessionsLoading: "Loading sessions",
     editSessionTitle: "Edit session title",
     saveSessionTitle: "Save session title",
     cancelEditSessionTitle: "Cancel title edit",
     titleUpdateFailed: "Failed to update session title.",
+    endSession: "End session",
+    ended: "ended",
+    sessionEnded: "This session has ended. Create a new session to continue.",
+    sessionEndFailed: "Failed to end session.",
     newSessionView: "New session",
     newSessionViewTitle: "New chat",
     messagesUnit: "messages",
     nativeSessionBound: "Native session bound",
     nativeSessionDraft: "Draft view",
+    nativeSessionMissing: "The native session is not recoverable. HiveWard history remains available.",
+    rebuildFromHistory: "Use HiveWard history",
+    rebuildFromHistoryEnabled: "History rebuild enabled",
     historyLoading: "Loading native history",
     historyLoadFailed: "Failed to load native history.",
-    sessionCreateFailed: "Failed to create an OpenClaw session.",
+    sessionCreateFailed: "Failed to create a chat session.",
     contextSummary: "Context summary",
     noAgent: "No agent",
     noModel: "No model",
@@ -1779,7 +1747,7 @@ function chatCopy(language: Language) {
     modeChat: "Chat",
     modeBlueprint: "Build blueprint",
     emptyTitle: "Waiting for messages",
-    emptyBody: "This session view has no messages yet.",
+    emptyBody: "This session has no messages yet.",
     you: "You",
     youAvatar: "You",
     assistant: "OpenClaw",
