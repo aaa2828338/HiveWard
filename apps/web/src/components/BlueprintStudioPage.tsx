@@ -180,8 +180,6 @@ interface ArchitectureRoleNodeData extends Record<string, unknown> {
 
 interface ArchitectureDistributorEdgeData extends Record<string, unknown> {
   drawsRootAndTrunk: boolean;
-  trunkLeft: number;
-  trunkRight: number;
   trunkY: number;
 }
 
@@ -1775,12 +1773,11 @@ function ArchitectureDistributorEdge({
   const edgeData = data as ArchitectureDistributorEdgeData | undefined;
   const fallbackTrunkY = sourceY + (targetY - sourceY) / 2;
   const trunkY = typeof edgeData?.trunkY === "number" ? edgeData.trunkY : fallbackTrunkY;
-  const trunkLeft = typeof edgeData?.trunkLeft === "number" ? edgeData.trunkLeft : Math.min(sourceX, targetX);
-  const trunkRight = typeof edgeData?.trunkRight === "number" ? edgeData.trunkRight : Math.max(sourceX, targetX);
+  const horizontalPath = `M ${sourceX},${trunkY} L ${targetX},${trunkY}`;
   const dropPath = `M ${targetX},${trunkY} L ${targetX},${targetY}`;
   const path = edgeData?.drawsRootAndTrunk
-    ? `M ${sourceX},${sourceY} L ${sourceX},${trunkY} M ${trunkLeft},${trunkY} L ${trunkRight},${trunkY} ${dropPath}`
-    : dropPath;
+    ? `M ${sourceX},${sourceY} L ${sourceX},${trunkY} ${horizontalPath} ${dropPath}`
+    : `${horizontalPath} ${dropPath}`;
 
   return (
     <BaseEdge
@@ -3411,7 +3408,6 @@ function buildArchitectureFlowEdges(
     const targetPoints = targetNodes.map((targetNode) => resolveArchitectureFlowHandlePoint(targetNode, "in", canvasWorld));
     const targetYs = targetPoints.map((point) => point.y);
     const trunkY = sourcePoint ? resolveArchitectureDistributorTrunkY(sourcePoint.y, targetYs) : 0;
-    const trunkXs = sourcePoint ? [sourcePoint.x, ...targetPoints.map((point) => point.x)] : targetPoints.map((point) => point.x);
 
     return {
       id: edge.id,
@@ -3423,8 +3419,6 @@ function buildArchitectureFlowEdges(
       className: "blueprint-edge architecture-blueprint-edge",
       data: {
         drawsRootAndTrunk: edge.id === firstSourceEdge?.id,
-        trunkLeft: trunkXs.length > 0 ? Math.min(...trunkXs) : 0,
-        trunkRight: trunkXs.length > 0 ? Math.max(...trunkXs) : 0,
         trunkY
       } satisfies ArchitectureDistributorEdgeData,
       style: { strokeWidth: 3.5 }
