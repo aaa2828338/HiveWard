@@ -92,6 +92,8 @@ type LegacyHivewardStoreState = Partial<RawHivewardStoreIndex> & {
   events?: BlueprintNodeEvent[];
 };
 
+type ArchitectureNodePosition = ArchitectureBlueprintView["nodes"][number]["position"];
+
 export class FileHivewardStore {
   private readonly filePath: string;
   private readonly dataDir: string;
@@ -362,6 +364,42 @@ export class FileHivewardStore {
       return {
         roles,
         architecture: buildArchitectureBlueprintView(index, companyId, roles)
+      };
+    });
+  }
+
+  async saveArchitectureLayout(
+    positions: Record<string, ArchitectureNodePosition>
+  ): Promise<{ roles: CompanyRoleDirectory; architecture: ArchitectureBlueprintView }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const now = new Date().toISOString();
+      const roles = buildRoleDirectory(index, companyId, now, index.roleDirectories[companyId]);
+      const roleIds = new Set([roles.ceo.id, ...roles.leaders.map((leader) => leader.id)]);
+      const architecturePositions = {
+        ...(roles.architecturePositions ?? {})
+      };
+
+      for (const [roleId, position] of Object.entries(positions)) {
+        if (!roleIds.has(roleId)) continue;
+        const normalizedPosition = normalizeArchitecturePosition(position);
+        if (normalizedPosition) {
+          architecturePositions[roleId] = normalizedPosition;
+        }
+      }
+
+      const nextRoles: CompanyRoleDirectory = {
+        ...roles,
+        architecturePositions: pruneArchitecturePositions(architecturePositions, roleIds),
+        updatedAt: now
+      };
+      index.roleDirectories[companyId] = nextRoles;
+      await this.writeIndexUnlocked(index);
+
+      return {
+        roles: nextRoles,
+        architecture: buildArchitectureBlueprintView(index, companyId, nextRoles)
       };
     });
   }
@@ -1455,8 +1493,9 @@ function buildRoleDirectory(
   rawDirectory?: Partial<CompanyRoleDirectory>
 ): CompanyRoleDirectory {
   const company = index.companies.find((candidate) => candidate.id === companyId);
-  const existingCeo = rawDirectory?.ceo;
-  const previousDriverBindings = Array.isArray(rawDirectory?.driverBindings) ? rawDirectory.driverBindings : [];
+  const sourceDirectory = rawDirectory ?? index.roleDirectories[companyId];
+  const existingCeo = sourceDirectory?.ceo;
+  const previousDriverBindings = Array.isArray(sourceDirectory?.driverBindings) ? sourceDirectory.driverBindings : [];
   const ceoId = existingCeo?.id || "ceo";
   const ceoLabel = existingCeo?.label || "CEO";
   const driverBindings: RoleDriverBinding[] = [];
@@ -1481,7 +1520,7 @@ function buildRoleDirectory(
     createdAt: existingCeo?.createdAt || now,
     updatedAt: now
   };
-  const previousLeaders = Array.isArray(rawDirectory?.leaders) ? rawDirectory.leaders : [];
+  const previousLeaders = Array.isArray(sourceDirectory?.leaders) ? sourceDirectory.leaders : [];
   const blueprints = index.blueprintIndex
     .filter((blueprint) => blueprint.companyId === companyId)
     .slice()
@@ -1516,11 +1555,14 @@ function buildRoleDirectory(
     } satisfies CompanyRoleProfile;
   });
 
+  const roleIds = new Set([ceo.id, ...leaders.map((leader) => leader.id)]);
+
   return {
     companyId,
     ceo,
     leaders,
     driverBindings,
+    architecturePositions: pruneArchitecturePositions(sourceDirectory?.architecturePositions ?? {}, roleIds),
     updatedAt: now
   };
 }
@@ -1574,7 +1616,7 @@ function buildArchitectureBlueprintView(
     pendingApprovalCount: pendingInboxCount + companyRuns.filter((run) => run.status === "waiting_approval").length,
     latestRunStatus: latestRun(companyRuns)?.status,
     latestRunAt: latestRun(companyRuns)?.startedAt,
-    position: { x: 0, y: 0 }
+    position: roles.architecturePositions?.[roles.ceo.id] ?? { x: 0, y: 0 }
   };
   const leaderSpacing = 280;
   const leaders = roles.leaders.map((leader, indexOffset) => {
@@ -1596,7 +1638,7 @@ function buildArchitectureBlueprintView(
       latestRunStatus: latest?.status,
       latestRunAt: latest?.startedAt,
       lastImportAt: blueprint?.updatedAt,
-      position: {
+      position: roles.architecturePositions?.[leader.id] ?? {
         x: (indexOffset - (roles.leaders.length - 1) / 2) * leaderSpacing,
         y: 220
       }
@@ -1614,6 +1656,32 @@ function buildArchitectureBlueprintView(
       label: "delegates"
     })),
     updatedAt: roles.updatedAt
+  };
+}
+
+function pruneArchitecturePositions(
+  positions: Record<string, ArchitectureNodePosition>,
+  roleIds: Set<string>
+): Record<string, ArchitectureNodePosition> {
+  const nextPositions: Record<string, ArchitectureNodePosition> = {};
+  for (const [roleId, position] of Object.entries(positions)) {
+    if (!roleIds.has(roleId)) continue;
+    const normalizedPosition = normalizeArchitecturePosition(position);
+    if (normalizedPosition) {
+      nextPositions[roleId] = normalizedPosition;
+    }
+  }
+  return nextPositions;
+}
+
+function normalizeArchitecturePosition(value: unknown): ArchitectureNodePosition | undefined {
+  if (!isRecord(value)) return undefined;
+  const x = value.x;
+  const y = value.y;
+  if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) return undefined;
+  return {
+    x,
+    y
   };
 }
 

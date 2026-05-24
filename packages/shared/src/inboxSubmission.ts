@@ -4,7 +4,6 @@ export const hivewardInboxSubmissionSchema = "hiveward.inbox-submission/v1";
 
 export const hivewardBlueprintNodeTypes = [
   "agent",
-  "parallel_agents",
   "manager",
   "manager_slot",
   "loop",
@@ -78,7 +77,8 @@ export const hivewardInboxSubmissionContract = [
   "- A manager_slot is a container for subordinate nodes. It must use type \"manager_slot\" with config.managerNodeId and config.slot.",
   "- Subordinate nodes inside a slot set parentId to the manager_slot node id.",
   "- A manager_slot may be empty when it is intentionally a planning placeholder or a phase container for later editing.",
-  "- When the user asks for a complete runnable business blueprint, prefer adding one or more child agent or parallel_agents nodes inside each concrete phase slot.",
+  "- When the user asks for a complete runnable business blueprint, prefer adding one or more child agent nodes inside each concrete phase slot.",
+  "- Express parallel work with manager_slot config.executionMode \"parallel\" and config.parallelLaneCount, not with standalone parallel agent nodes.",
   "- For requested phases such as research, collection, evaluation, QA, or report generation, create child nodes with concrete prompts unless the phase is intentionally left as a placeholder.",
   "- Do not connect a manager directly to an inner agent when manager_slot nodes exist.",
   "- Do not connect manager_slot nodes to each other as a sequence.",
@@ -131,8 +131,7 @@ export const hivewardInboxSubmissionContract = [
   "",
   "Do not use from/to in new outputs. Use source/target.",
   "Do not put runtimeId inside config. runtimeId belongs at node.runtimeId.",
-  "When the conversation or user selected Codex or Claude Code as the harness, use runtimeId \"codex\" or \"claude\" for runnable agent, manager, and parallel_agents nodes unless the user explicitly asks for OpenClaw.",
-  "parallel_agents may set one top-level runtimeId; all agents inside that node inherit it.",
+  "When the conversation or user selected Codex or Claude Code as the harness, use runtimeId \"codex\" or \"claude\" for runnable agent and manager nodes unless the user explicitly asks for OpenClaw.",
   "",
   "Canonical blueprint_proposal example:",
   JSON.stringify({

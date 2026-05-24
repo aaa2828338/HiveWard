@@ -77,6 +77,10 @@ export interface RoleDirectoryResponse {
   architecture: ArchitectureBlueprintView;
 }
 
+export interface SaveArchitectureBlueprintLayoutRequest {
+  positions: Record<string, ArchitectureBlueprintView["nodes"][number]["position"]>;
+}
+
 export interface ListInboxItemsResponse {
   items: InboxItem[];
 }

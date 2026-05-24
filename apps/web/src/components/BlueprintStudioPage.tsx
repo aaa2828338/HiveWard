@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import {
   applyNodeChanges,
   Background,
+  BackgroundVariant,
   BaseEdge,
   Controls,
   Handle,
@@ -210,6 +211,7 @@ export function BlueprintStudioPage({
   onCancelBlueprintRun,
   onSelectNode,
   onUpdateBlueprint,
+  onUpdateArchitectureLayout,
   onApproveRun,
   t
 }: {
@@ -237,6 +239,7 @@ export function BlueprintStudioPage({
   onCancelBlueprintRun: () => void;
   onSelectNode: (nodeId?: string) => void;
   onUpdateBlueprint: (updater: (current: BlueprintDefinition) => BlueprintDefinition) => void;
+  onUpdateArchitectureLayout: (positions: Record<string, CanvasPosition>) => void;
   onApproveRun: () => void;
   t: Messages;
 }) {
@@ -790,9 +793,15 @@ export function BlueprintStudioPage({
     [isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
-  const onArchitectureNodesChange: OnNodesChange<Node<ArchitectureRoleNodeData>> = useCallback((changes) => {
-    setArchitectureFlowNodes((current) => applyNodeChanges(changes, current));
-  }, []);
+  const onArchitectureNodesChange: OnNodesChange<Node<ArchitectureRoleNodeData>> = useCallback(
+    (changes) => {
+      setArchitectureFlowNodes((current) => applyNodeChanges(changes, current));
+      const positionChanges = collectArchitectureNodePositionChanges(changes);
+      if (positionChanges.size === 0) return;
+      onUpdateArchitectureLayout(Object.fromEntries(positionChanges));
+    },
+    [onUpdateArchitectureLayout]
+  );
 
   const onConnect = useCallback(
     (connection: Connection) => {
@@ -1237,7 +1246,7 @@ export function BlueprintStudioPage({
               fitViewOptions={{ padding: 0.28 }}
               proOptions={{ hideAttribution: true }}
             >
-              <Background gap={24} size={2} />
+              <Background color="var(--architecture-grid-line)" gap={36} lineWidth={1} variant={BackgroundVariant.Lines} />
               <BlueprintCornerStack
                 board={blueprintBoard}
                 copy={boardCopy}
@@ -3006,6 +3015,16 @@ function getConnectionEndPoint(event: globalThis.MouseEvent | globalThis.TouchEv
 }
 
 function collectBlueprintNodePositionChanges(changes: NodeChange<Node<BlueprintNodeCardData>>[]): Map<string, CanvasPosition> {
+  const positions = new Map<string, CanvasPosition>();
+  for (const change of changes) {
+    if (change.type !== "position" || !change.position) continue;
+    if (change.dragging === true) continue;
+    positions.set(change.id, change.position);
+  }
+  return positions;
+}
+
+function collectArchitectureNodePositionChanges(changes: NodeChange<Node<ArchitectureRoleNodeData>>[]): Map<string, CanvasPosition> {
   const positions = new Map<string, CanvasPosition>();
   for (const change of changes) {
     if (change.type !== "position" || !change.position) continue;

@@ -44,6 +44,7 @@ import type {
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
+  SaveArchitectureBlueprintLayoutRequest,
   SaveBlueprintRequest,
   ChatAttachment,
   ChatHistoryMessage,
@@ -511,6 +512,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.put("/api/roles/architecture-layout", async (req, res, next) => {
+    try {
+      const body = normalizeSaveArchitectureBlueprintLayoutRequest(req.body);
+      res.json(await store.saveArchitectureLayout(body.positions));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/inbox", async (_req, res, next) => {
     try {
       res.json({ items: await store.listInboxItems() });
@@ -845,6 +855,22 @@ function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRu
   return {
     nodeRunId: readOptionalString(value.nodeRunId)
   };
+}
+
+function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {
+  if (!isPlainRecord(value) || !isPlainRecord(value.positions)) {
+    throw new Error("Architecture layout request must include positions.");
+  }
+
+  const positions: SaveArchitectureBlueprintLayoutRequest["positions"] = {};
+  for (const [nodeId, position] of Object.entries(value.positions)) {
+    if (!isPlainRecord(position)) continue;
+    const x = position.x;
+    const y = position.y;
+    if (typeof x !== "number" || !Number.isFinite(x) || typeof y !== "number" || !Number.isFinite(y)) continue;
+    positions[nodeId] = { x, y };
+  }
+  return { positions };
 }
 
 function normalizeCreateChatSessionRequest(value: unknown): CreateChatSessionRequest {

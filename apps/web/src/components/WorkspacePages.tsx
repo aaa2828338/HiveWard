@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
   Trash2
 } from "lucide-react";
 import type {
@@ -488,6 +489,14 @@ export function RunsPage({
     setActiveIssueKey(undefined);
   }, [activeIssueKey, issues]);
 
+  useEffect(() => {
+    if (!activeRun || activeIssueKey || issues.length === 0) return;
+    const firstIssueWithDetail = issues.find(
+      (issue) => issue.outputBody !== undefined || issue.nodeRun?.output !== undefined || issue.nodeRun?.error
+    );
+    setActiveIssueKey((firstIssueWithDetail ?? issues[0])?.key);
+  }, [activeIssueKey, activeRun?.run.id, issues]);
+
   const acknowledgeTerminalRun = useCallback(
     (blueprintId: string) => {
       const stats = blueprintRunStats.get(blueprintId);
@@ -708,22 +717,98 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   onApprove: (blueprintRunId: string, nodeRunId: string) => void;
-  onApproveInboxItem: (itemId: string) => void;
-  onRejectInboxItem: (itemId: string) => void;
+  onApproveInboxItem: (itemId: string, comment?: string) => void;
+  onRejectInboxItem: (itemId: string, comment?: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
   const inboxCopy = getInboxCopy(language);
-  const pendingInboxItems = inboxItems.filter((item) => item.status === "pending");
+  const pendingInboxItems = useMemo(() => inboxItems.filter((item) => item.status === "pending"), [inboxItems]);
   const totalPending = approvals.length + pendingInboxItems.length;
-  const [selectedApprovalId, setSelectedApprovalId] = useState<string | undefined>(approvals[0]?.nodeRunId);
-  const selectedApproval = approvals.find((approval) => approval.nodeRunId === selectedApprovalId) ?? approvals[0];
+  const [selectedThread, setSelectedThread] = useState<InboxThreadSelection | undefined>(() =>
+    firstInboxThreadSelection(pendingInboxItems, approvals)
+  );
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+  const [localReplies, setLocalReplies] = useState<Record<string, InboxLocalReply[]>>({});
+  const selectedInboxItem =
+    selectedThread?.kind === "inbox"
+      ? pendingInboxItems.find((item) => item.id === selectedThread.id)
+      : undefined;
+  const selectedApproval =
+    selectedThread?.kind === "approval"
+      ? approvals.find((approval) => approval.nodeRunId === selectedThread.id)
+      : undefined;
+  const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
+  const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
+  const selectedMessages = useMemo(
+    () =>
+      selectedThread
+        ? buildInboxConversationMessages({
+            selection: selectedThread,
+            inboxItem: selectedInboxItem,
+            approval: selectedApproval,
+            replies: selectedThreadKey ? (localReplies[selectedThreadKey] ?? []) : [],
+            copy: inboxCopy,
+            t,
+            language
+          })
+        : [],
+    [inboxCopy, language, localReplies, selectedApproval, selectedInboxItem, selectedThread, selectedThreadKey, t]
+  );
 
   useEffect(() => {
-    setSelectedApprovalId((current) => {
-      if (current && approvals.some((approval) => approval.nodeRunId === current)) return current;
-      return approvals[0]?.nodeRunId;
+    setSelectedThread((current) => {
+      if (current && hasInboxThread(current, pendingInboxItems, approvals)) return current;
+      return firstInboxThreadSelection(pendingInboxItems, approvals);
     });
-  }, [approvals]);
+  }, [approvals, pendingInboxItems]);
+
+  const updateReplyDraft = (value: string) => {
+    if (!selectedThreadKey) return;
+    setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: value }));
+  };
+
+  const clearReplyDraft = () => {
+    if (!selectedThreadKey) return;
+    setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
+  };
+
+  const sendLocalReply = () => {
+    if (!selectedThreadKey) return;
+    const body = selectedReplyDraft.trim();
+    if (!body) return;
+    setLocalReplies((current) => ({
+      ...current,
+      [selectedThreadKey]: [
+        ...(current[selectedThreadKey] ?? []),
+        {
+          id: makeLocalInboxReplyId(),
+          body,
+          createdAt: new Date().toISOString()
+        }
+      ]
+    }));
+    clearReplyDraft();
+  };
+
+  const approveSelectedThread = () => {
+    const comment = selectedReplyDraft.trim() || undefined;
+    if (selectedInboxItem) {
+      onApproveInboxItem(selectedInboxItem.id, comment);
+      clearReplyDraft();
+      return;
+    }
+    if (selectedApproval) {
+      onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId);
+      clearReplyDraft();
+    }
+  };
+
+  const rejectSelectedThread = () => {
+    if (!selectedInboxItem) return;
+    const comment = selectedReplyDraft.trim() || undefined;
+    onRejectInboxItem(selectedInboxItem.id, comment);
+    clearReplyDraft();
+  };
 
   return (
     <section className="page-grid trace-page-grid inbox-page-grid">
@@ -747,8 +832,17 @@ export function ApprovalsPage({
               ) : (
                 <>
                 {pendingInboxItems.map((item, index) => (
-                  <article key={item.id} className="inbox-row inbox-formal-row" role="listitem">
-                    <button type="button" className="inbox-row-main" aria-pressed={false}>
+                  <article
+                    key={item.id}
+                    className={`inbox-row inbox-formal-row${selectedInboxItem?.id === item.id ? " selected" : ""}`}
+                    role="listitem"
+                  >
+                    <button
+                      type="button"
+                      className="inbox-row-main"
+                      aria-pressed={selectedInboxItem?.id === item.id}
+                      onClick={() => setSelectedThread({ kind: "inbox", id: item.id })}
+                    >
                       <span className="inbox-row-index">{index + 1}</span>
                       <span className="inbox-row-content">
                         <span className="inbox-row-topline">
@@ -783,14 +877,14 @@ export function ApprovalsPage({
                   </article>
                 ))}
                 {approvals.map((approval, index) => {
-                  const selected = approval.nodeRunId === selectedApproval?.nodeRunId;
+                  const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
                   return (
                     <article key={approval.nodeRunId} className={`inbox-row${selected ? " selected" : ""}`} role="listitem">
                       <button
                         type="button"
                         className="inbox-row-main"
                         aria-pressed={selected}
-                        onClick={() => setSelectedApprovalId(approval.nodeRunId)}
+                        onClick={() => setSelectedThread({ kind: "approval", id: approval.nodeRunId })}
                       >
                         <span className="inbox-row-index">{pendingInboxItems.length + index + 1}</span>
                         <span className="inbox-row-content">
@@ -827,22 +921,166 @@ export function ApprovalsPage({
           <div className="trace-column-header inbox-column-header">
             <h3>{inboxCopy.detailTitle}</h3>
           </div>
-          <div className="content-card stack-card inbox-workspace-column" aria-label={inboxCopy.detailTitle}>
-            <div className="inbox-workspace-placeholder" aria-hidden="true" />
-          </div>
+          <InboxConversationPanel
+            approval={selectedApproval}
+            copy={inboxCopy}
+            inboxItem={selectedInboxItem}
+            language={language}
+            messages={selectedMessages}
+            onApprove={approveSelectedThread}
+            onReject={rejectSelectedThread}
+            onReplyDraftChange={updateReplyDraft}
+            onSendReply={sendLocalReply}
+            replyDraft={selectedReplyDraft}
+          />
         </div>
       </section>
     </section>
   );
 }
 
+type InboxThreadSelection = {
+  kind: "approval" | "inbox";
+  id: string;
+};
+
+type InboxLocalReply = {
+  id: string;
+  body: string;
+  createdAt: string;
+};
+
+type InboxConversationMessage = {
+  id: string;
+  role: "assistant" | "user";
+  speaker: string;
+  body: string;
+  createdAt?: string;
+};
+
+function InboxConversationPanel({
+  approval,
+  copy,
+  inboxItem,
+  language,
+  messages,
+  replyDraft,
+  onApprove,
+  onReject,
+  onReplyDraftChange,
+  onSendReply
+}: {
+  approval?: PendingApprovalItem;
+  copy: InboxCopy;
+  inboxItem?: InboxItem;
+  language: Language;
+  messages: InboxConversationMessage[];
+  replyDraft: string;
+  onApprove: () => void;
+  onReject: () => void;
+  onReplyDraftChange: (value: string) => void;
+  onSendReply: () => void;
+}) {
+  const hasSelection = Boolean(inboxItem || approval);
+  const title = inboxItem?.title ?? (approval ? approvalSubject(approval) : copy.noSelectionTitle);
+  const subtitle = inboxItem
+    ? inboxItem.blueprintName ?? inboxItem.targetRoleId ?? inboxItem.createdByRoleId
+    : approval
+      ? approval.blueprintName
+      : "";
+  const statusLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : approval ? copy.approvalRequest : "";
+
+  return (
+    <section className="content-card inbox-workspace-column inbox-conversation-card" aria-label={copy.detailTitle}>
+      <div className="chat-window-header inbox-conversation-header">
+        <div className="chat-session-view-heading">
+          <span>{copy.conversation}</span>
+          <strong>{title}</strong>
+        </div>
+        <div className="chat-context-strip">
+          {statusLabel && <span className="bound">{statusLabel}</span>}
+          {subtitle && <span>{subtitle}</span>}
+        </div>
+      </div>
+
+      <div className="chat-thread inbox-conversation-thread">
+        {!hasSelection ? (
+          <div className="chat-empty-state">
+            <MessageSquareText size={22} />
+            <strong>{copy.noSelectionTitle}</strong>
+            <span>{copy.noSelectionBody}</span>
+          </div>
+        ) : (
+          messages.map((message) => (
+            <article key={message.id} className={`chat-message-row chat-message-row-${message.role}`}>
+              <div className={`chat-avatar chat-avatar-${message.role}`} aria-label={message.speaker}>
+                {message.role === "user" ? copy.youAvatar : <MessageSquareText size={16} />}
+              </div>
+              <div className={`chat-message chat-message-${message.role}`}>
+                <div className="chat-message-speaker">
+                  <strong>{message.speaker}</strong>
+                  {message.createdAt && <span>{formatDateTime(message.createdAt, language)}</span>}
+                </div>
+                <MarkdownRenderer value={message.body} className="chat-message-body" />
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+
+      <div className="chat-composer inbox-conversation-composer">
+        <textarea
+          value={replyDraft}
+          disabled={!hasSelection}
+          placeholder={hasSelection ? copy.replyPlaceholder : copy.noSelectionBody}
+          onChange={(event) => onReplyDraftChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              onSendReply();
+            }
+          }}
+        />
+        <div className="inbox-conversation-actions">
+          <button type="button" disabled={!hasSelection || !replyDraft.trim()} onClick={onSendReply}>
+            <Send size={15} />
+            {copy.sendReply}
+          </button>
+          <button type="button" className="primary-action" disabled={!hasSelection} onClick={onApprove}>
+            <BadgeCheck size={15} />
+            {copy.approve}
+          </button>
+          <button type="button" className="danger-action" disabled={!inboxItem} onClick={onReject}>
+            <Trash2 size={15} />
+            {copy.reject}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 type InboxCopy = {
+  approvalRequest: string;
+  approve: string;
+  conversation: string;
   detailTitle: string;
   emptyListBody: string;
   emptyListTitle: string;
+  from: string;
   listTitle: string;
+  noSelectionBody: string;
+  noSelectionTitle: string;
   noUpstreamOutput: string;
+  openedAt: string;
+  payload: string;
   reject: string;
+  replyPlaceholder: string;
+  sendReply: string;
+  system: string;
+  to: string;
+  you: string;
+  youAvatar: string;
 };
 
 type InboxContentBlock = {
@@ -854,22 +1092,50 @@ type InboxContentBlock = {
 function getInboxCopy(language: Language): InboxCopy {
   if (language === "zh-CN") {
     return {
-      detailTitle: "邮件详情",
-      emptyListBody: "新的人工审批会按时间出现在这里。",
-      emptyListTitle: "当前没有待审批收件",
-      listTitle: "收件",
-      noUpstreamOutput: "没有拿到上一个节点输出。",
-      reject: "驳回"
+      approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
+      approve: "\u6279\u51c6",
+      conversation: "\u5bf9\u8bdd",
+      detailTitle: "\u5bf9\u8bdd\u8be6\u60c5",
+      emptyListBody: "\u65b0\u7684\u4eba\u5de5\u5ba1\u6279\u4f1a\u6309\u65f6\u95f4\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
+      emptyListTitle: "\u5f53\u524d\u6ca1\u6709\u5f85\u5ba1\u6279\u6536\u4ef6",
+      from: "\u6765\u81ea",
+      listTitle: "\u6536\u4ef6",
+      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u56de\u590d\u6846\u3002",
+      noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
+      noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
+      openedAt: "\u53d1\u8d77\u65f6\u95f4",
+      payload: "\u8be6\u7ec6\u5185\u5bb9",
+      reject: "\u9a73\u56de",
+      replyPlaceholder: "\u8f93\u5165\u56de\u590d\uff0cShift+Enter \u6362\u884c...",
+      sendReply: "\u56de\u590d",
+      system: "HiveWard",
+      to: "\u53d1\u7ed9",
+      you: "\u4f60",
+      youAvatar: "\u4f60"
     };
   }
 
   return {
-    detailTitle: "Message detail",
+    approvalRequest: "Approval request",
+    approve: "Approve",
+    conversation: "Conversation",
+    detailTitle: "Conversation detail",
     emptyListBody: "New human approvals will appear here by request time.",
     emptyListTitle: "No pending inbox items",
+    from: "From",
     listTitle: "Messages",
+    noSelectionBody: "Select a message on the left to show its conversation and reply box here.",
+    noSelectionTitle: "Select a message",
     noUpstreamOutput: "No previous node output was captured.",
-    reject: "Reject"
+    openedAt: "Opened",
+    payload: "Payload",
+    reject: "Reject",
+    replyPlaceholder: "Reply, Shift+Enter for a new line...",
+    sendReply: "Reply",
+    system: "HiveWard",
+    to: "To",
+    you: "You",
+    youAvatar: "You"
   };
 }
 
@@ -923,6 +1189,180 @@ function approvalContentBlocks(approval: PendingApprovalItem, copy: InboxCopy, t
       body: formatted || t.trace.noOutput
     };
   });
+}
+
+function firstInboxThreadSelection(inboxItems: InboxItem[], approvals: PendingApprovalItem[]): InboxThreadSelection | undefined {
+  const firstInboxItem = inboxItems[0];
+  if (firstInboxItem) return { kind: "inbox", id: firstInboxItem.id };
+  const firstApproval = approvals[0];
+  if (firstApproval) return { kind: "approval", id: firstApproval.nodeRunId };
+  return undefined;
+}
+
+function hasInboxThread(selection: InboxThreadSelection, inboxItems: InboxItem[], approvals: PendingApprovalItem[]): boolean {
+  if (selection.kind === "inbox") return inboxItems.some((item) => item.id === selection.id);
+  return approvals.some((approval) => approval.nodeRunId === selection.id);
+}
+
+function inboxThreadKey(selection: InboxThreadSelection): string {
+  return `${selection.kind}:${selection.id}`;
+}
+
+function makeLocalInboxReplyId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `inbox-reply-${crypto.randomUUID()}`;
+  }
+  return `inbox-reply-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function buildInboxConversationMessages({
+  selection,
+  inboxItem,
+  approval,
+  replies,
+  copy,
+  t,
+  language
+}: {
+  selection: InboxThreadSelection;
+  inboxItem?: InboxItem;
+  approval?: PendingApprovalItem;
+  replies: InboxLocalReply[];
+  copy: InboxCopy;
+  t: Messages;
+  language: Language;
+}): InboxConversationMessage[] {
+  const baseMessages =
+    selection.kind === "inbox" && inboxItem
+      ? buildFormalInboxConversation(inboxItem, copy, language)
+      : selection.kind === "approval" && approval
+        ? buildApprovalConversation(approval, copy, t, language)
+        : [];
+
+  return [
+    ...baseMessages,
+    ...replies.map((reply) => ({
+      id: reply.id,
+      role: "user" as const,
+      speaker: copy.you,
+      body: reply.body,
+      createdAt: reply.createdAt
+    }))
+  ];
+}
+
+function buildFormalInboxConversation(item: InboxItem, copy: InboxCopy, language: Language): InboxConversationMessage[] {
+  const facts = [
+    `${copy.from}: ${item.createdByRoleId}`,
+    item.targetRoleId ? `${copy.to}: ${item.targetRoleId}` : undefined,
+    item.blueprintName ? `${copy.conversation}: ${item.blueprintName}` : undefined,
+    `${copy.openedAt}: ${formatDateTime(item.createdAt, language)}`
+  ].filter((fact): fact is string => Boolean(fact));
+  const messages: InboxConversationMessage[] = [
+    {
+      id: `${item.id}:summary`,
+      role: "assistant",
+      speaker: copy.system,
+      body: [`### ${item.title}`, item.summary, ...facts.map((fact) => `- ${fact}`)].join("\n\n"),
+      createdAt: item.createdAt
+    }
+  ];
+
+  const payloadBody = formatInboxPayload(item.payload, copy);
+  if (payloadBody) {
+    messages.push({
+      id: `${item.id}:payload`,
+      role: "assistant",
+      speaker: copy.system,
+      body: payloadBody,
+      createdAt: item.createdAt
+    });
+  }
+
+  return messages;
+}
+
+function buildApprovalConversation(
+  approval: PendingApprovalItem,
+  copy: InboxCopy,
+  t: Messages,
+  language: Language
+): InboxConversationMessage[] {
+  const facts = [
+    `${copy.from}: ${approval.startedBy}`,
+    `${copy.conversation}: ${approval.blueprintName}`,
+    `${copy.openedAt}: ${formatDateTime(approval.requestedAt, language)}`
+  ];
+  const instructions = approval.instructions?.trim();
+  const messages: InboxConversationMessage[] = [
+    {
+      id: `${approval.nodeRunId}:request`,
+      role: "assistant",
+      speaker: copy.system,
+      body: [
+        `### ${approvalSubject(approval)}`,
+        instructions || copy.approvalRequest,
+        ...facts.map((fact) => `- ${fact}`)
+      ].join("\n\n"),
+      createdAt: approval.requestedAt
+    }
+  ];
+
+  messages.push(
+    ...approvalContentBlocks(approval, copy, t).map((block) => ({
+      id: block.key,
+      role: "assistant" as const,
+      speaker: block.label,
+      body: block.body,
+      createdAt: approval.requestedAt
+    }))
+  );
+
+  return messages;
+}
+
+function formatInboxPayload(payload: Record<string, unknown> | undefined, copy: InboxCopy): string {
+  if (!payload) return "";
+  const visiblePayload = compactInboxPayload(payload);
+  const formatted = formatOutput(visiblePayload);
+  if (!formatted.trim() || formatted.trim() === "{}") return "";
+  const trimmed = formatted.length > 6_000 ? `${formatted.slice(0, 6_000)}\n...` : formatted;
+  return [copy.payload, "", "```json", trimmed, "```"].join("\n");
+}
+
+function compactInboxPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key === "blueprintPackage") {
+      compacted[key] = summarizeBlueprintPackagePayload(value);
+      continue;
+    }
+    compacted[key] = value;
+  }
+  return compacted;
+}
+
+function summarizeBlueprintPackagePayload(value: unknown): unknown {
+  if (!isPlainObject(value)) return value;
+  const blueprints = Array.isArray(value.blueprints) ? value.blueprints : [];
+  return {
+    blueprints: blueprints.map((blueprint) =>
+      isPlainObject(blueprint)
+        ? {
+            id: blueprint.id,
+            name: blueprint.name,
+            nodes: Array.isArray(blueprint.nodes) ? blueprint.nodes.length : undefined,
+            edges: Array.isArray(blueprint.edges) ? blueprint.edges.length : undefined
+          }
+        : blueprint
+    ),
+    exportedAt: value.exportedAt,
+    version: value.version
+  };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function DashboardPage({
@@ -1506,13 +1946,15 @@ export function HistoryPage({
   approvals,
   blueprints,
   language,
-  t
+  t,
+  onOpenRun
 }: {
   runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
   blueprints: BlueprintDefinition[];
   language: Language;
   t: Messages;
+  onOpenRun: (runId: string, blueprintId: string) => void;
 }) {
   const copy =
     language === "zh-CN"
@@ -1523,6 +1965,7 @@ export function HistoryPage({
           fromDate: "\u5f00\u59cb\u65e5\u671f",
           toDate: "\u7ed3\u675f\u65e5\u671f",
           noRecords: "\u8be5\u65f6\u95f4\u8303\u56f4\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
+          openRun: "\u67e5\u770b\u8fd0\u884c\u8be6\u60c5",
           startedAt: "\u542f\u52a8\u65f6\u95f4"
         }
       : {
@@ -1532,6 +1975,7 @@ export function HistoryPage({
           fromDate: "Start date",
           toDate: "End date",
           noRecords: "No records for this date range.",
+          openRun: "View run detail",
           startedAt: "Started"
         };
   const [startDate, setStartDate] = useState(() => toDateInputValue(addDays(new Date(), -6)));
@@ -1574,7 +2018,13 @@ export function HistoryPage({
             <div className="table-stack history-list">
               {runHistoryForRange.length ? (
                 runHistoryForRange.map((runView) => (
-                  <div key={runView.run.id} className="table-row history-list-row">
+                  <button
+                    key={runView.run.id}
+                    type="button"
+                    className="table-row history-list-row history-list-button"
+                    title={copy.openRun}
+                    onClick={() => onOpenRun(runView.run.id, runView.run.blueprintId)}
+                  >
                     <div className="history-list-main">
                       <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
                       <p>{runView.run.id}</p>
@@ -1584,7 +2034,7 @@ export function HistoryPage({
                       <span>{copy.startedAt}</span>
                       <time dateTime={runView.run.startedAt}>{formatDateTime(runView.run.startedAt, language)}</time>
                     </div>
-                  </div>
+                  </button>
                 ))
               ) : (
                 <div className="empty-state page-empty">{copy.noRecords}</div>

@@ -322,6 +322,49 @@ describe("apiRouter", () => {
     }
   });
 
+  it("persists architecture blueprint node positions across role rebuilds", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const initial = await readOkJson<{
+          architecture: { nodes: Array<{ id: string; kind: string; position: { x: number; y: number } }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+        const ceo = initial.architecture.nodes.find((node) => node.kind === "ceo")!;
+        const leader = initial.architecture.nodes.find((node) => node.kind === "leader")!;
+
+        const saveLayoutResponse = await fetch(`${baseUrl}/api/roles/architecture-layout`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            positions: {
+              [ceo.id]: { x: -40, y: 16 },
+              [leader.id]: { x: 320, y: 480 }
+            }
+          })
+        });
+        const saved = await readOkJson<{
+          architecture: { nodes: Array<{ id: string; position: { x: number; y: number } }> };
+        }>(saveLayoutResponse);
+        expect(saved.architecture.nodes.find((node) => node.id === ceo.id)?.position).toEqual({ x: -40, y: 16 });
+        expect(saved.architecture.nodes.find((node) => node.id === leader.id)?.position).toEqual({ x: 320, y: 480 });
+
+        await readOkJson(await fetch(`${baseUrl}/api/blueprints`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Layout rebuild coverage" })
+        }));
+
+        const afterRebuild = await readOkJson<{
+          architecture: { nodes: Array<{ id: string; position: { x: number; y: number } }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+        expect(afterRebuild.architecture.nodes.find((node) => node.id === ceo.id)?.position).toEqual({ x: -40, y: 16 });
+        expect(afterRebuild.architecture.nodes.find((node) => node.id === leader.id)?.position).toEqual({ x: 320, y: 480 });
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("injects runtime default models before starting a blueprint run", async () => {
     const fixture = await createStoreFixture();
     const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;

@@ -41,6 +41,7 @@ import type {
   PortableBlueprintPackage,
   RuntimeOverview,
   WorkspaceDashboard,
+  CanvasPosition,
   BlueprintDefinition,
   BlueprintRunSummary,
   BlueprintRunView
@@ -552,6 +553,17 @@ export function App() {
     [selectBlueprint]
   );
 
+  const openRunFromHistory = useCallback((runId: string, blueprintId: string) => {
+    const nextBlueprint = blueprintsRef.current.find((item) => item.id === blueprintId);
+    if (nextBlueprint) {
+      setBlueprint(nextBlueprint);
+    }
+    setRunPageBlueprintId(blueprintId);
+    setSelectedRunId(runId);
+    setSelectedNodeId(undefined);
+    setSection("runs");
+  }, []);
+
   const sidebarMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
     () => ({
       company: companies.length,
@@ -617,6 +629,18 @@ export function App() {
 
   const updateBlueprint = useCallback((updater: (current: BlueprintDefinition) => BlueprintDefinition) => {
     setBlueprint((current) => (current ? updater(current) : current));
+  }, []);
+
+  const updateArchitectureLayout = useCallback((positions: Record<string, CanvasPosition>) => {
+    if (Object.keys(positions).length === 0) return;
+    void api.saveArchitectureLayout(positions)
+      .then((nextRoles) => {
+        setRoleDirectory(nextRoles.roles);
+        setArchitecture(nextRoles.architecture);
+      })
+      .catch((layoutError) => {
+        setError(layoutError instanceof Error ? layoutError.message : messageRef.current.errors.save);
+      });
   }, []);
 
   const mutateDashboard = useCallback((updater: (current: WorkspaceDashboard) => WorkspaceDashboard) => {
@@ -865,9 +889,9 @@ export function App() {
   );
 
   const approveInboxItem = useCallback(
-    (itemId: string) => {
+    (itemId: string, comment?: string) => {
       void withBusy("approveInboxItem", async () => {
-        const result = await api.approveInboxItem(itemId);
+        const result = await api.approveInboxItem(itemId, comment);
         await hydrateWorkspace({ blueprintId: result.importedBlueprints?.[0]?.id ?? blueprint?.id });
       });
     },
@@ -875,9 +899,9 @@ export function App() {
   );
 
   const rejectInboxItem = useCallback(
-    (itemId: string) => {
+    (itemId: string, comment?: string) => {
       void withBusy("rejectInboxItem", async () => {
-        await api.rejectInboxItem(itemId);
+        await api.rejectInboxItem(itemId, comment);
         await hydrateWorkspace({ blueprintId: blueprint?.id });
       });
     },
@@ -1122,6 +1146,7 @@ export function App() {
           onCancelBlueprintRun={cancelBlueprintRun}
           onSelectNode={setSelectedNodeId}
           onUpdateBlueprint={updateBlueprint}
+          onUpdateArchitectureLayout={updateArchitectureLayout}
           onApproveRun={() => approveRun()}
           t={t}
         />
@@ -1220,7 +1245,16 @@ export function App() {
       );
     }
     if (section === "schedule") {
-      return <HistoryPage runs={runs} approvals={approvals} blueprints={blueprints} language={language} t={t} />;
+      return (
+        <HistoryPage
+          runs={runs}
+          approvals={approvals}
+          blueprints={blueprints}
+          language={language}
+          t={t}
+          onOpenRun={openRunFromHistory}
+        />
+      );
     }
     if (section === "channels") {
       return (

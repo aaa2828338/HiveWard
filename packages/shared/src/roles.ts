@@ -44,6 +44,7 @@ export interface CompanyRoleDirectory {
   ceo: CompanyRoleProfile;
   leaders: CompanyRoleProfile[];
   driverBindings: RoleDriverBinding[];
+  architecturePositions?: Record<string, ArchitectureBlueprintNode["position"]>;
   updatedAt: string;
 }
 

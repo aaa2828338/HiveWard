@@ -33,6 +33,7 @@ import type {
   OpenClawVersionResponse,
   RuntimeOverview,
   RuntimeOverviewResponse,
+  SaveArchitectureBlueprintLayoutRequest,
   SaveBlueprintRequest,
   SelectCompanyRequest,
   ApproveBlueprintRunRequest,
@@ -338,6 +339,15 @@ export const api = {
 
   async getRoleDirectory(): Promise<RoleDirectoryResponse> {
     return request<RoleDirectoryResponse>("/api/roles");
+  },
+
+  async saveArchitectureLayout(
+    positions: SaveArchitectureBlueprintLayoutRequest["positions"]
+  ): Promise<RoleDirectoryResponse> {
+    return request<RoleDirectoryResponse>("/api/roles/architecture-layout", {
+      method: "PUT",
+      body: JSON.stringify({ positions } satisfies SaveArchitectureBlueprintLayoutRequest)
+    });
   },
 
   async listInboxItems(): Promise<InboxItem[]> {
