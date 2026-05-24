@@ -614,8 +614,6 @@ export function App() {
     setDashboardDirty(true);
   }, []);
 
-  const refreshWorkspace = useCallback(() => withBusy("refreshWorkspace", () => hydrateWorkspace()), [hydrateWorkspace, withBusy]);
-
   const enterCompany = useCallback(
     (companyId: string) => {
       void withBusy("enterCompany", async () => {
@@ -1056,7 +1054,6 @@ export function App() {
           busyAction={busyAction}
           onSelectBlueprint={selectBlueprint}
           onCreateBlueprint={createBlueprint}
-          onRefreshWorkspace={refreshWorkspace}
           onOpenBlueprintImport={openBlueprintImport}
           onExportBlueprint={exportBlueprint}
           onDeleteBlueprint={deleteBlueprint}

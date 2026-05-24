@@ -143,6 +143,11 @@ const blueprintStepTypes = new Set<BlueprintNodeType>([
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
+type BlueprintDrawerAnchor = {
+  left: number;
+  width: number;
+  bottom: number;
+};
 
 export function BlueprintStudioPage({
   blueprint,
@@ -160,7 +165,6 @@ export function BlueprintStudioPage({
   busyAction,
   onSelectBlueprint,
   onCreateBlueprint,
-  onRefreshWorkspace,
   onOpenBlueprintImport,
   onExportBlueprint,
   onDeleteBlueprint,
@@ -186,7 +190,6 @@ export function BlueprintStudioPage({
   busyAction?: string;
   onSelectBlueprint: (blueprintId: string) => void;
   onCreateBlueprint: () => void;
-  onRefreshWorkspace: () => void;
   onOpenBlueprintImport: () => void;
   onExportBlueprint: (blueprintId?: string) => void;
   onDeleteBlueprint: (blueprintId: string) => void;
@@ -209,6 +212,7 @@ export function BlueprintStudioPage({
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
   const [nodeMenuAnchor, setNodeMenuAnchor] = useState<{ x: number; y: number; placement?: "above" }>({ x: 88, y: 252 });
   const [blueprintDrawerOpen, setBlueprintDrawerOpen] = useState(false);
+  const [blueprintDrawerAnchor, setBlueprintDrawerAnchor] = useState<BlueprintDrawerAnchor | undefined>();
   const [blueprintBoard, setBlueprintBoard] = useState<"business" | "architecture">("business");
   const [drawerSelectedBlueprintId, setDrawerSelectedBlueprintId] = useState<string | undefined>(blueprint?.id);
   const [blueprintSearch, setBlueprintSearch] = useState("");
@@ -411,11 +415,11 @@ export function BlueprintStudioPage({
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
   const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const isCompactBlueprintCanvas = canvasViewportSize.width <= 760;
   const blueprintCornerStyle = useMemo<CSSProperties>(() => {
-    const compact = canvasViewportSize.width <= 760;
-    const buttonSize = compact ? 14 : 20;
-    const gap = compact ? 4 : 6;
-    const switchHeight = compact ? 32 : 37;
+    const buttonSize = isCompactBlueprintCanvas ? 14 : 20;
+    const gap = isCompactBlueprintCanvas ? 4 : 6;
+    const switchHeight = isCompactBlueprintCanvas ? 32 : 37;
     const cornerHeight = buttonSize * 4;
     const miniMapWidth = Math.round(cornerHeight * (blueprintCanvasWorld.viewportWidth / blueprintCanvasWorld.viewportHeight));
     return {
@@ -429,7 +433,41 @@ export function BlueprintStudioPage({
       "--blueprint-minimap-width": `${miniMapWidth}px`,
       "--blueprint-corner-stack-width": `${buttonSize + gap + miniMapWidth}px`
     } as CSSProperties;
-  }, [blueprintCanvasWorld.viewportHeight, blueprintCanvasWorld.viewportWidth, canvasViewportSize.width]);
+  }, [blueprintCanvasWorld.viewportHeight, blueprintCanvasWorld.viewportWidth, isCompactBlueprintCanvas]);
+  const updateBlueprintDrawerAnchor = useCallback(() => {
+    const button = blueprintSelectorButtonRef.current;
+    const panel = canvasPanelRef.current;
+    if (!button || !panel || isCompactBlueprintCanvas) {
+      setBlueprintDrawerAnchor(undefined);
+      return;
+    }
+
+    const buttonRect = button.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const nextAnchor: BlueprintDrawerAnchor = {
+      left: Math.round(buttonRect.left - panelRect.left),
+      width: Math.round(buttonRect.width),
+      bottom: Math.round(panelRect.bottom - buttonRect.top + 8)
+    };
+
+    setBlueprintDrawerAnchor((current) =>
+      current &&
+      current.left === nextAnchor.left &&
+      current.width === nextAnchor.width &&
+      current.bottom === nextAnchor.bottom
+        ? current
+        : nextAnchor
+    );
+  }, [isCompactBlueprintCanvas]);
+  const blueprintDrawerStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!blueprintDrawerAnchor || isCompactBlueprintCanvas) return undefined;
+    return {
+      left: blueprintDrawerAnchor.left,
+      right: "auto",
+      bottom: blueprintDrawerAnchor.bottom,
+      width: blueprintDrawerAnchor.width
+    };
+  }, [blueprintDrawerAnchor, isCompactBlueprintCanvas]);
   const selectedBlueprintNodes = useMemo(() => {
     if (!blueprint || selectedCanvasNodeIds.length === 0) return [];
     const selectedIds = new Set(selectedCanvasNodeIds);
@@ -517,6 +555,18 @@ export function BlueprintStudioPage({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!blueprintDrawerOpen) return;
+    updateBlueprintDrawerAnchor();
+  }, [
+    blueprintDrawerOpen,
+    canBatchEditSelectedAgents,
+    canvasViewportSize.height,
+    canvasViewportSize.width,
+    isCompactBlueprintCanvas,
+    updateBlueprintDrawerAnchor
+  ]);
 
   const patchNodeConfig = useCallback(
     (nodeId: string, patch: Partial<BlueprintNode["config"]>) => {
@@ -803,8 +853,8 @@ export function BlueprintStudioPage({
     setBlueprintCardContextMenu(undefined);
     closeNodeMenu();
     closeNodeContextMenu();
-    void onRefreshWorkspace();
-  }, [blueprint?.id, blueprintDrawerOpen, blueprints, closeNodeContextMenu, closeNodeMenu, onRefreshWorkspace]);
+    updateBlueprintDrawerAnchor();
+  }, [blueprint?.id, blueprintDrawerOpen, blueprints, closeNodeContextMenu, closeNodeMenu, updateBlueprintDrawerAnchor]);
 
   const selectBlueprintCard = useCallback(
     (blueprintId: string) => {
@@ -1192,7 +1242,7 @@ export function BlueprintStudioPage({
           </div>
 
           {blueprintDrawerOpen && (
-            <aside ref={blueprintDrawerRef} className="blueprint-side-panel" aria-label={t.navigation.blueprint}>
+            <aside ref={blueprintDrawerRef} className="blueprint-side-panel" style={blueprintDrawerStyle} aria-label={t.navigation.blueprint}>
               <div className="blueprint-side-panel-header">
                 <div className="blueprint-side-panel-title">
                   <strong>{t.navigation.blueprint}</strong>
