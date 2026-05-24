@@ -14,6 +14,7 @@ import {
   type NodeChange,
   type NodeMouseHandler,
   type OnNodesChange,
+  type OnConnectEnd,
   useReactFlow,
   useStore
 } from "@xyflow/react";
@@ -33,12 +34,20 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Settings2,
   Square,
   Trash2,
   Upload,
   X
 } from "lucide-react";
-import { isAgentBlueprintNode, type AgentRuntimeId } from "@hiveward/shared";
+import {
+  isAgentBlueprintNode,
+  isManagerSlotInnerInHandle,
+  isManagerSlotInnerOutHandle,
+  resolveManagerSlotExecutionMode,
+  resolveManagerSlotParallelLaneCount,
+  type AgentRuntimeId
+} from "@hiveward/shared";
 import type {
   AgentNodeConfig,
   ArchitectureBlueprintView,
@@ -51,6 +60,7 @@ import type {
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
+  ManagerSlotExecutionMode,
   HarnessStatus,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
@@ -118,8 +128,6 @@ const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
 const managerSlotOutHandle = "manager-slot-out";
-const managerSlotInnerOutHandle = "manager-slot-inner-out";
-const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
 const blueprintStepTypes = new Set<BlueprintNodeType>([
   "agent",
@@ -193,6 +201,7 @@ export function BlueprintStudioPage({
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
   const inspectedNode = blueprint?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [batchEditorOpen, setBatchEditorOpen] = useState(false);
   const [localNodes, setLocalNodes] = useState<Node<BlueprintNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
@@ -227,6 +236,7 @@ export function BlueprintStudioPage({
   const blueprintCardContextMenuRef = useRef<HTMLDivElement | null>(null);
   const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean; openedMenu: boolean } | undefined>(undefined);
+  const suppressNextPaneClickRef = useRef(false);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
     setSelectedCanvasNodeIds((current) => {
@@ -399,6 +409,21 @@ export function BlueprintStudioPage({
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
   const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const selectedBlueprintNodes = useMemo(() => {
+    if (!blueprint || selectedCanvasNodeIds.length === 0) return [];
+    const selectedIds = new Set(selectedCanvasNodeIds);
+    return blueprint.nodes.filter((node) => selectedIds.has(node.id));
+  }, [blueprint, selectedCanvasNodeIds]);
+  const selectedAgentNodes = useMemo(
+    () => selectedBlueprintNodes.filter((node): node is BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig } => node.type === "agent"),
+    [selectedBlueprintNodes]
+  );
+  const canBatchEditSelectedAgents = selectedAgentNodes.length > 1;
+
+  useEffect(() => {
+    if (!batchEditorOpen || canBatchEditSelectedAgents) return;
+    setBatchEditorOpen(false);
+  }, [batchEditorOpen, canBatchEditSelectedAgents]);
 
   const rememberAcknowledgedTerminalRunId = useCallback((runId: string) => {
     if (acknowledgedTerminalRunIdsRef.current.has(runId)) return;
@@ -476,6 +501,14 @@ export function BlueprintStudioPage({
     (nodeId: string, patch: Partial<BlueprintNode["config"]>) => {
       if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
+        const normalizedPatch =
+          (patch as Partial<ManagerSlotNodeConfig>).executionMode === "parallel" &&
+          (patch as Partial<ManagerSlotNodeConfig>).parallelLaneCount === undefined
+            ? ({
+                ...patch,
+                parallelLaneCount: 4
+              } as Partial<BlueprintNode["config"]>)
+            : patch;
         const next = {
           ...current,
           nodes: current.nodes.map((node) =>
@@ -484,7 +517,7 @@ export function BlueprintStudioPage({
                   ...node,
                   config: {
                     ...node.config,
-                    ...patch
+                    ...normalizedPatch
                   } as BlueprintNode["config"]
                 }
               : node
@@ -494,6 +527,37 @@ export function BlueprintStudioPage({
       });
     },
     [isBlueprintInteractionLocked, onUpdateBlueprint]
+  );
+
+  const patchSelectedAgentNodes = useCallback(
+    (
+      nodeIds: string[],
+      runtimeId: AgentRuntimeId | undefined,
+      configPatch: Partial<AgentNodeConfig>
+    ) => {
+      if (isBlueprintInteractionLocked || nodeIds.length === 0) return;
+      const selectedIds = new Set(nodeIds);
+      const agentOptions = configuredAgents ?? [];
+      onUpdateBlueprint((current) => ({
+        ...current,
+        nodes: current.nodes.map((node) => {
+          if (!selectedIds.has(node.id) || node.type !== "agent") return node;
+          const runtimeConfigPatch = runtimeId
+            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions)
+            : {};
+          return {
+            ...node,
+            runtimeId: runtimeId ?? node.runtimeId,
+            config: {
+              ...node.config,
+              ...runtimeConfigPatch,
+              ...configPatch
+            } as AgentNodeConfig
+          };
+        })
+      }));
+    },
+    [configuredAgents, isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const patchNode = useCallback(
@@ -586,6 +650,21 @@ export function BlueprintStudioPage({
     setNodeContextMenu({ open: false, x: 0, y: 0, nodeId: undefined });
   }, []);
 
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      if (isBlueprintInteractionLocked) return;
+      if (connectionState.toNode || connectionState.toHandle) return;
+      const point = getConnectionEndPoint(event);
+      if (!point) return;
+      const { x, y } = getMenuPoint(point);
+      closeNodeContextMenu();
+      setInspectedNodeId(undefined);
+      suppressNextPaneClickRef.current = true;
+      openNodeMenuAt(x, y);
+    },
+    [closeNodeContextMenu, isBlueprintInteractionLocked, openNodeMenuAt]
+  );
+
   const clearCanvasSelection = useCallback(() => {
     setSelectedCanvasNodeIdsIfChanged([]);
     onSelectNode(undefined);
@@ -667,9 +746,11 @@ export function BlueprintStudioPage({
   useEffect(() => {
     if (!isBlueprintInteractionLocked) return;
     setInspectedNodeId(undefined);
+    setBatchEditorOpen(false);
     closeNodeMenu();
     closeNodeContextMenu();
     rightDragStateRef.current = undefined;
+    suppressNextPaneClickRef.current = false;
   }, [closeNodeContextMenu, closeNodeMenu, isBlueprintInteractionLocked]);
 
   const openDockNodeMenu = useCallback(
@@ -980,7 +1061,12 @@ export function BlueprintStudioPage({
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
+            onConnectEnd={onConnectEnd}
             onPaneClick={() => {
+              if (suppressNextPaneClickRef.current) {
+                suppressNextPaneClickRef.current = false;
+                return;
+              }
               setSelectedCanvasNodeIdsIfChanged([]);
               onSelectNode(undefined);
               closeNodeMenu();
@@ -1046,6 +1132,18 @@ export function BlueprintStudioPage({
             >
               <Plus size={18} />
             </button>
+            {canBatchEditSelectedAgents && (
+              <button
+                type="button"
+                className="blueprint-dock-batch"
+                title="Batch agent settings"
+                onClick={() => setBatchEditorOpen(true)}
+                disabled={busy || isBlueprintInteractionLocked}
+              >
+                <Settings2 size={16} />
+                <span>{selectedAgentNodes.length}</span>
+              </button>
+            )}
             <button
               ref={blueprintSelectorButtonRef}
               type="button"
@@ -1256,6 +1354,21 @@ export function BlueprintStudioPage({
             onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
           />
         )}
+
+        {batchEditorOpen && blueprint && !isBlueprintInteractionLocked && canBatchEditSelectedAgents && (
+          <BatchAgentSettingsModal
+            nodes={selectedAgentNodes}
+            models={catalog?.models ?? []}
+            configuredAgents={configuredAgents ?? []}
+            harnessStatuses={harnessStatuses}
+            t={t}
+            onClose={() => setBatchEditorOpen(false)}
+            onApply={(runtimeId, configPatch) => {
+              patchSelectedAgentNodes(selectedAgentNodes.map((node) => node.id), runtimeId, configPatch);
+              setBatchEditorOpen(false);
+            }}
+          />
+        )}
       </section>
     </ReactFlowProvider>
   );
@@ -1449,6 +1562,143 @@ function NodeDetailModal({
                 onPatchConfig={onPatchConfig}
               />
             )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BatchAgentSettingsModal({
+  nodes,
+  models,
+  configuredAgents,
+  harnessStatuses,
+  t,
+  onClose,
+  onApply
+}: {
+  nodes: Array<BlueprintNode & { type: "agent"; config: AgentNodeConfig }>;
+  models: NonNullable<CatalogSnapshot["models"]>;
+  configuredAgents: OpenClawConfiguredAgent[];
+  harnessStatuses?: HarnessStatus[];
+  t: Messages;
+  onClose: () => void;
+  onApply: (runtimeId: AgentRuntimeId | undefined, configPatch: Partial<AgentNodeConfig>) => void;
+}) {
+  const [runtimeId, setRuntimeId] = useState<"" | AgentRuntimeId>("");
+  const [openclawAgentId, setOpenclawAgentId] = useState("");
+  const [modelSelection, setModelSelection] = useState("");
+  const [permissionProfile, setPermissionProfile] = useState<"" | NonNullable<AgentNodeConfig["permissionProfile"]>>("");
+  const [workingDirectory, setWorkingDirectory] = useState("");
+  const [timeoutMs, setTimeoutMs] = useState("");
+  const effectiveRuntimeId = runtimeId || commonAgentRuntime(nodes) || "openclaw";
+  const isSdkProvider = effectiveRuntimeId === "claude" || effectiveRuntimeId === "codex";
+  const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
+
+  const apply = () => {
+    const configPatch: Partial<AgentNodeConfig> = {};
+    if (openclawAgentId) configPatch.openclawAgentId = openclawAgentId;
+    if (modelSelection === "__default") {
+      configPatch.modelId = undefined;
+    } else if (modelSelection) {
+      configPatch.modelId = modelSelection;
+    }
+    if (permissionProfile) configPatch.permissionProfile = permissionProfile;
+    if (workingDirectory.trim()) configPatch.workingDirectory = workingDirectory.trim();
+    if (timeoutMs.trim()) configPatch.timeoutMs = clampNumberInput(timeoutMs, 1, 3600000, 600000);
+    onApply(runtimeId || undefined, configPatch);
+  };
+
+  return (
+    <div className="node-modal-backdrop" onClick={onClose}>
+      <section className="node-modal batch-agent-modal" onClick={(event) => event.stopPropagation()}>
+        <header className="node-modal-header">
+          <div>
+            <span className="hero-eyebrow modal-eyebrow">{t.metrics.agents(nodes.length)}</span>
+            <h3>Batch settings</h3>
+          </div>
+          <button type="button" className="icon-button node-modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="node-modal-grid">
+          <div className="node-modal-main">
+            <div className="node-modal-section">
+              <h4>{t.fields.settings}</h4>
+              <div className="config-form node-modal-form">
+                <label>
+                  <span>Runtime</span>
+                  <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value as "" | AgentRuntimeId)}>
+                    <option value="">No change</option>
+                    <option value="openclaw">OpenClaw</option>
+                    <option value="codex">Codex</option>
+                    <option value="claude">Claude Code</option>
+                  </select>
+                </label>
+                {!isSdkProvider && (
+                  <label>
+                    <span>{t.fields.openclawAgent}</span>
+                    <select value={openclawAgentId} onChange={(event) => setOpenclawAgentId(event.target.value)}>
+                      <option value="">No change</option>
+                      {configuredAgents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name ? `${agent.name} (${agent.id})` : agent.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  <span>{t.fields.model}</span>
+                  {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                    <input value={modelSelection} placeholder="No change" onChange={(event) => setModelSelection(event.target.value)} />
+                  ) : (
+                    <select value={modelSelection} onChange={(event) => setModelSelection(event.target.value)}>
+                      <option value="">No change</option>
+                      <option value="__default">{runtimeDefaultModelLabel(effectiveRuntimeId, t)}</option>
+                      {runtimeModelOptions.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+                {isSdkProvider && (
+                  <>
+                    <label>
+                      <span>Permission</span>
+                      <select
+                        value={permissionProfile}
+                        onChange={(event) => setPermissionProfile(event.target.value as "" | NonNullable<AgentNodeConfig["permissionProfile"]>)}
+                      >
+                        <option value="">No change</option>
+                        <option value="read_only">Read only</option>
+                        <option value="workspace_write">Workspace write</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Working directory</span>
+                      <input value={workingDirectory} placeholder="No change" onChange={(event) => setWorkingDirectory(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Timeout ms</span>
+                      <input min={1} type="number" value={timeoutMs} placeholder="No change" onChange={(event) => setTimeoutMs(event.target.value)} />
+                    </label>
+                  </>
+                )}
+              </div>
+              <div className="node-modal-actions">
+                <button type="button" onClick={onClose}>
+                  Cancel
+                </button>
+                <button type="button" className="primary-action" onClick={apply}>
+                  Apply
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </section>
@@ -1735,6 +1985,7 @@ function NodeConfigForm({
 
   if (node.type === "manager_slot") {
     const config = node.config as ManagerSlotNodeConfig;
+    const executionMode = resolveManagerSlotExecutionMode(config);
     return (
       <div className="config-form node-modal-form">
         <label>
@@ -1745,6 +1996,34 @@ function NodeConfigForm({
           <span>{t.fields.slot}</span>
           <input value={config.slot} readOnly />
         </label>
+        <label>
+          <span>{t.fields.mode}</span>
+          <select
+            value={executionMode}
+            onChange={(event) => {
+              const nextMode = event.target.value as ManagerSlotExecutionMode;
+              onPatchConfig({
+                executionMode: nextMode,
+                ...(nextMode === "parallel" ? { parallelLaneCount: resolveManagerSlotParallelLaneCount(config) } : {})
+              });
+            }}
+          >
+            <option value="manual">Manual graph</option>
+            <option value="parallel">Parallel fan-out</option>
+          </select>
+        </label>
+        {executionMode === "parallel" && (
+          <label>
+            <span>{t.fields.parallelLanes}</span>
+            <input
+              min={1}
+              max={16}
+              type="number"
+              value={resolveManagerSlotParallelLaneCount(config)}
+              onChange={(event) => onPatchConfig({ parallelLaneCount: clampNumberInput(event.target.value, 1, 16, 4) })}
+            />
+          </label>
+        )}
         <label>
           <span>{t.fields.manager}</span>
           <input value={config.managerNodeId} readOnly />
@@ -2193,6 +2472,11 @@ function runtimeLabel(runtimeId: AgentRuntimeId): string {
   return "OpenClaw";
 }
 
+function commonAgentRuntime(nodes: Array<BlueprintNode & { type: "agent" }>): AgentRuntimeId | undefined {
+  const runtimes = new Set(nodes.map((node) => node.runtimeId ?? "openclaw"));
+  return runtimes.size === 1 ? [...runtimes][0] : undefined;
+}
+
 function runtimeHarnessId(runtimeId: AgentRuntimeId): HarnessStatus["id"] {
   return runtimeId === "claude" ? "claudeCode" : runtimeId;
 }
@@ -2288,6 +2572,14 @@ function getMenuPoint(event: { clientX: number; clientY: number }): { x: number;
     x: event.clientX + 8,
     y: event.clientY + 8
   };
+}
+
+function getConnectionEndPoint(event: globalThis.MouseEvent | globalThis.TouchEvent): { clientX: number; clientY: number } | undefined {
+  if ("changedTouches" in event) {
+    const touch = event.changedTouches[0];
+    return touch ? { clientX: touch.clientX, clientY: touch.clientY } : undefined;
+  }
+  return { clientX: event.clientX, clientY: event.clientY };
 }
 
 function collectBlueprintNodePositionChanges(changes: NodeChange<Node<BlueprintNodeCardData>>[]): Map<string, CanvasPosition> {
@@ -2662,6 +2954,8 @@ function buildFlowNodes(
   return (blueprint?.nodes ?? []).map((node) => {
     const status = statusByNode.get(node.id)?.status;
     const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
+    const managerSlotConfig = node.type === "manager_slot" ? node.config as ManagerSlotNodeConfig : undefined;
+    const managerSlotExecutionMode = managerSlotConfig ? resolveManagerSlotExecutionMode(managerSlotConfig) : undefined;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     return {
@@ -2683,11 +2977,35 @@ function buildFlowNodes(
         isStartNode: isBlueprintStartNode(blueprint, node, nodesById),
         managerPortCount:
           node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
-        managerSlot: node.type === "manager_slot" ? (node.config as ManagerSlotNodeConfig).slot : undefined,
+        managerSlot: managerSlotConfig?.slot,
+        managerSlotExecutionMode,
+        managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,
         managerSlotSize
       }
     };
   });
+}
+
+function resolveManagerSlotLaneCount(
+  blueprint: BlueprintDefinition | undefined,
+  slotNode: BlueprintNode
+): number {
+  if (!blueprint || slotNode.type !== "manager_slot") return 1;
+  const childIds = new Set(blueprint.nodes.filter((node) => node.parentId === slotNode.id).map((node) => node.id));
+  const innerEdgeCount = blueprint.edges.filter(
+    (edge) =>
+      (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle) && childIds.has(edge.target)) ||
+      (edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle) && childIds.has(edge.source))
+  ).length;
+  const executionMode = resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig);
+  if (executionMode === "parallel") {
+    return Math.max(
+      resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig),
+      childIds.size,
+      Math.ceil(innerEdgeCount / 2)
+    );
+  }
+  return Math.max(1, Math.ceil(innerEdgeCount / 2));
 }
 
 function BlueprintCanvasMiniMap({
@@ -2951,7 +3269,7 @@ function buildFlowEdges(blueprint: BlueprintDefinition | undefined, runStatus?: 
 }
 
 function blueprintEdgeType(edge: BlueprintEdge): Edge["type"] | undefined {
-  if (edge.sourceHandle === managerSlotInnerOutHandle || edge.targetHandle === managerSlotInnerInHandle) return "straight";
+  if (isManagerSlotInnerOutHandle(edge.sourceHandle) || isManagerSlotInnerInHandle(edge.targetHandle)) return "default";
   return undefined;
 }
 
@@ -3018,7 +3336,9 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
     return {
       label: t.defaults.managerSlotLabel,
       managerNodeId: "",
-      slot: 1
+      slot: 1,
+      executionMode: "manual",
+      parallelLaneCount: 4
     };
   }
   if (type === "loop") {

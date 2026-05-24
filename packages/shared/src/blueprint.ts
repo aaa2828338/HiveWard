@@ -36,6 +36,8 @@ export type BlueprintNodeRunStatus =
 
 export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
 
+export type ManagerSlotExecutionMode = "manual" | "parallel";
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -86,6 +88,8 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
 export interface ManagerSlotNodeConfig extends BlueprintNodeBaseConfig {
   managerNodeId: string;
   slot: number;
+  executionMode?: ManagerSlotExecutionMode;
+  parallelLaneCount?: number;
 }
 
 export interface LoopNodeConfig extends BlueprintNodeBaseConfig {
@@ -228,6 +232,7 @@ const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>
 ]);
 
 const blueprintNodeResultRoles = new Set<BlueprintNodeResultRole>(["auto", "final", "ignore"]);
+const managerSlotExecutionModes = new Set<ManagerSlotExecutionMode>(["manual", "parallel"]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
@@ -235,8 +240,38 @@ const managerSlotOutHandle = "manager-slot-out";
 const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
+const maxManagerSlotParallelLaneCount = 16;
 const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
 const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
+
+export function resolveManagerSlotExecutionMode(
+  config: Pick<ManagerSlotNodeConfig, "executionMode">
+): ManagerSlotExecutionMode {
+  return config.executionMode === "parallel" ? "parallel" : "manual";
+}
+
+export function resolveManagerSlotParallelLaneCount(
+  config: Pick<ManagerSlotNodeConfig, "parallelLaneCount">
+): number {
+  if (typeof config.parallelLaneCount !== "number" || !Number.isFinite(config.parallelLaneCount)) return 4;
+  return Math.min(maxManagerSlotParallelLaneCount, Math.max(1, Math.round(config.parallelLaneCount)));
+}
+
+export function managerSlotInnerOutHandleId(lane: number): string {
+  return lane <= 1 ? managerSlotInnerOutHandle : `${managerSlotInnerOutHandle}-${lane}`;
+}
+
+export function managerSlotInnerInHandleId(lane: number): string {
+  return lane <= 1 ? managerSlotInnerInHandle : `${managerSlotInnerInHandle}-${lane}`;
+}
+
+export function isManagerSlotInnerOutHandle(handle: string | null | undefined): boolean {
+  return handle === managerSlotInnerOutHandle || Boolean(handle?.startsWith(`${managerSlotInnerOutHandle}-`));
+}
+
+export function isManagerSlotInnerInHandle(handle: string | null | undefined): boolean {
+  return handle === managerSlotInnerInHandle || Boolean(handle?.startsWith(`${managerSlotInnerInHandle}-`));
+}
 
 export interface BlueprintImportDefaults {
   runtimeId?: AgentRuntimeId;
@@ -1748,8 +1783,9 @@ function layoutManagerSlotChildNodes(
   const outgoing = new Map<string, string[]>();
   for (const edge of edges) {
     if (!childIds.has(edge.target)) continue;
-    if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) continue;
+    if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) continue;
     if (!childIds.has(edge.source)) continue;
+    if (resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig) === "parallel") continue;
     incomingCounts.set(edge.target, (incomingCounts.get(edge.target) ?? 0) + 1);
     outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
   }
@@ -2058,7 +2094,9 @@ function readPortableBlueprintNodeConfig(
     return {
       ...base,
       managerNodeId: readOptionalString(config.managerNodeId) ?? "",
-      slot: readBoundedInteger(config.slot, 1, maxManagerPortCount, 1)
+      slot: readBoundedInteger(config.slot, 1, maxManagerPortCount, 1),
+      executionMode: readManagerSlotExecutionMode(config.executionMode, `${fieldName}.executionMode`),
+      parallelLaneCount: readBoundedInteger(config.parallelLaneCount, 1, maxManagerSlotParallelLaneCount, 4)
     } as ManagerSlotNodeConfig;
   }
 
@@ -2351,13 +2389,13 @@ function normalizeManagerSlotBoundaryEdge(edge: BlueprintEdge, source: Blueprint
   if (source.type === "manager_slot") {
     return {
       ...edge,
-      sourceHandle: managerSlotInnerOutHandle,
+      sourceHandle: isManagerSlotInnerOutHandle(edge.sourceHandle) ? edge.sourceHandle : managerSlotInnerOutHandle,
       condition: edge.condition ?? "success"
     };
   }
   return {
     ...edge,
-    targetHandle: managerSlotInnerInHandle,
+    targetHandle: isManagerSlotInnerInHandle(edge.targetHandle) ? edge.targetHandle : managerSlotInnerInHandle,
     condition: edge.condition ?? "success"
   };
 }
@@ -2383,10 +2421,13 @@ function ensureManagerSlotEdges(edges: BlueprintEdge[], nodes: BlueprintNode[], 
 
   const childNodes = nodes.filter((node) => node.parentId === slotNode.id);
   if (childNodes.length === 0) return nextEdges;
+  if (resolveManagerSlotExecutionMode(slotConfig) === "parallel") {
+    return ensureManagerSlotParallelEdges(nextEdges, slotNode, childNodes);
+  }
 
   const childIds = new Set(childNodes.map((node) => node.id));
-  const hasSlotInputEdge = nextEdges.some((edge) => edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle);
-  const hasSlotOutputEdge = nextEdges.some((edge) => edge.target === slotNode.id && edge.targetHandle === managerSlotInnerInHandle);
+  const hasSlotInputEdge = nextEdges.some((edge) => edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle));
+  const hasSlotOutputEdge = nextEdges.some((edge) => edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle));
   const firstChild = childNodes.find(
     (node) => !nextEdges.some((edge) => edge.target === node.id && (edge.source === slotNode.id || childIds.has(edge.source)))
   ) ?? childNodes[0]!;
@@ -2413,6 +2454,43 @@ function ensureManagerSlotEdges(edges: BlueprintEdge[], nodes: BlueprintNode[], 
     });
   }
   return nextEdges;
+}
+
+function ensureManagerSlotParallelEdges(
+  edges: BlueprintEdge[],
+  slotNode: BlueprintNode,
+  childNodes: BlueprintNode[]
+): BlueprintEdge[] {
+  const childIds = new Set(childNodes.map((node) => node.id));
+  let nextEdges = edges.filter((edge) => !isManagerSlotParallelManagedEdge(edge, slotNode.id, childIds));
+
+  childNodes.forEach((childNode, index) => {
+    const lane = index + 1;
+    nextEdges = appendNormalizedEdge(nextEdges, {
+      id: `edge-${slotNode.id}-${childNode.id}-parallel-input`,
+      source: slotNode.id,
+      sourceHandle: managerSlotInnerOutHandleId(lane),
+      target: childNode.id,
+      condition: "success"
+    });
+    nextEdges = appendNormalizedEdge(nextEdges, {
+      id: `edge-${childNode.id}-${slotNode.id}-parallel-output`,
+      source: childNode.id,
+      target: slotNode.id,
+      targetHandle: managerSlotInnerInHandleId(lane),
+      condition: "success"
+    });
+  });
+
+  return nextEdges;
+}
+
+function isManagerSlotParallelManagedEdge(edge: BlueprintEdge, slotNodeId: string, childIds: Set<string>): boolean {
+  return (
+    (edge.source === slotNodeId && isManagerSlotInnerOutHandle(edge.sourceHandle) && childIds.has(edge.target)) ||
+    (edge.target === slotNodeId && isManagerSlotInnerInHandle(edge.targetHandle) && childIds.has(edge.source)) ||
+    (childIds.has(edge.source) && childIds.has(edge.target))
+  );
 }
 
 function appendNormalizedEdge(edges: BlueprintEdge[], edge: BlueprintEdge): BlueprintEdge[] {
@@ -2503,6 +2581,14 @@ function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNod
     return value as BlueprintNodeResultRole;
   }
   throw new Error(`${fieldName} must be auto, final, or ignore.`);
+}
+
+function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {
+  if (value === undefined || value === null || value === "") return "manual";
+  if (typeof value === "string" && managerSlotExecutionModes.has(value as ManagerSlotExecutionMode)) {
+    return value as ManagerSlotExecutionMode;
+  }
+  throw new Error(`${fieldName} must be manual or parallel.`);
 }
 
 function isBlueprintNodeType(value: string): value is BlueprintNodeType {

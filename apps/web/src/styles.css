@@ -2654,6 +2654,20 @@ dd {
   letter-spacing: 0;
 }
 
+.manager-slot-mode-tag {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  color: #63737d;
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0;
+}
+
+.manager-slot-mode-parallel {
+  color: var(--accent-strong);
+}
+
 .manager-slot-box-wall {
   position: absolute;
   top: 50px;
@@ -2672,6 +2686,31 @@ dd {
 
 .manager-slot-box-handle {
   z-index: 5;
+}
+
+.manager-slot-lane-label {
+  position: absolute;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-50%);
+  border: 1px solid rgb(148 163 184 / 0.18);
+  border-radius: 999px;
+  background: rgb(15 23 42 / 0.68);
+  color: #dbeafe;
+  font-weight: 780;
+  line-height: 1;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
+.manager-slot-lane-label-out {
+  color: #fef3c7;
+}
+
+.manager-slot-lane-label-in {
+  color: #dbeafe;
 }
 
 .manager-slot-box-external {
@@ -2707,6 +2746,13 @@ dd {
   margin-top: 14px;
   max-height: 240px;
   overflow: auto;
+}
+
+.node-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .run-panel,
@@ -4368,7 +4414,8 @@ textarea {
 }
 
 .manager-port-index,
-.manager-slot-box-tag {
+.manager-slot-box-tag,
+.manager-slot-mode-tag {
   color: #a7b4c6;
 }
 
@@ -5283,6 +5330,18 @@ html[data-theme="light"] .node-output-row pre {
   color: var(--accent-strong);
 }
 
+.blueprint-dock-batch {
+  gap: 6px;
+  min-width: 48px;
+  padding: 0 10px;
+  color: var(--accent-strong);
+}
+
+.blueprint-dock-batch span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .blueprint-run-button {
   min-width: 132px;
 }
@@ -5847,6 +5906,7 @@ html[data-theme="light"] .node-menu-item:hover:not(:disabled) {
   }
 
   .blueprint-dock-add,
+  .blueprint-dock-batch,
   .blueprint-run-button {
     flex: 1 1 auto;
   }

@@ -122,6 +122,7 @@ export interface Messages {
     nodeId: string;
     openclawAgent: string;
     output: string;
+    parallelLanes: string;
     position: string;
     ports: string;
     primaryModel: string;
@@ -347,6 +348,7 @@ export const messages: Record<Language, Messages> = {
       nodeId: "Node ID",
       openclawAgent: "OpenClaw Agent",
       output: "Output",
+      parallelLanes: "Parallel lanes",
       position: "Position",
       ports: "Ports",
       primaryModel: "Primary model",
@@ -667,6 +669,7 @@ export const messages: Record<Language, Messages> = {
       nodeId: "节点 ID",
       openclawAgent: "OpenClaw Agent",
       output: "输出",
+      parallelLanes: "\u5e76\u884c\u6392\u6570",
       position: "位置",
       ports: "端口",
       primaryModel: "主模型",

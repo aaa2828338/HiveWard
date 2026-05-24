@@ -3,6 +3,9 @@ import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
   isAgentBlueprintNode,
   resolveAgentRuntimeSource,
+  isManagerSlotInnerInHandle,
+  isManagerSlotInnerOutHandle,
+  resolveManagerSlotExecutionMode,
   type AgentNodeConfig,
   type AgentRuntimeId,
   type ApprovalNodeConfig,
@@ -10,6 +13,7 @@ import {
   type ConditionNodeConfig,
   type LoopNodeConfig,
   type ManagerNodeConfig,
+  type ManagerSlotNodeConfig,
   type OpenClawObjectRef,
   type ParallelAgentsNodeConfig,
   type SendNodeConfig,
@@ -37,8 +41,6 @@ const executableTypes = new Set([
 ]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
-const managerSlotInnerOutHandle = "manager-slot-inner-out";
-const managerSlotInnerInHandle = "manager-slot-inner-in";
 const defaultManagerAgentName = "manager";
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
@@ -747,6 +749,7 @@ export class BlueprintWorker {
         label: target.config.label,
         type: target.type,
         description: target.config.description,
+        executionMode: resolveManagerSlotExecutionMode(target.config as ManagerSlotNodeConfig),
         children
       };
     }
@@ -1419,9 +1422,11 @@ export class BlueprintWorker {
   }
 
   private getScopedIncomingEdges(blueprint: BlueprintDefinition, slotNode: BlueprintNode, node: BlueprintNode): BlueprintEdge[] {
+    const isParallelSlot = this.isParallelManagerSlot(slotNode);
     return blueprint.edges.filter((edge) => {
       if (edge.target !== node.id) return false;
-      if (edge.source === slotNode.id) return edge.sourceHandle === managerSlotInnerOutHandle;
+      if (edge.source === slotNode.id) return isManagerSlotInnerOutHandle(edge.sourceHandle);
+      if (isParallelSlot) return false;
       const source = blueprint.nodes.find((candidate) => candidate.id === edge.source);
       return source?.parentId === slotNode.id;
     });
@@ -1434,7 +1439,7 @@ export class BlueprintWorker {
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number
   ): IncomingEdgeState {
-    if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) return "satisfied";
+    if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) return "satisfied";
     const source = blueprint.nodes.find((candidate) => candidate.id === edge.source);
     if (!source || source.parentId !== slotNode.id) return "blocked";
     const sourceRun = this.findLatestNodeRun(nodeRuns, source.id, undefined, scopeStartIndex);
@@ -1467,7 +1472,7 @@ export class BlueprintWorker {
     const outputs: UpstreamOutput = [];
     for (const edge of incoming) {
       if (this.resolveScopedEdgeState(blueprint, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
-      if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) {
+      if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) {
         outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput));
         continue;
       }
@@ -1486,8 +1491,24 @@ export class BlueprintWorker {
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number
   ): unknown {
+    if (this.isParallelManagerSlot(slotNode)) {
+      const childRuns = childNodes.flatMap((node) => {
+        const nodeRun = this.findLatestNodeRun(nodeRuns, node.id, "succeeded", scopeStartIndex);
+        return nodeRun ? [nodeRun] : [];
+      });
+      if (childRuns.length === 0 || childRuns.length < childNodes.length) return undefined;
+      if (childRuns.length === 1) return childRuns[0]!.output;
+      return {
+        outputs: childRuns.map((nodeRun) => ({
+          nodeId: nodeRun.nodeId,
+          nodeLabel: nodeRun.nodeLabel,
+          output: nodeRun.output
+        }))
+      };
+    }
+
     const explicitOutputs = blueprint.edges
-      .filter((edge) => edge.target === slotNode.id && edge.targetHandle === managerSlotInnerInHandle)
+      .filter((edge) => edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle))
       .flatMap((edge) => {
         const source = childNodes.find((node) => node.id === edge.source);
         if (!source) return [];
@@ -1524,6 +1545,13 @@ export class BlueprintWorker {
       };
     }
     return undefined;
+  }
+
+  private isParallelManagerSlot(slotNode: BlueprintNode): boolean {
+    return (
+      slotNode.type === "manager_slot" &&
+      resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig) === "parallel"
+    );
   }
 
   private syntheticAgentResult(
