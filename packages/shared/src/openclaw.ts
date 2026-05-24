@@ -171,6 +171,7 @@ export interface StartAgentTaskInput {
   timeoutMs?: number;
   outputSchema?: Record<string, unknown>;
   input: unknown;
+  skillIds?: string[];
   tools: string[];
 }
 

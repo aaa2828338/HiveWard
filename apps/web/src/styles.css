@@ -2278,7 +2278,15 @@ dd {
 }
 
 .parallel-agent-card {
+  display: grid;
   gap: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.parallel-agent-list > .parallel-agent-card:first-child {
+  padding-top: 0;
+  border-top: 0;
 }
 
 .parallel-agent-card-header {
@@ -2330,6 +2338,14 @@ dd {
 .skill-item-main span {
   font-size: 12px;
   color: var(--muted);
+}
+
+.node-skill-field .skill-item {
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
 }
 
 .compact-empty-state {
@@ -4119,6 +4135,29 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+.node-title-editable {
+  cursor: text;
+}
+
+.node-title-editable:hover {
+  color: var(--accent);
+}
+
+.node-title-input {
+  width: 100%;
+  min-height: 32px;
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid var(--accent-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 760;
+}
+
 .node-modal-header p {
   color: var(--muted);
   line-height: 1.4;
@@ -4166,8 +4205,29 @@ textarea {
   grid-template-columns: 1fr;
 }
 
-.node-agent-primary-form textarea {
-  min-height: 210px;
+.node-system-prompt-input {
+  min-height: 170px;
+}
+
+.node-user-prompt-input {
+  min-height: 110px;
+}
+
+.node-skill-field {
+  display: grid;
+  gap: 8px;
+}
+
+.node-field-label {
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.skill-empty-text {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .node-advanced-settings {
