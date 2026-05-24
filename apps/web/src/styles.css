@@ -3944,7 +3944,7 @@ textarea {
   opacity: 0.58;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap {
+.blueprint-corner-stack .blueprint-world-minimap {
   width: 150px;
   height: 112px;
   border: 1px solid #263244;
@@ -3955,31 +3955,31 @@ textarea {
   touch-action: none;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-svg {
+.blueprint-corner-stack .blueprint-world-minimap-svg {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-surface {
+.blueprint-corner-stack .blueprint-world-minimap-surface {
   fill: #0b1018;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-mask {
+.blueprint-corner-stack .blueprint-world-minimap-mask {
   fill: rgb(15 19 26 / 0.72);
   stroke: transparent;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-node {
+.blueprint-corner-stack .blueprint-world-minimap-node {
   fill: #64748b;
   stroke: transparent;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-node.selected {
+.blueprint-corner-stack .blueprint-world-minimap-node.selected {
   fill: #f59a0b;
 }
 
-.blueprint-canvas-panel .blueprint-world-minimap-viewport {
+.blueprint-corner-stack .blueprint-world-minimap-viewport {
   fill: transparent;
   stroke: rgb(255 255 255 / 0.92);
   stroke-width: 3;
@@ -3987,14 +3987,14 @@ textarea {
   filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.42));
 }
 
-.blueprint-canvas-panel .react-flow__controls {
+.blueprint-corner-stack .react-flow__controls {
   overflow: hidden;
   border: 1px solid #263244;
   border-radius: var(--radius-sm);
   box-shadow: none;
 }
 
-.blueprint-canvas-panel .react-flow__controls-button {
+.blueprint-corner-stack .react-flow__controls-button {
   width: 30px;
   height: 30px;
   min-height: 30px;
@@ -4005,13 +4005,13 @@ textarea {
   background: #111722;
 }
 
-.blueprint-canvas-panel .react-flow__controls-button:hover {
+.blueprint-corner-stack .react-flow__controls-button:hover {
   color: var(--text);
   background: #1a2230;
   transform: none;
 }
 
-.blueprint-canvas-panel .react-flow__controls-button svg {
+.blueprint-corner-stack .react-flow__controls-button svg {
   fill: currentColor;
 }
 
@@ -5188,37 +5188,37 @@ html[data-theme="light"] .node-handle {
   box-shadow: 0 0 0 1px rgb(15 23 42 / 0.18);
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap,
-html[data-theme="light"] .blueprint-canvas-panel .react-flow__controls {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap,
+html[data-theme="light"] .blueprint-corner-stack .react-flow__controls {
   border-color: #dce3ec;
   background: #ffffff;
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap-surface {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-surface {
   fill: #ffffff;
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .react-flow__controls-button {
+html[data-theme="light"] .blueprint-corner-stack .react-flow__controls-button {
   border-bottom-color: #e5e7eb;
   background: #ffffff;
   color: var(--muted-strong);
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap-mask {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-mask {
   fill: rgb(148 163 184 / 0.18);
   stroke: transparent;
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap-node {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-node {
   fill: #94a3b8;
   stroke: transparent;
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap-node.selected {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-node.selected {
   fill: var(--accent);
 }
 
-html[data-theme="light"] .blueprint-canvas-panel .blueprint-world-minimap-viewport {
+html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-viewport {
   stroke: rgb(255 255 255 / 0.95);
   filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.32));
 }
@@ -9811,6 +9811,9 @@ html[data-theme="light"] .chat-avatar-assistant {
 }
 
 .architecture-blueprint-shell {
+  --blueprint-corner-edge: 6px;
+  --blueprint-corner-stack-width: 230px;
+  --blueprint-switch-height: 37px;
   position: relative;
   min-height: 720px;
   overflow: hidden;
@@ -9821,6 +9824,35 @@ html[data-theme="light"] .chat-avatar-assistant {
     linear-gradient(180deg, rgb(255 255 255 / 0.035) 1px, transparent 1px),
     #0b1217;
   background-size: 36px 36px;
+}
+
+.react-flow__node-architectureRole {
+  z-index: 2;
+}
+
+.architecture-flow-role-card {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+}
+
+.architecture-flow-role-card.architecture-ceo-card {
+  width: 100%;
+}
+
+.architecture-flow-role-card.selected {
+  border-color: var(--accent);
+  outline: var(--selection-ring-width) solid var(--accent);
+  outline-offset: 0;
+}
+
+.architecture-flow-role-card .architecture-role-handle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.architecture-blueprint-edge .react-flow__edge-path {
+  stroke: rgb(148 163 184 / 0.76);
 }
 
 .architecture-blueprint-panel {
@@ -10105,6 +10137,11 @@ html[data-theme="light"] .architecture-role-metrics time {
 }
 
 @media (max-width: 760px) {
+  .architecture-blueprint-shell {
+    --blueprint-corner-edge: 4px;
+    --blueprint-switch-height: 32px;
+  }
+
   .blueprint-canvas-panel {
     --blueprint-corner-edge: 4px;
     --blueprint-corner-gap: 4px;

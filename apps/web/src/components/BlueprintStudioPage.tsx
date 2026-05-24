@@ -3,8 +3,10 @@ import {
   applyNodeChanges,
   Background,
   Controls,
+  Handle,
   ReactFlow,
   ReactFlowProvider,
+  Position,
   SelectionMode,
   type Connection,
   type CoordinateExtent,
@@ -13,6 +15,7 @@ import {
   type Node,
   type NodeChange,
   type NodeMouseHandler,
+  type NodeProps,
   type OnNodesChange,
   type OnConnectEnd,
   useReactFlow,
@@ -57,6 +60,7 @@ import type {
   CatalogSnapshot,
   ConditionNodeConfig,
   CompanyRoleDirectory,
+  CompanyRoleKind,
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
@@ -93,7 +97,8 @@ import {
 } from "../lib/run-state";
 
 const nodeTypes = {
-  blueprintNode: BlueprintNodeCard
+  blueprintNode: BlueprintNodeCard,
+  architectureRole: ArchitectureRoleNodeCard
 };
 
 type BlueprintCanvasWorld = {
@@ -142,12 +147,27 @@ const blueprintStepTypes = new Set<BlueprintNodeType>([
 ]);
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
+const architectureCeoNodeSize: CanvasSize = { width: 420, height: 86 };
+const architectureLeaderNodeSize: CanvasSize = { width: 340, height: 220 };
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
 type BlueprintDrawerAnchor = {
   left: number;
   width: number;
   bottom: number;
 };
+
+interface ArchitectureRoleNodeData extends Record<string, unknown> {
+  label: string;
+  roleKind: CompanyRoleKind;
+  blueprintId?: string;
+  blueprintName?: string;
+  pendingApprovalCount: number;
+  latestRunStatus?: BlueprintRunSummary["status"];
+  latestRunAt?: string;
+  leaderCount?: number;
+  copy: BlueprintBoardCopy;
+  onOpenBlueprint: (blueprintId: string) => void;
+}
 
 export function BlueprintStudioPage({
   blueprint,
@@ -251,7 +271,7 @@ export function BlueprintStudioPage({
       }
       return nextIds;
     });
-  }, []);
+  }, [blueprintBoard]);
 
   const workspaceRunStatus = resolveRunViewStatus(runView);
   const workspaceTerminalRunSeen = Boolean(
@@ -434,6 +454,18 @@ export function BlueprintStudioPage({
       "--blueprint-corner-stack-width": `${buttonSize + gap + miniMapWidth}px`
     } as CSSProperties;
   }, [blueprintCanvasWorld.viewportHeight, blueprintCanvasWorld.viewportWidth, isCompactBlueprintCanvas]);
+  const openArchitectureBlueprint = useCallback(
+    (blueprintId: string) => {
+      onSelectBlueprint(blueprintId);
+      setBlueprintBoard("business");
+    },
+    [onSelectBlueprint]
+  );
+  const architectureFlowNodes = useMemo(
+    () => buildArchitectureFlowNodes(architecture, roleDirectory, blueprints, boardCopy, openArchitectureBlueprint),
+    [architecture, blueprints, boardCopy, openArchitectureBlueprint, roleDirectory]
+  );
+  const architectureFlowEdges = useMemo(() => buildArchitectureFlowEdges(architecture), [architecture]);
   const updateBlueprintDrawerAnchor = useCallback(() => {
     const button = blueprintSelectorButtonRef.current;
     const panel = canvasPanelRef.current;
@@ -1053,19 +1085,41 @@ export function BlueprintStudioPage({
 
   if (blueprintBoard === "architecture") {
     return (
-      <section className="blueprint-shell compact-blueprint-shell architecture-blueprint-shell">
-        <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
-        <ArchitectureBlueprintPanel
-          architecture={architecture}
-          blueprints={blueprints}
-          roleDirectory={roleDirectory}
-          copy={boardCopy}
-          onOpenBlueprint={(blueprintId) => {
-            onSelectBlueprint(blueprintId);
-            setBlueprintBoard("business");
-          }}
-        />
-      </section>
+      <ReactFlowProvider>
+        <section className="blueprint-shell compact-blueprint-shell">
+          <section
+            ref={canvasPanelRef}
+            className="blueprint-canvas-panel expanded-blueprint-panel architecture-blueprint-shell"
+            style={blueprintCornerStyle}
+          >
+            <ReactFlow
+              nodes={architectureFlowNodes}
+              edges={architectureFlowEdges}
+              nodeTypes={nodeTypes}
+              translateExtent={blueprintCanvasWorld.extent}
+              nodeExtent={blueprintCanvasWorld.extent}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              panOnDrag={[1, 2]}
+              minZoom={0.35}
+              maxZoom={1.5}
+              fitView
+              fitViewOptions={{ padding: 0.28 }}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background gap={24} size={2} />
+              <BlueprintCornerStack
+                board={blueprintBoard}
+                copy={boardCopy}
+                canvasWorld={blueprintCanvasWorld}
+                nodes={architectureFlowNodes}
+                style={blueprintCornerStyle}
+                onChange={setBlueprintBoard}
+              />
+            </ReactFlow>
+          </section>
+        </section>
+      </ReactFlowProvider>
     );
   }
 
@@ -1186,13 +1240,14 @@ export function BlueprintStudioPage({
             proOptions={{ hideAttribution: true }}
           >
             <Background gap={24} size={2} />
-            <div className="blueprint-corner-stack" style={blueprintCornerStyle} aria-label="Blueprint viewport tools">
-              <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
-              <div className="blueprint-corner-toolrow">
-                <Controls position="top-left" />
-                <BlueprintCanvasMiniMap canvasWorld={blueprintCanvasWorld} nodes={localNodes} />
-              </div>
-            </div>
+            <BlueprintCornerStack
+              board={blueprintBoard}
+              copy={boardCopy}
+              canvasWorld={blueprintCanvasWorld}
+              nodes={localNodes}
+              style={blueprintCornerStyle}
+              onChange={setBlueprintBoard}
+            />
           </ReactFlow>
 
           <div className="blueprint-action-dock" aria-label={t.navigation.blueprint}>
@@ -1506,76 +1561,68 @@ function BlueprintBoardSwitch({
   );
 }
 
-function ArchitectureBlueprintPanel({
-  architecture,
-  blueprints,
-  roleDirectory,
+function BlueprintCornerStack({
+  board,
   copy,
-  onOpenBlueprint
+  canvasWorld,
+  nodes,
+  style,
+  onChange
 }: {
-  architecture?: ArchitectureBlueprintView;
-  blueprints: BlueprintDefinition[];
-  roleDirectory?: CompanyRoleDirectory;
+  board: "business" | "architecture";
   copy: BlueprintBoardCopy;
-  onOpenBlueprint: (blueprintId: string) => void;
+  canvasWorld: BlueprintCanvasWorld;
+  nodes: Node[];
+  style: CSSProperties;
+  onChange: (board: "business" | "architecture") => void;
 }) {
-  const ceoNode = architecture?.nodes.find((node) => node.kind === "ceo");
-  const leaderNodes = architecture?.nodes.filter((node) => node.kind === "leader") ?? [];
-  const leaderCount = roleDirectory?.leaders.length ?? leaderNodes.length;
+  return (
+    <div className="blueprint-corner-stack" style={style} aria-label="Blueprint viewport tools">
+      <BlueprintBoardSwitch board={board} copy={copy} onChange={onChange} />
+      <div className="blueprint-corner-toolrow">
+        <Controls position="top-left" />
+        <BlueprintCanvasMiniMap canvasWorld={canvasWorld} nodes={nodes} />
+      </div>
+    </div>
+  );
+}
+
+function ArchitectureRoleNodeCard({ data, selected }: NodeProps) {
+  const nodeData = data as ArchitectureRoleNodeData;
+  const isCeo = nodeData.roleKind === "ceo";
+  const blueprintLabel = nodeData.blueprintName ?? nodeData.blueprintId;
 
   return (
-    <section className="architecture-blueprint-panel">
-      <div className="architecture-blueprint-rail">
-        <div className="architecture-role-card architecture-ceo-card">
-          <span className="architecture-role-icon">
-            <ShieldCheck size={20} />
-          </span>
-          <div>
-            <span>{copy.ceo}</span>
-            <strong>{ceoNode?.label ?? roleDirectory?.ceo.label ?? "CEO"}</strong>
-          </div>
-          <div className="architecture-role-metrics">
-            <span>{ceoNode?.pendingApprovalCount ?? 0} {copy.pending}</span>
-            <span>{leaderCount} {copy.leader}</span>
-          </div>
-        </div>
-        <div className="architecture-spine" aria-hidden="true" />
+    <article
+      className={`architecture-role-card architecture-flow-role-card ${isCeo ? "architecture-ceo-card" : "architecture-leader-card"} ${selected ? "selected" : ""}`}
+    >
+      <Handle id="architecture-role-in" className="node-handle architecture-role-handle" type="target" position={Position.Top} />
+      <span className={`architecture-role-icon${isCeo ? "" : " leader"}`}>
+        {isCeo ? <ShieldCheck size={20} /> : <Bot size={19} />}
+      </span>
+      <div className="architecture-role-main">
+        <span>{isCeo ? nodeData.copy.ceo : nodeData.copy.leader}</span>
+        <strong>{nodeData.label}</strong>
+        {!isCeo && blueprintLabel && <small>{blueprintLabel}</small>}
+        {!isCeo && !blueprintLabel && <small>{nodeData.copy.architectureEmpty}</small>}
       </div>
-
-      {leaderNodes.length === 0 ? (
-        <div className="architecture-empty">{copy.architectureEmpty}</div>
-      ) : (
-        <div className="architecture-leader-grid">
-          {leaderNodes.map((node) => {
-            const blueprintId = node.blueprintId;
-            const blueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : undefined;
-            return (
-              <article key={node.id} className="architecture-role-card architecture-leader-card">
-                <span className="architecture-role-icon leader">
-                  <Bot size={19} />
-                </span>
-                <div className="architecture-role-main">
-                  <span>{copy.leader}</span>
-                  <strong>{node.label}</strong>
-                  <small>{node.blueprintName ?? blueprint?.name ?? blueprintId}</small>
-                </div>
-                <div className="architecture-role-metrics">
-                  <span>{node.pendingApprovalCount} {copy.pending}</span>
-                  <span>{node.latestRunStatus ? `${copy.latestRun}: ${node.latestRunStatus}` : copy.noRun}</span>
-                  {node.latestRunAt && <time dateTime={node.latestRunAt}>{formatArchitectureDate(node.latestRunAt)}</time>}
-                </div>
-                {blueprintId && (
-                  <button type="button" className="architecture-open-blueprint" onClick={() => onOpenBlueprint(blueprintId)}>
-                    <LayoutTemplate size={15} />
-                    {copy.openBlueprint}
-                  </button>
-                )}
-              </article>
-            );
-          })}
-        </div>
+      <div className="architecture-role-metrics">
+        <span>{nodeData.pendingApprovalCount} {nodeData.copy.pending}</span>
+        {isCeo ? (
+          <span>{nodeData.leaderCount ?? 0} {nodeData.copy.leader}</span>
+        ) : (
+          <span>{nodeData.latestRunStatus ? `${nodeData.copy.latestRun}: ${nodeData.latestRunStatus}` : nodeData.copy.noRun}</span>
+        )}
+        {!isCeo && nodeData.latestRunAt && <time dateTime={nodeData.latestRunAt}>{formatArchitectureDate(nodeData.latestRunAt)}</time>}
+      </div>
+      {!isCeo && nodeData.blueprintId && (
+        <button type="button" className="architecture-open-blueprint" onClick={() => nodeData.onOpenBlueprint(nodeData.blueprintId!)}>
+          <LayoutTemplate size={15} />
+          {nodeData.copy.openBlueprint}
+        </button>
       )}
-    </section>
+      <Handle id="architecture-role-out" className="node-handle architecture-role-handle" type="source" position={Position.Bottom} />
+    </article>
   );
 }
 
@@ -3071,6 +3118,66 @@ function buildFlowNodes(
   });
 }
 
+function buildArchitectureFlowNodes(
+  architecture: ArchitectureBlueprintView | undefined,
+  roleDirectory: CompanyRoleDirectory | undefined,
+  blueprints: BlueprintDefinition[],
+  copy: BlueprintBoardCopy,
+  onOpenBlueprint: (blueprintId: string) => void
+): Node<ArchitectureRoleNodeData>[] {
+  const architectureNodes = architecture?.nodes ?? [];
+  const leaderCount = roleDirectory?.leaders.length ?? architectureNodes.filter((node) => node.kind === "leader").length;
+  const fallbackCeo: ArchitectureBlueprintView["nodes"][number] | undefined = roleDirectory?.ceo
+    ? {
+        id: roleDirectory.ceo.id,
+        roleId: roleDirectory.ceo.id,
+        kind: "ceo" as const,
+        label: roleDirectory.ceo.label,
+        pendingApprovalCount: 0,
+        position: { x: 0, y: 0 }
+      }
+    : undefined;
+  const nodes = architectureNodes.length > 0 ? architectureNodes : fallbackCeo ? [fallbackCeo] : [];
+
+  return nodes.map((node) => {
+    const isCeo = node.kind === "ceo";
+    const blueprint = node.blueprintId ? blueprints.find((item) => item.id === node.blueprintId) : undefined;
+    const size = isCeo ? architectureCeoNodeSize : architectureLeaderNodeSize;
+    return {
+      id: node.id,
+      type: "architectureRole",
+      position: node.position,
+      initialWidth: size.width,
+      initialHeight: size.height,
+      style: { width: size.width, height: size.height },
+      data: {
+        label: node.label,
+        roleKind: node.kind,
+        blueprintId: node.blueprintId,
+        blueprintName: node.blueprintName ?? blueprint?.name,
+        pendingApprovalCount: node.pendingApprovalCount,
+        latestRunStatus: node.latestRunStatus,
+        latestRunAt: node.latestRunAt,
+        leaderCount: isCeo ? leaderCount : undefined,
+        copy,
+        onOpenBlueprint
+      }
+    };
+  });
+}
+
+function buildArchitectureFlowEdges(architecture: ArchitectureBlueprintView | undefined): Edge[] {
+  return (architecture?.edges ?? []).map((edge) => ({
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: "architecture-role-out",
+    targetHandle: "architecture-role-in",
+    className: "blueprint-edge architecture-blueprint-edge",
+    style: { strokeWidth: 3.5 }
+  }));
+}
+
 function resolveManagerSlotLaneCount(
   blueprint: BlueprintDefinition | undefined,
   slotNode: BlueprintNode
@@ -3098,7 +3205,7 @@ function BlueprintCanvasMiniMap({
   nodes
 }: {
   canvasWorld: BlueprintCanvasWorld;
-  nodes: Node<BlueprintNodeCardData>[];
+  nodes: Node[];
 }) {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const { setCenter } = useReactFlow();
@@ -3222,7 +3329,7 @@ type MiniMapNodeBox = {
   selected: boolean;
 };
 
-function buildMiniMapNodeBoxes(nodes: Node<BlueprintNodeCardData>[]): MiniMapNodeBox[] {
+function buildMiniMapNodeBoxes(nodes: Node[]): MiniMapNodeBox[] {
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const absolutePositions = new Map<string, CanvasPosition>();
   return nodes
@@ -3242,8 +3349,8 @@ function buildMiniMapNodeBoxes(nodes: Node<BlueprintNodeCardData>[]): MiniMapNod
 }
 
 function resolveFlowNodeAbsolutePosition(
-  node: Node<BlueprintNodeCardData>,
-  nodesById: Map<string, Node<BlueprintNodeCardData>>,
+  node: Node,
+  nodesById: Map<string, Node>,
   cache: Map<string, CanvasPosition>
 ): CanvasPosition {
   const cached = cache.get(node.id);
@@ -3258,7 +3365,7 @@ function resolveFlowNodeAbsolutePosition(
   return position;
 }
 
-function resolveFlowNodeSize(node: Node<BlueprintNodeCardData>): CanvasSize {
+function resolveFlowNodeSize(node: Node): CanvasSize {
   return {
     width: node.width ?? node.measured?.width ?? node.initialWidth ?? readCssPixelValue(node.style?.width) ?? defaultChildNodeSize.width,
     height: node.height ?? node.measured?.height ?? node.initialHeight ?? readCssPixelValue(node.style?.height) ?? defaultChildNodeSize.height

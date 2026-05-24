@@ -88,6 +88,7 @@ const systemLabels: Record<AppSystemId, string> = {
 };
 
 const RUN_POLL_INTERVAL_MS = 2500;
+const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 const harnessSkillHarnessIds: HarnessId[] = ["openclaw", "claudeCode", "codex"];
@@ -173,6 +174,9 @@ export function App() {
   });
   const t = messages[language];
   const messageRef = useRef(t);
+  const blueprintRef = useRef<BlueprintDefinition | undefined>(undefined);
+  const blueprintsRef = useRef<BlueprintDefinition[]>([]);
+  const busyActionRef = useRef<string | undefined>(undefined);
   const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
@@ -183,8 +187,17 @@ export function App() {
   }, [t]);
 
   useEffect(() => {
+    blueprintRef.current = blueprint;
     selectedBlueprintIdRef.current = blueprint?.id;
-  }, [blueprint?.id]);
+  }, [blueprint]);
+
+  useEffect(() => {
+    blueprintsRef.current = blueprints;
+  }, [blueprints]);
+
+  useEffect(() => {
+    busyActionRef.current = busyAction;
+  }, [busyAction]);
 
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
@@ -975,6 +988,52 @@ export function App() {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [applyRunView, pollingRunId]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const pollForBlueprintChanges = async () => {
+      if (busyActionRef.current) return;
+
+      try {
+        const previousBlueprints = blueprintsRef.current;
+        const nextBlueprints = await api.listBlueprints();
+        if (cancelled || blueprintCollectionSignature(nextBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
+
+        const selectedBlueprintId = selectedBlueprintIdRef.current;
+        if (!hasLocalBlueprintEdits(blueprintRef.current, previousBlueprints)) {
+          await hydrateWorkspace({ blueprintId: selectedBlueprintId });
+          return;
+        }
+
+        setBlueprints(nextBlueprints);
+        const nextRoles = await api.getRoleDirectory().catch(() => undefined);
+        if (cancelled || !nextRoles) return;
+        setRoleDirectory(nextRoles.roles);
+        setArchitecture(nextRoles.architecture);
+      } catch {
+        // Background refresh is opportunistic; user-triggered actions surface errors.
+      }
+    };
+
+    const scheduleNextPoll = () => {
+      timer = window.setTimeout(() => {
+        void pollForBlueprintChanges().finally(() => {
+          if (!cancelled) scheduleNextPoll();
+        });
+      }, BLUEPRINT_CHANGE_POLL_INTERVAL_MS);
+    };
+
+    scheduleNextPoll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [hydrateWorkspace, selectedCompanyId]);
 
   const renderSection = () => {
     if (section === "hivewardHome") {
@@ -1844,6 +1903,17 @@ function replaceBlueprint(blueprints: BlueprintDefinition[], blueprint: Blueprin
     return blueprint;
   });
   return replaced ? next : [blueprint, ...next];
+}
+
+function blueprintCollectionSignature(blueprints: BlueprintDefinition[]): string {
+  return JSON.stringify([...blueprints].sort((left, right) => left.id.localeCompare(right.id)));
+}
+
+function hasLocalBlueprintEdits(blueprint: BlueprintDefinition | undefined, serverBlueprints: BlueprintDefinition[]): boolean {
+  if (!blueprint) return false;
+  const serverBlueprint = serverBlueprints.find((candidate) => candidate.id === blueprint.id);
+  if (!serverBlueprint) return false;
+  return JSON.stringify(blueprint) !== JSON.stringify(serverBlueprint);
 }
 
 function defaultNewBlueprintName(index: number, language: Language): string {
