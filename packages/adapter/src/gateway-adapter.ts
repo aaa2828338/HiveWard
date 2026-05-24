@@ -587,8 +587,11 @@ const agentTerminalPollIntervalMs = 5_000;
 const agentTerminalTranscriptGraceMs = 30_000;
 
 export function formatAgentMessage(input: StartAgentTaskInput): string {
+  const skillSection = input.skillIds?.length
+    ? ["Selected skills:", ...input.skillIds.map((skillId) => `- ${skillId}`)].join("\n")
+    : undefined;
   if (input.input === undefined) {
-    return input.prompt;
+    return [input.prompt, skillSection ? "" : undefined, skillSection].filter((section) => section !== undefined).join("\n");
   }
 
   const formattedInput = formatAgentInput(input.input);
@@ -597,6 +600,8 @@ export function formatAgentMessage(input: StartAgentTaskInput): string {
     `Hiveward node run: ${input.nodeRunId}`,
     "",
     input.prompt,
+    skillSection ? "" : undefined,
+    skillSection,
     formattedInput ? "" : undefined,
     formattedInput,
   ].filter((section) => section !== undefined).join("\n");

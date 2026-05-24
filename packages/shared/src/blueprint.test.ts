@@ -199,6 +199,8 @@ describe("blueprint contracts", () => {
 
   it("exports portable blueprint packages without OpenClaw environment bindings", () => {
     const blueprint = createStarterBlueprint("2026-05-18T00:00:00.000Z");
+    const sourceAgent = blueprint.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
+    sourceAgent.skillIds = ["hiveward-ceo"];
     const blueprintPackage = createPortableBlueprintPackage([blueprint], "2026-05-19T00:00:00.000Z");
     const exportedBlueprint = blueprintPackage.blueprints[0]!;
     const exportedAgent = exportedBlueprint.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
@@ -207,6 +209,7 @@ describe("blueprint contracts", () => {
     expect(blueprintPackage.schema).toBe("hiveward.blueprint-package/v1");
     expect(exportedAgent.openclawAgentId).toBeUndefined();
     expect(exportedAgent.modelId).toBeUndefined();
+    expect(exportedAgent.skillIds).toEqual(["hiveward-ceo"]);
     expect(exportedAgent.tools).toEqual([]);
     expect(exportedSend.channelId).toBe("");
     expect(exportedSend.target).toBe("");

@@ -3,6 +3,9 @@ import type { StartAgentTaskInput } from "@hiveward/shared";
 const secretKeyPattern = /(api[_-]?key|auth|credential|password|secret|token)/i;
 
 export function buildPromptEnvelope(input: StartAgentTaskInput): string {
+  const skillText = input.skillIds?.length
+    ? ["", "Selected skills:", ...input.skillIds.map((skillId) => `- ${skillId}`)].join("\n")
+    : "";
   const schemaText = input.outputSchema
     ? [
         "",
@@ -19,6 +22,7 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
     `Blueprint run: ${input.blueprintRunId}`,
     `Node run: ${input.nodeRunId}`,
     `Agent name: ${input.agentName}`,
+    skillText,
     "",
     "Task:",
     input.prompt,
@@ -57,21 +61,23 @@ export function validateOutputSchema(output: string, schema: Record<string, unkn
 }
 
 function matchesSchemaType(value: unknown, schema: Record<string, unknown>): boolean {
-  const expectedType = typeof schema.type === "string" ? schema.type : undefined;
-  if (expectedType && !matchesJsonType(value, expectedType)) return false;
+  const expectedTypes = readSchemaTypes(schema.type);
+  if (expectedTypes.length > 0 && !expectedTypes.some((type) => matchesJsonType(value, type))) return false;
 
-  if (expectedType === "object" && isRecord(value)) {
+  if (expectedTypes.includes("object") && isRecord(value)) {
     const required = Array.isArray(schema.required) ? schema.required : [];
     if (!required.every((key) => typeof key === "string" && Object.hasOwn(value, key))) return false;
+    const requiredKeys = new Set(readRequiredKeys(required));
 
     const properties = isRecord(schema.properties) ? schema.properties : {};
     for (const [key, propertySchema] of Object.entries(properties)) {
       if (!Object.hasOwn(value, key) || !isRecord(propertySchema)) continue;
+      if (!requiredKeys.has(key) && value[key] === null) continue;
       if (!matchesSchemaType(value[key], propertySchema)) return false;
     }
   }
 
-  if (expectedType === "array" && Array.isArray(value) && isRecord(schema.items)) {
+  if (expectedTypes.includes("array") && Array.isArray(value) && isRecord(schema.items)) {
     return value.every((item) => matchesSchemaType(item, schema.items as Record<string, unknown>));
   }
 
@@ -81,8 +87,16 @@ function matchesSchemaType(value: unknown, schema: Record<string, unknown>): boo
 function strictJsonObjectSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const normalized = Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, strictJsonSchemaValue(value)]));
   const type = normalized.type;
-  if (type === "object" || isRecord(normalized.properties)) {
+  const properties = isRecord(normalized.properties) ? normalized.properties : undefined;
+  if (type === "object" || properties) {
     normalized.additionalProperties = false;
+    normalized.required = properties ? Object.keys(properties) : [];
+    const originalRequired = new Set(readRequiredKeys(schema.required));
+    if (properties) {
+      normalized.properties = Object.fromEntries(
+        Object.entries(properties).map(([key, value]) => [key, originalRequired.has(key) ? value : nullableJsonSchemaValue(value)])
+      );
+    }
   }
   return normalized;
 }
@@ -95,6 +109,40 @@ function strictJsonSchemaValue(value: unknown): unknown {
     return value;
   }
   return strictJsonObjectSchema(value);
+}
+
+function nullableJsonSchemaValue(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+
+  const normalized = { ...value };
+  normalized.type = addNullSchemaType(normalized.type);
+  if (Array.isArray(normalized.enum) && !normalized.enum.includes(null)) {
+    normalized.enum = [...normalized.enum, null];
+  }
+  return normalized;
+}
+
+function addNullSchemaType(type: unknown): unknown {
+  if (typeof type === "string") {
+    return type === "null" ? type : [type, "null"];
+  }
+  if (Array.isArray(type)) {
+    return type.includes("null") ? type : [...type, "null"];
+  }
+  return type;
+}
+
+function readSchemaTypes(type: unknown): string[] {
+  if (typeof type === "string") return [type];
+  if (!Array.isArray(type)) return [];
+  return type.filter((item): item is string => typeof item === "string");
+}
+
+function readRequiredKeys(required: unknown): string[] {
+  if (!Array.isArray(required)) return [];
+  return required.filter((item): item is string => typeof item === "string");
 }
 
 function matchesJsonType(value: unknown, expectedType: string): boolean {

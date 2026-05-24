@@ -64,11 +64,13 @@ import type {
   ConditionNodeConfig,
   CompanyRoleDirectory,
   CompanyRoleKind,
+  GroupNodeConfig,
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
   ManagerSlotExecutionMode,
   HarnessStatus,
+  HarnessSkillStatusResponse,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
   ParallelAgentsNodeConfig,
@@ -191,6 +193,7 @@ export function BlueprintStudioPage({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessSkillStatuses,
   runSummaries,
   runView,
   selectedNodeId,
@@ -216,6 +219,7 @@ export function BlueprintStudioPage({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   runSummaries: BlueprintRunSummary[];
   runView?: BlueprintRunView;
   selectedNodeId?: string;
@@ -651,6 +655,47 @@ export function BlueprintStudioPage({
                 parallelLaneCount: 4
               } as Partial<BlueprintNode["config"]>)
             : patch;
+        const currentNode = current.nodes.find((node) => node.id === nodeId);
+        const isManagerSlotAssignmentPatch =
+          currentNode?.type === "manager_slot" && ("managerNodeId" in normalizedPatch || "slot" in normalizedPatch);
+        if (isManagerSlotAssignmentPatch) {
+          const currentSlotConfig = currentNode.config as ManagerSlotNodeConfig;
+          const nextSlotConfig = {
+            ...currentSlotConfig,
+            ...normalizedPatch
+          } as ManagerSlotNodeConfig;
+          const patchedBlueprint: BlueprintDefinition = {
+            ...current,
+            nodes: current.nodes.map((node) =>
+              node.id === nodeId
+                ? {
+                    ...node,
+                    config: nextSlotConfig
+                  }
+                : node
+            )
+          };
+          if (!nextSlotConfig.managerNodeId) {
+            return {
+              ...patchedBlueprint,
+              edges: patchedBlueprint.edges.filter((edge) => !isManagerSlotAssignmentEdge(edge, nodeId))
+            };
+          }
+          const managerNode = patchedBlueprint.nodes.find((node) => node.id === nextSlotConfig.managerNodeId && node.type === "manager");
+          const slotNode = patchedBlueprint.nodes.find((node) => node.id === nodeId && node.type === "manager_slot");
+          if (managerNode && slotNode) {
+            return applyManagerSlotAssignment(
+              patchedBlueprint,
+              {
+                managerNode,
+                slotNode,
+                slot: nextSlotConfig.slot
+              },
+              t
+            );
+          }
+          return patchedBlueprint;
+        }
         const next = {
           ...current,
           nodes: current.nodes.map((node) =>
@@ -668,7 +713,7 @@ export function BlueprintStudioPage({
         return next;
       });
     },
-    [isBlueprintInteractionLocked, onUpdateBlueprint]
+    [isBlueprintInteractionLocked, onUpdateBlueprint, t]
   );
 
   const patchSelectedAgentNodes = useCallback(
@@ -1560,6 +1605,8 @@ export function BlueprintStudioPage({
             catalog={catalog}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
+            harnessSkillStatuses={harnessSkillStatuses}
+            nodes={blueprint.nodes}
             node={inspectedNode}
             t={t}
             onClose={() => {
@@ -1725,31 +1772,28 @@ function ArchitectureRoleDetailSidebar({
 
       <div className="node-modal-grid">
         <div className="node-modal-main">
-          <div className="node-modal-section">
-            <h4>{nodeData.copy.latestRun}</h4>
-            <div className="config-form node-modal-form">
+          <div className="config-form node-modal-form">
+            <label>
+              <span>{nodeData.copy.pending}</span>
+              <input value={String(nodeData.pendingApprovalCount)} readOnly />
+            </label>
+            {isCeo ? (
               <label>
-                <span>{nodeData.copy.pending}</span>
-                <input value={String(nodeData.pendingApprovalCount)} readOnly />
+                <span>{nodeData.copy.leader}</span>
+                <input value={String(nodeData.leaderCount ?? 0)} readOnly />
               </label>
-              {isCeo ? (
-                <label>
-                  <span>{nodeData.copy.leader}</span>
-                  <input value={String(nodeData.leaderCount ?? 0)} readOnly />
-                </label>
-              ) : (
-                <label>
-                  <span>{nodeData.copy.latestRun}</span>
-                  <input value={nodeData.latestRunStatus ?? nodeData.copy.noRun} readOnly />
-                </label>
-              )}
-              {!isCeo && blueprintLabel && (
-                <label>
-                  <span>{nodeData.copy.business}</span>
-                  <input value={blueprintLabel} readOnly />
-                </label>
-              )}
-            </div>
+            ) : (
+              <label>
+                <span>{nodeData.copy.latestRun}</span>
+                <input value={nodeData.latestRunStatus ?? nodeData.copy.noRun} readOnly />
+              </label>
+            )}
+            {!isCeo && blueprintLabel && (
+              <label>
+                <span>{nodeData.copy.business}</span>
+                <input value={blueprintLabel} readOnly />
+              </label>
+            )}
           </div>
         </div>
       </div>
@@ -1807,6 +1851,8 @@ function NodeDetailSidebar({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessSkillStatuses,
+  nodes,
   node,
   t,
   onClose,
@@ -1816,6 +1862,8 @@ function NodeDetailSidebar({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  nodes: BlueprintNode[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -1826,11 +1874,11 @@ function NodeDetailSidebar({
   const channels = catalog?.channels ?? [];
 
   return (
-    <aside className="node-modal node-detail-sidebar" aria-label={t.fields.settings} onPointerDown={(event) => event.stopPropagation()}>
+    <aside className="node-modal node-detail-sidebar" aria-label={node.config.label} onPointerDown={(event) => event.stopPropagation()}>
       <header className="node-modal-header">
         <div>
           <span className="hero-eyebrow modal-eyebrow">{t.nodeTypes[node.type]}</span>
-          <h3>{node.config.label}</h3>
+          <EditableNodeTitle value={node.config.label} onChange={(label) => onPatchConfig({ label })} />
         </div>
         <button type="button" className="icon-button node-modal-close" onClick={onClose}>
           <X size={18} />
@@ -1839,31 +1887,73 @@ function NodeDetailSidebar({
 
       <div className="node-modal-grid">
         <div className="node-modal-main">
-          <div className="node-modal-section">
-            <h4>{t.fields.settings}</h4>
-            <NodeConfigForm
-              catalog={catalog}
-              node={node}
-              configuredAgents={configuredAgents}
-              harnessStatuses={harnessStatuses}
-              models={models}
-              channels={channels}
-              onPatchNode={onPatchNode}
-              onPatchConfig={onPatchConfig}
-              t={t}
-            />
-          </div>
-          {isAgentBlueprintNode(node) && (node.runtimeId ?? "openclaw") === "openclaw" && (
-            <AgentSkillPanel
-              node={node}
-              skills={catalog?.tools ?? []}
-              t={t}
-              onPatchConfig={onPatchConfig}
-            />
-          )}
+          <NodeConfigForm
+            node={node}
+            configuredAgents={configuredAgents}
+            harnessStatuses={harnessStatuses}
+            harnessSkillStatuses={harnessSkillStatuses}
+            nodes={nodes}
+            models={models}
+            channels={channels}
+            onPatchNode={onPatchNode}
+            onPatchConfig={onPatchConfig}
+            t={t}
+          />
         </div>
       </div>
     </aside>
+  );
+}
+
+function EditableNodeTitle({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const cancelBlurCommitRef = useRef(false);
+
+  useEffect(() => {
+    if (!isEditing) setDraft(value);
+  }, [isEditing, value]);
+
+  const commit = () => {
+    if (cancelBlurCommitRef.current) {
+      cancelBlurCommitRef.current = false;
+      return;
+    }
+    setIsEditing(false);
+    onChange(draft);
+  };
+
+  const beginEdit = () => {
+    cancelBlurCommitRef.current = false;
+    setDraft(value);
+    setIsEditing(true);
+  };
+
+  if (isEditing) {
+    return (
+      <input
+        autoFocus
+        className="node-title-input"
+        value={draft}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onFocus={(event) => event.target.select()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") commit();
+          if (event.key === "Escape") {
+            cancelBlurCommitRef.current = true;
+            setDraft(value);
+            setIsEditing(false);
+          }
+        }}
+      />
+    );
+  }
+
+  return (
+    <h3 className="node-title-editable" onDoubleClick={beginEdit}>
+      {value}
+    </h3>
   );
 }
 
@@ -1885,26 +1975,18 @@ function BatchAgentSettingsModal({
   onApply: (runtimeId: AgentRuntimeId | undefined, configPatch: Partial<AgentNodeConfig>) => void;
 }) {
   const [runtimeId, setRuntimeId] = useState<"" | AgentRuntimeId>("");
-  const [openclawAgentId, setOpenclawAgentId] = useState("");
   const [modelSelection, setModelSelection] = useState("");
-  const [permissionProfile, setPermissionProfile] = useState<"" | NonNullable<AgentNodeConfig["permissionProfile"]>>("");
-  const [workingDirectory, setWorkingDirectory] = useState("");
-  const [timeoutMs, setTimeoutMs] = useState("");
   const effectiveRuntimeId = runtimeId || commonAgentRuntime(nodes) || "openclaw";
   const isSdkProvider = effectiveRuntimeId === "claude" || effectiveRuntimeId === "codex";
   const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
 
   const apply = () => {
     const configPatch: Partial<AgentNodeConfig> = {};
-    if (openclawAgentId) configPatch.openclawAgentId = openclawAgentId;
     if (modelSelection === "__default") {
       configPatch.modelId = undefined;
     } else if (modelSelection) {
       configPatch.modelId = modelSelection;
     }
-    if (permissionProfile) configPatch.permissionProfile = permissionProfile;
-    if (workingDirectory.trim()) configPatch.workingDirectory = workingDirectory.trim();
-    if (timeoutMs.trim()) configPatch.timeoutMs = clampNumberInput(timeoutMs, 1, 3600000, 600000);
     onApply(runtimeId || undefined, configPatch);
   };
 
@@ -1923,79 +2005,40 @@ function BatchAgentSettingsModal({
 
         <div className="node-modal-grid">
           <div className="node-modal-main">
-            <div className="node-modal-section">
-              <h4>{t.fields.settings}</h4>
-              <div className="config-form node-modal-form">
-                <label>
-                  <span>Runtime</span>
-                  <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value as "" | AgentRuntimeId)}>
+            <div className="config-form node-modal-form">
+              <label>
+                <span>{t.fields.harness}</span>
+                <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value as "" | AgentRuntimeId)}>
+                  <option value="">No change</option>
+                  <option value="codex">Codex</option>
+                  <option value="openclaw">OpenClaw</option>
+                  {effectiveRuntimeId === "claude" && <option value="claude">Claude Code</option>}
+                </select>
+              </label>
+              <label>
+                <span>{t.fields.model}</span>
+                {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                  <input value={modelSelection} placeholder="No change" onChange={(event) => setModelSelection(event.target.value)} />
+                ) : (
+                  <select value={modelSelection} onChange={(event) => setModelSelection(event.target.value)}>
                     <option value="">No change</option>
-                    <option value="openclaw">OpenClaw</option>
-                    <option value="codex">Codex</option>
-                    <option value="claude">Claude Code</option>
+                    <option value="__default">{runtimeDefaultModelLabel(effectiveRuntimeId, t)}</option>
+                    {runtimeModelOptions.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.label}
+                      </option>
+                    ))}
                   </select>
-                </label>
-                {!isSdkProvider && (
-                  <label>
-                    <span>{t.fields.openclawAgent}</span>
-                    <select value={openclawAgentId} onChange={(event) => setOpenclawAgentId(event.target.value)}>
-                      <option value="">No change</option>
-                      {configuredAgents.map((agent) => (
-                        <option key={agent.id} value={agent.id}>
-                          {agent.name ? `${agent.name} (${agent.id})` : agent.id}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
                 )}
-                <label>
-                  <span>{t.fields.model}</span>
-                  {isSdkProvider && runtimeModelOptions.length === 0 ? (
-                    <input value={modelSelection} placeholder="No change" onChange={(event) => setModelSelection(event.target.value)} />
-                  ) : (
-                    <select value={modelSelection} onChange={(event) => setModelSelection(event.target.value)}>
-                      <option value="">No change</option>
-                      <option value="__default">{runtimeDefaultModelLabel(effectiveRuntimeId, t)}</option>
-                      {runtimeModelOptions.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-                </label>
-                {isSdkProvider && (
-                  <>
-                    <label>
-                      <span>Permission</span>
-                      <select
-                        value={permissionProfile}
-                        onChange={(event) => setPermissionProfile(event.target.value as "" | NonNullable<AgentNodeConfig["permissionProfile"]>)}
-                      >
-                        <option value="">No change</option>
-                        <option value="read_only">Read only</option>
-                        <option value="workspace_write">Workspace write</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>Working directory</span>
-                      <input value={workingDirectory} placeholder="No change" onChange={(event) => setWorkingDirectory(event.target.value)} />
-                    </label>
-                    <label>
-                      <span>Timeout ms</span>
-                      <input min={1} type="number" value={timeoutMs} placeholder="No change" onChange={(event) => setTimeoutMs(event.target.value)} />
-                    </label>
-                  </>
-                )}
-              </div>
-              <div className="node-modal-actions">
-                <button type="button" onClick={onClose}>
-                  Cancel
-                </button>
-                <button type="button" className="primary-action" onClick={apply}>
-                  Apply
-                </button>
-              </div>
+              </label>
+            </div>
+            <div className="node-modal-actions">
+              <button type="button" onClick={onClose}>
+                Cancel
+              </button>
+              <button type="button" className="primary-action" onClick={apply}>
+                Apply
+              </button>
             </div>
           </div>
         </div>
@@ -2008,39 +2051,34 @@ function NodeConfigForm({
   node,
   configuredAgents,
   harnessStatuses,
+  harnessSkillStatuses,
+  nodes,
   models,
   channels,
   onPatchNode,
   onPatchConfig,
   t
 }: {
-  catalog?: CatalogSnapshot;
   node: BlueprintNode;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  nodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
   onPatchConfig: (patch: Partial<BlueprintNode["config"]>) => void;
   t: Messages;
 }) {
-  const agentOutputSchema = isAgentBlueprintNode(node) ? node.config.outputSchema : undefined;
-  const [schemaText, setSchemaText] = useState("");
-
-  useEffect(() => {
-    setSchemaText(formatOutputSchema(agentOutputSchema));
-  }, [agentOutputSchema, node.id, node.type]);
-
   if (isAgentBlueprintNode(node)) {
     const config = node.config;
     const runtimeId = node.runtimeId ?? "openclaw";
+    const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const selectedModel = config.modelId ?? "";
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
-    const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
-    const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2050,121 +2088,71 @@ function NodeConfigForm({
       <div className="node-agent-config">
         <div className="config-form node-modal-form node-agent-primary-form">
           <label>
-            <span>Runtime</span>
+            <span>{t.fields.harness}</span>
             <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-              <option value="openclaw">OpenClaw</option>
               <option value="codex">Codex</option>
-              <option value="claude">Claude Code</option>
+              <option value="openclaw">OpenClaw</option>
+              {runtimeId === "claude" && <option value="claude">Claude Code</option>}
             </select>
           </label>
           <label>
-            <span>{t.fields.title}</span>
-            <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
+            <span>{t.fields.model}</span>
+            {isSdkProvider && runtimeModelOptions.length === 0 ? (
+              <input
+                value={selectedModel}
+                placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
+              />
+            ) : (
+              <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
+                <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
+                {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+                {runtimeModelOptions.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </label>
           <label className="field-span-full">
-            <span>{t.fields.prompt}</span>
-            <textarea rows={10} value={config.prompt} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
+            <span>{t.fields.systemPrompt}</span>
+            <textarea
+              className="node-system-prompt-input"
+              rows={10}
+              value={config.prompt}
+              onChange={(event) => onPatchConfig({ prompt: event.target.value })}
+            />
           </label>
+          <label className="field-span-full">
+            <span>{t.fields.userPrompt}</span>
+            <textarea
+              className="node-user-prompt-input"
+              rows={6}
+              value={config.userPrompt ?? ""}
+              onChange={(event) => onPatchConfig({ userPrompt: event.target.value || undefined })}
+            />
+          </label>
+          <AgentSkillField
+            className="field-span-full"
+            selectedSkills={config.skillIds ?? []}
+            skills={skills}
+            t={t}
+            onChange={(skillIds) => onPatchConfig({ skillIds })}
+          />
         </div>
-        <details className="node-advanced-settings">
-          <summary>
-            <span>{t.fields.advancedSettings}</span>
-            <small>{t.fields.advancedSettingsHint}</small>
-          </summary>
-          <div className="config-form node-modal-form node-agent-advanced-form">
-            {!isSdkProvider && (
-              <label>
-                <span>{t.fields.openclawAgent}</span>
-                <select
-                  value={selectedAgentId}
-                  onChange={(event) => onPatchConfig({ openclawAgentId: event.target.value })}
-                >
-                  {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-                  {agentOptions.map((agent) => (
-                    <option key={agent.id} value={agent.id}>
-                      {agent.name ? `${agent.name} (${agent.id})` : agent.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            <label>
-              <span>{t.fields.model}</span>
-              {isSdkProvider && runtimeModelOptions.length === 0 ? (
-                <input
-                  value={selectedModel}
-                  placeholder={runtimeDefaultModelLabel(runtimeId, t)}
-                  onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
-                />
-              ) : (
-                <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-                  <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
-                  {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-                  {runtimeModelOptions.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </label>
-            <label>
-              <span>{t.fields.runLabel}</span>
-              <input value={config.agentName} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
-            </label>
-            {isSdkProvider && (
-              <>
-                <label>
-                  <span>Permission</span>
-                  <select
-                    value={config.permissionProfile ?? "read_only"}
-                    onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
-                  >
-                    <option value="read_only">Read only</option>
-                    <option value="workspace_write">Workspace write</option>
-                  </select>
-                </label>
-                <label>
-                  <span>Working directory</span>
-                  <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
-                </label>
-                <label>
-                  <span>Timeout ms</span>
-                  <BoundedNumberInput
-                    value={config.timeoutMs ?? 600000}
-                    min={1}
-                    max={3600000}
-                    fallback={600000}
-                    onValueChange={(timeoutMs) => onPatchConfig({ timeoutMs })}
-                  />
-                </label>
-                <label className="field-span-full">
-                  <span>Output schema</span>
-                  <textarea
-                    rows={6}
-                    value={schemaText}
-                    onChange={(event) => setSchemaText(event.target.value)}
-                    onBlur={() => onPatchConfig({ outputSchema: readOutputSchema(schemaText) })}
-                  />
-                </label>
-              </>
-            )}
-          </div>
-        </details>
       </div>
     );
   }
-
   if (node.type === "manager") {
     const config = node.config as ManagerNodeConfig;
     const runtimeId = node.runtimeId ?? "openclaw";
+    const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const selectedModel = config.modelId ?? "";
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
-    const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
-    const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2172,29 +2160,13 @@ function NodeConfigForm({
     return (
       <div className="config-form node-modal-form">
         <label>
-          <span>Runtime</span>
+          <span>{t.fields.harness}</span>
           <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-            <option value="openclaw">OpenClaw</option>
             <option value="codex">Codex</option>
-            <option value="claude">Claude Code</option>
+            <option value="openclaw">OpenClaw</option>
+            {runtimeId === "claude" && <option value="claude">Claude Code</option>}
           </select>
         </label>
-        {!isSdkProvider && (
-          <label>
-            <span>{t.fields.openclawAgent}</span>
-            <select
-              value={selectedAgentId}
-              onChange={(event) => onPatchConfig({ openclawAgentId: event.target.value })}
-            >
-              {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-              {agentOptions.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name ? `${agent.name} (${agent.id})` : agent.id}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
         <label>
           <span>{t.fields.model}</span>
           {isSdkProvider && runtimeModelOptions.length === 0 ? (
@@ -2215,14 +2187,13 @@ function NodeConfigForm({
             </select>
           )}
         </label>
-        <label>
-          <span>{t.fields.runLabel}</span>
-          <input value={config.agentName ?? "manager"} onChange={(event) => onPatchConfig({ agentName: event.target.value })} />
-        </label>
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
+        <AgentSkillField
+          className="field-span-full"
+          selectedSkills={config.skillIds ?? []}
+          skills={skills}
+          t={t}
+          onChange={(skillIds) => onPatchConfig({ skillIds })}
+        />
         <label>
           <span>{t.fields.ports}</span>
           <BoundedNumberInput
@@ -2243,37 +2214,10 @@ function NodeConfigForm({
             onValueChange={(maxHandoffs) => onPatchConfig({ maxHandoffs })}
           />
         </label>
-        {isSdkProvider && (
-          <>
-            <label>
-              <span>Permission</span>
-              <select
-                value={config.permissionProfile ?? "read_only"}
-                onChange={(event) => onPatchConfig({ permissionProfile: event.target.value as ManagerNodeConfig["permissionProfile"] })}
-              >
-                <option value="read_only">Read only</option>
-                <option value="workspace_write">Workspace write</option>
-              </select>
-            </label>
-            <label>
-              <span>Working directory</span>
-              <input value={config.workingDirectory ?? ""} onChange={(event) => onPatchConfig({ workingDirectory: event.target.value })} />
-            </label>
-            <label>
-              <span>Timeout ms</span>
-              <BoundedNumberInput
-                value={config.timeoutMs ?? 600000}
-                min={1}
-                max={3600000}
-                fallback={600000}
-                onValueChange={(timeoutMs) => onPatchConfig({ timeoutMs })}
-              />
-            </label>
-          </>
-        )}
         <label className="field-span-full">
-          <span>{t.fields.instructions}</span>
+          <span>{t.fields.systemPrompt}</span>
           <textarea
+            className="node-system-prompt-input"
             rows={8}
             value={config.instructions ?? ""}
             onChange={(event) => onPatchConfig({ instructions: event.target.value })}
@@ -2286,15 +2230,37 @@ function NodeConfigForm({
   if (node.type === "manager_slot") {
     const config = node.config as ManagerSlotNodeConfig;
     const executionMode = resolveManagerSlotExecutionMode(config);
+    const managerNodes = nodes.filter(
+      (candidate): candidate is BlueprintNode & { type: "manager"; config: ManagerNodeConfig } => candidate.type === "manager"
+    );
+    const switchManager = (managerNodeId: string) => {
+      onPatchConfig({
+        managerNodeId,
+        slot: normalizeBoundedNumberValue(config.slot, 1, maxManagerPortCount, 1)
+      });
+    };
     return (
       <div className="config-form node-modal-form">
         <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
+          <span>{t.fields.manager}</span>
+          <select value={config.managerNodeId} onChange={(event) => switchManager(event.target.value)}>
+            <option value="">{t.common.notLinked}</option>
+            {managerNodes.map((manager) => (
+              <option key={manager.id} value={manager.id}>
+                {manager.config.label || manager.id}
+              </option>
+            ))}
+          </select>
         </label>
         <label>
           <span>{t.fields.slot}</span>
-          <input value={config.slot} readOnly />
+          <BoundedNumberInput
+            value={config.slot}
+            min={1}
+            max={maxManagerPortCount}
+            fallback={1}
+            onValueChange={(slot) => onPatchConfig({ slot })}
+          />
         </label>
         <label>
           <span>{t.fields.mode}</span>
@@ -2324,10 +2290,6 @@ function NodeConfigForm({
             />
           </label>
         )}
-        <label>
-          <span>{t.fields.manager}</span>
-          <input value={config.managerNodeId} readOnly />
-        </label>
       </div>
     );
   }
@@ -2336,10 +2298,6 @@ function NodeConfigForm({
     const config = node.config as LoopNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label>
           <span>{t.fields.maxIterations}</span>
           <BoundedNumberInput
@@ -2358,10 +2316,6 @@ function NodeConfigForm({
     const config = node.config as ConditionNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label className="field-span-full">
           <span>{t.fields.expression}</span>
           <input value={config.expression} onChange={(event) => onPatchConfig({ expression: event.target.value })} />
@@ -2374,10 +2328,6 @@ function NodeConfigForm({
     const config = node.config as ApprovalNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label>
           <span>{t.fields.approver}</span>
           <input value={config.approverHint ?? ""} onChange={(event) => onPatchConfig({ approverHint: event.target.value })} />
@@ -2394,10 +2344,6 @@ function NodeConfigForm({
     const config = node.config as SendNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label>
           <span>{t.fields.channels}</span>
           <select value={config.channelId} onChange={(event) => onPatchConfig({ channelId: event.target.value })}>
@@ -2425,10 +2371,6 @@ function NodeConfigForm({
     const config = node.config as SummaryNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label>
           <span>{t.fields.model}</span>
           <select value={config.modelId ?? ""} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
@@ -2458,6 +2400,7 @@ function NodeConfigForm({
   if (node.type === "parallel_agents") {
     const config = node.config as ParallelAgentsNodeConfig;
     const runtimeId = node.runtimeId ?? "openclaw";
+    const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const agentOptions = configuredAgents ?? [];
@@ -2490,16 +2433,12 @@ function NodeConfigForm({
     return (
       <div className="config-form node-modal-form">
         <label>
-          <span>Runtime</span>
+          <span>{t.fields.harness}</span>
           <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-            <option value="openclaw">OpenClaw</option>
             <option value="codex">Codex</option>
-            <option value="claude">Claude Code</option>
+            <option value="openclaw">OpenClaw</option>
+            {runtimeId === "claude" && <option value="claude">Claude Code</option>}
           </select>
-        </label>
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
         </label>
         <label>
           <span>{t.fields.waitFor}</span>
@@ -2519,11 +2458,9 @@ function NodeConfigForm({
             config.agents.map((agent, index) => {
               const selectedModel = agent.modelId ?? "";
               const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
-              const selectedAgentId = agent.openclawAgentId ?? agentOptions[0]?.id ?? "main";
-              const hasSelectedAgent = agentOptions.some((candidate) => candidate.id === selectedAgentId);
 
               return (
-                <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
+                <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="parallel-agent-card">
                   <div className="parallel-agent-card-header">
                     <h4>{`${runtimeLabel(runtimeId)} Agent ${index + 1}`}</h4>
                     <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
@@ -2531,19 +2468,6 @@ function NodeConfigForm({
                     </button>
                   </div>
                   <div className="config-form parallel-agent-form">
-                    {!isSdkProvider && (
-                      <label>
-                        <span>{t.fields.openclawAgent}</span>
-                        <select value={selectedAgentId} onChange={(event) => updateAgent(index, { openclawAgentId: event.target.value })}>
-                          {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-                          {agentOptions.map((candidate) => (
-                            <option key={candidate.id} value={candidate.id}>
-                              {candidate.name ? `${candidate.name} (${candidate.id})` : candidate.id}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
                     <label>
                       <span>{t.fields.model}</span>
                       {isSdkProvider && runtimeModelOptions.length === 0 ? (
@@ -2564,41 +2488,30 @@ function NodeConfigForm({
                         </select>
                       )}
                     </label>
-                    <label>
-                      <span>{t.fields.runLabel}</span>
-                      <input value={agent.agentName} onChange={(event) => updateAgent(index, { agentName: event.target.value })} />
-                    </label>
-                    {isSdkProvider && (
-                      <>
-                        <label>
-                          <span>Permission</span>
-                          <select
-                            value={agent.permissionProfile ?? "read_only"}
-                            onChange={(event) => updateAgent(index, { permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
-                          >
-                            <option value="read_only">Read only</option>
-                            <option value="workspace_write">Workspace write</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>Working directory</span>
-                          <input value={agent.workingDirectory ?? ""} onChange={(event) => updateAgent(index, { workingDirectory: event.target.value })} />
-                        </label>
-                        <label>
-                          <span>Timeout ms</span>
-                          <BoundedNumberInput
-                            value={agent.timeoutMs ?? 600000}
-                            min={1}
-                            max={3600000}
-                            fallback={600000}
-                            onValueChange={(timeoutMs) => updateAgent(index, { timeoutMs })}
-                          />
-                        </label>
-                      </>
-                    )}
+                    <AgentSkillField
+                      className="field-span-full"
+                      selectedSkills={agent.skillIds ?? []}
+                      skills={skills}
+                      t={t}
+                      onChange={(skillIds) => updateAgent(index, { skillIds })}
+                    />
                     <label className="field-span-full">
-                      <span>{t.fields.prompt}</span>
-                      <textarea rows={6} value={agent.prompt} onChange={(event) => updateAgent(index, { prompt: event.target.value })} />
+                      <span>{t.fields.systemPrompt}</span>
+                      <textarea
+                        className="node-system-prompt-input"
+                        rows={6}
+                        value={agent.prompt}
+                        onChange={(event) => updateAgent(index, { prompt: event.target.value })}
+                      />
+                    </label>
+                    <label className="field-span-full">
+                      <span>{t.fields.userPrompt}</span>
+                      <textarea
+                        className="node-user-prompt-input"
+                        rows={4}
+                        value={agent.userPrompt ?? ""}
+                        onChange={(event) => updateAgent(index, { userPrompt: event.target.value || undefined })}
+                      />
                     </label>
                   </div>
                 </div>
@@ -2617,10 +2530,6 @@ function NodeConfigForm({
     const config = node.config as NoteNodeConfig;
     return (
       <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.label}</span>
-          <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-        </label>
         <label className="field-span-full">
           <span>{t.fields.body}</span>
           <textarea rows={10} value={config.body} onChange={(event) => onPatchConfig({ body: event.target.value })} />
@@ -2629,49 +2538,52 @@ function NodeConfigForm({
     );
   }
 
+  if (node.type === "group") {
+    const config = node.config as GroupNodeConfig;
+    return (
+      <div className="config-form node-modal-form">
+        <label>
+          <span>{t.fields.tagColor}</span>
+          <input type="color" value={normalizeColorInput(config.color)} onChange={(event) => onPatchConfig({ color: event.target.value })} />
+        </label>
+      </div>
+    );
+  }
+
   return (
-    <div className="config-form node-modal-form">
-      <label>
-        <span>{t.fields.label}</span>
-        <input value={node.config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
-      </label>
-    </div>
+    <div className="config-form node-modal-form" />
   );
 }
 
-function AgentSkillPanel({
-  node,
+function AgentSkillField({
+  className,
+  selectedSkills,
   skills,
   t,
-  onPatchConfig
+  onChange
 }: {
-  node: BlueprintNode;
-  skills: NonNullable<CatalogSnapshot["tools"]>;
+  className?: string;
+  selectedSkills: string[];
+  skills: BlueprintSkillOption[];
   t: Messages;
-  onPatchConfig: (patch: Partial<BlueprintNode["config"]>) => void;
+  onChange: (skillIds: string[]) => void;
 }) {
-  const config = node.config as AgentNodeConfig;
   const [selectedSkillId, setSelectedSkillId] = useState("");
-  const selectedSkills = config.tools ?? [];
   const availableSkills = skills.filter((skill) => !selectedSkills.includes(skill.id));
 
   const addSkill = () => {
     if (!selectedSkillId) return;
-    onPatchConfig({
-      tools: [...selectedSkills, selectedSkillId]
-    });
+    onChange([...selectedSkills, selectedSkillId]);
     setSelectedSkillId("");
   };
 
   const removeSkill = (skillId: string) => {
-    onPatchConfig({
-      tools: selectedSkills.filter((item) => item !== skillId)
-    });
+    onChange(selectedSkills.filter((item) => item !== skillId));
   };
 
   return (
-    <div className="node-modal-section">
-      <h4>{t.fields.skills}</h4>
+    <div className={`node-skill-field ${className ?? ""}`}>
+      <span className="node-field-label">{t.fields.skills}</span>
       <div className="skill-picker">
         <select value={selectedSkillId} onChange={(event) => setSelectedSkillId(event.target.value)}>
           <option value="">{t.empty.selectSkill}</option>
@@ -2687,7 +2599,7 @@ function AgentSkillPanel({
       </div>
       <div className="skill-list">
         {selectedSkills.length === 0 ? (
-          <div className="empty-state compact-empty-state">{t.empty.noSkills}</div>
+          <div className="skill-empty-text">{t.empty.noSelectedSkills}</div>
         ) : (
           selectedSkills.map((skillId) => {
             const match = skills.find((skill) => skill.id === skillId);
@@ -2707,12 +2619,6 @@ function AgentSkillPanel({
       </div>
     </div>
   );
-}
-
-function clampNumberInput(value: string, min: number, max: number, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, parsed));
 }
 
 function BoundedNumberInput({
@@ -2774,9 +2680,19 @@ function readBoundedNumberDraft(value: string, min: number, max: number): number
   return Math.min(max, Math.max(min, parsed));
 }
 
+function normalizeColorInput(value: string | undefined): string {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value : "#64748b";
+}
+
 type BlueprintRuntimeModelOption = {
   id: string;
   label: string;
+};
+
+type BlueprintSkillOption = {
+  id: string;
+  label: string;
+  category: string;
 };
 
 function buildRuntimeConfigPatch(
@@ -2820,6 +2736,23 @@ function buildBlueprintRuntimeModelOptions(
   return harnessStatus?.defaultModelId
     ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId === "inherit" ? `${runtimeLabel(runtimeId)} default` : harnessStatus.defaultModelId }]
     : [];
+}
+
+function buildBlueprintRuntimeSkillOptions(
+  runtimeId: AgentRuntimeId,
+  harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>
+): BlueprintSkillOption[] {
+  const harnessId = runtimeHarnessId(runtimeId);
+  const status = harnessSkillStatuses?.[harnessId];
+  if (!status?.supported) return [];
+
+  return status.skills
+    .filter((skill) => skill.installed || skill.status === "stale")
+    .map((skill) => ({
+      id: skill.id,
+      label: skill.label,
+      category: skill.status === "installed" ? runtimeLabel(runtimeId) : `${runtimeLabel(runtimeId)} ${skill.status}`
+    }));
 }
 
 function runtimeDefaultModelLabel(runtimeId: AgentRuntimeId, t: Messages): string {
@@ -3941,22 +3874,6 @@ function defaultVisibleEdgeLabel(condition?: BlueprintEdge["condition"]): string
     return condition;
   }
   return undefined;
-}
-
-function formatOutputSchema(schema: Record<string, unknown> | undefined): string {
-  return schema ? JSON.stringify(schema, null, 2) : "";
-}
-
-function readOutputSchema(value: string): Record<string, unknown> | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function createDefaultParallelAgent(t: Messages, agentId = "main"): AgentNodeConfig {

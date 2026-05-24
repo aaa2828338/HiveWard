@@ -583,6 +583,7 @@ describe("BlueprintWorker", () => {
             label: "SDK Node",
             agentName: "codex-runner",
             prompt: "Return JSON.",
+            skillIds: ["hiveward-leader"],
             modelId: "gpt-5.4",
             permissionProfile: "read_only",
             workingDirectory: tempDir,
@@ -615,6 +616,7 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]).toMatchObject({
       source: "codex",
       agentName: "codex-runner",
+      skillIds: ["hiveward-leader"],
       modelId: "gpt-5.4",
       permissionProfile: "read_only",
       workingDirectory: tempDir,

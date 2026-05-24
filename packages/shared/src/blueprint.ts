@@ -59,6 +59,8 @@ export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
   profileId?: string;
   agentName: string;
   prompt: string;
+  userPrompt?: string;
+  skillIds?: string[];
   modelId?: string;
   permissionProfile?: AgentPermissionProfile;
   workingDirectory?: string;
@@ -79,6 +81,7 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   openclawAgentId?: string;
   agentName?: string;
   modelId?: string;
+  skillIds?: string[];
   permissionProfile?: AgentPermissionProfile;
   workingDirectory?: string;
   timeoutMs?: number;
@@ -1865,6 +1868,8 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       resultRole: agentConfig.resultRole,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
+      userPrompt: agentConfig.userPrompt,
+      skillIds: agentConfig.skillIds ?? [],
       permissionProfile: agentConfig.permissionProfile,
       timeoutMs: agentConfig.timeoutMs,
       outputSchema: cloneJsonObject(agentConfig.outputSchema),
@@ -2085,6 +2090,7 @@ function readPortableBlueprintNodeConfig(
       openclawAgentId: readOptionalString(config.openclawAgentId),
       agentName: readOptionalString(config.agentName),
       modelId: readOptionalString(config.modelId),
+      skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
       permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
       workingDirectory: readOptionalString(config.workingDirectory),
       timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
@@ -2118,6 +2124,8 @@ function readAgentNodeConfig(
     profileId: readOptionalString(config.profileId),
     agentName: readRequiredString(config.agentName, `${fieldName}.agentName`),
     prompt: readRequiredString(config.prompt, `${fieldName}.prompt`),
+    userPrompt: readOptionalString(config.userPrompt),
+    skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
     modelId: readOptionalString(config.modelId),
     permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
     workingDirectory: readOptionalString(config.workingDirectory),

@@ -7,7 +7,7 @@ import type { ThreadEvent, ThreadOptions, TurnOptions, Usage } from "@openai/cod
 import { ClaudeAgentSdkRuntime, type ClaudeQueryFn } from "./claude-runtime";
 import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from "./codex-runtime";
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
-import { buildPromptEnvelope } from "./prompt-envelope";
+import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { AgentSdkTaskRegistry } from "./task-registry";
 
 describe("agent SDK runtime", () => {
@@ -18,6 +18,7 @@ describe("agent SDK runtime", () => {
       source: "claude",
       agentName: "reviewer",
       prompt: "Review the change.",
+      skillIds: ["hiveward-leader"],
       input: {
         z: 1,
         a: {
@@ -29,11 +30,37 @@ describe("agent SDK runtime", () => {
     });
 
     expect(envelope).toContain("Blueprint run: run-1");
+    expect(envelope).toContain("Selected skills:");
+    expect(envelope).toContain("- hiveward-leader");
     expect(envelope).toContain('"a"');
     expect(envelope).toContain('"z"');
     expect(envelope).toContain("<redacted>");
     expect(envelope).not.toContain("secret-token");
     expect(envelope.indexOf('"a"')).toBeLessThan(envelope.indexOf('"z"'));
+  });
+
+  it("converts optional Codex output schema properties to nullable required fields", () => {
+    const schema = {
+      type: "object",
+      required: ["status"],
+      properties: {
+        status: { type: "string" },
+        nextSlot: { type: "integer" },
+        reason: { type: "string" }
+      }
+    };
+
+    expect(toCodexOutputSchema(schema)).toEqual({
+      type: "object",
+      required: ["status", "nextSlot", "reason"],
+      additionalProperties: false,
+      properties: {
+        status: { type: "string" },
+        nextSlot: { type: ["integer", "null"] },
+        reason: { type: ["string", "null"] }
+      }
+    });
+    expect(validateOutputSchema('{"status":"complete","nextSlot":null,"reason":null}', schema)).toBe(true);
   });
 
   it("maps permission profiles to provider SDK settings", () => {
@@ -46,30 +73,36 @@ describe("agent SDK runtime", () => {
 
   it("starts Claude through the SDK without a platform auth precheck", async () => {
     const workspace = createWorkspace();
+    let options: Parameters<ClaudeQueryFn>[0]["options"];
     const runtime = new ClaudeAgentSdkRuntime(
       new AgentSdkTaskRegistry(2),
       { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
-      fakeClaudeQuery([
-        {
-          type: "result",
-          subtype: "success",
-          duration_ms: 1,
-          duration_api_ms: 1,
-          is_error: false,
-          num_turns: 1,
-          result: "ok",
-          stop_reason: null,
-          total_cost_usd: 0,
-          usage: {},
-          modelUsage: {},
-          permission_denials: [],
-          uuid: "uuid-auth-owned-by-sdk",
-          session_id: "claude-session-auth-owned-by-sdk"
-        } as unknown as SDKMessage
-      ])
+      (params) => {
+        options = params.options;
+        return fakeClaudeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "ok",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-auth-owned-by-sdk",
+            session_id: "claude-session-auth-owned-by-sdk"
+          } as unknown as SDKMessage
+        ])(params);
+      }
     );
 
-    const started = await runtime.startTask(createStartInput({ source: "claude", workingDirectory: workspace }));
+    const started = await runtime.startTask(
+      createStartInput({ source: "claude", workingDirectory: workspace, skillIds: ["hiveward-leader"] })
+    );
     const result = await runtime.waitForTask({
       nodeRunId: "node-run-1",
       taskId: started.taskId,
@@ -80,6 +113,7 @@ describe("agent SDK runtime", () => {
 
     expect(started.status).toBe("running");
     expect(started.source).toBe("claude");
+    expect(options?.skills).toEqual(["hiveward-leader"]);
     expect(result.status).toBe("succeeded");
   });
 

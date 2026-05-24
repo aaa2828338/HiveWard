@@ -1105,6 +1105,7 @@ export function App() {
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
           harnessStatuses={harnessStatuses}
+          harnessSkillStatuses={harnessSkillStatuses}
           runSummaries={runSummaries}
           runView={latestRunForBlueprint}
           selectedNodeId={selectedNodeId}

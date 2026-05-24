@@ -220,6 +220,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       permissionMode: mapClaudePermission(permissionProfile),
       tools: mapClaudeAvailableTools(permissionProfile, input.tools),
       allowedTools: mapClaudeTools(permissionProfile, input.tools),
+      skills: input.skillIds?.length ? input.skillIds : undefined,
       outputFormat: input.outputSchema ? { type: "json_schema", schema: input.outputSchema } : undefined
     };
 

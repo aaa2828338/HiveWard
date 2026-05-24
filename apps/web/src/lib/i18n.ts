@@ -85,6 +85,7 @@ export interface Messages {
     noRuns: string;
     noSavedViews: string;
     noSessions: string;
+    noSelectedSkills: string;
     noSkills: string;
     noTags: string;
     noTasks: string;
@@ -112,6 +113,7 @@ export interface Messages {
     agentName: string;
     approver: string;
     expression: string;
+    harness: string;
     instructions: string;
     label: string;
     manager: string;
@@ -142,6 +144,8 @@ export interface Messages {
     tagLabel: string;
     title: string;
     updatedAt: string;
+    systemPrompt: string;
+    userPrompt: string;
     waitFor: string;
     blueprint: string;
     workspace: string;
@@ -311,6 +315,7 @@ export const messages: Record<Language, Messages> = {
       noRuns: "No blueprint runs yet",
       noSavedViews: "No saved views yet",
       noSessions: "No visible runtime sessions",
+      noSelectedSkills: "No skills selected",
       noSkills: "No Skills returned from OpenClaw.",
       noTags: "No tags yet",
       noTasks: "No active runs yet",
@@ -338,6 +343,7 @@ export const messages: Record<Language, Messages> = {
       agentName: "Agent name",
       approver: "Approver",
       expression: "Expression",
+      harness: "Harness",
       instructions: "Instructions",
       label: "Label",
       manager: "Manager",
@@ -368,6 +374,8 @@ export const messages: Record<Language, Messages> = {
       tagLabel: "Tag label",
       title: "Title",
       updatedAt: "Updated",
+      systemPrompt: "System prompt",
+      userPrompt: "User prompt",
       waitFor: "Wait for",
       blueprint: "Blueprint",
       workspace: "Workspace"
@@ -632,6 +640,7 @@ export const messages: Record<Language, Messages> = {
       noRuns: "\u8fd8\u6ca1\u6709\u84dd\u56fe\u8fd0\u884c",
       noSavedViews: "还没有保存的视图",
       noSessions: "当前没有可见运行会话",
+      noSelectedSkills: "\u8fd8\u6ca1\u6709\u9009\u62e9 Skill",
       noSkills: "OpenClaw \u6682\u672a\u8fd4\u56de Skills",
       noTags: "还没有标签",
       noTasks: "当前没有运行",
@@ -652,6 +661,9 @@ export const messages: Record<Language, Messages> = {
     fields: {
       advancedSettings: "\u9ad8\u7ea7\u8bbe\u7f6e",
       advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u6743\u9650\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
+      harness: "Harness",
+      systemPrompt: "\u7cfb\u7edf\u63d0\u793a\u8bcd",
+      userPrompt: "\u7528\u6237\u63d0\u793a\u8bcd",
       body: "内容",
       category: "分类",
       channels: "\u9891\u9053",
