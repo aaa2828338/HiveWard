@@ -14,6 +14,7 @@ import {
   Bot,
   Brain,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   FileUp,
@@ -1188,7 +1189,7 @@ function ChatSelect({
           <span className="chat-select-value">
             <strong>{selectedLabel}</strong>
           </span>
-          <ChevronRight className="chat-select-arrow" size={15} />
+          <ChevronDown className="chat-select-arrow" size={15} />
         </button>
         {open && typeof document !== "undefined" && createPortal(
           <div ref={menuRef} className="chat-select-menu" role="listbox" aria-label={label} style={menuStyle}>
