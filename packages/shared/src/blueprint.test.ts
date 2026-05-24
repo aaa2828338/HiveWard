@@ -396,7 +396,7 @@ describe("blueprint contracts", () => {
     const research = portable.nodes.find((node) => node.id === "research")!;
     const build = portable.nodes.find((node) => node.id === "build")!;
 
-    expect(slot.config).toMatchObject({ managerNodeId: "manager", slot: 1 });
+    expect(slot.config).toMatchObject({ managerNodeId: "manager", slot: 1, executionMode: "parallel", parallelLaneCount: 1 });
     expect(slot.size).toEqual({ width: 560, height: 300 });
     expect(research.parentId).toBe("slot-1");
     expect(build.parentId).toBe("slot-1");
@@ -419,9 +419,19 @@ describe("blueprint contracts", () => {
         target: "research"
       }),
       expect.objectContaining({
-        source: "build",
+        source: "research",
         target: "slot-1",
         targetHandle: "manager-slot-inner-in"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-inner-out-2",
+        target: "build"
+      }),
+      expect.objectContaining({
+        source: "build",
+        target: "slot-1",
+        targetHandle: "manager-slot-inner-in-2"
       })
     ]));
 
@@ -437,8 +447,9 @@ describe("blueprint contracts", () => {
 
     expect(importedManager.position.x).toBe(80);
     expect(importedSlot.position.x).toBe(460);
-    expect(importedSlot.size?.width).toBeGreaterThanOrEqual(832);
-    expect(importedResearch.position.x).toBeLessThan(importedBuild.position.x);
+    expect(importedSlot.size?.width).toBe(560);
+    expect(importedResearch.parentId).toBe(importedSlot.id);
+    expect(importedBuild.parentId).toBe(importedSlot.id);
     expect(imported.display.viewport?.zoom).toBe(0.85);
   });
 

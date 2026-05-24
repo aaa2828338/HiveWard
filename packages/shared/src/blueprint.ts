@@ -248,15 +248,15 @@ const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
 const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
 
 export function resolveManagerSlotExecutionMode(
-  config: Pick<ManagerSlotNodeConfig, "executionMode">
+  _config: Pick<ManagerSlotNodeConfig, "executionMode">
 ): ManagerSlotExecutionMode {
-  return config.executionMode === "parallel" ? "parallel" : "manual";
+  return "parallel";
 }
 
 export function resolveManagerSlotParallelLaneCount(
   config: Pick<ManagerSlotNodeConfig, "parallelLaneCount">
 ): number {
-  if (typeof config.parallelLaneCount !== "number" || !Number.isFinite(config.parallelLaneCount)) return 4;
+  if (typeof config.parallelLaneCount !== "number" || !Number.isFinite(config.parallelLaneCount)) return 1;
   return Math.min(maxManagerSlotParallelLaneCount, Math.max(1, Math.round(config.parallelLaneCount)));
 }
 
@@ -2103,7 +2103,7 @@ function readPortableBlueprintNodeConfig(
       managerNodeId: readOptionalString(config.managerNodeId) ?? "",
       slot: readBoundedInteger(config.slot, 1, maxManagerPortCount, 1),
       executionMode: readManagerSlotExecutionMode(config.executionMode, `${fieldName}.executionMode`),
-      parallelLaneCount: readBoundedInteger(config.parallelLaneCount, 1, maxManagerSlotParallelLaneCount, 4)
+      parallelLaneCount: readBoundedInteger(config.parallelLaneCount, 1, maxManagerSlotParallelLaneCount, 1)
     } as ManagerSlotNodeConfig;
   }
 
@@ -2593,9 +2593,9 @@ function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNod
 }
 
 function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {
-  if (value === undefined || value === null || value === "") return "manual";
+  if (value === undefined || value === null || value === "") return "parallel";
   if (typeof value === "string" && managerSlotExecutionModes.has(value as ManagerSlotExecutionMode)) {
-    return value as ManagerSlotExecutionMode;
+    return "parallel";
   }
   throw new Error(`${fieldName} must be manual or parallel.`);
 }

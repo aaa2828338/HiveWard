@@ -49,7 +49,7 @@ import {
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
-  resolveRunViewStatus,
+  resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -451,14 +451,15 @@ export function RunsPage({
   );
   const orderedNodes = useMemo(() => getBlueprintNodeOrder(blueprint), [blueprint]);
   const blueprintRunStats = useMemo(() => {
-    const stats = new Map<string, { latestRunId?: string; latestStatus?: BlueprintRunStatus; lastUsedAt: number }>();
+    const stats = new Map<string, { latestRunId?: string; latestStatus?: BlueprintRunStatus; latestRawStatus?: BlueprintRunStatus; lastUsedAt: number }>();
     for (const runView of runs) {
       const startedAt = toSafeTimestamp(runView.run.startedAt);
       const current = stats.get(runView.run.blueprintId);
       if (!current || startedAt >= current.lastUsedAt) {
         stats.set(runView.run.blueprintId, {
           latestRunId: runView.run.id,
-          latestStatus: resolveRunViewStatus(runView),
+          latestStatus: resolveRunViewDisplayStatus(runView),
+          latestRawStatus: runView.run.status,
           lastUsedAt: startedAt
         });
       }
@@ -480,7 +481,7 @@ export function RunsPage({
         : activeIssue?.nodeRun?.error;
   const isActiveIssueError = activeIssue?.outputBody === undefined && activeIssue?.nodeRun?.output === undefined && Boolean(activeIssue?.nodeRun?.error);
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
-  const runFrameState = traceRunFrameState(resolveRunViewStatus(activeRun));
+  const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
 
   useEffect(() => {
     if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
@@ -490,7 +491,7 @@ export function RunsPage({
   const acknowledgeTerminalRun = useCallback(
     (blueprintId: string) => {
       const stats = blueprintRunStats.get(blueprintId);
-      if (!stats?.latestRunId || !isTerminalBlueprintRunStatus(stats.latestStatus)) return;
+      if (!stats?.latestRunId || !isTerminalBlueprintRunStatus(stats.latestRawStatus)) return;
       setAcknowledgedTerminalRunIds((current) => {
         if (current.has(stats.latestRunId!)) return current;
         const next = new Set(current);
@@ -504,7 +505,7 @@ export function RunsPage({
   useEffect(() => {
     if (!blueprint?.id) return;
     acknowledgeTerminalRun(blueprint.id);
-  }, [acknowledgeTerminalRun, blueprint?.id, currentBlueprintRunStats?.latestRunId, currentBlueprintRunStats?.latestStatus]);
+  }, [acknowledgeTerminalRun, blueprint?.id, currentBlueprintRunStats?.latestRunId, currentBlueprintRunStats?.latestRawStatus]);
 
   useEffect(() => {
     writeAcknowledgedTerminalRunIds(getBrowserStorage(), acknowledgedTerminalRunIds);

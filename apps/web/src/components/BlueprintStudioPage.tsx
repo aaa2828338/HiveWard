@@ -28,6 +28,7 @@ import {
   ArrowUpDown,
   Bot,
   Check,
+  ChevronDown,
   Download,
   GitBranch,
   LayoutTemplate,
@@ -68,7 +69,6 @@ import type {
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
-  ManagerSlotExecutionMode,
   HarnessStatus,
   HarnessSkillStatusResponse,
   NoteNodeConfig,
@@ -93,10 +93,11 @@ import {
 } from "./BlueprintNodeCard";
 import { type Messages } from "../lib/i18n";
 import {
+  isPollingRunStatus,
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
-  resolveRunViewStatus,
+  resolveRunViewDisplayStatus,
   shouldShowBlueprintWorkspaceRunState,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
@@ -294,13 +295,14 @@ export function BlueprintStudioPage({
     });
   }, [blueprintBoard]);
 
-  const workspaceRunStatus = resolveRunViewStatus(runView);
+  const workspaceRunStatus = resolveRunViewDisplayStatus(runView);
   const workspaceTerminalRunSeen = Boolean(
     runView?.run.id &&
-      isTerminalBlueprintRunStatus(workspaceRunStatus) &&
+      isTerminalBlueprintRunStatus(runView.run.status) &&
       acknowledgedTerminalRunIds.has(runView.run.id)
   );
   const workspaceRunView = shouldShowBlueprintWorkspaceRunState(workspaceRunStatus, workspaceTerminalRunSeen) ? runView : undefined;
+  const workspaceEdgeRunStatus = workspaceRunView ? workspaceRunStatus : undefined;
   const statusByNode = useMemo(() => {
     const map = new Map<string, BlueprintNodeRun>();
     for (const nodeRun of workspaceRunView?.nodeRuns ?? []) {
@@ -314,8 +316,8 @@ export function BlueprintStudioPage({
   }, [statusByNode, t, blueprint]);
 
   useEffect(() => {
-    setLocalEdges(buildFlowEdges(blueprint, workspaceRunView?.run.status));
-  }, [workspaceRunView?.run.status, blueprint]);
+    setLocalEdges(buildFlowEdges(blueprint, workspaceEdgeRunStatus));
+  }, [workspaceEdgeRunStatus, blueprint]);
 
   useEffect(() => {
     setBusinessViewport(blueprint?.display.viewport ?? defaultBlueprintViewport);
@@ -443,18 +445,31 @@ export function BlueprintStudioPage({
     if (blueprintSortMode === "nodes") return blueprintDrawerCopy.nodes;
     return blueprintDrawerCopy.name;
   }, [blueprintDrawerCopy, blueprintSortMode]);
+  const blueprintSortOptions = useMemo<BlueprintSelectOption[]>(
+    () => [
+      { value: "recent", label: blueprintDrawerCopy.recent },
+      { value: "usage", label: blueprintDrawerCopy.usage },
+      { value: "created", label: blueprintDrawerCopy.created },
+      { value: "nodes", label: blueprintDrawerCopy.nodes },
+      { value: "name", label: blueprintDrawerCopy.name }
+    ],
+    [blueprintDrawerCopy]
+  );
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
+  const currentBlueprintRunView = runView && blueprint && runView.run.blueprintId === blueprint.id ? runView : undefined;
+  const currentBlueprintRawLatestStatus =
+    currentBlueprintRunView?.run.status ?? currentBlueprintRunStats?.latestStatus;
   const currentBlueprintLatestStatus =
-    runView?.run.blueprintId === blueprint?.id ? resolveRunViewStatus(runView) : currentBlueprintRunStats?.latestStatus;
+    currentBlueprintRunView ? resolveRunViewDisplayStatus(currentBlueprintRunView) : currentBlueprintRunStats?.latestStatus;
   const currentTerminalRunId =
-    currentBlueprintRunStats?.latestRunId && isTerminalBlueprintRunStatus(currentBlueprintLatestStatus)
+    currentBlueprintRunStats?.latestRunId && isTerminalBlueprintRunStatus(currentBlueprintRawLatestStatus)
       ? currentBlueprintRunStats.latestRunId
       : undefined;
   const currentTerminalRunSeen = Boolean(currentTerminalRunId && acknowledgedTerminalRunIds.has(currentTerminalRunId));
   const currentBlueprintActivity = currentBlueprintLatestStatus
     ? resolveBlueprintActivityState(currentBlueprintLatestStatus, currentTerminalRunSeen)
     : "idle";
-  const isBlueprintInteractionLocked = currentBlueprintActivity === "running";
+  const isBlueprintInteractionLocked = Boolean(currentBlueprintRawLatestStatus && isPollingRunStatus(currentBlueprintRawLatestStatus));
   const isRunButtonBusy = busyAction === "runBlueprint" || busyAction === "cancelBlueprintRun";
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
@@ -652,7 +667,7 @@ export function BlueprintStudioPage({
           (patch as Partial<ManagerSlotNodeConfig>).parallelLaneCount === undefined
             ? ({
                 ...patch,
-                parallelLaneCount: 4
+                parallelLaneCount: 1
               } as Partial<BlueprintNode["config"]>)
             : patch;
         const currentNode = current.nodes.find((node) => node.id === nodeId);
@@ -1451,20 +1466,16 @@ export function BlueprintStudioPage({
                     placeholder={blueprintDrawerCopy.search}
                   />
                 </label>
-                <label className="blueprint-sort-button" title={`${blueprintDrawerCopy.sort}: ${selectedSortLabel}`}>
+                <div className="blueprint-sort-button" title={`${blueprintDrawerCopy.sort}: ${selectedSortLabel}`}>
                   <ArrowUpDown size={15} />
-                  <select
-                    aria-label={blueprintDrawerCopy.sort}
+                  <BlueprintSelect
+                    ariaLabel={blueprintDrawerCopy.sort}
                     value={blueprintSortMode}
-                    onChange={(event) => setBlueprintSortMode(event.target.value as BlueprintSortMode)}
-                  >
-                    <option value="recent">{blueprintDrawerCopy.recent}</option>
-                    <option value="usage">{blueprintDrawerCopy.usage}</option>
-                    <option value="created">{blueprintDrawerCopy.created}</option>
-                    <option value="nodes">{blueprintDrawerCopy.nodes}</option>
-                    <option value="name">{blueprintDrawerCopy.name}</option>
-                  </select>
-                </label>
+                    options={blueprintSortOptions}
+                    className="blueprint-sort-select"
+                    onChange={(value) => setBlueprintSortMode(value as BlueprintSortMode)}
+                  />
+                </div>
               </div>
               <div className="blueprint-card-list">
                 {visibleBlueprints.length === 0 ? (
@@ -1957,6 +1968,96 @@ function EditableNodeTitle({ value, onChange }: { value: string; onChange: (valu
   );
 }
 
+type BlueprintSelectOption = {
+  value: string;
+  label: string;
+  disabled?: boolean;
+};
+
+function BlueprintSelect({
+  value,
+  options,
+  ariaLabel,
+  className,
+  disabled,
+  onChange
+}: {
+  value: string;
+  options: BlueprintSelectOption[];
+  ariaLabel: string;
+  className?: string;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const selectedOption = options.find((option) => option.value === value);
+  const displayLabel = selectedOption?.label ?? value;
+  const isDisabled = disabled || options.every((option) => option.disabled);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as globalThis.Node | null;
+      if (target && rootRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className={`blueprint-select ${className ?? ""}`}>
+      <button
+        type="button"
+        className={`blueprint-select-button ${open ? "open" : ""}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={isDisabled}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span>{displayLabel}</span>
+        <ChevronDown size={16} />
+      </button>
+      {open && (
+        <div className="blueprint-select-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => {
+            const selected = option.value === value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                className={`blueprint-select-option ${selected ? "selected" : ""}`}
+                role="option"
+                aria-selected={selected}
+                disabled={option.disabled}
+                onClick={() => {
+                  if (option.disabled) return;
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span>{option.label}</span>
+                {selected && <Check size={15} />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BatchAgentSettingsModal({
   nodes,
   models,
@@ -1979,6 +2080,17 @@ function BatchAgentSettingsModal({
   const effectiveRuntimeId = runtimeId || commonAgentRuntime(nodes) || "openclaw";
   const isSdkProvider = effectiveRuntimeId === "claude" || effectiveRuntimeId === "codex";
   const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
+  const runtimeOptions: BlueprintSelectOption[] = [
+    { value: "", label: "No change" },
+    { value: "codex", label: "Codex" },
+    { value: "openclaw", label: "OpenClaw" },
+    ...(effectiveRuntimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+  ];
+  const modelSelectionOptions: BlueprintSelectOption[] = [
+    { value: "", label: "No change" },
+    { value: "__default", label: runtimeDefaultModelLabel(effectiveRuntimeId, t) },
+    ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
+  ];
 
   const apply = () => {
     const configPatch: Partial<AgentNodeConfig> = {};
@@ -2008,27 +2120,24 @@ function BatchAgentSettingsModal({
             <div className="config-form node-modal-form">
               <label>
                 <span>{t.fields.harness}</span>
-                <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value as "" | AgentRuntimeId)}>
-                  <option value="">No change</option>
-                  <option value="codex">Codex</option>
-                  <option value="openclaw">OpenClaw</option>
-                  {effectiveRuntimeId === "claude" && <option value="claude">Claude Code</option>}
-                </select>
+                <BlueprintSelect
+                  value={runtimeId}
+                  options={runtimeOptions}
+                  ariaLabel={t.fields.harness}
+                  onChange={(value) => setRuntimeId(value as "" | AgentRuntimeId)}
+                />
               </label>
               <label>
                 <span>{t.fields.model}</span>
                 {isSdkProvider && runtimeModelOptions.length === 0 ? (
                   <input value={modelSelection} placeholder="No change" onChange={(event) => setModelSelection(event.target.value)} />
                 ) : (
-                  <select value={modelSelection} onChange={(event) => setModelSelection(event.target.value)}>
-                    <option value="">No change</option>
-                    <option value="__default">{runtimeDefaultModelLabel(effectiveRuntimeId, t)}</option>
-                    {runtimeModelOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.label}
-                      </option>
-                    ))}
-                  </select>
+                  <BlueprintSelect
+                    value={modelSelection}
+                    options={modelSelectionOptions}
+                    ariaLabel={t.fields.model}
+                    onChange={setModelSelection}
+                  />
                 )}
               </label>
             </div>
@@ -2079,6 +2188,16 @@ function NodeConfigForm({
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
+    const runtimeOptions: BlueprintSelectOption[] = [
+      { value: "codex", label: "Codex" },
+      { value: "openclaw", label: "OpenClaw" },
+      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+    ];
+    const modelOptions: BlueprintSelectOption[] = [
+      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
+      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
+      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
+    ];
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2089,11 +2208,12 @@ function NodeConfigForm({
         <div className="config-form node-modal-form node-agent-primary-form">
           <label>
             <span>{t.fields.harness}</span>
-            <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-              <option value="codex">Codex</option>
-              <option value="openclaw">OpenClaw</option>
-              {runtimeId === "claude" && <option value="claude">Claude Code</option>}
-            </select>
+            <BlueprintSelect
+              value={runtimeId}
+              options={runtimeOptions}
+              ariaLabel={t.fields.harness}
+              onChange={(value) => switchRuntime(value as AgentRuntimeId)}
+            />
           </label>
           <label>
             <span>{t.fields.model}</span>
@@ -2104,15 +2224,12 @@ function NodeConfigForm({
                 onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
               />
             ) : (
-              <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-                <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
-                {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-                {runtimeModelOptions.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
+              <BlueprintSelect
+                value={selectedModel}
+                options={modelOptions}
+                ariaLabel={t.fields.model}
+                onChange={(value) => onPatchConfig({ modelId: value || undefined })}
+              />
             )}
           </label>
           <label className="field-span-full">
@@ -2153,6 +2270,16 @@ function NodeConfigForm({
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
+    const runtimeOptions: BlueprintSelectOption[] = [
+      { value: "codex", label: "Codex" },
+      { value: "openclaw", label: "OpenClaw" },
+      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+    ];
+    const modelOptions: BlueprintSelectOption[] = [
+      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
+      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
+      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
+    ];
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2161,11 +2288,12 @@ function NodeConfigForm({
       <div className="config-form node-modal-form">
         <label>
           <span>{t.fields.harness}</span>
-          <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-            <option value="codex">Codex</option>
-            <option value="openclaw">OpenClaw</option>
-            {runtimeId === "claude" && <option value="claude">Claude Code</option>}
-          </select>
+          <BlueprintSelect
+            value={runtimeId}
+            options={runtimeOptions}
+            ariaLabel={t.fields.harness}
+            onChange={(value) => switchRuntime(value as AgentRuntimeId)}
+          />
         </label>
         <label>
           <span>{t.fields.model}</span>
@@ -2176,15 +2304,12 @@ function NodeConfigForm({
               onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
             />
           ) : (
-            <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-              <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
-              {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-              {runtimeModelOptions.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.label}
-                </option>
-              ))}
-            </select>
+            <BlueprintSelect
+              value={selectedModel}
+              options={modelOptions}
+              ariaLabel={t.fields.model}
+              onChange={(value) => onPatchConfig({ modelId: value || undefined })}
+            />
           )}
         </label>
         <AgentSkillField
@@ -2229,10 +2354,13 @@ function NodeConfigForm({
 
   if (node.type === "manager_slot") {
     const config = node.config as ManagerSlotNodeConfig;
-    const executionMode = resolveManagerSlotExecutionMode(config);
     const managerNodes = nodes.filter(
       (candidate): candidate is BlueprintNode & { type: "manager"; config: ManagerNodeConfig } => candidate.type === "manager"
     );
+    const managerOptions: BlueprintSelectOption[] = [
+      { value: "", label: t.common.notLinked },
+      ...managerNodes.map((manager) => ({ value: manager.id, label: manager.config.label || manager.id }))
+    ];
     const switchManager = (managerNodeId: string) => {
       onPatchConfig({
         managerNodeId,
@@ -2241,17 +2369,15 @@ function NodeConfigForm({
     };
     return (
       <div className="config-form node-modal-form">
-        <label>
+        <div className="config-field">
           <span>{t.fields.manager}</span>
-          <select value={config.managerNodeId} onChange={(event) => switchManager(event.target.value)}>
-            <option value="">{t.common.notLinked}</option>
-            {managerNodes.map((manager) => (
-              <option key={manager.id} value={manager.id}>
-                {manager.config.label || manager.id}
-              </option>
-            ))}
-          </select>
-        </label>
+          <BlueprintSelect
+            value={config.managerNodeId}
+            options={managerOptions}
+            ariaLabel={t.fields.manager}
+            onChange={switchManager}
+          />
+        </div>
         <label>
           <span>{t.fields.slot}</span>
           <BoundedNumberInput
@@ -2263,33 +2389,15 @@ function NodeConfigForm({
           />
         </label>
         <label>
-          <span>{t.fields.mode}</span>
-          <select
-            value={executionMode}
-            onChange={(event) => {
-              const nextMode = event.target.value as ManagerSlotExecutionMode;
-              onPatchConfig({
-                executionMode: nextMode,
-                ...(nextMode === "parallel" ? { parallelLaneCount: resolveManagerSlotParallelLaneCount(config) } : {})
-              });
-            }}
-          >
-            <option value="manual">Manual graph</option>
-            <option value="parallel">Parallel fan-out</option>
-          </select>
+          <span>{t.fields.parallelLanes}</span>
+          <BoundedNumberInput
+            value={resolveManagerSlotParallelLaneCount(config)}
+            min={1}
+            max={16}
+            fallback={1}
+            onValueChange={(parallelLaneCount) => onPatchConfig({ parallelLaneCount })}
+          />
         </label>
-        {executionMode === "parallel" && (
-          <label>
-            <span>{t.fields.parallelLanes}</span>
-            <BoundedNumberInput
-              value={resolveManagerSlotParallelLaneCount(config)}
-              min={1}
-              max={16}
-              fallback={4}
-              onValueChange={(parallelLaneCount) => onPatchConfig({ parallelLaneCount })}
-            />
-          </label>
-        )}
       </div>
     );
   }
@@ -2342,18 +2450,20 @@ function NodeConfigForm({
 
   if (node.type === "send") {
     const config = node.config as SendNodeConfig;
+    const channelOptions: BlueprintSelectOption[] =
+      channels.length === 0
+        ? [{ value: config.channelId, label: config.channelId }]
+        : channels.map((channel) => ({ value: channel.id, label: channel.label }));
     return (
       <div className="config-form node-modal-form">
         <label>
           <span>{t.fields.channels}</span>
-          <select value={config.channelId} onChange={(event) => onPatchConfig({ channelId: event.target.value })}>
-            {channels.length === 0 && <option value={config.channelId}>{config.channelId}</option>}
-            {channels.map((channel) => (
-              <option key={channel.id} value={channel.id}>
-                {channel.label}
-              </option>
-            ))}
-          </select>
+          <BlueprintSelect
+            value={config.channelId}
+            options={channelOptions}
+            ariaLabel={t.fields.channels}
+            onChange={(value) => onPatchConfig({ channelId: value })}
+          />
         </label>
         <label>
           <span>{t.fields.target}</span>
@@ -2369,25 +2479,33 @@ function NodeConfigForm({
 
   if (node.type === "summary") {
     const config = node.config as SummaryNodeConfig;
+    const modelOptions: BlueprintSelectOption[] = [
+      { value: "", label: t.common.defaultModel },
+      ...models.map((model) => ({ value: model.id, label: model.label }))
+    ];
+    const modeOptions: BlueprintSelectOption[] = [
+      { value: "structured_merge", label: t.options.structuredMerge },
+      { value: "openclaw_summary_agent", label: t.options.openClawAgent }
+    ];
     return (
       <div className="config-form node-modal-form">
         <label>
           <span>{t.fields.model}</span>
-          <select value={config.modelId ?? ""} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-            <option value="">{t.common.defaultModel}</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
+          <BlueprintSelect
+            value={config.modelId ?? ""}
+            options={modelOptions}
+            ariaLabel={t.fields.model}
+            onChange={(value) => onPatchConfig({ modelId: value || undefined })}
+          />
         </label>
         <label>
           <span>{t.fields.mode}</span>
-          <select value={config.mode} onChange={(event) => onPatchConfig({ mode: event.target.value as SummaryNodeConfig["mode"] })}>
-            <option value="structured_merge">{t.options.structuredMerge}</option>
-            <option value="openclaw_summary_agent">{t.options.openClawAgent}</option>
-          </select>
+          <BlueprintSelect
+            value={config.mode}
+            options={modeOptions}
+            ariaLabel={t.fields.mode}
+            onChange={(value) => onPatchConfig({ mode: value as SummaryNodeConfig["mode"] })}
+          />
         </label>
         <label className="field-span-full">
           <span>{t.fields.prompt}</span>
@@ -2404,6 +2522,15 @@ function NodeConfigForm({
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const agentOptions = configuredAgents ?? [];
+    const runtimeOptions: BlueprintSelectOption[] = [
+      { value: "codex", label: "Codex" },
+      { value: "openclaw", label: "OpenClaw" },
+      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+    ];
+    const waitForOptions: BlueprintSelectOption[] = [
+      { value: "all", label: t.options.waitForAll },
+      { value: "first_success", label: t.options.firstSuccess }
+    ];
     const updateAgent = (index: number, patch: Partial<AgentNodeConfig>) => {
       onPatchConfig({
         agents: config.agents.map((agent, agentIndex) => (agentIndex === index ? { ...agent, ...patch } : agent))
@@ -2434,18 +2561,21 @@ function NodeConfigForm({
       <div className="config-form node-modal-form">
         <label>
           <span>{t.fields.harness}</span>
-          <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
-            <option value="codex">Codex</option>
-            <option value="openclaw">OpenClaw</option>
-            {runtimeId === "claude" && <option value="claude">Claude Code</option>}
-          </select>
+          <BlueprintSelect
+            value={runtimeId}
+            options={runtimeOptions}
+            ariaLabel={t.fields.harness}
+            onChange={(value) => switchRuntime(value as AgentRuntimeId)}
+          />
         </label>
         <label>
           <span>{t.fields.waitFor}</span>
-          <select value={config.waitFor} onChange={(event) => onPatchConfig({ waitFor: event.target.value as ParallelAgentsNodeConfig["waitFor"] })}>
-            <option value="all">{t.options.waitForAll}</option>
-            <option value="first_success">{t.options.firstSuccess}</option>
-          </select>
+          <BlueprintSelect
+            value={config.waitFor}
+            options={waitForOptions}
+            ariaLabel={t.fields.waitFor}
+            onChange={(value) => onPatchConfig({ waitFor: value as ParallelAgentsNodeConfig["waitFor"] })}
+          />
         </label>
         <label>
           <span>{t.metrics.agents(config.agents.length)}</span>
@@ -2458,6 +2588,11 @@ function NodeConfigForm({
             config.agents.map((agent, index) => {
               const selectedModel = agent.modelId ?? "";
               const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
+              const modelOptions: BlueprintSelectOption[] = [
+                { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
+                ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
+                ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
+              ];
 
               return (
                 <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="parallel-agent-card">
@@ -2477,15 +2612,12 @@ function NodeConfigForm({
                           onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}
                         />
                       ) : (
-                        <select value={selectedModel} onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}>
-                          <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
-                          {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-                          {runtimeModelOptions.map((model) => (
-                            <option key={model.id} value={model.id}>
-                              {model.label}
-                            </option>
-                          ))}
-                        </select>
+                        <BlueprintSelect
+                          value={selectedModel}
+                          options={modelOptions}
+                          ariaLabel={t.fields.model}
+                          onChange={(value) => updateAgent(index, { modelId: value || undefined })}
+                        />
                       )}
                     </label>
                     <AgentSkillField
@@ -2568,13 +2700,15 @@ function AgentSkillField({
   t: Messages;
   onChange: (skillIds: string[]) => void;
 }) {
-  const [selectedSkillId, setSelectedSkillId] = useState("");
   const availableSkills = skills.filter((skill) => !selectedSkills.includes(skill.id));
+  const skillOptions: BlueprintSelectOption[] = [
+    { value: "", label: t.empty.selectSkill, disabled: availableSkills.length === 0 },
+    ...availableSkills.map((skill) => ({ value: skill.id, label: `${skill.label} (${skill.category})` }))
+  ];
 
-  const addSkill = () => {
-    if (!selectedSkillId) return;
-    onChange([...selectedSkills, selectedSkillId]);
-    setSelectedSkillId("");
+  const addSkill = (skillId: string) => {
+    if (!skillId || selectedSkills.includes(skillId)) return;
+    onChange([...selectedSkills, skillId]);
   };
 
   const removeSkill = (skillId: string) => {
@@ -2585,17 +2719,13 @@ function AgentSkillField({
     <div className={`node-skill-field ${className ?? ""}`}>
       <span className="node-field-label">{t.fields.skills}</span>
       <div className="skill-picker">
-        <select value={selectedSkillId} onChange={(event) => setSelectedSkillId(event.target.value)}>
-          <option value="">{t.empty.selectSkill}</option>
-          {availableSkills.map((skill) => (
-            <option key={skill.id} value={skill.id}>
-              {skill.label} ({skill.category})
-            </option>
-          ))}
-        </select>
-        <button type="button" onClick={addSkill} disabled={!selectedSkillId}>
-          {t.actions.addSkill}
-        </button>
+        <BlueprintSelect
+          value=""
+          options={skillOptions}
+          ariaLabel={t.fields.skills}
+          disabled={availableSkills.length === 0}
+          onChange={addSkill}
+        />
       </div>
       <div className="skill-list">
         {selectedSkills.length === 0 ? (
@@ -3817,8 +3947,8 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       label: t.defaults.managerSlotLabel,
       managerNodeId: "",
       slot: 1,
-      executionMode: "manual",
-      parallelLaneCount: 4
+      executionMode: "parallel",
+      parallelLaneCount: 1
     };
   }
   if (type === "loop") {

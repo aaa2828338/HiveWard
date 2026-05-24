@@ -1,5 +1,5 @@
-import { memo, type CSSProperties } from "react";
-import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
+import { memo, useEffect, type CSSProperties } from "react";
+import { Handle, NodeResizer, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import {
   Bot,
   CheckCircle2,
@@ -80,8 +80,9 @@ function statusClass(status?: BlueprintNodeRunStatus) {
   return "status-idle";
 }
 
-export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selected, width, height }: NodeProps) {
+export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, selected, width, height }: NodeProps) {
   const nodeData = data as BlueprintNodeCardData;
+  const updateNodeInternals = useUpdateNodeInternals();
   const TypeIcon = typeIcon[nodeData.type];
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
@@ -94,6 +95,21 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
       : nodeData.type === "manager_slot"
         ? managerSlotNodeStyle(nodeData.managerSlotSize, { width, height })
         : undefined;
+
+  useEffect(() => {
+    if (nodeData.type !== "manager" && nodeData.type !== "manager_slot") return;
+    updateNodeInternals(id);
+  }, [
+    height,
+    id,
+    managerPortCount,
+    managerSlotLaneCount,
+    nodeData.managerSlotSize?.height,
+    nodeData.managerSlotSize?.width,
+    nodeData.type,
+    updateNodeInternals,
+    width
+  ]);
 
   return (
     <div

@@ -45,12 +45,23 @@ export function resolveRunViewStatus(runView?: BlueprintRunView): BlueprintRunSt
   return isActiveRunView(runView) ? "running" : runView.run.status;
 }
 
+export function resolveRunViewDisplayStatus(runView?: BlueprintRunView): BlueprintRunStatus | undefined {
+  if (!runView) return undefined;
+  if (hasFailedNodeRun(runView)) return "failed";
+  if (runView.run.status === "failed" || runView.run.status === "cancelled") return runView.run.status;
+  return isActiveRunView(runView) ? "running" : runView.run.status;
+}
+
 function hasActiveNodeRun(runView: BlueprintRunView): boolean {
   return runView.nodeRuns.some((nodeRun) => isActiveNodeRunStatus(nodeRun.status));
 }
 
 function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
+}
+
+function hasFailedNodeRun(runView: BlueprintRunView): boolean {
+  return runView.nodeRuns.some((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
 }
 
 export function resolveBlueprintActivityState(status?: BlueprintRunStatus, terminalStatusSeen = false): BlueprintActivityState {

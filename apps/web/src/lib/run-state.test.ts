@@ -4,6 +4,7 @@ import {
   acknowledgedTerminalRunIdsStorageKey,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
+  resolveRunViewDisplayStatus,
   resolveRunViewStatus,
   selectRunPollingTarget,
   shouldShowBlueprintWorkspaceRunState,
@@ -116,6 +117,7 @@ describe("run state sync", () => {
     const staleTerminalRun = createRunView("running", { runId: "run-stale-terminal", runStatus: "failed" });
 
     expect(resolveRunViewStatus(staleTerminalRun)).toBe("running");
+    expect(resolveRunViewDisplayStatus(staleTerminalRun)).toBe("failed");
     expect(
       selectRunPollingTarget({
         runs: [staleTerminalRun],
@@ -124,6 +126,13 @@ describe("run state sync", () => {
         view: "runs"
       })
     ).toBe("run-stale-terminal");
+  });
+
+  it("shows failed node results before the run summary reaches a terminal status", () => {
+    const failedNodeInOpenRun = createRunView("failed", { runId: "run-failed-node", runStatus: "running" });
+
+    expect(resolveRunViewStatus(failedNodeInOpenRun)).toBe("running");
+    expect(resolveRunViewDisplayStatus(failedNodeInOpenRun)).toBe("failed");
   });
 
   it("does not poll runs from another blueprint", () => {
