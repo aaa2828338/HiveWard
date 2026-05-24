@@ -131,6 +131,8 @@ export const hivewardInboxSubmissionContract = [
   "",
   "Do not use from/to in new outputs. Use source/target.",
   "Do not put runtimeId inside config. runtimeId belongs at node.runtimeId.",
+  "When the conversation or user selected Codex or Claude Code as the harness, use runtimeId \"codex\" or \"claude\" for runnable agent, manager, and parallel_agents nodes unless the user explicitly asks for OpenClaw.",
+  "parallel_agents may set one top-level runtimeId; all agents inside that node inherit it.",
   "",
   "Canonical blueprint_proposal example:",
   JSON.stringify({

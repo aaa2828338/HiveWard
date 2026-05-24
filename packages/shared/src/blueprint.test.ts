@@ -17,6 +17,8 @@ import {
   type BlueprintEdge,
   type BlueprintNode,
   type BlueprintNodeRun,
+  type ManagerSlotNodeConfig,
+  type ParallelAgentsNodeConfig,
   type SendNodeConfig
 } from "./blueprint";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
@@ -241,6 +243,78 @@ describe("blueprint contracts", () => {
     expect(importedSendConfig.target).toBe("");
   });
 
+  it("imports agent defaults from the node runtime instead of always using OpenClaw", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-24T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "sdk-runtime-import",
+          name: "SDK runtime import",
+          version: 1,
+          nodes: [
+            createContractNode("openclaw-agent", "agent", "OpenClaw Agent"),
+            {
+              ...createContractNode("codex-agent", "agent", "Codex Agent", {}, { x: 1, y: 0 }),
+              runtimeId: "codex"
+            },
+            {
+              id: "codex-parallel",
+              type: "parallel_agents",
+              runtimeId: "codex",
+              position: { x: 2, y: 0 },
+              config: {
+                label: "Codex Parallel",
+                agents: [
+                  {
+                    label: "Codex Parallel Agent",
+                    agentName: "codex-parallel-agent",
+                    prompt: "Run in Codex.",
+                    tools: []
+                  }
+                ],
+                waitFor: "all"
+              }
+            }
+          ],
+          edges: [],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const imported = hydrateImportedBlueprint(blueprintPackage.blueprints[0]!, {
+      id: "blueprint-imported",
+      companyId: "company-local",
+      now: "2026-05-24T00:00:00.000Z",
+      defaults: {
+        openclawAgentId: "local-main",
+        modelId: "openclaw/local-default",
+        modelIds: {
+          openclaw: "openclaw/local-default",
+          codex: "gpt-5.5",
+          claude: "inherit"
+        }
+      }
+    });
+
+    const openclawAgent = imported.nodes.find((node) => node.id === "openclaw-agent")!;
+    const codexAgent = imported.nodes.find((node) => node.id === "codex-agent")!;
+    const codexParallel = imported.nodes.find((node) => node.id === "codex-parallel")!;
+    const codexParallelAgent = ((codexParallel.config as ParallelAgentsNodeConfig).agents[0])!;
+
+    expect(openclawAgent.runtimeId).toBe("openclaw");
+    expect((openclawAgent.config as AgentNodeConfig).openclawAgentId).toBe("local-main");
+    expect((openclawAgent.config as AgentNodeConfig).modelId).toBe("openclaw/local-default");
+    expect(codexAgent.runtimeId).toBe("codex");
+    expect((codexAgent.config as AgentNodeConfig).openclawAgentId).toBeUndefined();
+    expect((codexAgent.config as AgentNodeConfig).modelId).toBe("gpt-5.5");
+    expect(codexParallel.runtimeId).toBe("codex");
+    expect(codexParallelAgent.openclawAgentId).toBeUndefined();
+    expect(codexParallelAgent.modelId).toBe("gpt-5.5");
+  });
+
   it("auto-layouts imported blueprints when model coordinates are compressed", () => {
     const blueprintPackage = readPortableBlueprintPackage({
       schema: "hiveward.blueprint-package/v1",
@@ -412,6 +486,78 @@ describe("blueprint contracts", () => {
         targetHandle: "manager-in-1"
       })
     ]));
+  });
+
+  it("normalizes parallel manager slots as fan-out and fan-in containers", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-24T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "parallel-manager-slot",
+          name: "Parallel manager slot",
+          version: 1,
+          nodes: [
+            {
+              id: "manager",
+              type: "manager",
+              position: { x: 0, y: 0 },
+              config: { label: "Manager", portCount: 1, maxHandoffs: 4 }
+            },
+            {
+              id: "slot-1",
+              type: "manager_slot",
+              position: { x: 0, y: 0 },
+              config: { label: "Slot 1", managerNodeId: "manager", slot: 1, executionMode: "parallel", parallelLaneCount: 3 }
+            },
+            {
+              ...createContractNode("alpha", "agent", "Alpha", undefined, { x: 0, y: 0 }),
+              parentId: "slot-1"
+            },
+            {
+              ...createContractNode("beta", "agent", "Beta", undefined, { x: 0, y: 0 }),
+              parentId: "slot-1"
+            }
+          ],
+          edges: [
+            { id: "manager-to-slot", source: "manager", target: "slot-1" },
+            { id: "alpha-to-beta-old-pipeline", source: "alpha", target: "beta" },
+            { id: "slot-to-manager", source: "slot-1", target: "manager" }
+          ],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const portable = blueprintPackage.blueprints[0]!;
+    const slot = portable.nodes.find((node) => node.id === "slot-1")!;
+
+    expect((slot.config as ManagerSlotNodeConfig).executionMode).toBe("parallel");
+    expect((slot.config as ManagerSlotNodeConfig).parallelLaneCount).toBe(3);
+    expect(portable.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-inner-out",
+        target: "alpha"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-inner-out-2",
+        target: "beta"
+      }),
+      expect.objectContaining({
+        source: "alpha",
+        target: "slot-1",
+        targetHandle: "manager-slot-inner-in"
+      }),
+      expect.objectContaining({
+        source: "beta",
+        target: "slot-1",
+        targetHandle: "manager-slot-inner-in-2"
+      })
+    ]));
+    expect(portable.edges.some((edge) => edge.source === "alpha" && edge.target === "beta")).toBe(false);
   });
 
   it("resolves explicit final results without relying on node labels", () => {

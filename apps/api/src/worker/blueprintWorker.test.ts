@@ -832,6 +832,76 @@ describe("BlueprintWorker", () => {
     ).toBe(1);
   });
 
+  it("runs all child nodes in a parallel manager slot from one manager handoff", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Run the parallel slot."
+          }
+        },
+        {
+          id: "parallel-slot",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Parallel Slot",
+            managerNodeId: "manager",
+            slot: 1,
+            executionMode: "parallel"
+          }
+        },
+        {
+          ...createAgentNode("alpha", "Alpha", { x: 120, y: 100 }),
+          parentId: "parallel-slot"
+        },
+        {
+          ...createAgentNode("beta", "Beta", { x: 120, y: 240 }),
+          parentId: "parallel-slot"
+        }
+      ],
+      [
+        { id: "manager-slot-out", source: "manager", sourceHandle: "manager-out-1", target: "parallel-slot", targetHandle: "manager-slot-in", condition: "success" },
+        { id: "slot-manager-in", source: "parallel-slot", sourceHandle: "manager-slot-out", target: "manager", targetHandle: "manager-in-1", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-alpha"),
+      createStartedAgentTask("task-beta")
+    ], [
+      createCompletedAgentTask("task-alpha", "succeeded", "alpha done"),
+      createCompletedAgentTask("task-beta", "succeeded", "beta done")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const slotOutput = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "parallel-slot")?.output;
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["alpha", "beta"]);
+    expect(adapter.calls.every((call) => (call.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId === "parallel-slot")).toBe(true);
+    expect(slotOutput).toEqual(JSON.stringify({
+      outputs: [
+        { nodeId: "alpha", nodeLabel: "Alpha", output: "alpha done" },
+        { nodeId: "beta", nodeLabel: "Beta", output: "beta done" }
+      ]
+    }));
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.output).toMatchObject({
+      status: "completed"
+    });
+  });
+
   it("runs an agent-driven manager with the default sequential prompt when instructions are empty", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));

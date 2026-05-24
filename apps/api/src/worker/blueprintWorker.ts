@@ -3,6 +3,9 @@ import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
   isAgentBlueprintNode,
   resolveAgentRuntimeSource,
+  isManagerSlotInnerInHandle,
+  isManagerSlotInnerOutHandle,
+  resolveManagerSlotExecutionMode,
   type AgentNodeConfig,
   type AgentRuntimeId,
   type ApprovalNodeConfig,
@@ -10,6 +13,7 @@ import {
   type ConditionNodeConfig,
   type LoopNodeConfig,
   type ManagerNodeConfig,
+  type ManagerSlotNodeConfig,
   type OpenClawObjectRef,
   type ParallelAgentsNodeConfig,
   type SendNodeConfig,
@@ -37,8 +41,6 @@ const executableTypes = new Set([
 ]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
-const managerSlotInnerOutHandle = "manager-slot-inner-out";
-const managerSlotInnerInHandle = "manager-slot-inner-in";
 const defaultManagerAgentName = "manager";
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
@@ -317,6 +319,7 @@ export class BlueprintWorker {
   ): Promise<boolean> {
     const openclawRef = this.resolveAgentOpenClawRef(node, nodeRun);
     if (!openclawRef?.sessionKey) return false;
+    const runtimeId = node.runtimeId ?? "openclaw";
 
     const result = await this.adapter.waitForAgentTask({
       nodeRunId: nodeRun.id,
@@ -324,7 +327,7 @@ export class BlueprintWorker {
       runId: openclawRef.runId ?? openclawRef.sourceId,
       sessionKey: openclawRef.sessionKey,
       source: openclawRef.source,
-      agentId: node.runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
+      agentId: runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
       modelId: (node.config as AgentNodeConfig).modelId
     });
     const finalRef: OpenClawObjectRef = {
@@ -746,6 +749,7 @@ export class BlueprintWorker {
         label: target.config.label,
         type: target.type,
         description: target.config.description,
+        executionMode: resolveManagerSlotExecutionMode(target.config as ManagerSlotNodeConfig),
         children
       };
     }
@@ -977,12 +981,13 @@ export class BlueprintWorker {
     input: unknown
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
+    const runtimeId = node.runtimeId ?? "openclaw";
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
-      source: resolveAgentRuntimeSource(node.runtimeId),
-      agentId: node.runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      source: resolveAgentRuntimeSource(runtimeId),
+      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
       prompt: config.prompt,
       modelId: config.modelId,
@@ -1042,6 +1047,7 @@ export class BlueprintWorker {
     upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as ParallelAgentsNodeConfig;
+    const runtimeId = this.resolveParallelAgentsRuntimeId(node);
     const input = { upstream };
     const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     if (config.agents.length === 0) {
@@ -1053,8 +1059,8 @@ export class BlueprintWorker {
         this.runAgentTask({
           blueprintRunId: run.id,
           nodeRunId: nodeRun.id,
-          source: "openclaw",
-          agentId: agent.openclawAgentId ?? "main",
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? agent.openclawAgentId ?? "main" : undefined,
           agentName: agent.agentName,
           prompt: agent.prompt,
           modelId: agent.modelId,
@@ -1092,6 +1098,12 @@ export class BlueprintWorker {
       nodeRunWithInput,
       outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
     );
+  }
+
+  private resolveParallelAgentsRuntimeId(node: BlueprintNode): AgentRuntimeId {
+    return node.runtimeId === "codex" || node.runtimeId === "claude" || node.runtimeId === "openclaw"
+      ? node.runtimeId
+      : "openclaw";
   }
 
   private async executeManagerNode(
@@ -1410,9 +1422,11 @@ export class BlueprintWorker {
   }
 
   private getScopedIncomingEdges(blueprint: BlueprintDefinition, slotNode: BlueprintNode, node: BlueprintNode): BlueprintEdge[] {
+    const isParallelSlot = this.isParallelManagerSlot(slotNode);
     return blueprint.edges.filter((edge) => {
       if (edge.target !== node.id) return false;
-      if (edge.source === slotNode.id) return edge.sourceHandle === managerSlotInnerOutHandle;
+      if (edge.source === slotNode.id) return isManagerSlotInnerOutHandle(edge.sourceHandle);
+      if (isParallelSlot) return false;
       const source = blueprint.nodes.find((candidate) => candidate.id === edge.source);
       return source?.parentId === slotNode.id;
     });
@@ -1425,7 +1439,7 @@ export class BlueprintWorker {
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number
   ): IncomingEdgeState {
-    if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) return "satisfied";
+    if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) return "satisfied";
     const source = blueprint.nodes.find((candidate) => candidate.id === edge.source);
     if (!source || source.parentId !== slotNode.id) return "blocked";
     const sourceRun = this.findLatestNodeRun(nodeRuns, source.id, undefined, scopeStartIndex);
@@ -1458,7 +1472,7 @@ export class BlueprintWorker {
     const outputs: UpstreamOutput = [];
     for (const edge of incoming) {
       if (this.resolveScopedEdgeState(blueprint, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
-      if (edge.source === slotNode.id && edge.sourceHandle === managerSlotInnerOutHandle) {
+      if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) {
         outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput));
         continue;
       }
@@ -1477,8 +1491,24 @@ export class BlueprintWorker {
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number
   ): unknown {
+    if (this.isParallelManagerSlot(slotNode)) {
+      const childRuns = childNodes.flatMap((node) => {
+        const nodeRun = this.findLatestNodeRun(nodeRuns, node.id, "succeeded", scopeStartIndex);
+        return nodeRun ? [nodeRun] : [];
+      });
+      if (childRuns.length === 0 || childRuns.length < childNodes.length) return undefined;
+      if (childRuns.length === 1) return childRuns[0]!.output;
+      return {
+        outputs: childRuns.map((nodeRun) => ({
+          nodeId: nodeRun.nodeId,
+          nodeLabel: nodeRun.nodeLabel,
+          output: nodeRun.output
+        }))
+      };
+    }
+
     const explicitOutputs = blueprint.edges
-      .filter((edge) => edge.target === slotNode.id && edge.targetHandle === managerSlotInnerInHandle)
+      .filter((edge) => edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle))
       .flatMap((edge) => {
         const source = childNodes.find((node) => node.id === edge.source);
         if (!source) return [];
@@ -1515,6 +1545,13 @@ export class BlueprintWorker {
       };
     }
     return undefined;
+  }
+
+  private isParallelManagerSlot(slotNode: BlueprintNode): boolean {
+    return (
+      slotNode.type === "manager_slot" &&
+      resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig) === "parallel"
+    );
   }
 
   private syntheticAgentResult(

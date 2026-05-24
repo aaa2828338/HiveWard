@@ -13,7 +13,14 @@ import {
   ShieldCheck,
   XCircle
 } from "lucide-react";
-import type { CanvasSize, BlueprintNodeRunStatus, BlueprintNodeType } from "@hiveward/shared";
+import {
+  managerSlotInnerInHandleId,
+  managerSlotInnerOutHandleId,
+  type CanvasSize,
+  type BlueprintNodeRunStatus,
+  type BlueprintNodeType,
+  type ManagerSlotExecutionMode
+} from "@hiveward/shared";
 
 export interface BlueprintNodeCardData extends Record<string, unknown> {
   label: string;
@@ -25,6 +32,8 @@ export interface BlueprintNodeCardData extends Record<string, unknown> {
   isStartNode?: boolean;
   managerPortCount?: number;
   managerSlot?: number;
+  managerSlotExecutionMode?: ManagerSlotExecutionMode;
+  managerSlotLaneCount?: number;
   managerSlotSize?: CanvasSize;
 }
 
@@ -77,6 +86,8 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
   const managerSlots = Array.from({ length: managerPortCount }, (_item, index) => index + 1);
+  const managerSlotLaneCount = clampManagerSlotLaneCount(nodeData.managerSlotLaneCount);
+  const managerSlotLanes = Array.from({ length: managerSlotLaneCount }, (_item, index) => index + 1);
   const nodeStyle =
     nodeData.type === "manager"
       ? managerNodeStyle(managerPortCount)
@@ -114,19 +125,39 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
             style={{ top: 58 }}
           />
           <Handle
-            id="manager-slot-inner-out"
+            id={managerSlotInnerOutHandleId(1)}
             className="node-handle output-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-out"
             type="source"
             position={Position.Right}
-            style={{ top: "var(--manager-slot-inner-handle-top)" }}
+            style={managerSlotLaneHandleStyle(1, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "out")}
           />
           <Handle
-            id="manager-slot-inner-in"
+            id={managerSlotInnerInHandleId(1)}
             className="node-handle input-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-in"
             type="target"
             position={Position.Left}
-            style={{ top: "var(--manager-slot-inner-handle-top)" }}
+            style={managerSlotLaneHandleStyle(1, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "in")}
           />
+          {managerSlotLanes.slice(1).map((lane) => (
+            <Handle
+              key={`manager-slot-inner-out-${lane}`}
+              id={managerSlotInnerOutHandleId(lane)}
+              className="node-handle output-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-out"
+              type="source"
+              position={Position.Right}
+              style={managerSlotLaneHandleStyle(lane, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "out")}
+            />
+          ))}
+          {managerSlotLanes.slice(1).map((lane) => (
+            <Handle
+              key={`manager-slot-inner-in-${lane}`}
+              id={managerSlotInnerInHandleId(lane)}
+              className="node-handle input-handle manager-slot-box-handle manager-slot-box-inner manager-slot-box-inner-in"
+              type="target"
+              position={Position.Left}
+              style={managerSlotLaneHandleStyle(lane, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "in")}
+            />
+          ))}
         </>
       ) : nodeData.type === "manager" ? (
         <>
@@ -164,11 +195,36 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, selecte
       <div className="node-kind">{nodeData.kindLabel}</div>
       {nodeData.isStartNode && <span className="node-start-badge">Start</span>}
       {nodeData.type === "manager_slot" && (
-        <div className="manager-slot-box-body" aria-hidden="true">
-          <span className="manager-slot-box-tag">{`Slot ${nodeData.managerSlot ?? ""}`}</span>
-          <span className="manager-slot-box-wall manager-slot-box-wall-left" />
-          <span className="manager-slot-box-wall manager-slot-box-wall-right" />
-        </div>
+        <>
+          <div className="manager-slot-box-body" aria-hidden="true">
+            <span className="manager-slot-box-tag">{`Slot ${nodeData.managerSlot ?? ""}`}</span>
+            <span className={`manager-slot-mode-tag manager-slot-mode-${nodeData.managerSlotExecutionMode ?? "manual"}`}>
+              {nodeData.managerSlotExecutionMode === "parallel" ? "Parallel" : "Manual"}
+            </span>
+            <span className="manager-slot-box-wall manager-slot-box-wall-left" />
+            <span className="manager-slot-box-wall manager-slot-box-wall-right" />
+          </div>
+          {managerSlotLanes.map((lane) => (
+            <span
+              key={`manager-slot-lane-out-label-${lane}`}
+              className="manager-slot-lane-label manager-slot-lane-label-out"
+              style={managerSlotLaneLabelStyle(lane, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "out")}
+              aria-hidden="true"
+            >
+              {lane}
+            </span>
+          ))}
+          {managerSlotLanes.map((lane) => (
+            <span
+              key={`manager-slot-lane-in-label-${lane}`}
+              className="manager-slot-lane-label manager-slot-lane-label-in"
+              style={managerSlotLaneLabelStyle(lane, managerSlotLaneCount, nodeData.managerSlotSize, { width, height }, "in")}
+              aria-hidden="true"
+            >
+              {lane}
+            </span>
+          ))}
+        </>
       )}
       {nodeData.type === "manager" && (
         <div className="manager-port-list" aria-hidden="true">
@@ -214,6 +270,11 @@ function clampManagerPortCount(value: unknown): number {
   return Math.min(8, Math.max(1, Math.round(value)));
 }
 
+function clampManagerSlotLaneCount(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+  return Math.min(16, Math.max(1, Math.round(value)));
+}
+
 function managerNodeStyle(portCount: number): CSSProperties {
   return {
     minHeight: managerPortStart + Math.max(0, portCount - 1) * managerPortGap + 40,
@@ -234,6 +295,43 @@ function managerSlotNodeStyle(size?: CanvasSize, liveSize?: Partial<CanvasSize>)
     "--manager-slot-frame-bottom": `${MANAGER_SLOT_FRAME.bottom}px`,
     "--manager-slot-inner-handle-top": `${innerHandleTop}px`
   } as CSSProperties;
+}
+
+function managerSlotLaneHandleStyle(
+  lane: number,
+  laneCount: number,
+  size: CanvasSize | undefined,
+  liveSize: Partial<CanvasSize>,
+  side: "in" | "out"
+): CSSProperties {
+  const normalizedHeight = normalizeManagerSlotSizeValue(liveSize.height ?? size?.height, MANAGER_SLOT_DEFAULT_SIZE.height, MANAGER_SLOT_MIN_SIZE.height);
+  const availableHeight = Math.max(1, normalizedHeight - MANAGER_SLOT_FRAME.top - MANAGER_SLOT_FRAME.bottom);
+  const top = MANAGER_SLOT_FRAME.top + (availableHeight * lane) / (laneCount + 1);
+  return {
+    top,
+    ...(side === "out" ? { left: MANAGER_SLOT_FRAME.side, right: "auto" } : { left: "auto", right: MANAGER_SLOT_FRAME.side })
+  };
+}
+
+function managerSlotLaneLabelStyle(
+  lane: number,
+  laneCount: number,
+  size: CanvasSize | undefined,
+  liveSize: Partial<CanvasSize>,
+  side: "in" | "out"
+): CSSProperties {
+  const normalizedHeight = normalizeManagerSlotSizeValue(liveSize.height ?? size?.height, MANAGER_SLOT_DEFAULT_SIZE.height, MANAGER_SLOT_MIN_SIZE.height);
+  const availableHeight = Math.max(1, normalizedHeight - MANAGER_SLOT_FRAME.top - MANAGER_SLOT_FRAME.bottom);
+  const laneGap = availableHeight / (laneCount + 1);
+  const labelSize = Math.min(16, Math.max(10, Math.floor(laneGap - 1)));
+  const top = MANAGER_SLOT_FRAME.top + laneGap * lane;
+  return {
+    top,
+    width: labelSize,
+    height: labelSize,
+    fontSize: Math.max(6, labelSize * 0.58),
+    ...(side === "out" ? { left: Math.max(0, MANAGER_SLOT_FRAME.side - 10 - labelSize) } : { right: Math.max(0, MANAGER_SLOT_FRAME.side - 10 - labelSize) })
+  };
 }
 
 function normalizeManagerSlotSizeValue(value: unknown, fallback: number, min: number): number {

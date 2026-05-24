@@ -14,6 +14,7 @@ import {
   type NodeChange,
   type NodeMouseHandler,
   type OnNodesChange,
+  type OnConnectEnd,
   useReactFlow,
   useStore
 } from "@xyflow/react";
@@ -33,12 +34,20 @@ import {
   Search,
   Send,
   ShieldCheck,
+  Settings2,
   Square,
   Trash2,
   Upload,
   X
 } from "lucide-react";
-import { isAgentBlueprintNode, type AgentRuntimeId } from "@hiveward/shared";
+import {
+  isAgentBlueprintNode,
+  isManagerSlotInnerInHandle,
+  isManagerSlotInnerOutHandle,
+  resolveManagerSlotExecutionMode,
+  resolveManagerSlotParallelLaneCount,
+  type AgentRuntimeId
+} from "@hiveward/shared";
 import type {
   AgentNodeConfig,
   ArchitectureBlueprintView,
@@ -51,6 +60,8 @@ import type {
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
+  ManagerSlotExecutionMode,
+  HarnessStatus,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
   ParallelAgentsNodeConfig,
@@ -117,8 +128,6 @@ const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
 const managerSlotOutHandle = "manager-slot-out";
-const managerSlotInnerOutHandle = "manager-slot-inner-out";
-const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
 const blueprintStepTypes = new Set<BlueprintNodeType>([
   "agent",
@@ -142,6 +151,7 @@ export function BlueprintStudioPage({
   roleDirectory,
   catalog,
   configuredAgents,
+  harnessStatuses,
   runSummaries,
   runView,
   selectedNodeId,
@@ -167,6 +177,7 @@ export function BlueprintStudioPage({
   roleDirectory?: CompanyRoleDirectory;
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
+  harnessStatuses?: HarnessStatus[];
   runSummaries: BlueprintRunSummary[];
   runView?: BlueprintRunView;
   selectedNodeId?: string;
@@ -190,6 +201,7 @@ export function BlueprintStudioPage({
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
   const inspectedNode = blueprint?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const [batchEditorOpen, setBatchEditorOpen] = useState(false);
   const [localNodes, setLocalNodes] = useState<Node<BlueprintNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
   const [nodeMenuOpen, setNodeMenuOpen] = useState(false);
@@ -224,6 +236,7 @@ export function BlueprintStudioPage({
   const blueprintCardContextMenuRef = useRef<HTMLDivElement | null>(null);
   const deleteDialogRef = useRef<HTMLDivElement | null>(null);
   const rightDragStateRef = useRef<{ x: number; y: number; moved: boolean; openedMenu: boolean } | undefined>(undefined);
+  const suppressNextPaneClickRef = useRef(false);
 
   const setSelectedCanvasNodeIdsIfChanged = useCallback((nextIds: string[]) => {
     setSelectedCanvasNodeIds((current) => {
@@ -396,6 +409,21 @@ export function BlueprintStudioPage({
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
   const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const selectedBlueprintNodes = useMemo(() => {
+    if (!blueprint || selectedCanvasNodeIds.length === 0) return [];
+    const selectedIds = new Set(selectedCanvasNodeIds);
+    return blueprint.nodes.filter((node) => selectedIds.has(node.id));
+  }, [blueprint, selectedCanvasNodeIds]);
+  const selectedAgentNodes = useMemo(
+    () => selectedBlueprintNodes.filter((node): node is BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig } => node.type === "agent"),
+    [selectedBlueprintNodes]
+  );
+  const canBatchEditSelectedAgents = selectedAgentNodes.length > 1;
+
+  useEffect(() => {
+    if (!batchEditorOpen || canBatchEditSelectedAgents) return;
+    setBatchEditorOpen(false);
+  }, [batchEditorOpen, canBatchEditSelectedAgents]);
 
   const rememberAcknowledgedTerminalRunId = useCallback((runId: string) => {
     if (acknowledgedTerminalRunIdsRef.current.has(runId)) return;
@@ -473,6 +501,14 @@ export function BlueprintStudioPage({
     (nodeId: string, patch: Partial<BlueprintNode["config"]>) => {
       if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
+        const normalizedPatch =
+          (patch as Partial<ManagerSlotNodeConfig>).executionMode === "parallel" &&
+          (patch as Partial<ManagerSlotNodeConfig>).parallelLaneCount === undefined
+            ? ({
+                ...patch,
+                parallelLaneCount: 4
+              } as Partial<BlueprintNode["config"]>)
+            : patch;
         const next = {
           ...current,
           nodes: current.nodes.map((node) =>
@@ -481,7 +517,7 @@ export function BlueprintStudioPage({
                   ...node,
                   config: {
                     ...node.config,
-                    ...patch
+                    ...normalizedPatch
                   } as BlueprintNode["config"]
                 }
               : node
@@ -491,6 +527,37 @@ export function BlueprintStudioPage({
       });
     },
     [isBlueprintInteractionLocked, onUpdateBlueprint]
+  );
+
+  const patchSelectedAgentNodes = useCallback(
+    (
+      nodeIds: string[],
+      runtimeId: AgentRuntimeId | undefined,
+      configPatch: Partial<AgentNodeConfig>
+    ) => {
+      if (isBlueprintInteractionLocked || nodeIds.length === 0) return;
+      const selectedIds = new Set(nodeIds);
+      const agentOptions = configuredAgents ?? [];
+      onUpdateBlueprint((current) => ({
+        ...current,
+        nodes: current.nodes.map((node) => {
+          if (!selectedIds.has(node.id) || node.type !== "agent") return node;
+          const runtimeConfigPatch = runtimeId
+            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions)
+            : {};
+          return {
+            ...node,
+            runtimeId: runtimeId ?? node.runtimeId,
+            config: {
+              ...node.config,
+              ...runtimeConfigPatch,
+              ...configPatch
+            } as AgentNodeConfig
+          };
+        })
+      }));
+    },
+    [configuredAgents, isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const patchNode = useCallback(
@@ -547,7 +614,7 @@ export function BlueprintStudioPage({
         const node: BlueprintNode = {
           id,
           type,
-          runtimeId: type === "agent" || type === "manager" ? "openclaw" : undefined,
+          runtimeId: type === "agent" || type === "manager" || type === "parallel_agents" ? "openclaw" : undefined,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
             ? managerSlotChildInitialPosition(selectedSlot!, blueprintWithUniqueIds.nodes.filter((candidate) => candidate.parentId === selectedSlot!.id).length)
@@ -582,6 +649,21 @@ export function BlueprintStudioPage({
   const closeNodeContextMenu = useCallback(() => {
     setNodeContextMenu({ open: false, x: 0, y: 0, nodeId: undefined });
   }, []);
+
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      if (isBlueprintInteractionLocked) return;
+      if (connectionState.toNode || connectionState.toHandle) return;
+      const point = getConnectionEndPoint(event);
+      if (!point) return;
+      const { x, y } = getMenuPoint(point);
+      closeNodeContextMenu();
+      setInspectedNodeId(undefined);
+      suppressNextPaneClickRef.current = true;
+      openNodeMenuAt(x, y);
+    },
+    [closeNodeContextMenu, isBlueprintInteractionLocked, openNodeMenuAt]
+  );
 
   const clearCanvasSelection = useCallback(() => {
     setSelectedCanvasNodeIdsIfChanged([]);
@@ -664,9 +746,11 @@ export function BlueprintStudioPage({
   useEffect(() => {
     if (!isBlueprintInteractionLocked) return;
     setInspectedNodeId(undefined);
+    setBatchEditorOpen(false);
     closeNodeMenu();
     closeNodeContextMenu();
     rightDragStateRef.current = undefined;
+    suppressNextPaneClickRef.current = false;
   }, [closeNodeContextMenu, closeNodeMenu, isBlueprintInteractionLocked]);
 
   const openDockNodeMenu = useCallback(
@@ -977,7 +1061,12 @@ export function BlueprintStudioPage({
             onNodeClick={onNodeClick}
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
+            onConnectEnd={onConnectEnd}
             onPaneClick={() => {
+              if (suppressNextPaneClickRef.current) {
+                suppressNextPaneClickRef.current = false;
+                return;
+              }
               setSelectedCanvasNodeIdsIfChanged([]);
               onSelectNode(undefined);
               closeNodeMenu();
@@ -1043,6 +1132,18 @@ export function BlueprintStudioPage({
             >
               <Plus size={18} />
             </button>
+            {canBatchEditSelectedAgents && (
+              <button
+                type="button"
+                className="blueprint-dock-batch"
+                title="Batch agent settings"
+                onClick={() => setBatchEditorOpen(true)}
+                disabled={busy || isBlueprintInteractionLocked}
+              >
+                <Settings2 size={16} />
+                <span>{selectedAgentNodes.length}</span>
+              </button>
+            )}
             <button
               ref={blueprintSelectorButtonRef}
               type="button"
@@ -1245,11 +1346,27 @@ export function BlueprintStudioPage({
           <NodeDetailModal
             catalog={catalog}
             configuredAgents={configuredAgents}
+            harnessStatuses={harnessStatuses}
             node={inspectedNode}
             t={t}
             onClose={() => setInspectedNodeId(undefined)}
             onPatchNode={(patch) => patchNode(inspectedNode.id, patch)}
             onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
+          />
+        )}
+
+        {batchEditorOpen && blueprint && !isBlueprintInteractionLocked && canBatchEditSelectedAgents && (
+          <BatchAgentSettingsModal
+            nodes={selectedAgentNodes}
+            models={catalog?.models ?? []}
+            configuredAgents={configuredAgents ?? []}
+            harnessStatuses={harnessStatuses}
+            t={t}
+            onClose={() => setBatchEditorOpen(false)}
+            onApply={(runtimeId, configPatch) => {
+              patchSelectedAgentNodes(selectedAgentNodes.map((node) => node.id), runtimeId, configPatch);
+              setBatchEditorOpen(false);
+            }}
           />
         )}
       </section>
@@ -1389,6 +1506,7 @@ function formatArchitectureDate(value: string): string {
 function NodeDetailModal({
   catalog,
   configuredAgents,
+  harnessStatuses,
   node,
   t,
   onClose,
@@ -1397,6 +1515,7 @@ function NodeDetailModal({
 }: {
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
+  harnessStatuses?: HarnessStatus[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -1427,6 +1546,7 @@ function NodeDetailModal({
                 catalog={catalog}
                 node={node}
                 configuredAgents={configuredAgents}
+                harnessStatuses={harnessStatuses}
                 models={models}
                 channels={channels}
                 onPatchNode={onPatchNode}
@@ -1434,7 +1554,7 @@ function NodeDetailModal({
                 t={t}
               />
             </div>
-            {isAgentBlueprintNode(node) && node.runtimeId === "openclaw" && (
+            {isAgentBlueprintNode(node) && (node.runtimeId ?? "openclaw") === "openclaw" && (
               <AgentSkillPanel
                 node={node}
                 skills={catalog?.tools ?? []}
@@ -1449,9 +1569,147 @@ function NodeDetailModal({
   );
 }
 
+function BatchAgentSettingsModal({
+  nodes,
+  models,
+  configuredAgents,
+  harnessStatuses,
+  t,
+  onClose,
+  onApply
+}: {
+  nodes: Array<BlueprintNode & { type: "agent"; config: AgentNodeConfig }>;
+  models: NonNullable<CatalogSnapshot["models"]>;
+  configuredAgents: OpenClawConfiguredAgent[];
+  harnessStatuses?: HarnessStatus[];
+  t: Messages;
+  onClose: () => void;
+  onApply: (runtimeId: AgentRuntimeId | undefined, configPatch: Partial<AgentNodeConfig>) => void;
+}) {
+  const [runtimeId, setRuntimeId] = useState<"" | AgentRuntimeId>("");
+  const [openclawAgentId, setOpenclawAgentId] = useState("");
+  const [modelSelection, setModelSelection] = useState("");
+  const [permissionProfile, setPermissionProfile] = useState<"" | NonNullable<AgentNodeConfig["permissionProfile"]>>("");
+  const [workingDirectory, setWorkingDirectory] = useState("");
+  const [timeoutMs, setTimeoutMs] = useState("");
+  const effectiveRuntimeId = runtimeId || commonAgentRuntime(nodes) || "openclaw";
+  const isSdkProvider = effectiveRuntimeId === "claude" || effectiveRuntimeId === "codex";
+  const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
+
+  const apply = () => {
+    const configPatch: Partial<AgentNodeConfig> = {};
+    if (openclawAgentId) configPatch.openclawAgentId = openclawAgentId;
+    if (modelSelection === "__default") {
+      configPatch.modelId = undefined;
+    } else if (modelSelection) {
+      configPatch.modelId = modelSelection;
+    }
+    if (permissionProfile) configPatch.permissionProfile = permissionProfile;
+    if (workingDirectory.trim()) configPatch.workingDirectory = workingDirectory.trim();
+    if (timeoutMs.trim()) configPatch.timeoutMs = clampNumberInput(timeoutMs, 1, 3600000, 600000);
+    onApply(runtimeId || undefined, configPatch);
+  };
+
+  return (
+    <div className="node-modal-backdrop" onClick={onClose}>
+      <section className="node-modal batch-agent-modal" onClick={(event) => event.stopPropagation()}>
+        <header className="node-modal-header">
+          <div>
+            <span className="hero-eyebrow modal-eyebrow">{t.metrics.agents(nodes.length)}</span>
+            <h3>Batch settings</h3>
+          </div>
+          <button type="button" className="icon-button node-modal-close" onClick={onClose}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="node-modal-grid">
+          <div className="node-modal-main">
+            <div className="node-modal-section">
+              <h4>{t.fields.settings}</h4>
+              <div className="config-form node-modal-form">
+                <label>
+                  <span>Runtime</span>
+                  <select value={runtimeId} onChange={(event) => setRuntimeId(event.target.value as "" | AgentRuntimeId)}>
+                    <option value="">No change</option>
+                    <option value="openclaw">OpenClaw</option>
+                    <option value="codex">Codex</option>
+                    <option value="claude">Claude Code</option>
+                  </select>
+                </label>
+                {!isSdkProvider && (
+                  <label>
+                    <span>{t.fields.openclawAgent}</span>
+                    <select value={openclawAgentId} onChange={(event) => setOpenclawAgentId(event.target.value)}>
+                      <option value="">No change</option>
+                      {configuredAgents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name ? `${agent.name} (${agent.id})` : agent.id}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  <span>{t.fields.model}</span>
+                  {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                    <input value={modelSelection} placeholder="No change" onChange={(event) => setModelSelection(event.target.value)} />
+                  ) : (
+                    <select value={modelSelection} onChange={(event) => setModelSelection(event.target.value)}>
+                      <option value="">No change</option>
+                      <option value="__default">{runtimeDefaultModelLabel(effectiveRuntimeId, t)}</option>
+                      {runtimeModelOptions.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+                {isSdkProvider && (
+                  <>
+                    <label>
+                      <span>Permission</span>
+                      <select
+                        value={permissionProfile}
+                        onChange={(event) => setPermissionProfile(event.target.value as "" | NonNullable<AgentNodeConfig["permissionProfile"]>)}
+                      >
+                        <option value="">No change</option>
+                        <option value="read_only">Read only</option>
+                        <option value="workspace_write">Workspace write</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>Working directory</span>
+                      <input value={workingDirectory} placeholder="No change" onChange={(event) => setWorkingDirectory(event.target.value)} />
+                    </label>
+                    <label>
+                      <span>Timeout ms</span>
+                      <input min={1} type="number" value={timeoutMs} placeholder="No change" onChange={(event) => setTimeoutMs(event.target.value)} />
+                    </label>
+                  </>
+                )}
+              </div>
+              <div className="node-modal-actions">
+                <button type="button" onClick={onClose}>
+                  Cancel
+                </button>
+                <button type="button" className="primary-action" onClick={apply}>
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function NodeConfigForm({
   node,
   configuredAgents,
+  harnessStatuses,
   models,
   channels,
   onPatchNode,
@@ -1461,6 +1719,7 @@ function NodeConfigForm({
   catalog?: CatalogSnapshot;
   node: BlueprintNode;
   configuredAgents?: OpenClawConfiguredAgent[];
+  harnessStatuses?: HarnessStatus[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
@@ -1476,20 +1735,25 @@ function NodeConfigForm({
 
   if (isAgentBlueprintNode(node)) {
     const config = node.config;
-    const runtimeId = node.runtimeId;
+    const runtimeId = node.runtimeId ?? "openclaw";
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const selectedModel = config.modelId ?? "";
-    const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+    const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
     const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
     const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
+    const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
+      onPatchNode({ runtimeId: nextRuntimeId });
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+    };
 
     return (
       <div className="node-agent-config">
         <div className="config-form node-modal-form node-agent-primary-form">
           <label>
             <span>Runtime</span>
-            <select value={runtimeId} onChange={(event) => onPatchNode({ runtimeId: event.target.value as AgentRuntimeId })}>
+            <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
               <option value="openclaw">OpenClaw</option>
               <option value="codex">Codex</option>
               <option value="claude">Claude Code</option>
@@ -1528,13 +1792,17 @@ function NodeConfigForm({
             )}
             <label>
               <span>{t.fields.model}</span>
-              {isSdkProvider ? (
-                <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
+              {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                <input
+                  value={selectedModel}
+                  placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                  onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
+                />
               ) : (
                 <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-                  <option value="">{t.common.defaultModel}</option>
+                  <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
                   {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-                  {models.map((model) => (
+                  {runtimeModelOptions.map((model) => (
                     <option key={model.id} value={model.id}>
                       {model.label}
                     </option>
@@ -1593,15 +1861,20 @@ function NodeConfigForm({
     const runtimeId = node.runtimeId ?? "openclaw";
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const selectedModel = config.modelId ?? "";
-    const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+    const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
     const selectedAgentId = config.openclawAgentId ?? agentOptions[0]?.id ?? "main";
     const hasSelectedAgent = agentOptions.some((agent) => agent.id === selectedAgentId);
+    const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
+      onPatchNode({ runtimeId: nextRuntimeId });
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+    };
     return (
       <div className="config-form node-modal-form">
         <label>
           <span>Runtime</span>
-          <select value={runtimeId} onChange={(event) => onPatchNode({ runtimeId: event.target.value as AgentRuntimeId })}>
+          <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
             <option value="openclaw">OpenClaw</option>
             <option value="codex">Codex</option>
             <option value="claude">Claude Code</option>
@@ -1625,13 +1898,17 @@ function NodeConfigForm({
         )}
         <label>
           <span>{t.fields.model}</span>
-          {isSdkProvider ? (
-            <input value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })} />
+          {isSdkProvider && runtimeModelOptions.length === 0 ? (
+            <input
+              value={selectedModel}
+              placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+              onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
+            />
           ) : (
             <select value={selectedModel} onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}>
-              <option value="">{t.common.defaultModel}</option>
+              <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
               {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-              {models.map((model) => (
+              {runtimeModelOptions.map((model) => (
                 <option key={model.id} value={model.id}>
                   {model.label}
                 </option>
@@ -1708,6 +1985,7 @@ function NodeConfigForm({
 
   if (node.type === "manager_slot") {
     const config = node.config as ManagerSlotNodeConfig;
+    const executionMode = resolveManagerSlotExecutionMode(config);
     return (
       <div className="config-form node-modal-form">
         <label>
@@ -1718,6 +1996,34 @@ function NodeConfigForm({
           <span>{t.fields.slot}</span>
           <input value={config.slot} readOnly />
         </label>
+        <label>
+          <span>{t.fields.mode}</span>
+          <select
+            value={executionMode}
+            onChange={(event) => {
+              const nextMode = event.target.value as ManagerSlotExecutionMode;
+              onPatchConfig({
+                executionMode: nextMode,
+                ...(nextMode === "parallel" ? { parallelLaneCount: resolveManagerSlotParallelLaneCount(config) } : {})
+              });
+            }}
+          >
+            <option value="manual">Manual graph</option>
+            <option value="parallel">Parallel fan-out</option>
+          </select>
+        </label>
+        {executionMode === "parallel" && (
+          <label>
+            <span>{t.fields.parallelLanes}</span>
+            <input
+              min={1}
+              max={16}
+              type="number"
+              value={resolveManagerSlotParallelLaneCount(config)}
+              onChange={(event) => onPatchConfig({ parallelLaneCount: clampNumberInput(event.target.value, 1, 16, 4) })}
+            />
+          </label>
+        )}
         <label>
           <span>{t.fields.manager}</span>
           <input value={config.managerNodeId} readOnly />
@@ -1851,6 +2157,9 @@ function NodeConfigForm({
 
   if (node.type === "parallel_agents") {
     const config = node.config as ParallelAgentsNodeConfig;
+    const runtimeId = node.runtimeId ?? "openclaw";
+    const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
+    const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const agentOptions = configuredAgents ?? [];
     const updateAgent = (index: number, patch: Partial<AgentNodeConfig>) => {
       onPatchConfig({
@@ -1858,8 +2167,9 @@ function NodeConfigForm({
       });
     };
     const addAgent = () => {
+      const agent = createDefaultParallelAgent(t, agentOptions[0]?.id ?? "main");
       onPatchConfig({
-        agents: [...config.agents, createDefaultParallelAgent(t, agentOptions[0]?.id ?? "main")]
+        agents: [...config.agents, { ...agent, ...buildRuntimeConfigPatch(agent, runtimeId, agentOptions) }]
       });
     };
     const removeAgent = (index: number) => {
@@ -1867,9 +2177,26 @@ function NodeConfigForm({
         agents: config.agents.filter((_, agentIndex) => agentIndex !== index)
       });
     };
+    const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
+      onPatchNode({ runtimeId: nextRuntimeId });
+      onPatchConfig({
+        agents: config.agents.map((agent) => ({
+          ...agent,
+          ...buildRuntimeConfigPatch(agent, nextRuntimeId, agentOptions)
+        }))
+      });
+    };
 
     return (
       <div className="config-form node-modal-form">
+        <label>
+          <span>Runtime</span>
+          <select value={runtimeId} onChange={(event) => switchRuntime(event.target.value as AgentRuntimeId)}>
+            <option value="openclaw">OpenClaw</option>
+            <option value="codex">Codex</option>
+            <option value="claude">Claude Code</option>
+          </select>
+        </label>
         <label>
           <span>{t.fields.label}</span>
           <input value={config.label} onChange={(event) => onPatchConfig({ label: event.target.value })} />
@@ -1891,46 +2218,83 @@ function NodeConfigForm({
           ) : (
             config.agents.map((agent, index) => {
               const selectedModel = agent.modelId ?? "";
-              const hasSelectedModel = selectedModel ? models.some((model) => model.id === selectedModel) : true;
+              const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
               const selectedAgentId = agent.openclawAgentId ?? agentOptions[0]?.id ?? "main";
               const hasSelectedAgent = agentOptions.some((candidate) => candidate.id === selectedAgentId);
 
               return (
                 <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="node-modal-section parallel-agent-card">
                   <div className="parallel-agent-card-header">
-                    <h4>{`OpenClaw Agent ${index + 1}`}</h4>
+                    <h4>{`${runtimeLabel(runtimeId)} Agent ${index + 1}`}</h4>
                     <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
                       <X size={14} />
                     </button>
                   </div>
                   <div className="config-form parallel-agent-form">
-                    <label>
-                      <span>{t.fields.openclawAgent}</span>
-                      <select value={selectedAgentId} onChange={(event) => updateAgent(index, { openclawAgentId: event.target.value })}>
-                        {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
-                        {agentOptions.map((candidate) => (
-                          <option key={candidate.id} value={candidate.id}>
-                            {candidate.name ? `${candidate.name} (${candidate.id})` : candidate.id}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    {!isSdkProvider && (
+                      <label>
+                        <span>{t.fields.openclawAgent}</span>
+                        <select value={selectedAgentId} onChange={(event) => updateAgent(index, { openclawAgentId: event.target.value })}>
+                          {!hasSelectedAgent && <option value={selectedAgentId}>{selectedAgentId}</option>}
+                          {agentOptions.map((candidate) => (
+                            <option key={candidate.id} value={candidate.id}>
+                              {candidate.name ? `${candidate.name} (${candidate.id})` : candidate.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                     <label>
                       <span>{t.fields.model}</span>
-                      <select value={selectedModel} onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}>
-                        <option value="">{t.common.defaultModel}</option>
-                        {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
-                        {models.map((model) => (
-                          <option key={model.id} value={model.id}>
-                            {model.label}
-                          </option>
-                        ))}
-                      </select>
+                      {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                        <input
+                          value={selectedModel}
+                          placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                          onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}
+                        />
+                      ) : (
+                        <select value={selectedModel} onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}>
+                          <option value="">{runtimeDefaultModelLabel(runtimeId, t)}</option>
+                          {!hasSelectedModel && <option value={selectedModel}>{selectedModel}</option>}
+                          {runtimeModelOptions.map((model) => (
+                            <option key={model.id} value={model.id}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
                     </label>
                     <label>
                       <span>{t.fields.runLabel}</span>
                       <input value={agent.agentName} onChange={(event) => updateAgent(index, { agentName: event.target.value })} />
                     </label>
+                    {isSdkProvider && (
+                      <>
+                        <label>
+                          <span>Permission</span>
+                          <select
+                            value={agent.permissionProfile ?? "read_only"}
+                            onChange={(event) => updateAgent(index, { permissionProfile: event.target.value as AgentNodeConfig["permissionProfile"] })}
+                          >
+                            <option value="read_only">Read only</option>
+                            <option value="workspace_write">Workspace write</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Working directory</span>
+                          <input value={agent.workingDirectory ?? ""} onChange={(event) => updateAgent(index, { workingDirectory: event.target.value })} />
+                        </label>
+                        <label>
+                          <span>Timeout ms</span>
+                          <input
+                            min={1}
+                            type="number"
+                            value={agent.timeoutMs ?? 600000}
+                            onChange={(event) => updateAgent(index, { timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+                          />
+                        </label>
+                      </>
+                    )}
                     <label className="field-span-full">
                       <span>{t.fields.prompt}</span>
                       <textarea rows={6} value={agent.prompt} onChange={(event) => updateAgent(index, { prompt: event.target.value })} />
@@ -2050,6 +2414,73 @@ function clampNumberInput(value: string, min: number, max: number, fallback: num
   return Math.min(max, Math.max(min, parsed));
 }
 
+type BlueprintRuntimeModelOption = {
+  id: string;
+  label: string;
+};
+
+function buildRuntimeConfigPatch(
+  config: AgentNodeConfig | ManagerNodeConfig,
+  runtimeId: AgentRuntimeId,
+  agentOptions: OpenClawConfiguredAgent[]
+): Partial<AgentNodeConfig & ManagerNodeConfig> {
+  const patch: Partial<AgentNodeConfig & ManagerNodeConfig> = {
+    modelId: undefined
+  };
+  if (runtimeId === "openclaw") {
+    return {
+      ...patch,
+      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main"
+    };
+  }
+  return {
+    ...patch,
+    openclawAgentId: undefined,
+    permissionProfile: config.permissionProfile ?? "read_only",
+    timeoutMs: config.timeoutMs ?? 600000
+  };
+}
+
+function buildBlueprintRuntimeModelOptions(
+  runtimeId: AgentRuntimeId,
+  models: NonNullable<CatalogSnapshot["models"]>,
+  harnessStatuses?: HarnessStatus[]
+): BlueprintRuntimeModelOption[] {
+  if (runtimeId === "openclaw") {
+    return models.map((model) => ({ id: model.id, label: model.label }));
+  }
+
+  const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
+  if (harnessStatus?.models?.length) {
+    return harnessStatus.models.map((model) => ({
+      id: model.id,
+      label: model.id === "inherit" ? `${runtimeLabel(runtimeId)} default` : model.label || model.id
+    }));
+  }
+  return harnessStatus?.defaultModelId
+    ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId === "inherit" ? `${runtimeLabel(runtimeId)} default` : harnessStatus.defaultModelId }]
+    : [];
+}
+
+function runtimeDefaultModelLabel(runtimeId: AgentRuntimeId, t: Messages): string {
+  return `${runtimeLabel(runtimeId)} ${t.common.defaultModel}`;
+}
+
+function runtimeLabel(runtimeId: AgentRuntimeId): string {
+  if (runtimeId === "codex") return "Codex";
+  if (runtimeId === "claude") return "Claude Code";
+  return "OpenClaw";
+}
+
+function commonAgentRuntime(nodes: Array<BlueprintNode & { type: "agent" }>): AgentRuntimeId | undefined {
+  const runtimes = new Set(nodes.map((node) => node.runtimeId ?? "openclaw"));
+  return runtimes.size === 1 ? [...runtimes][0] : undefined;
+}
+
+function runtimeHarnessId(runtimeId: AgentRuntimeId): HarnessStatus["id"] {
+  return runtimeId === "claude" ? "claudeCode" : runtimeId;
+}
+
 function compareDescending(left: number, right: number): number {
   return right - left;
 }
@@ -2141,6 +2572,14 @@ function getMenuPoint(event: { clientX: number; clientY: number }): { x: number;
     x: event.clientX + 8,
     y: event.clientY + 8
   };
+}
+
+function getConnectionEndPoint(event: globalThis.MouseEvent | globalThis.TouchEvent): { clientX: number; clientY: number } | undefined {
+  if ("changedTouches" in event) {
+    const touch = event.changedTouches[0];
+    return touch ? { clientX: touch.clientX, clientY: touch.clientY } : undefined;
+  }
+  return { clientX: event.clientX, clientY: event.clientY };
 }
 
 function collectBlueprintNodePositionChanges(changes: NodeChange<Node<BlueprintNodeCardData>>[]): Map<string, CanvasPosition> {
@@ -2515,6 +2954,8 @@ function buildFlowNodes(
   return (blueprint?.nodes ?? []).map((node) => {
     const status = statusByNode.get(node.id)?.status;
     const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
+    const managerSlotConfig = node.type === "manager_slot" ? node.config as ManagerSlotNodeConfig : undefined;
+    const managerSlotExecutionMode = managerSlotConfig ? resolveManagerSlotExecutionMode(managerSlotConfig) : undefined;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     return {
@@ -2536,11 +2977,35 @@ function buildFlowNodes(
         isStartNode: isBlueprintStartNode(blueprint, node, nodesById),
         managerPortCount:
           node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
-        managerSlot: node.type === "manager_slot" ? (node.config as ManagerSlotNodeConfig).slot : undefined,
+        managerSlot: managerSlotConfig?.slot,
+        managerSlotExecutionMode,
+        managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,
         managerSlotSize
       }
     };
   });
+}
+
+function resolveManagerSlotLaneCount(
+  blueprint: BlueprintDefinition | undefined,
+  slotNode: BlueprintNode
+): number {
+  if (!blueprint || slotNode.type !== "manager_slot") return 1;
+  const childIds = new Set(blueprint.nodes.filter((node) => node.parentId === slotNode.id).map((node) => node.id));
+  const innerEdgeCount = blueprint.edges.filter(
+    (edge) =>
+      (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle) && childIds.has(edge.target)) ||
+      (edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle) && childIds.has(edge.source))
+  ).length;
+  const executionMode = resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig);
+  if (executionMode === "parallel") {
+    return Math.max(
+      resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig),
+      childIds.size,
+      Math.ceil(innerEdgeCount / 2)
+    );
+  }
+  return Math.max(1, Math.ceil(innerEdgeCount / 2));
 }
 
 function BlueprintCanvasMiniMap({
@@ -2804,7 +3269,7 @@ function buildFlowEdges(blueprint: BlueprintDefinition | undefined, runStatus?: 
 }
 
 function blueprintEdgeType(edge: BlueprintEdge): Edge["type"] | undefined {
-  if (edge.sourceHandle === managerSlotInnerOutHandle || edge.targetHandle === managerSlotInnerInHandle) return "straight";
+  if (isManagerSlotInnerOutHandle(edge.sourceHandle) || isManagerSlotInnerInHandle(edge.targetHandle)) return "default";
   return undefined;
 }
 
@@ -2871,7 +3336,9 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
     return {
       label: t.defaults.managerSlotLabel,
       managerNodeId: "",
-      slot: 1
+      slot: 1,
+      executionMode: "manual",
+      parallelLaneCount: 4
     };
   }
   if (type === "loop") {
