@@ -81,6 +81,7 @@ const composerMinHeightPx = 42;
 const composerMaxHeightPx = 132;
 const newSessionViewOptionValue = "__new_session_view__";
 const nativeSessionOptionPrefix = "__native_openclaw_session__:";
+const newBlueprintOptionValue = "__new_blueprint__";
 
 export function ChatPage({
   catalog,
@@ -122,6 +123,7 @@ export function ChatPage({
   const [thinkingEffort, setThinkingEffort] = useState<ChatThinkingEffort>("minimal");
   const [chatMode, setChatMode] = useState<ChatMode>("chat");
   const [selectedRoleId, setSelectedRoleId] = useState("ceo");
+  const [selectedBlueprintId, setSelectedBlueprintId] = useState(newBlueprintOptionValue);
   const [settingsCollapsed, setSettingsCollapsed] = useState(false);
   const [titleEditing, setTitleEditing] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -158,7 +160,31 @@ export function ChatPage({
   const selectedRoleBlueprint = selectedRole?.blueprintId
     ? blueprints.find((blueprint) => blueprint.id === selectedRole.blueprintId)
     : undefined;
+  const blueprintOptions = useMemo<SelectOption[]>(
+    () => buildBlueprintOptions(selectedRole, blueprints, copy),
+    [blueprints, copy, selectedRole]
+  );
+  const selectedBlueprintOptionValue = resolveBlueprintSelection(selectedRole, selectedBlueprintId, blueprints);
+  const selectedBlueprintScopeId =
+    chatMode === "blueprint" ? readSelectedBlueprintScopeId(selectedBlueprintOptionValue) : undefined;
+  const selectedChatBlueprint = selectedBlueprintScopeId
+    ? blueprints.find((blueprint) => blueprint.id === selectedBlueprintScopeId)
+    : undefined;
+  const titleBlueprint = chatMode === "blueprint" ? selectedChatBlueprint : selectedRoleBlueprint;
   const selectedRoleLabel = selectedRole?.label ?? copy.ceoRole;
+
+  const applySessionRoleScope = useCallback(
+    (roleScope: ChatRoleScope | undefined) => {
+      if (!roleScope) return;
+      if (roleScope.role === "ceo") {
+        setSelectedRoleId(roleDirectory?.ceo.id ?? "ceo");
+      } else if (roleScope.leaderId) {
+        setSelectedRoleId(roleScope.leaderId);
+      }
+      setSelectedBlueprintId(roleScope.blueprintId ?? newBlueprintOptionValue);
+    },
+    [roleDirectory?.ceo.id]
+  );
 
   const loadChatSessions = useCallback(
     async (preferredSessionId?: string) => {
@@ -174,7 +200,7 @@ export function ChatPage({
             agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
             thinkingEffort,
             mode: chatMode,
-            roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+            roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
           });
           sessions = [created];
         }
@@ -198,6 +224,7 @@ export function ChatPage({
           if (nextActiveSession.agentId) setAgentId(nextActiveSession.agentId);
           if (nextActiveSession.thinkingEffort) setThinkingEffort(nextActiveSession.thinkingEffort);
           setChatMode(nextActiveSession.mode);
+          applySessionRoleScope(nextActiveSession.roleScope);
         }
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : copy.historyLoadFailed);
@@ -212,7 +239,9 @@ export function ChatPage({
       copy,
       defaultModelId,
       harnessId,
+      applySessionRoleScope,
       selectedCompanyId,
+      selectedBlueprintScopeId,
       selectedRole,
       thinkingEffort
     ]
@@ -322,7 +351,7 @@ export function ChatPage({
 
   const createSessionView = useCallback(async () => {
     try {
-      const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole);
+      const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId);
       const nextSession = await api.createHivewardChatSession({
         harnessId,
         title: copy.newSessionViewTitle,
@@ -342,7 +371,7 @@ export function ChatPage({
     } catch (sessionError) {
       setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
     }
-  }, [agentId, chatMode, copy, harnessId, modelId, selectedCompanyId, selectedRole, thinkingEffort]);
+  }, [agentId, chatMode, copy, harnessId, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]);
 
   const loadSessionMessages = useCallback(
     async (sessionViewId: string) => {
@@ -381,7 +410,7 @@ export function ChatPage({
           modelId: modelId || undefined,
           thinkingEffort,
           mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
         });
         setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
         setActiveSessionViewId(session.id);
@@ -395,7 +424,7 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [chatMode, copy.sessionCreateFailed, defaultAgentId, modelId, runtimeSessions, selectedCompanyId, selectedRole, thinkingEffort]
+    [chatMode, copy.sessionCreateFailed, defaultAgentId, modelId, runtimeSessions, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   useEffect(() => {
@@ -411,6 +440,11 @@ export function ChatPage({
     if (roleOptions.some((option) => option.value === selectedRoleId)) return;
     setSelectedRoleId(roleOptions[0]?.value ?? "ceo");
   }, [roleOptions, selectedRoleId]);
+
+  useEffect(() => {
+    if (selectedBlueprintId === selectedBlueprintOptionValue) return;
+    setSelectedBlueprintId(selectedBlueprintOptionValue);
+  }, [selectedBlueprintId, selectedBlueprintOptionValue]);
 
   useEffect(() => {
     void loadChatSessions();
@@ -527,13 +561,14 @@ export function ChatPage({
       if (nextSessionView?.modelId) setModelId(nextSessionView.modelId);
       if (nextSessionView?.thinkingEffort) setThinkingEffort(nextSessionView.thinkingEffort);
       if (nextSessionView?.mode) setChatMode(nextSessionView.mode);
+      applySessionRoleScope(nextSessionView?.roleScope);
       void loadSessionMessages(sessionViewId);
       setRebuildFromHivewardHistory(false);
       setDraft("");
       setAttachments([]);
       setError(undefined);
     },
-    [activateNativeSession, createSessionView, loadSessionMessages, sessionViews]
+    [activateNativeSession, applySessionRoleScope, createSessionView, loadSessionMessages, sessionViews]
   );
 
   const selectHarness = useCallback(
@@ -542,6 +577,7 @@ export function ChatPage({
       const existing = sessionViews.find((sessionView) => sessionView.harnessId === nextHarnessId && sessionView.status !== "ended");
       if (existing) {
         setActiveSessionViewId(existing.id);
+        applySessionRoleScope(existing.roleScope);
         void loadSessionMessages(existing.id);
         return;
       }
@@ -553,7 +589,7 @@ export function ChatPage({
           agentId: nextHarnessId === "openclaw" ? agentId || undefined : undefined,
           thinkingEffort,
           mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
         });
         setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
         setActiveSessionViewId(session.id);
@@ -562,7 +598,7 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [agentId, chatMode, copy, loadSessionMessages, modelId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
+    [agentId, applySessionRoleScope, chatMode, copy, loadSessionMessages, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
   );
 
   const selectAgent = useCallback(
@@ -577,7 +613,7 @@ export function ChatPage({
           agentId: nextAgentId || undefined,
           thinkingEffort,
           mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole)
+          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
         });
         const nextSessionView: HivewardSessionView = { ...session, messages: [] };
         setSessionViews((current) => [nextSessionView, ...current]);
@@ -590,7 +626,7 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [agentId, chatMode, copy, harnessId, modelId, selectedCompanyId, selectedRole, thinkingEffort]
+    [agentId, chatMode, copy, harnessId, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   const canSend =
@@ -608,7 +644,7 @@ export function ChatPage({
     const content = draft.trim();
     const outgoingAttachments = attachments;
     const includePlatformContext = messages.length === 0;
-    const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole);
+    const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId);
     const sendHarnessId = harnessId;
     const sendHarnessLabel = formatHarnessLabel(sendHarnessId);
     const sendIsOpenClawHarness = sendHarnessId === "openclaw";
@@ -743,7 +779,7 @@ export function ChatPage({
           <h2>{copy.title}</h2>
           <p>
             {selectedRoleLabel}
-            {selectedRoleBlueprint ? ` / ${selectedRoleBlueprint.name}` : company?.name ? ` / ${company.name}` : ""}
+            {titleBlueprint ? ` / ${titleBlueprint.name}` : company?.name ? ` / ${company.name}` : ""}
           </p>
         </div>
         <span
@@ -782,6 +818,11 @@ export function ChatPage({
                 <button type="button" title={copy.role} aria-label={copy.role} onClick={() => setSettingsCollapsed(false)}>
                   <Bot size={16} />
                 </button>
+                {chatMode === "blueprint" && (
+                  <button type="button" title={copy.blueprint} aria-label={copy.blueprint} onClick={() => setSettingsCollapsed(false)}>
+                    <LayoutTemplate size={16} />
+                  </button>
+                )}
                 {isOpenClawHarness && (
                   <button type="button" title={copy.agent} aria-label={copy.agent} onClick={() => setSettingsCollapsed(false)}>
                     <Bot size={16} />
@@ -817,6 +858,16 @@ export function ChatPage({
                   options={roleOptions}
                   onChange={setSelectedRoleId}
                 />
+
+                {chatMode === "blueprint" && (
+                  <ChatSelect
+                    label={copy.blueprint}
+                    icon={<LayoutTemplate size={14} />}
+                    value={selectedBlueprintOptionValue}
+                    options={blueprintOptions}
+                    onChange={setSelectedBlueprintId}
+                  />
+                )}
 
                 {isOpenClawHarness && (
                   <ChatSelect
@@ -1367,16 +1418,63 @@ function buildRoleOptions(
   ];
 }
 
+function buildBlueprintOptions(
+  role: CompanyRoleDirectory["ceo"] | CompanyRoleDirectory["leaders"][number] | undefined,
+  blueprints: BlueprintDefinition[],
+  copy: ReturnType<typeof chatCopy>
+): SelectOption[] {
+  if (role?.kind === "leader") {
+    if (!role.blueprintId) {
+      return [{ value: newBlueprintOptionValue, label: copy.noBlueprint, disabled: true }];
+    }
+    const blueprint = blueprints.find((item) => item.id === role.blueprintId);
+    return [{
+      value: role.blueprintId,
+      label: blueprint?.name ?? role.blueprintId,
+      meta: copy.blueprintRole
+    }];
+  }
+  return [
+    { value: newBlueprintOptionValue, label: copy.newBlueprint, variant: "create" },
+    ...blueprints.map((blueprint) => ({
+      value: blueprint.id,
+      label: blueprint.name,
+      meta: blueprint.description || copy.blueprintRole
+    }))
+  ];
+}
+
+function resolveBlueprintSelection(
+  role: CompanyRoleDirectory["ceo"] | CompanyRoleDirectory["leaders"][number] | undefined,
+  selectedBlueprintId: string,
+  blueprints: BlueprintDefinition[]
+): string {
+  if (role?.kind === "leader") return role.blueprintId ?? newBlueprintOptionValue;
+  if (
+    selectedBlueprintId !== newBlueprintOptionValue &&
+    blueprints.length > 0 &&
+    !blueprints.some((blueprint) => blueprint.id === selectedBlueprintId)
+  ) {
+    return newBlueprintOptionValue;
+  }
+  return selectedBlueprintId || newBlueprintOptionValue;
+}
+
+function readSelectedBlueprintScopeId(selectedBlueprintId: string): string | undefined {
+  return selectedBlueprintId === newBlueprintOptionValue ? undefined : selectedBlueprintId;
+}
+
 function buildChatRoleScope(
   selectedCompanyId: string | undefined,
-  role: CompanyRoleDirectory["ceo"] | CompanyRoleDirectory["leaders"][number] | undefined
+  role: CompanyRoleDirectory["ceo"] | CompanyRoleDirectory["leaders"][number] | undefined,
+  selectedBlueprintId?: string
 ): ChatRoleScope | undefined {
   if (!role) return undefined;
   return {
     companyId: selectedCompanyId,
     role: role.kind,
     leaderId: role.kind === "leader" ? role.id : undefined,
-    blueprintId: role.blueprintId
+    blueprintId: role.kind === "leader" ? role.blueprintId : selectedBlueprintId
   };
 }
 
@@ -1641,6 +1739,9 @@ function chatCopy(language: Language) {
       ceoRole: "CEO",
       companyRole: "\u516c\u53f8\u7ea7",
       blueprintRole: "\u4e1a\u52a1\u84dd\u56fe",
+      blueprint: "\u84dd\u56fe",
+      newBlueprint: "\u65b0\u84dd\u56fe",
+      noBlueprint: "\u672a\u7ed1\u5b9a\u84dd\u56fe",
       agent: "Agent",
       model: "\u6a21\u578b",
       thinking: "\u601d\u8003\u5f3a\u5ea6",
@@ -1732,6 +1833,9 @@ function chatCopy(language: Language) {
     ceoRole: "CEO",
     companyRole: "Company",
     blueprintRole: "Business blueprint",
+    blueprint: "Blueprint",
+    newBlueprint: "New blueprint",
+    noBlueprint: "No blueprint",
     agent: "Agent",
     model: "Model",
     thinking: "Thinking",

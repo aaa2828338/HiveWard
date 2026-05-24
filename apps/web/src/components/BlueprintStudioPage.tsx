@@ -306,7 +306,7 @@ export function BlueprintStudioPage({
   }, [workspaceRunView]);
 
   useEffect(() => {
-    setLocalNodes(buildFlowNodes(blueprint, statusByNode, t));
+    setLocalNodes((current) => mergeBlueprintFlowNodes(buildFlowNodes(blueprint, statusByNode, t), current));
   }, [statusByNode, t, blueprint]);
 
   useEffect(() => {
@@ -2130,11 +2130,12 @@ function NodeConfigForm({
                 </label>
                 <label>
                   <span>Timeout ms</span>
-                  <input
-                    min={1}
-                    type="number"
+                  <BoundedNumberInput
                     value={config.timeoutMs ?? 600000}
-                    onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+                    min={1}
+                    max={3600000}
+                    fallback={600000}
+                    onValueChange={(timeoutMs) => onPatchConfig({ timeoutMs })}
                   />
                 </label>
                 <label className="field-span-full">
@@ -2224,22 +2225,22 @@ function NodeConfigForm({
         </label>
         <label>
           <span>{t.fields.ports}</span>
-          <input
+          <BoundedNumberInput
+            value={config.portCount}
             min={1}
             max={8}
-            type="number"
-            value={config.portCount}
-            onChange={(event) => onPatchConfig({ portCount: clampNumberInput(event.target.value, 1, 8, 3) })}
+            fallback={3}
+            onValueChange={(portCount) => onPatchConfig({ portCount })}
           />
         </label>
         <label>
           <span>{t.fields.maxHandoffs}</span>
-          <input
+          <BoundedNumberInput
+            value={config.maxHandoffs}
             min={1}
             max={50}
-            type="number"
-            value={config.maxHandoffs}
-            onChange={(event) => onPatchConfig({ maxHandoffs: clampNumberInput(event.target.value, 1, 50, 12) })}
+            fallback={12}
+            onValueChange={(maxHandoffs) => onPatchConfig({ maxHandoffs })}
           />
         </label>
         {isSdkProvider && (
@@ -2260,11 +2261,12 @@ function NodeConfigForm({
             </label>
             <label>
               <span>Timeout ms</span>
-              <input
-                min={1}
-                type="number"
+              <BoundedNumberInput
                 value={config.timeoutMs ?? 600000}
-                onChange={(event) => onPatchConfig({ timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+                min={1}
+                max={3600000}
+                fallback={600000}
+                onValueChange={(timeoutMs) => onPatchConfig({ timeoutMs })}
               />
             </label>
           </>
@@ -2313,12 +2315,12 @@ function NodeConfigForm({
         {executionMode === "parallel" && (
           <label>
             <span>{t.fields.parallelLanes}</span>
-            <input
+            <BoundedNumberInput
+              value={resolveManagerSlotParallelLaneCount(config)}
               min={1}
               max={16}
-              type="number"
-              value={resolveManagerSlotParallelLaneCount(config)}
-              onChange={(event) => onPatchConfig({ parallelLaneCount: clampNumberInput(event.target.value, 1, 16, 4) })}
+              fallback={4}
+              onValueChange={(parallelLaneCount) => onPatchConfig({ parallelLaneCount })}
             />
           </label>
         )}
@@ -2340,12 +2342,12 @@ function NodeConfigForm({
         </label>
         <label>
           <span>{t.fields.maxIterations}</span>
-          <input
+          <BoundedNumberInput
+            value={config.maxIterations}
             min={1}
             max={25}
-            type="number"
-            value={config.maxIterations}
-            onChange={(event) => onPatchConfig({ maxIterations: clampNumberInput(event.target.value, 1, 25, 3) })}
+            fallback={3}
+            onValueChange={(maxIterations) => onPatchConfig({ maxIterations })}
           />
         </label>
       </div>
@@ -2584,11 +2586,12 @@ function NodeConfigForm({
                         </label>
                         <label>
                           <span>Timeout ms</span>
-                          <input
-                            min={1}
-                            type="number"
+                          <BoundedNumberInput
                             value={agent.timeoutMs ?? 600000}
-                            onChange={(event) => updateAgent(index, { timeoutMs: clampNumberInput(event.target.value, 1, 3600000, 600000) })}
+                            min={1}
+                            max={3600000}
+                            fallback={600000}
+                            onValueChange={(timeoutMs) => updateAgent(index, { timeoutMs })}
                           />
                         </label>
                       </>
@@ -2709,6 +2712,65 @@ function AgentSkillPanel({
 function clampNumberInput(value: string, min: number, max: number, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+
+function BoundedNumberInput({
+  value,
+  min,
+  max,
+  fallback,
+  onValueChange
+}: {
+  value?: number;
+  min: number;
+  max: number;
+  fallback: number;
+  onValueChange: (value: number) => void;
+}) {
+  const normalizedValue = normalizeBoundedNumberValue(value, min, max, fallback);
+  const [draft, setDraft] = useState(String(normalizedValue));
+  const focusedRef = useRef(false);
+
+  useEffect(() => {
+    if (!focusedRef.current) setDraft(String(normalizedValue));
+  }, [normalizedValue]);
+
+  return (
+    <input
+      min={min}
+      max={max}
+      type="number"
+      value={draft}
+      onFocus={() => {
+        focusedRef.current = true;
+      }}
+      onChange={(event) => {
+        const nextDraft = event.target.value;
+        setDraft(nextDraft);
+        const nextValue = readBoundedNumberDraft(nextDraft, min, max);
+        if (nextValue !== undefined) onValueChange(nextValue);
+      }}
+      onBlur={() => {
+        focusedRef.current = false;
+        const nextValue = readBoundedNumberDraft(draft, min, max) ?? fallback;
+        const normalizedNextValue = normalizeBoundedNumberValue(nextValue, min, max, fallback);
+        setDraft(String(normalizedNextValue));
+        if (normalizedNextValue !== normalizedValue) onValueChange(normalizedNextValue);
+      }}
+    />
+  );
+}
+
+function normalizeBoundedNumberValue(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function readBoundedNumberDraft(value: string, min: number, max: number): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return undefined;
   return Math.min(max, Math.max(min, parsed));
 }
 
@@ -3311,6 +3373,26 @@ function buildFlowNodes(
         managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,
         managerSlotSize
       }
+    };
+  });
+}
+
+function mergeBlueprintFlowNodes(
+  nextNodes: Node<BlueprintNodeCardData>[],
+  currentNodes: Node<BlueprintNodeCardData>[]
+): Node<BlueprintNodeCardData>[] {
+  if (currentNodes.length === 0) return nextNodes;
+  const currentById = new Map(currentNodes.map((node) => [node.id, node]));
+  return nextNodes.map((node) => {
+    const current = currentById.get(node.id);
+    if (!current) return node;
+    return {
+      ...node,
+      selected: current.selected,
+      dragging: current.dragging,
+      width: current.width,
+      height: current.height,
+      measured: current.measured
     };
   });
 }

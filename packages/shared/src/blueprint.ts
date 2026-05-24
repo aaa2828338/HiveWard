@@ -279,6 +279,7 @@ export interface BlueprintImportDefaults {
   modelId?: string;
   modelIds?: Partial<Record<AgentRuntimeId, string>>;
   channelId?: string;
+  replaceBlueprintId?: string;
 }
 
 export interface BlueprintRun {

@@ -489,7 +489,8 @@ export class FileHivewardStore {
         }
         importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, importableBlueprintPackage, {
           ...defaults,
-          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? defaults.runtimeId
+          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? defaults.runtimeId,
+          replaceBlueprintId: item.blueprintId ?? defaults.replaceBlueprintId
         });
       }
       const now = new Date().toISOString();
@@ -1022,20 +1023,43 @@ export class FileHivewardStore {
     const now = new Date().toISOString();
     const imported: BlueprintDefinition[] = [];
     const knownBlueprints = [...index.blueprintIndex];
+    let replacementUsed = false;
 
     for (const portableBlueprint of blueprintPackage.blueprints) {
+      const replacementIndex = !replacementUsed && defaults.replaceBlueprintId
+        ? index.blueprintIndex.findIndex((entry) => entry.companyId === companyId && entry.id === defaults.replaceBlueprintId)
+        : -1;
+      const replacementEntry = replacementIndex >= 0 ? index.blueprintIndex[replacementIndex] : undefined;
       const blueprint = hydrateImportedBlueprint(portableBlueprint, {
-        id: nextBlueprintId(knownBlueprints),
+        id: replacementEntry?.id ?? nextBlueprintId(knownBlueprints),
         companyId,
         now,
         defaults,
-        name: nextImportedBlueprintName(knownBlueprints, portableBlueprint.name)
+        name: replacementEntry ? portableBlueprint.name : nextImportedBlueprintName(knownBlueprints, portableBlueprint.name)
       });
-      const entry = toBlueprintIndexEntry(blueprint);
-      knownBlueprints.push(entry);
-      await this.writeBlueprintUnlocked(blueprint);
-      index.blueprintIndex.push(entry);
-      imported.push(blueprint);
+      const importedBlueprint = replacementEntry
+        ? {
+            ...blueprint,
+            version: replacementEntry.version + 1,
+            createdAt: replacementEntry.createdAt
+          }
+        : blueprint;
+      const entry = toBlueprintIndexEntry(importedBlueprint);
+      await this.writeBlueprintUnlocked(importedBlueprint);
+      if (replacementIndex >= 0) {
+        index.blueprintIndex[replacementIndex] = entry;
+        const knownIndex = knownBlueprints.findIndex((known) => known.companyId === companyId && known.id === entry.id);
+        if (knownIndex >= 0) {
+          knownBlueprints[knownIndex] = entry;
+        } else {
+          knownBlueprints.push(entry);
+        }
+        replacementUsed = true;
+      } else {
+        knownBlueprints.push(entry);
+        index.blueprintIndex.push(entry);
+      }
+      imported.push(importedBlueprint);
     }
 
     index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, now);

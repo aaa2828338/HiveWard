@@ -1220,7 +1220,11 @@ async function streamHivewardChatSession({
     }
 
     const roleSkillPrompt = await buildChatRoleSkillPrompt(store, requestBody.roleScope);
-    const prompt = buildChatPrompt(requestBody, roleSkillPrompt, rebuildContext);
+    const selectedBlueprintContext =
+      requestBody.mode === "blueprint"
+        ? await buildSelectedBlueprintDraftingContext(store, requestBody.roleScope)
+        : undefined;
+    const prompt = buildChatPrompt(requestBody, roleSkillPrompt, rebuildContext, selectedBlueprintContext);
     await adapter.streamChatMessage(
       {
         sessionKey: nativeSessionKey,
@@ -1343,15 +1347,58 @@ async function streamHivewardChatSession({
   res.end();
 }
 
-function buildChatPrompt(input: ResolvedChatSessionMessage, roleSkillPrompt?: string, rebuildContext?: string): string {
+function buildChatPrompt(
+  input: ResolvedChatSessionMessage,
+  roleSkillPrompt?: string,
+  rebuildContext?: string,
+  selectedBlueprintContext?: string
+): string {
   const contextBlocks = [
     input.includePlatformContext ? hivewardPlatformContext : undefined,
     roleSkillPrompt,
     rebuildContext,
+    selectedBlueprintContext,
     input.mode === "blueprint" ? buildBlueprintDraftingContext(input.message) : undefined
   ].filter((block): block is string => Boolean(block));
   if (!contextBlocks.length) return input.message.trim();
   return [...contextBlocks, "", "User message:", input.message.trim()].join("\n");
+}
+
+async function buildSelectedBlueprintDraftingContext(
+  store: FileHivewardStore,
+  roleScope: ChatRoleScope | undefined
+): Promise<string | undefined> {
+  if (!roleScope?.blueprintId) return undefined;
+  const blueprint = await store.getBlueprint(roleScope.blueprintId);
+  if (!blueprint) {
+    return [
+      "Selected blueprint target:",
+      `- blueprintId: ${roleScope.blueprintId}`,
+      "- The user selected this blueprint, but HiveWard could not load it. Ask the user to choose another blueprint before submitting a proposal."
+    ].join("\n");
+  }
+  const portableBlueprint = {
+    id: blueprint.id,
+    name: blueprint.name,
+    description: blueprint.description,
+    version: blueprint.version,
+    nodes: blueprint.nodes,
+    edges: blueprint.edges,
+    variables: blueprint.variables,
+    display: blueprint.display
+  };
+  return [
+    "Selected blueprint target:",
+    `- blueprintId: ${blueprint.id}`,
+    `- name: ${blueprint.name}`,
+    "- Modify this selected blueprint instead of creating an unrelated new blueprint.",
+    "- When submitting a hiveward-inbox blueprint_proposal, set blueprintId to this blueprint id.",
+    "- The blueprintPackage should contain one complete replacement definition for the selected blueprint, including nodes, edges, variables, and display.",
+    "Current selected blueprint JSON:",
+    "```json",
+    JSON.stringify(portableBlueprint, null, 2),
+    "```"
+  ].join("\n");
 }
 
 async function syncChatHistoryInboxSubmissions(
