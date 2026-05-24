@@ -9953,3 +9953,171 @@ html[data-theme="light"] .architecture-role-metrics span,
 html[data-theme="light"] .architecture-role-metrics time {
   background: #f1f5f9;
 }
+
+.blueprint-canvas-panel {
+  --blueprint-corner-edge: 12px;
+  --blueprint-corner-gap: 12px;
+  --blueprint-control-button-size: 32px;
+  --blueprint-controls-width: var(--blueprint-control-button-size);
+  --blueprint-corner-height: 128px;
+  --blueprint-minimap-width: 192px;
+  --blueprint-corner-stack-width: 248px;
+  --blueprint-switch-height: 74px;
+}
+
+.blueprint-corner-stack {
+  position: absolute;
+  z-index: 14;
+  top: var(--blueprint-corner-edge);
+  left: var(--blueprint-corner-edge);
+  display: inline-grid;
+  gap: var(--blueprint-corner-gap);
+  justify-items: stretch;
+  width: var(--blueprint-corner-stack-width);
+  pointer-events: none;
+}
+
+.blueprint-corner-stack .blueprint-board-switch {
+  position: static;
+  width: 100%;
+  height: var(--blueprint-switch-height);
+  align-items: stretch;
+  border-radius: var(--radius-lg);
+  pointer-events: auto;
+}
+
+.blueprint-corner-stack .blueprint-board-switch button {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  gap: 4px;
+  font-size: 11px;
+}
+
+.blueprint-corner-stack .blueprint-board-switch button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.blueprint-canvas-panel .react-flow__attribution {
+  display: none;
+}
+
+.blueprint-canvas-panel .react-flow__panel {
+  margin: 0;
+}
+
+.blueprint-corner-toolrow {
+  width: 100%;
+  height: var(--blueprint-corner-height);
+  display: flex;
+  align-items: stretch;
+  gap: var(--blueprint-corner-gap);
+  pointer-events: none;
+}
+
+.blueprint-corner-toolrow .react-flow__controls {
+  position: static !important;
+  inset: auto !important;
+  margin: 0 !important;
+  width: var(--blueprint-controls-width);
+  height: var(--blueprint-corner-height);
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  pointer-events: auto;
+}
+
+.blueprint-corner-toolrow .react-flow__controls-button {
+  flex: 1 1 0;
+  width: 100%;
+  height: var(--blueprint-control-button-size);
+  min-height: var(--blueprint-control-button-size);
+  padding: 0;
+}
+
+.blueprint-corner-toolrow .blueprint-world-minimap {
+  width: var(--blueprint-minimap-width);
+  height: var(--blueprint-corner-height);
+  flex: 0 0 auto;
+  border-radius: var(--radius-lg);
+  pointer-events: auto;
+}
+
+.blueprint-action-dock {
+  right: auto;
+  left: var(--blueprint-dock-edge);
+}
+
+.blueprint-side-panel {
+  right: auto;
+  left: calc(var(--blueprint-dock-edge) + var(--blueprint-dock-padding));
+}
+
+.node-detail-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 13;
+  width: min(294px, 100%);
+  height: auto;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.node-detail-sidebar .node-modal-header {
+  position: relative;
+  top: auto;
+  flex: 0 0 auto;
+}
+
+.node-detail-sidebar .node-modal-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.node-detail-sidebar .node-modal-form {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  .blueprint-canvas-panel {
+    --blueprint-corner-edge: 8px;
+    --blueprint-corner-gap: 8px;
+    --blueprint-control-button-size: 28px;
+    --blueprint-corner-height: 112px;
+    --blueprint-switch-height: 64px;
+  }
+
+  .blueprint-action-dock {
+    right: 12px;
+    left: 12px;
+  }
+
+  .blueprint-side-panel {
+    top: 12px;
+    right: 12px;
+    bottom: 124px;
+    left: 12px;
+  }
+
+  .node-detail-sidebar {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 12px;
+    width: auto;
+  }
+
+  .node-detail-sidebar .node-modal-header,
+  .node-detail-sidebar .node-modal-grid {
+    padding-inline: 12px;
+  }
+}

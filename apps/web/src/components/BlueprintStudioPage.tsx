@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   applyNodeChanges,
   Background,
@@ -199,8 +199,10 @@ export function BlueprintStudioPage({
   t: Messages;
 }) {
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();
-  const inspectedNode = blueprint?.nodes.find((node) => node.id === inspectedNodeId);
   const [selectedCanvasNodeIds, setSelectedCanvasNodeIds] = useState<string[]>([]);
+  const selectedDetailNodeId =
+    selectedCanvasNodeIds.length === 1 ? selectedCanvasNodeIds[0] : selectedCanvasNodeIds.length === 0 ? selectedNodeId : undefined;
+  const inspectedNode = blueprint?.nodes.find((node) => node.id === selectedDetailNodeId);
   const [batchEditorOpen, setBatchEditorOpen] = useState(false);
   const [localNodes, setLocalNodes] = useState<Node<BlueprintNodeCardData>[]>([]);
   const [localEdges, setLocalEdges] = useState<Edge[]>([]);
@@ -409,6 +411,24 @@ export function BlueprintStudioPage({
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
   const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const blueprintCornerStyle = useMemo<CSSProperties>(() => {
+    const compact = canvasViewportSize.width <= 760;
+    const buttonSize = compact ? 14 : 20;
+    const gap = compact ? 8 : 12;
+    const switchHeight = compact ? 32 : 37;
+    const cornerHeight = buttonSize * 4;
+    const miniMapWidth = Math.round(cornerHeight * (blueprintCanvasWorld.viewportWidth / blueprintCanvasWorld.viewportHeight));
+    return {
+      "--blueprint-corner-edge": `${gap}px`,
+      "--blueprint-control-button-size": `${buttonSize}px`,
+      "--blueprint-controls-width": `${buttonSize}px`,
+      "--blueprint-corner-gap": `${gap}px`,
+      "--blueprint-corner-height": `${cornerHeight}px`,
+      "--blueprint-switch-height": `${switchHeight}px`,
+      "--blueprint-minimap-width": `${miniMapWidth}px`,
+      "--blueprint-corner-stack-width": `${buttonSize + gap + miniMapWidth}px`
+    } as CSSProperties;
+  }, [blueprintCanvasWorld.viewportHeight, blueprintCanvasWorld.viewportWidth, canvasViewportSize.width]);
   const selectedBlueprintNodes = useMemo(() => {
     if (!blueprint || selectedCanvasNodeIds.length === 0) return [];
     const selectedIds = new Set(selectedCanvasNodeIds);
@@ -667,6 +687,10 @@ export function BlueprintStudioPage({
 
   const clearCanvasSelection = useCallback(() => {
     setSelectedCanvasNodeIdsIfChanged([]);
+    setLocalNodes((current) => {
+      if (!current.some((node) => node.selected)) return current;
+      return current.map((node) => (node.selected ? { ...node, selected: false } : node));
+    });
     onSelectNode(undefined);
   }, [onSelectNode, setSelectedCanvasNodeIdsIfChanged]);
 
@@ -921,8 +945,7 @@ export function BlueprintStudioPage({
         return;
       }
       if (selectedNodeId === node.id) {
-        if (isBlueprintInteractionLocked) return;
-        setInspectedNodeId(node.id);
+        setSelectedCanvasNodeIdsIfChanged([node.id]);
         return;
       }
       setSelectedCanvasNodeIdsIfChanged([node.id]);
@@ -998,7 +1021,6 @@ export function BlueprintStudioPage({
   return (
     <ReactFlowProvider>
       <section className="blueprint-shell compact-blueprint-shell">
-        <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
         <section
           ref={canvasPanelRef}
           className={`blueprint-canvas-panel expanded-blueprint-panel blueprint-canvas-state-${currentBlueprintActivity}`}
@@ -1094,7 +1116,11 @@ export function BlueprintStudioPage({
               setInspectedNodeId(undefined);
               openNodeMenuAt(x, y);
             }}
-            onSelectionChange={({ nodes }) => setSelectedCanvasNodeIdsIfChanged(nodes.map((node) => node.id))}
+            onSelectionChange={({ nodes }) => {
+              const nodeIds = nodes.map((node) => node.id);
+              setSelectedCanvasNodeIdsIfChanged(nodeIds);
+              onSelectNode(nodeIds.length === 1 ? nodeIds[0] : undefined);
+            }}
             onNodesChange={onNodesChange}
             onConnect={onConnect}
             nodesDraggable={!isBlueprintInteractionLocked}
@@ -1105,10 +1131,16 @@ export function BlueprintStudioPage({
             deleteKeyCode={null}
             minZoom={0.35}
             maxZoom={1.5}
+            proOptions={{ hideAttribution: true }}
           >
             <Background gap={24} size={2} />
-            <BlueprintCanvasMiniMap canvasWorld={blueprintCanvasWorld} nodes={localNodes} />
-            <Controls position="top-right" />
+            <div className="blueprint-corner-stack" style={blueprintCornerStyle} aria-label="Blueprint viewport tools">
+              <BlueprintBoardSwitch board={blueprintBoard} copy={boardCopy} onChange={setBlueprintBoard} />
+              <div className="blueprint-corner-toolrow">
+                <Controls position="top-left" />
+                <BlueprintCanvasMiniMap canvasWorld={blueprintCanvasWorld} nodes={localNodes} />
+              </div>
+            </div>
           </ReactFlow>
 
           <div className="blueprint-action-dock" aria-label={t.navigation.blueprint}>
@@ -1343,13 +1375,16 @@ export function BlueprintStudioPage({
         </section>
 
         {inspectedNode && blueprint && !isBlueprintInteractionLocked && (
-          <NodeDetailModal
+          <NodeDetailSidebar
             catalog={catalog}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
             node={inspectedNode}
             t={t}
-            onClose={() => setInspectedNodeId(undefined)}
+            onClose={() => {
+              setInspectedNodeId(undefined);
+              clearCanvasSelection();
+            }}
             onPatchNode={(patch) => patchNode(inspectedNode.id, patch)}
             onPatchConfig={(patch) => patchNodeConfig(inspectedNode.id, patch)}
           />
@@ -1503,7 +1538,7 @@ function formatArchitectureDate(value: string): string {
   });
 }
 
-function NodeDetailModal({
+function NodeDetailSidebar({
   catalog,
   configuredAgents,
   harnessStatuses,
@@ -1526,46 +1561,44 @@ function NodeDetailModal({
   const channels = catalog?.channels ?? [];
 
   return (
-    <div className="node-modal-backdrop" onClick={onClose}>
-      <section className="node-modal" onClick={(event) => event.stopPropagation()}>
-        <header className="node-modal-header">
-          <div>
-            <span className="hero-eyebrow modal-eyebrow">{t.nodeTypes[node.type]}</span>
-            <h3>{node.config.label}</h3>
-          </div>
-          <button type="button" className="icon-button node-modal-close" onClick={onClose}>
-            <X size={18} />
-          </button>
-        </header>
-
-        <div className="node-modal-grid">
-          <div className="node-modal-main">
-            <div className="node-modal-section">
-              <h4>{t.fields.settings}</h4>
-              <NodeConfigForm
-                catalog={catalog}
-                node={node}
-                configuredAgents={configuredAgents}
-                harnessStatuses={harnessStatuses}
-                models={models}
-                channels={channels}
-                onPatchNode={onPatchNode}
-                onPatchConfig={onPatchConfig}
-                t={t}
-              />
-            </div>
-            {isAgentBlueprintNode(node) && (node.runtimeId ?? "openclaw") === "openclaw" && (
-              <AgentSkillPanel
-                node={node}
-                skills={catalog?.tools ?? []}
-                t={t}
-                onPatchConfig={onPatchConfig}
-              />
-            )}
-          </div>
+    <aside className="node-modal node-detail-sidebar" aria-label={t.fields.settings} onPointerDown={(event) => event.stopPropagation()}>
+      <header className="node-modal-header">
+        <div>
+          <span className="hero-eyebrow modal-eyebrow">{t.nodeTypes[node.type]}</span>
+          <h3>{node.config.label}</h3>
         </div>
-      </section>
-    </div>
+        <button type="button" className="icon-button node-modal-close" onClick={onClose}>
+          <X size={18} />
+        </button>
+      </header>
+
+      <div className="node-modal-grid">
+        <div className="node-modal-main">
+          <div className="node-modal-section">
+            <h4>{t.fields.settings}</h4>
+            <NodeConfigForm
+              catalog={catalog}
+              node={node}
+              configuredAgents={configuredAgents}
+              harnessStatuses={harnessStatuses}
+              models={models}
+              channels={channels}
+              onPatchNode={onPatchNode}
+              onPatchConfig={onPatchConfig}
+              t={t}
+            />
+          </div>
+          {isAgentBlueprintNode(node) && (node.runtimeId ?? "openclaw") === "openclaw" && (
+            <AgentSkillPanel
+              node={node}
+              skills={catalog?.tools ?? []}
+              t={t}
+              onPatchConfig={onPatchConfig}
+            />
+          )}
+        </div>
+      </div>
+    </aside>
   );
 }
 
@@ -3045,7 +3078,10 @@ function BlueprintCanvasMiniMap({
   );
 
   return (
-    <div className="react-flow__panel top left blueprint-world-minimap">
+    <div
+      className="blueprint-world-minimap"
+      style={{ aspectRatio: `${canvasWorld.viewportWidth} / ${canvasWorld.viewportHeight}` }}
+    >
       <svg
         ref={svgRef}
         className="blueprint-world-minimap-svg"
