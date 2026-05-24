@@ -17,9 +17,7 @@ import {
   type BlueprintEdge,
   type BlueprintNode,
   type BlueprintNodeRun,
-  type ManagerSlotNodeConfig,
-  type ParallelAgentsNodeConfig,
-  type SendNodeConfig
+  type ManagerSlotNodeConfig
 } from "./blueprint";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
 import { defaultCompanyId } from "./company";
@@ -33,11 +31,17 @@ describe("blueprint contracts", () => {
       "agent",
       "agent",
       "summary",
-      "approval",
-      "send"
+      "agent"
     ]);
-    expect(blueprint.nodes.slice(0, 3).map((node) => node.runtimeId)).toEqual(["openclaw", "openclaw", "openclaw"]);
-    expect(blueprint.edges).toHaveLength(6);
+    expect(blueprint.nodes.filter((node) => node.type === "agent").map((node) => node.runtimeId)).toEqual([
+      "openclaw",
+      "openclaw",
+      "openclaw",
+      "openclaw"
+    ]);
+    expect((blueprint.nodes.find((node) => node.id === "delivery")!.config as AgentNodeConfig).approval?.enabled).toBe(true);
+    expect((blueprint.nodes.find((node) => node.id === "delivery")!.config as AgentNodeConfig).send?.enabled).toBe(true);
+    expect(blueprint.edges).toHaveLength(5);
     expect(blueprint.nodes.every((node) => "position" in node)).toBe(true);
     expect(blueprint.companyId).toBe(defaultCompanyId);
   });
@@ -204,19 +208,21 @@ describe("blueprint contracts", () => {
     const blueprintPackage = createPortableBlueprintPackage([blueprint], "2026-05-19T00:00:00.000Z");
     const exportedBlueprint = blueprintPackage.blueprints[0]!;
     const exportedAgent = exportedBlueprint.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
-    const exportedSend = exportedBlueprint.nodes.find((node) => node.id === "send")!.config as SendNodeConfig;
+    const exportedDelivery = exportedBlueprint.nodes.find((node) => node.id === "delivery")!.config as AgentNodeConfig;
 
     expect(blueprintPackage.schema).toBe("hiveward.blueprint-package/v1");
     expect(exportedAgent.openclawAgentId).toBeUndefined();
     expect(exportedAgent.modelId).toBeUndefined();
     expect(exportedAgent.skillIds).toEqual(["hiveward-ceo"]);
     expect(exportedAgent.tools).toEqual([]);
-    expect(exportedSend.channelId).toBe("");
-    expect(exportedSend.target).toBe("");
+    expect(exportedDelivery.openclawAgentId).toBeUndefined();
+    expect(exportedDelivery.approval?.enabled).toBe(true);
+    expect(exportedDelivery.send?.channelId).toBe("");
+    expect(exportedDelivery.send?.target).toBe("");
     expect(JSON.stringify(blueprintPackage)).not.toContain(blueprint.companyId);
   });
 
-  it("imports portable blueprints with local default bindings and disabled delivery nodes", () => {
+  it("imports portable blueprints with local default bindings and local delivery channels", () => {
     const blueprint = createStarterBlueprint("2026-05-18T00:00:00.000Z");
     const blueprintPackage = readPortableBlueprintPackage(
       createPortableBlueprintPackage([blueprint], "2026-05-19T00:00:00.000Z")
@@ -232,8 +238,8 @@ describe("blueprint contracts", () => {
       }
     });
     const importedAgent = imported.nodes.find((node) => node.id === "requirements")!.config as AgentNodeConfig;
-    const importedSend = imported.nodes.find((node) => node.id === "send")!;
-    const importedSendConfig = importedSend.config as SendNodeConfig;
+    const importedDelivery = imported.nodes.find((node) => node.id === "delivery")!;
+    const importedDeliveryConfig = importedDelivery.config as AgentNodeConfig;
 
     expect(imported.id).toBe("blueprint-imported");
     expect(imported.companyId).toBe("company-local");
@@ -241,9 +247,11 @@ describe("blueprint contracts", () => {
     expect(importedAgent.openclawAgentId).toBe("local-main");
     expect(importedAgent.modelId).toBe("local/model");
     expect(importedAgent.tools).toEqual([]);
-    expect(importedSend.disabled).toBe(true);
-    expect(importedSendConfig.channelId).toBe("local-channel");
-    expect(importedSendConfig.target).toBe("");
+    expect(importedDelivery.disabled).toBeUndefined();
+    expect(importedDeliveryConfig.openclawAgentId).toBe("local-main");
+    expect(importedDeliveryConfig.send?.enabled).toBe(true);
+    expect(importedDeliveryConfig.send?.channelId).toBe("local-channel");
+    expect(importedDeliveryConfig.send?.target).toBe("");
   });
 
   it("imports agent defaults from the node runtime instead of always using OpenClaw", () => {
@@ -260,24 +268,6 @@ describe("blueprint contracts", () => {
             {
               ...createContractNode("codex-agent", "agent", "Codex Agent", {}, { x: 1, y: 0 }),
               runtimeId: "codex"
-            },
-            {
-              id: "codex-parallel",
-              type: "parallel_agents",
-              runtimeId: "codex",
-              position: { x: 2, y: 0 },
-              config: {
-                label: "Codex Parallel",
-                agents: [
-                  {
-                    label: "Codex Parallel Agent",
-                    agentName: "codex-parallel-agent",
-                    prompt: "Run in Codex.",
-                    tools: []
-                  }
-                ],
-                waitFor: "all"
-              }
             }
           ],
           edges: [],
@@ -304,8 +294,6 @@ describe("blueprint contracts", () => {
 
     const openclawAgent = imported.nodes.find((node) => node.id === "openclaw-agent")!;
     const codexAgent = imported.nodes.find((node) => node.id === "codex-agent")!;
-    const codexParallel = imported.nodes.find((node) => node.id === "codex-parallel")!;
-    const codexParallelAgent = ((codexParallel.config as ParallelAgentsNodeConfig).agents[0])!;
 
     expect(openclawAgent.runtimeId).toBe("openclaw");
     expect((openclawAgent.config as AgentNodeConfig).openclawAgentId).toBe("local-main");
@@ -313,9 +301,35 @@ describe("blueprint contracts", () => {
     expect(codexAgent.runtimeId).toBe("codex");
     expect((codexAgent.config as AgentNodeConfig).openclawAgentId).toBeUndefined();
     expect((codexAgent.config as AgentNodeConfig).modelId).toBe("gpt-5.5");
-    expect(codexParallel.runtimeId).toBe("codex");
-    expect(codexParallelAgent.openclawAgentId).toBeUndefined();
-    expect(codexParallelAgent.modelId).toBe("gpt-5.5");
+  });
+
+  it("rejects removed standalone approval, send, and parallel agent node types", () => {
+    for (const type of ["approval", "send", "parallel_agents"]) {
+      expect(() =>
+        readPortableBlueprintPackage({
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-24T00:00:00.000Z",
+          blueprints: [
+            {
+              id: `removed-${type}`,
+              name: `Removed ${type}`,
+              version: 1,
+              nodes: [
+                {
+                  id: "removed-node",
+                  type,
+                  position: { x: 0, y: 0 },
+                  config: { label: "Removed" }
+                }
+              ],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        })
+      ).toThrow(`Unsupported blueprint node type: ${type}.`);
+    }
   });
 
   it("auto-layouts imported blueprints when model coordinates are compressed", () => {
@@ -376,14 +390,16 @@ describe("blueprint contracts", () => {
               config: { label: "Slot 1", slot: 1 }
             },
             createContractNode("research", "agent", "News Research", undefined, { x: 0, y: 0 }),
-            createContractNode("build", "agent", "HTML Build", undefined, { x: 0, y: 0 })
+            createContractNode("build", "agent", "HTML Build", undefined, { x: 0, y: 0 }),
+            createContractNode("publish", "agent", "Publish", undefined, { x: 0, y: 0 })
           ],
           edges: [
             { id: "manager-to-slot", source: "manager", target: "slot-1" },
             { id: "slot-to-research", source: "slot-1", target: "research" },
             { id: "research-to-build", source: "research", target: "build" },
             { id: "build-to-slot", source: "build", target: "slot-1" },
-            { id: "slot-to-manager", source: "slot-1", target: "manager" }
+            { id: "slot-to-manager", source: "slot-1", target: "manager" },
+            { id: "slot-to-publish", source: "slot-1", sourceHandle: "manager-slot-forward-out", target: "publish" }
           ],
           variables: {},
           display: { viewport: { x: 0, y: 0, zoom: 1 } }
@@ -395,11 +411,13 @@ describe("blueprint contracts", () => {
     const slot = portable.nodes.find((node) => node.id === "slot-1")!;
     const research = portable.nodes.find((node) => node.id === "research")!;
     const build = portable.nodes.find((node) => node.id === "build")!;
+    const publish = portable.nodes.find((node) => node.id === "publish")!;
 
     expect(slot.config).toMatchObject({ managerNodeId: "manager", slot: 1, executionMode: "parallel", parallelLaneCount: 1 });
     expect(slot.size).toEqual({ width: 560, height: 300 });
     expect(research.parentId).toBe("slot-1");
     expect(build.parentId).toBe("slot-1");
+    expect(publish.parentId).toBeUndefined();
     expect(portable.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: "manager",
@@ -432,6 +450,11 @@ describe("blueprint contracts", () => {
         source: "build",
         target: "slot-1",
         targetHandle: "manager-slot-inner-in-2"
+      }),
+      expect.objectContaining({
+        source: "slot-1",
+        sourceHandle: "manager-slot-forward-out",
+        target: "publish"
       })
     ]));
 
@@ -444,12 +467,14 @@ describe("blueprint contracts", () => {
     const importedSlot = imported.nodes.find((node) => node.id === "slot-1")!;
     const importedResearch = imported.nodes.find((node) => node.id === "research")!;
     const importedBuild = imported.nodes.find((node) => node.id === "build")!;
+    const importedPublish = imported.nodes.find((node) => node.id === "publish")!;
 
     expect(importedManager.position.x).toBe(80);
     expect(importedSlot.position.x).toBe(460);
     expect(importedSlot.size?.width).toBe(560);
     expect(importedResearch.parentId).toBe(importedSlot.id);
     expect(importedBuild.parentId).toBe(importedSlot.id);
+    expect(importedPublish.parentId).toBeUndefined();
     expect(imported.display.viewport?.zoom).toBe(0.85);
   });
 
@@ -655,45 +680,24 @@ describe("blueprint contracts", () => {
     expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["merge"]);
   });
 
-  it("keeps approval and send nodes from taking the final result", () => {
-    const brief = createContractNode("brief", "agent", "Brief");
-    const summary = createContractNode("summary", "summary", "Summary");
-    const approval = createContractNode("approval", "approval", "Approval");
-    const send = createContractNode("send", "send", "Send");
-    const blueprint = createResolverBlueprint([brief, summary, approval, send], [
-      { id: "brief-summary", source: "brief", target: "summary", condition: "success" },
-      { id: "summary-approval", source: "summary", target: "approval", condition: "success" },
-      { id: "approval-send", source: "approval", target: "send", condition: "success" }
-    ]);
-
-    const result = resolveFinalRunResult(blueprint, [
-      createContractNodeRun(brief, "brief"),
-      createContractNodeRun(summary, "summary"),
-      createContractNodeRun(approval, { approved: true }),
-      createContractNodeRun(send, { delivered: true })
-    ]);
-
-    expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["summary"]);
-  });
-
   it("allows an explicit final role to select a delivery node", () => {
     const summary = createContractNode("summary", "summary", "Summary");
-    const send = createContractNode("send", "send", "Send", {
+    const delivery = createContractNode("delivery", "agent", "Delivery", {
       resultRole: "final"
     });
-    const blueprint = createResolverBlueprint([summary, send], [
-      { id: "summary-send", source: "summary", target: "send", condition: "success" }
+    const blueprint = createResolverBlueprint([summary, delivery], [
+      { id: "summary-delivery", source: "summary", target: "delivery", condition: "success" }
     ]);
 
     const result = resolveFinalRunResult(blueprint, [
       createContractNodeRun(summary, "summary"),
-      createContractNodeRun(send, { delivered: true })
+      createContractNodeRun(delivery, { delivered: true })
     ]);
 
     expect(result?.candidates).toHaveLength(1);
     expect(result?.candidates[0]).toMatchObject({
-      nodeId: "send",
-      nodeType: "send",
+      nodeId: "delivery",
+      nodeType: "agent",
       resultRole: "final",
       selectionReason: "explicit_final",
       output: { delivered: true }
@@ -864,17 +868,8 @@ function createContractNodeConfig(type: BlueprintNode["type"], label: string): B
   if (type === "summary") {
     return { label, mode: "structured_merge" };
   }
-  if (type === "approval") {
-    return { label };
-  }
-  if (type === "send") {
-    return { label, channelId: "slack", target: "#ops", bodyTemplate: "{{summary}}" };
-  }
   if (type === "manager") {
     return { label, portCount: 1, maxHandoffs: 3 };
-  }
-  if (type === "parallel_agents") {
-    return { label, agents: [], waitFor: "all" };
   }
   if (type === "manager_slot") {
     return { label, managerNodeId: "manager", slot: 1 };

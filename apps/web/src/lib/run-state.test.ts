@@ -13,7 +13,7 @@ import {
 } from "./run-state";
 
 describe("run state sync", () => {
-  it("derives pending inbox items from a waiting approval node in run detail", () => {
+  it("derives pending inbox items from a waiting Agent approval in run detail", () => {
     const runView = createRunView("waiting_approval");
 
     const approvals = syncApprovalsForRun([], runView);
@@ -23,16 +23,75 @@ describe("run state sync", () => {
         blueprintId: "blueprint-1",
         blueprintName: "Blueprint 1",
         blueprintRunId: "run-1",
-        nodeRunId: "node-run-approval",
-        nodeId: "approval",
-        nodeLabel: "Human Approval",
+        nodeRunId: "node-run-agent",
+        nodeId: "agent",
+        nodeLabel: "Agent",
         startedBy: "tester",
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
         approverHint: "Lead",
-        instructions: "Approve before send."
+        instructions: "Approve before send.",
+        reviewOutput: "draft answer",
+        canReply: true,
+        canReject: true
       }
     ]);
+  });
+
+  it("derives Agent approval reply state from a waiting agent node", () => {
+    const runView = createRunView("waiting_approval");
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      nodeId: "delivery",
+      nodeLabel: "Delivery",
+      nodeType: "agent",
+      output: {
+        approvalType: "agent",
+        approverHint: "Lead",
+        instructions: "Reply before approve.",
+        reviewOutput: "draft answer",
+        replies: [
+          {
+            id: "reply-1",
+            role: "user",
+            body: "Tighten the wording.",
+            createdAt: "2026-05-21T01:03:00.000Z"
+          },
+          {
+            id: "reply-2",
+            role: "assistant",
+            body: "final answer",
+            createdAt: "2026-05-21T01:04:00.000Z"
+          }
+        ]
+      }
+    };
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]).toMatchObject({
+      nodeId: "delivery",
+      nodeLabel: "Delivery",
+      approverHint: "Lead",
+      instructions: "Reply before approve.",
+      reviewOutput: "draft answer",
+      canReply: true,
+      canReject: true,
+      replies: [
+        {
+          id: "reply-1",
+          role: "user",
+          body: "Tighten the wording.",
+          createdAt: "2026-05-21T01:03:00.000Z"
+        },
+        {
+          id: "reply-2",
+          role: "assistant",
+          body: "final answer",
+          createdAt: "2026-05-21T01:04:00.000Z"
+        }
+      ]
+    });
   });
 
   it("carries previous node output into pending inbox items", () => {
@@ -60,14 +119,17 @@ describe("run state sync", () => {
         blueprintId: "blueprint-1",
         blueprintName: "Blueprint 1",
         blueprintRunId: "run-1",
-        nodeRunId: "node-run-approval",
-        nodeId: "approval",
-        nodeLabel: "Human Approval",
+        nodeRunId: "node-run-agent",
+        nodeId: "agent",
+        nodeLabel: "Agent",
         startedBy: "tester",
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
         approverHint: "Lead",
-        instructions: "Approve before send."
+        instructions: "Approve before send.",
+        reviewOutput: "draft answer",
+        canReply: true,
+        canReject: true
       }
     ];
 
@@ -213,12 +275,12 @@ function createRunView(
     run,
     nodeRuns: [
       {
-        id: "node-run-approval",
+        id: "node-run-agent",
         blueprintRunId: run.id,
         blueprintId: run.blueprintId,
-        nodeId: "approval",
-        nodeLabel: "Human Approval",
-        nodeType: "approval",
+        nodeId: "agent",
+        nodeLabel: "Agent",
+        nodeType: "agent",
         status: nodeStatus,
         queuedAt: "2026-05-21T01:01:00.000Z",
         startedAt: "2026-05-21T01:02:00.000Z",
@@ -239,8 +301,11 @@ function createRunView(
             }),
         output: nodeStatus === "waiting_approval"
           ? {
+              approvalType: "agent",
               approverHint: "Lead",
-              instructions: "Approve before send."
+              instructions: "Approve before send.",
+              reviewOutput: "draft answer",
+              replies: []
             }
           : { approved: true }
       }

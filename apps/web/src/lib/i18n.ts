@@ -413,15 +413,12 @@ export const messages: Record<Language, Messages> = {
     },
     nodeTypes: {
       agent: "Agent",
-      approval: "Approval",
       condition: "Condition",
       group: "Group",
       loop: "Loop",
       manager: "Manager",
       manager_slot: "Slot",
       note: "Note",
-      parallel_agents: "Parallel agents",
-      send: "Send",
       summary: "Summary"
     },
     pages: {
@@ -737,15 +734,12 @@ export const messages: Record<Language, Messages> = {
     },
     nodeTypes: {
       agent: "Agent",
-      approval: "人工审批",
       condition: "条件",
       group: "分组",
       loop: "循环",
       manager: "管理器",
       manager_slot: "槽位",
       note: "备注",
-      parallel_agents: "并行 Agent",
-      send: "发送",
       summary: "汇总"
     },
     pages: {

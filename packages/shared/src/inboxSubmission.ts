@@ -9,8 +9,6 @@ export const hivewardBlueprintNodeTypes = [
   "loop",
   "condition",
   "summary",
-  "approval",
-  "send",
   "note",
   "group"
 ] as const;
@@ -59,6 +57,8 @@ export const hivewardInboxSubmissionContract = [
   "Each blueprint must include: id, name, version number, nodes array, edges array, variables object, display.viewport.",
   "",
   `Allowed node types: ${hivewardBlueprintNodeTypes.join(", ")}.`,
+  "Do not use removed standalone node types approval, send, or parallel_agents.",
+  "Human approval and sending are Agent config options, not separate nodes.",
   "Do not invent node types such as http.get, transform, html.render, file.write, fetch, parse, render, or save.",
   "Represent external work as agent nodes with clear prompts.",
   "",

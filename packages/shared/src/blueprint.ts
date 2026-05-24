@@ -6,14 +6,11 @@ export type AgentBlueprintNodeType = "agent";
 
 export type BlueprintNodeType =
   | AgentBlueprintNodeType
-  | "parallel_agents"
   | "manager"
   | "manager_slot"
   | "loop"
   | "condition"
   | "summary"
-  | "approval"
-  | "send"
   | "note"
   | "group";
 
@@ -66,12 +63,22 @@ export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
   workingDirectory?: string;
   timeoutMs?: number;
   outputSchema?: Record<string, unknown>;
+  approval?: AgentApprovalConfig;
+  send?: AgentSendConfig;
   tools: string[];
 }
 
-export interface ParallelAgentsNodeConfig extends BlueprintNodeBaseConfig {
-  agents: AgentNodeConfig[];
-  waitFor: "all" | "first_success";
+export interface AgentApprovalConfig {
+  enabled: boolean;
+  approverHint?: string;
+  instructions?: string;
+}
+
+export interface AgentSendConfig {
+  enabled: boolean;
+  channelId: string;
+  target: string;
+  bodyTemplate: string;
 }
 
 export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
@@ -109,17 +116,6 @@ export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
   modelId?: string;
 }
 
-export interface ApprovalNodeConfig extends BlueprintNodeBaseConfig {
-  approverHint?: string;
-  instructions?: string;
-}
-
-export interface SendNodeConfig extends BlueprintNodeBaseConfig {
-  channelId: string;
-  target: string;
-  bodyTemplate: string;
-}
-
 export interface NoteNodeConfig extends BlueprintNodeBaseConfig {
   body: string;
 }
@@ -130,14 +126,11 @@ export interface GroupNodeConfig extends BlueprintNodeBaseConfig {
 
 export type BlueprintNodeConfig =
   | AgentNodeConfig
-  | ParallelAgentsNodeConfig
   | ManagerNodeConfig
   | ManagerSlotNodeConfig
   | LoopNodeConfig
   | ConditionNodeConfig
   | SummaryNodeConfig
-  | ApprovalNodeConfig
-  | SendNodeConfig
   | NoteNodeConfig
   | GroupNodeConfig;
 
@@ -213,14 +206,11 @@ export interface PortableBlueprintPackage {
 
 const portableBlueprintNodeTypes = new Set<BlueprintNodeType>([
   "agent",
-  "parallel_agents",
   "manager",
   "manager_slot",
   "loop",
   "condition",
   "summary",
-  "approval",
-  "send",
   "note",
   "group"
 ]);
@@ -240,6 +230,7 @@ const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
 const managerSlotOutHandle = "manager-slot-out";
+const managerSlotForwardOutHandle = "manager-slot-forward-out";
 const managerSlotInnerOutHandle = "manager-slot-inner-out";
 const managerSlotInnerInHandle = "manager-slot-inner-in";
 const maxManagerPortCount = 8;
@@ -268,12 +259,20 @@ export function managerSlotInnerInHandleId(lane: number): string {
   return lane <= 1 ? managerSlotInnerInHandle : `${managerSlotInnerInHandle}-${lane}`;
 }
 
+export function managerSlotForwardOutHandleId(): string {
+  return managerSlotForwardOutHandle;
+}
+
 export function isManagerSlotInnerOutHandle(handle: string | null | undefined): boolean {
   return handle === managerSlotInnerOutHandle || Boolean(handle?.startsWith(`${managerSlotInnerOutHandle}-`));
 }
 
 export function isManagerSlotInnerInHandle(handle: string | null | undefined): boolean {
   return handle === managerSlotInnerInHandle || Boolean(handle?.startsWith(`${managerSlotInnerInHandle}-`));
+}
+
+export function isManagerSlotForwardOutHandle(handle: string | null | undefined): boolean {
+  return handle === managerSlotForwardOutHandle;
 }
 
 export interface BlueprintImportDefaults {
@@ -407,7 +406,6 @@ export interface FinalRunResult {
 
 const resultProducingNodeTypes = new Set<BlueprintNodeType>([
   "agent",
-  "parallel_agents",
   "manager",
   "summary"
 ]);
@@ -658,24 +656,27 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
         }
       },
       {
-        id: "approval",
-        type: "approval",
+        id: "delivery",
+        type: "agent",
+        runtimeId: "openclaw",
         position: { x: 1100, y: 132 },
         config: {
-          label: "Human Approval",
-          approverHint: "Engineering lead",
-          instructions: "Approve before sending to the team channel."
-        }
-      },
-      {
-        id: "send",
-        type: "send",
-        position: { x: 1440, y: 132 },
-        config: {
-          label: "Send to Slack",
-          channelId: "slack",
-          target: "#engineering",
-          bodyTemplate: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}"
+          label: "Delivery Agent",
+          openclawAgentId: "main",
+          agentName: "delivery-agent",
+          prompt: "Prepare the approved delivery note from the merged summary.",
+          approval: {
+            enabled: true,
+            approverHint: "Engineering lead",
+            instructions: "Review the delivery note before sending it to the team channel."
+          },
+          send: {
+            enabled: true,
+            channelId: "slack",
+            target: "#engineering",
+            bodyTemplate: "Blueprint {{blueprint.name}} completed. Summary: {{summary}}"
+          },
+          tools: []
         }
       }
     ],
@@ -684,8 +685,7 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
       { id: "e2", source: "requirements", target: "tests", condition: "success" },
       { id: "e3", source: "architecture", target: "summary", condition: "success" },
       { id: "e4", source: "tests", target: "summary", condition: "success" },
-      { id: "e5", source: "summary", target: "approval", condition: "success" },
-      { id: "e6", source: "approval", target: "send", condition: "success" }
+      { id: "e5", source: "summary", target: "delivery", condition: "success" }
     ],
     variables: {},
     display: {
@@ -1873,17 +1873,15 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       permissionProfile: agentConfig.permissionProfile,
       timeoutMs: agentConfig.timeoutMs,
       outputSchema: cloneJsonObject(agentConfig.outputSchema),
+      approval: agentConfig.approval ? { ...agentConfig.approval } : undefined,
+      send: agentConfig.send
+        ? {
+            ...agentConfig.send,
+            channelId: "",
+            target: ""
+          }
+        : undefined,
       tools: []
-    };
-  }
-  if (type === "parallel_agents") {
-    const parallelConfig = config as ParallelAgentsNodeConfig;
-    return {
-      label: parallelConfig.label,
-      description: parallelConfig.description,
-      resultRole: parallelConfig.resultRole,
-      agents: parallelConfig.agents.map((agent) => toPortableBlueprintNodeConfig("agent", agent) as AgentNodeConfig),
-      waitFor: parallelConfig.waitFor
     };
   }
   if (type === "summary") {
@@ -1894,17 +1892,6 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       resultRole: summaryConfig.resultRole,
       mode: summaryConfig.mode,
       prompt: summaryConfig.prompt
-    };
-  }
-  if (type === "send") {
-    const sendConfig = config as SendNodeConfig;
-    return {
-      label: sendConfig.label,
-      description: sendConfig.description,
-      resultRole: sendConfig.resultRole,
-      channelId: "",
-      target: "",
-      bodyTemplate: sendConfig.bodyTemplate
     };
   }
   return { ...config };
@@ -1919,7 +1906,7 @@ function applyImportDefaultsToNode(node: BlueprintNode, defaults: BlueprintImpor
   return {
     ...node,
     runtimeId: runtimeId ?? node.runtimeId,
-    disabled: node.type === "send" ? true : node.disabled,
+    disabled: node.disabled,
     config: applyImportDefaultsToConfig(node.type, node.config, defaults, runtimeId)
   };
 }
@@ -1937,14 +1924,15 @@ function applyImportDefaultsToConfig(
       ...agentConfig,
       openclawAgentId: runtimeId === "openclaw" ? defaults.openclawAgentId ?? agentConfig.openclawAgentId ?? "main" : undefined,
       modelId: modelId ?? agentConfig.modelId,
+      send: agentConfig.send
+        ? {
+            ...agentConfig.send,
+            channelId: runtimeId === "openclaw" ? defaults.channelId ?? agentConfig.send.channelId ?? "" : "",
+            target: runtimeId === "openclaw" ? agentConfig.send.target ?? "" : "",
+            enabled: runtimeId === "openclaw" && agentConfig.send.enabled
+          }
+        : undefined,
       tools: []
-    };
-  }
-  if (type === "parallel_agents") {
-    const parallelConfig = config as ParallelAgentsNodeConfig;
-    return {
-      ...parallelConfig,
-      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults, runtimeId) as AgentNodeConfig)
     };
   }
   if (type === "manager") {
@@ -1964,19 +1952,11 @@ function applyImportDefaultsToConfig(
       modelId: summaryConfig.mode === "openclaw_summary_agent" ? defaultModelForImportRuntime("openclaw", defaults) : undefined
     };
   }
-  if (type === "send") {
-    const sendConfig = config as SendNodeConfig;
-    return {
-      ...sendConfig,
-      channelId: defaults.channelId ?? "",
-      target: ""
-    };
-  }
   return config;
 }
 
 function resolveImportNodeRuntimeId(node: BlueprintNode, defaults: BlueprintImportDefaults): AgentRuntimeId | undefined {
-  if (node.type !== "agent" && node.type !== "manager" && node.type !== "parallel_agents") {
+  if (node.type !== "agent" && node.type !== "manager") {
     return node.runtimeId;
   }
   return node.runtimeId ?? defaults.runtimeId ?? "openclaw";
@@ -2057,21 +2037,6 @@ function readPortableBlueprintNodeConfig(
   if (type === "agent") {
     return readAgentNodeConfig(config, fieldName, base);
   }
-  if (type === "parallel_agents") {
-    const agents = readArray(config.agents, `${fieldName}.agents`);
-    return {
-      ...config,
-      ...base,
-      agents: agents.map((agent, index) =>
-        readAgentNodeConfig(readConfigRecord(agent, `${fieldName}.agents[${index}]`), `${fieldName}.agents[${index}]`, {
-          label: readRequiredString((agent as Record<string, unknown>).label, `${fieldName}.agents[${index}].label`),
-          description: isRecord(agent) ? readOptionalString(agent.description) : undefined,
-          resultRole: isRecord(agent) ? readOptionalResultRole(agent.resultRole, `${fieldName}.agents[${index}].resultRole`) : undefined
-        })
-      ),
-      waitFor: config.waitFor === "first_success" ? "first_success" : "all"
-    } as ParallelAgentsNodeConfig;
-  }
   if (type === "summary") {
     const mode = config.mode === "openclaw_summary_agent" ? "openclaw_summary_agent" : "structured_merge";
     return {
@@ -2131,7 +2096,34 @@ function readAgentNodeConfig(
     workingDirectory: readOptionalString(config.workingDirectory),
     timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
     outputSchema: isRecord(config.outputSchema) ? config.outputSchema : undefined,
+    approval: readAgentApprovalConfig(config.approval, `${fieldName}.approval`),
+    send: readAgentSendConfig(config.send, `${fieldName}.send`),
     tools: readStringArray(config.tools, `${fieldName}.tools`)
+  };
+}
+
+function readAgentApprovalConfig(value: unknown, fieldName: string): AgentApprovalConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+  return {
+    enabled: value.enabled === true,
+    approverHint: readOptionalString(value.approverHint),
+    instructions: readOptionalString(value.instructions)
+  };
+}
+
+function readAgentSendConfig(value: unknown, fieldName: string): AgentSendConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) {
+    throw new Error(`${fieldName} must be an object.`);
+  }
+  return {
+    enabled: value.enabled === true,
+    channelId: readOptionalString(value.channelId) ?? "",
+    target: readOptionalString(value.target) ?? "",
+    bodyTemplate: readOptionalString(value.bodyTemplate) ?? ""
   };
 }
 
@@ -2228,6 +2220,7 @@ function attachSlotChildNodesFromEdges(
     const sourceIsSlot = slotIds.has(edge.source);
     const targetIsSlot = slotIds.has(edge.target);
     if (sourceIsSlot === targetIsSlot) continue;
+    if (sourceIsSlot && isManagerSlotForwardOutHandle(edge.sourceHandle)) continue;
 
     const slotId = sourceIsSlot ? edge.source : edge.target;
     const childId = sourceIsSlot ? edge.target : edge.source;
@@ -2387,6 +2380,16 @@ function normalizeManagerSlotBoundaryEdge(edge: BlueprintEdge, source: Blueprint
 
   if (otherNode.type === "manager_slot") {
     throw new Error(`Manager slots must not connect directly to each other (${source.id} -> ${target.id}).`);
+  }
+  if (source.type === "manager_slot" && isManagerSlotForwardOutHandle(edge.sourceHandle)) {
+    if (otherNode.type === "manager") {
+      throw new Error(`Manager slot edge ${edge.id} must use the left manager return handle for manager connections.`);
+    }
+    return {
+      ...edge,
+      sourceHandle: managerSlotForwardOutHandle,
+      condition: edge.condition ?? "success"
+    };
   }
   if (otherNode.type === "manager") {
     throw new Error(`Manager slot edge ${edge.id} must use canonical manager-slot handles.`);

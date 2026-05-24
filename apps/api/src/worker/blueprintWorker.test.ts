@@ -10,6 +10,7 @@ import {
   createActiveManagerRemotionVideoChaosBlueprint,
   createManagerDrivenHtmlBlueprint,
   createRealThreeAgentBlueprint,
+  type SendChannelInput,
   type SendChannelResult,
   type StartAgentTaskInput,
   type StartedAgentTaskResult,
@@ -25,6 +26,7 @@ import { BlueprintWorker } from "./blueprintWorker";
 class ScriptedAdapter implements RuntimeAdapter {
   readonly calls: StartAgentTaskInput[] = [];
   readonly waitCalls: WaitForAgentTaskInput[] = [];
+  readonly sendCalls: SendChannelInput[] = [];
 
   constructor(
     private readonly startResults: StartedAgentTaskResult[],
@@ -96,7 +98,8 @@ class ScriptedAdapter implements RuntimeAdapter {
     return result;
   }
 
-  async sendChannelMessage(): Promise<SendChannelResult> {
+  async sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult> {
+    this.sendCalls.push(input);
     return {
       deliveryId: "delivery-1",
       status: "sent",
@@ -369,6 +372,201 @@ describe("BlueprintWorker", () => {
     expect(nodeRun?.error).toContain("visible output");
   });
 
+  it("lets Agent approval replies revise output before approval sends the final answer", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true,
+        approverHint: "Lead",
+        instructions: "Review before sending."
+      },
+      send: {
+        enabled: true,
+        channelId: "slack",
+        target: "#engineering",
+        bodyTemplate: "Blueprint {{blueprint.name}} completed: {{summary}}"
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-2", "succeeded", "final answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+
+    expect(waitingNode.output).toMatchObject({
+      approvalType: "agent",
+      approverHint: "Lead",
+      instructions: "Review before sending.",
+      reviewOutput: "draft answer",
+      replies: []
+    });
+    expect(adapter.sendCalls).toHaveLength(0);
+
+    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Use the final wording.");
+    const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const repliedOutput = repliedNode.output as {
+      reviewOutput: string;
+      replies: Array<{ role: string; body: string }>;
+    };
+
+    expect(repliedOutput.reviewOutput).toBe("final answer");
+    expect(repliedOutput.replies.map((reply) => reply.role)).toEqual(["user", "assistant"]);
+    expect(repliedOutput.replies.map((reply) => reply.body)).toEqual(["Use the final wording.", "final answer"]);
+    expect(adapter.calls[1]?.input).toMatchObject({
+      originalInput: {
+        upstream: []
+      },
+      humanApproval: {
+        previousOutput: "draft answer",
+        latestReply: "Use the final wording."
+      }
+    });
+    expect(adapter.sendCalls).toHaveLength(0);
+
+    await worker.approveRun(blueprint, repliedView.run, repliedNode.id, "Approved.");
+    const finalView = await waitForRunTerminal(store, run.id);
+    const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(finalView?.run.status).toBe("succeeded");
+    expect(finalNode).toMatchObject({
+      status: "succeeded",
+      output: "final answer"
+    });
+    expect(adapter.sendCalls).toHaveLength(1);
+    expect(adapter.sendCalls[0]).toMatchObject({
+      channelId: "slack",
+      target: "#engineering",
+      blueprintRunId: run.id,
+      nodeRunId: repliedNode.id
+    });
+    expect(adapter.sendCalls[0]?.body).toContain("Blueprint Test blueprint completed");
+    expect(adapter.sendCalls[0]?.body).toContain("final answer");
+  });
+
+  it("fails the run instead of getting stuck when an Agent approval reply rerun fails", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-2", "failed", undefined, "revision failed")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+
+    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Try again.");
+    const finalView = await waitForRunTerminal(store, run.id);
+    const failedNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(finalView?.run.status).toBe("failed");
+    expect(failedNode?.status).toBe("failed");
+    expect(failedNode?.error).toBe("revision failed");
+  });
+
+  it("runs downstream nodes connected to a manager slot forward output", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const slotAgent = createAgentNode("slot-agent", "Slot Agent", { x: 520, y: 180 });
+    slotAgent.parentId = "slot-1";
+    const followUp = createAgentNode("follow-up", "Follow Up", { x: 980, y: 180 });
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 1
+          }
+        },
+        {
+          id: "slot-1",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Slot 1",
+            managerNodeId: "manager",
+            slot: 1
+          }
+        },
+        slotAgent,
+        followUp
+      ],
+      [
+        { id: "manager-slot", source: "manager", sourceHandle: "manager-out-1", target: "slot-1", targetHandle: "manager-slot-in" },
+        { id: "slot-manager", source: "slot-1", sourceHandle: "manager-slot-out", target: "manager", targetHandle: "manager-in-1" },
+        { id: "slot-agent", source: "slot-1", sourceHandle: "manager-slot-inner-out", target: "slot-agent" },
+        { id: "agent-slot", source: "slot-agent", target: "slot-1", targetHandle: "manager-slot-inner-in" },
+        { id: "slot-follow-up", source: "slot-1", sourceHandle: "manager-slot-forward-out", target: "follow-up" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-slot-agent"),
+      createStartedAgentTask("task-follow-up")
+    ], [
+      createCompletedAgentTask("task-slot-agent", "succeeded", "slot output"),
+      createCompletedAgentTask("task-follow-up", "succeeded", "follow-up output")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const slotRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "slot-1");
+    const followUpRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "follow-up");
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(slotRun).toMatchObject({
+      status: "succeeded",
+      output: "slot output"
+    });
+    expect(followUpRun).toMatchObject({
+      status: "succeeded",
+      output: "follow-up output",
+      input: {
+        upstream: [
+          expect.objectContaining({
+            nodeId: "slot-1",
+            output: "slot output"
+          })
+        ]
+      }
+    });
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["slot-agent", "follow-up"]);
+  });
+
   it("keeps platform-owned fields authoritative when agent output contains matching names", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
@@ -533,26 +731,32 @@ describe("BlueprintWorker", () => {
     expect((adapter.calls[2]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
   });
 
-  it("approves the requested node when multiple human approvals are waiting", async () => {
+  it("approves the requested Agent approval when multiple approvals are waiting", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
-    const worker = new BlueprintWorker(store, new ScriptedAdapter([], []));
+    const worker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([
+        createStartedAgentTask("task-approval-a"),
+        createStartedAgentTask("task-approval-b")
+      ], [
+        createCompletedAgentTask("task-approval-a", "succeeded", "A ready"),
+        createCompletedAgentTask("task-approval-b", "succeeded", "B ready")
+      ])
+    );
+    const approvalA = createAgentNode("approval-a", "Approval A");
+    approvalA.config = {
+      ...approvalA.config,
+      approval: { enabled: true, approverHint: "Lead A", instructions: "Approve A." }
+    };
+    const approvalB = createAgentNode("approval-b", "Approval B", { x: 260, y: 0 });
+    approvalB.config = {
+      ...approvalB.config,
+      approval: { enabled: true, approverHint: "Lead B", instructions: "Approve B." }
+    };
     const blueprint = createBlueprint(
-      [
-        {
-          id: "approval-a",
-          type: "approval",
-          position: { x: 0, y: 0 },
-          config: { label: "Approval A", approverHint: "Lead A", instructions: "Approve A." }
-        },
-        {
-          id: "approval-b",
-          type: "approval",
-          position: { x: 260, y: 0 },
-          config: { label: "Approval B", approverHint: "Lead B", instructions: "Approve B." }
-        }
-      ],
+      [approvalA, approvalB],
       []
     );
 
@@ -567,6 +771,7 @@ describe("BlueprintWorker", () => {
 
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === firstApproval.id)?.status).toBe("waiting_approval");
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.status).toBe("succeeded");
+    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.output).toBe("B ready");
   });
 
   it("passes SDK node configuration to the adapter and persists provider refs", async () => {

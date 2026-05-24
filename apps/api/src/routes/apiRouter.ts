@@ -39,7 +39,6 @@ import type {
   OpenClawObjectSource,
   OpenClawVersionInfo,
   ManagerNodeConfig,
-  ParallelAgentsNodeConfig,
   SummaryNodeConfig,
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
@@ -56,7 +55,9 @@ import type {
   CreateChatSessionRequest,
   CreateHivewardChatSessionRequest,
   InboxItem,
+  RejectBlueprintRunRequest,
   RejectInboxItemRequest,
+  ReplyBlueprintRunApprovalRequest,
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
@@ -820,7 +821,49 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeApproveBlueprintRunRequest(req.body);
-      const updated = await worker.approveRun(blueprint, run, body.nodeRunId);
+      const updated = await worker.approveRun(blueprint, run, body.nodeRunId, body.comment);
+      const view = await store.getRunView(updated.id);
+      res.json({ run: view });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/blueprint-runs/:runId/reject", async (req, res, next) => {
+    try {
+      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
+      if (!run) {
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
+        return;
+      }
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
+        return;
+      }
+      const body = normalizeRejectBlueprintRunRequest(req.body);
+      const updated = await worker.rejectRun(blueprint, run, body.nodeRunId, body.comment);
+      const view = await store.getRunView(updated.id);
+      res.json({ run: view });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/blueprint-runs/:runId/reply", async (req, res, next) => {
+    try {
+      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
+      if (!run) {
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
+        return;
+      }
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
+        return;
+      }
+      const body = normalizeReplyBlueprintRunApprovalRequest(req.body);
+      const updated = await worker.replyToApproval(blueprint, run, body.nodeRunId, body.message);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -853,8 +896,35 @@ function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRu
     throw new Error("Approve request must be a JSON object.");
   }
   return {
-    nodeRunId: readOptionalString(value.nodeRunId)
+    nodeRunId: readOptionalString(value.nodeRunId),
+    comment: readOptionalString(value.comment)
   };
+}
+
+function normalizeRejectBlueprintRunRequest(value: unknown): RejectBlueprintRunRequest {
+  if (value === undefined || value === null) return {};
+  if (!isPlainRecord(value)) {
+    throw new Error("Reject request must be a JSON object.");
+  }
+  return {
+    nodeRunId: readOptionalString(value.nodeRunId),
+    comment: readOptionalString(value.comment)
+  };
+}
+
+function normalizeReplyBlueprintRunApprovalRequest(value: unknown): ReplyBlueprintRunApprovalRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Approval reply request must be a JSON object.");
+  }
+  const nodeRunId = readOptionalString(value.nodeRunId);
+  const message = readOptionalString(value.message);
+  if (!nodeRunId) {
+    throw new Error("Approval reply nodeRunId is required.");
+  }
+  if (!message) {
+    throw new Error("Approval reply message is required.");
+  }
+  return { nodeRunId, message };
 }
 
 function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {
@@ -2383,13 +2453,6 @@ function collectInvalidAgentIds(blueprint: BlueprintDefinition, configuredAgentI
       if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
       continue;
     }
-    if (node.type === "parallel_agents") {
-      if ((node.runtimeId ?? "openclaw") !== "openclaw") continue;
-      for (const agent of (node.config as ParallelAgentsNodeConfig).agents) {
-        const agentId = agent.openclawAgentId ?? "main";
-        if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
-      }
-    }
   }
 
   return [...invalid];
@@ -2425,20 +2488,6 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
           ...node,
           runtimeId: node.runtimeId ?? "openclaw",
           config: config.modelId || !defaultModelId ? config : { ...config, modelId: defaultModelId }
-        };
-      }
-      if (node.type === "parallel_agents") {
-        const config = node.config as ParallelAgentsNodeConfig;
-        const runtimeId = node.runtimeId ?? "openclaw";
-        const defaultModelId = defaultModelForAgentRuntime(runtimeId, defaults);
-        if (!defaultModelId) return { ...node, runtimeId };
-        return {
-          ...node,
-          runtimeId,
-          config: {
-            ...config,
-            agents: config.agents.map((agent) => (agent.modelId ? agent : { ...agent, modelId: defaultModelId }))
-          }
         };
       }
       if (node.type === "summary") {
