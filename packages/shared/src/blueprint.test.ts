@@ -17,6 +17,7 @@ import {
   type BlueprintEdge,
   type BlueprintNode,
   type BlueprintNodeRun,
+  type ParallelAgentsNodeConfig,
   type SendNodeConfig
 } from "./blueprint";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
@@ -239,6 +240,78 @@ describe("blueprint contracts", () => {
     expect(importedSend.disabled).toBe(true);
     expect(importedSendConfig.channelId).toBe("local-channel");
     expect(importedSendConfig.target).toBe("");
+  });
+
+  it("imports agent defaults from the node runtime instead of always using OpenClaw", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-24T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "sdk-runtime-import",
+          name: "SDK runtime import",
+          version: 1,
+          nodes: [
+            createContractNode("openclaw-agent", "agent", "OpenClaw Agent"),
+            {
+              ...createContractNode("codex-agent", "agent", "Codex Agent", {}, { x: 1, y: 0 }),
+              runtimeId: "codex"
+            },
+            {
+              id: "codex-parallel",
+              type: "parallel_agents",
+              runtimeId: "codex",
+              position: { x: 2, y: 0 },
+              config: {
+                label: "Codex Parallel",
+                agents: [
+                  {
+                    label: "Codex Parallel Agent",
+                    agentName: "codex-parallel-agent",
+                    prompt: "Run in Codex.",
+                    tools: []
+                  }
+                ],
+                waitFor: "all"
+              }
+            }
+          ],
+          edges: [],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const imported = hydrateImportedBlueprint(blueprintPackage.blueprints[0]!, {
+      id: "blueprint-imported",
+      companyId: "company-local",
+      now: "2026-05-24T00:00:00.000Z",
+      defaults: {
+        openclawAgentId: "local-main",
+        modelId: "openclaw/local-default",
+        modelIds: {
+          openclaw: "openclaw/local-default",
+          codex: "gpt-5.5",
+          claude: "inherit"
+        }
+      }
+    });
+
+    const openclawAgent = imported.nodes.find((node) => node.id === "openclaw-agent")!;
+    const codexAgent = imported.nodes.find((node) => node.id === "codex-agent")!;
+    const codexParallel = imported.nodes.find((node) => node.id === "codex-parallel")!;
+    const codexParallelAgent = ((codexParallel.config as ParallelAgentsNodeConfig).agents[0])!;
+
+    expect(openclawAgent.runtimeId).toBe("openclaw");
+    expect((openclawAgent.config as AgentNodeConfig).openclawAgentId).toBe("local-main");
+    expect((openclawAgent.config as AgentNodeConfig).modelId).toBe("openclaw/local-default");
+    expect(codexAgent.runtimeId).toBe("codex");
+    expect((codexAgent.config as AgentNodeConfig).openclawAgentId).toBeUndefined();
+    expect((codexAgent.config as AgentNodeConfig).modelId).toBe("gpt-5.5");
+    expect(codexParallel.runtimeId).toBe("codex");
+    expect(codexParallelAgent.openclawAgentId).toBeUndefined();
+    expect(codexParallelAgent.modelId).toBe("gpt-5.5");
   });
 
   it("auto-layouts imported blueprints when model coordinates are compressed", () => {

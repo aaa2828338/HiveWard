@@ -11,7 +11,7 @@ import type {
   OpenClawUsageFact,
   OpenClawVersionInfo
 } from "./openclaw";
-import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
+import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 
@@ -98,6 +98,7 @@ export interface CreateBlueprintProposalRequest {
   diffSummary?: string;
   createdByRoleId?: string;
   targetRoleId?: string;
+  runtimeId?: AgentRuntimeId;
 }
 
 export interface InboxItemResponse {

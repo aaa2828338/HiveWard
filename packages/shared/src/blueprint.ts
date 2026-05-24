@@ -239,8 +239,10 @@ const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
 const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
 
 export interface BlueprintImportDefaults {
+  runtimeId?: AgentRuntimeId;
   openclawAgentId?: string;
   modelId?: string;
+  modelIds?: Partial<Record<AgentRuntimeId, string>>;
   channelId?: string;
 }
 
@@ -1871,24 +1873,28 @@ function cloneJsonObject(value: Record<string, unknown> | undefined): Record<str
 }
 
 function applyImportDefaultsToNode(node: BlueprintNode, defaults: BlueprintImportDefaults = {}): BlueprintNode {
+  const runtimeId = resolveImportNodeRuntimeId(node, defaults);
   return {
     ...node,
+    runtimeId: runtimeId ?? node.runtimeId,
     disabled: node.type === "send" ? true : node.disabled,
-    config: applyImportDefaultsToConfig(node.type, node.config, defaults)
+    config: applyImportDefaultsToConfig(node.type, node.config, defaults, runtimeId)
   };
 }
 
 function applyImportDefaultsToConfig(
   type: BlueprintNodeType,
   config: BlueprintNodeConfig,
-  defaults: BlueprintImportDefaults
+  defaults: BlueprintImportDefaults,
+  runtimeId?: AgentRuntimeId
 ): BlueprintNodeConfig {
   if (isAgentBlueprintNodeType(type)) {
     const agentConfig = config as AgentNodeConfig;
+    const modelId = defaultModelForImportRuntime(runtimeId, defaults);
     return {
       ...agentConfig,
-      openclawAgentId: defaults.openclawAgentId ?? "main",
-      modelId: defaults.modelId,
+      openclawAgentId: runtimeId === "openclaw" ? defaults.openclawAgentId ?? agentConfig.openclawAgentId ?? "main" : undefined,
+      modelId: modelId ?? agentConfig.modelId,
       tools: []
     };
   }
@@ -1896,14 +1902,24 @@ function applyImportDefaultsToConfig(
     const parallelConfig = config as ParallelAgentsNodeConfig;
     return {
       ...parallelConfig,
-      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults) as AgentNodeConfig)
+      agents: parallelConfig.agents.map((agent) => applyImportDefaultsToConfig("agent", agent, defaults, runtimeId) as AgentNodeConfig)
+    };
+  }
+  if (type === "manager") {
+    const managerConfig = config as ManagerNodeConfig;
+    const modelId = defaultModelForImportRuntime(runtimeId, defaults);
+    return {
+      ...managerConfig,
+      openclawAgentId: runtimeId === "openclaw" ? defaults.openclawAgentId ?? managerConfig.openclawAgentId ?? "main" : undefined,
+      modelId: modelId ?? managerConfig.modelId,
+      tools: managerConfig.tools ?? []
     };
   }
   if (type === "summary") {
     const summaryConfig = config as SummaryNodeConfig;
     return {
       ...summaryConfig,
-      modelId: summaryConfig.mode === "openclaw_summary_agent" ? defaults.modelId : undefined
+      modelId: summaryConfig.mode === "openclaw_summary_agent" ? defaultModelForImportRuntime("openclaw", defaults) : undefined
     };
   }
   if (type === "send") {
@@ -1915,6 +1931,18 @@ function applyImportDefaultsToConfig(
     };
   }
   return config;
+}
+
+function resolveImportNodeRuntimeId(node: BlueprintNode, defaults: BlueprintImportDefaults): AgentRuntimeId | undefined {
+  if (node.type !== "agent" && node.type !== "manager" && node.type !== "parallel_agents") {
+    return node.runtimeId;
+  }
+  return node.runtimeId ?? defaults.runtimeId ?? "openclaw";
+}
+
+function defaultModelForImportRuntime(runtimeId: AgentRuntimeId | undefined, defaults: BlueprintImportDefaults): string | undefined {
+  if (!runtimeId || runtimeId === "openclaw") return defaults.modelIds?.openclaw ?? defaults.modelId;
+  return defaults.modelIds?.[runtimeId];
 }
 
 function readPortableBlueprintDefinition(value: unknown): PortableBlueprintDefinition {
@@ -1958,7 +1986,7 @@ function readPortableBlueprintNode(value: unknown, index: number): BlueprintNode
   return {
     id: readRequiredString(value.id, `blueprint.nodes[${index}].id`),
     type,
-    runtimeId: type === "agent" ? runtimeId ?? "openclaw" : runtimeId,
+    runtimeId,
     position: readPosition(value.position, `blueprint.nodes[${index}].position`),
     size: isRecord(value.size)
       ? {

@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
+  AgentRuntimeId,
   ApproveInboxItemRequest,
+  BlueprintImportDefaults,
   CatalogSnapshot,
   ChatRoleScope,
   CreateCompanyRequest,
@@ -341,11 +343,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       const body = req.body as ImportBlueprintPackageRequest;
       const blueprintPackage = readPortableBlueprintPackage(body.blueprintPackage);
       const config = await openClawConfigStore.getState();
-      const blueprints = await store.importBlueprintPackage(blueprintPackage, {
-        openclawAgentId: selectDefaultAgentId(config.configuredAgents),
-        modelId: config.defaultModelId,
-        channelId: selectDefaultChannelId(config.configuredChannels)
-      });
+      const blueprints = await store.importBlueprintPackage(blueprintPackage, buildBlueprintImportDefaults(config));
       res.status(201).json({ blueprints });
     } catch (error) {
       next(error);
@@ -543,11 +541,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const body = normalizeApproveInboxItemRequest(req.body);
       const config = await openClawConfigStore.getState();
-      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), {
-        openclawAgentId: selectDefaultAgentId(config.configuredAgents),
-        modelId: config.defaultModelId,
-        channelId: selectDefaultChannelId(config.configuredChannels)
-      }, body.comment));
+      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), buildBlueprintImportDefaults(config), body.comment));
     } catch (error) {
       next(error);
     }
@@ -965,7 +959,8 @@ function normalizeCreateBlueprintProposalRequest(value: unknown): CreateBlueprin
     preview: isPlainRecord(value.preview) ? value.preview : undefined,
     diffSummary: readOptionalString(value.diffSummary),
     createdByRoleId: readOptionalString(value.createdByRoleId),
-    targetRoleId: readOptionalString(value.targetRoleId)
+    targetRoleId: readOptionalString(value.targetRoleId),
+    runtimeId: readOptionalAgentRuntimeId(value.runtimeId)
   };
 }
 
@@ -1504,7 +1499,8 @@ async function materializeChatInboxSubmission(
       ...parsed,
       blueprintId,
       createdByRoleId,
-      targetRoleId: readOptionalString(parsed.targetRoleId) ?? chatRequest.roleScope?.leaderId
+      targetRoleId: readOptionalString(parsed.targetRoleId) ?? chatRequest.roleScope?.leaderId,
+      runtimeId: readOptionalAgentRuntimeId(parsed.runtimeId) ?? runtimeIdForChatHarness(chatRequest.harnessId)
     }));
     return { item, output: buildChatInboxSubmissionSuccessOutput(outputWithoutBlock, item) };
   }
@@ -1764,6 +1760,10 @@ function sourceForChatHarness(harnessId: HarnessId): OpenClawObjectSource {
   return harnessId;
 }
 
+function runtimeIdForChatHarness(harnessId: HarnessId): AgentRuntimeId {
+  return harnessId === "claudeCode" ? "claude" : harnessId;
+}
+
 function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
   return role === "leader" ? "hiveward-leader" : "hiveward-ceo";
 }
@@ -1790,6 +1790,10 @@ function resolveChatModelId(
 function readHarnessId(value: string | undefined): HarnessId {
   if (value === "openclaw" || value === "claudeCode" || value === "codex") return value;
   throw new Error(`Unsupported harness id: ${value ?? ""}`);
+}
+
+function readOptionalAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
+  return value === "openclaw" || value === "codex" || value === "claude" ? value : undefined;
 }
 
 async function buildHarnessSkillStatusResponse(
@@ -2307,6 +2311,7 @@ function collectInvalidAgentIds(blueprint: BlueprintDefinition, configuredAgentI
       continue;
     }
     if (node.type === "parallel_agents") {
+      if ((node.runtimeId ?? "openclaw") !== "openclaw") continue;
       for (const agent of (node.config as ParallelAgentsNodeConfig).agents) {
         const agentId = agent.openclawAgentId ?? "main";
         if (!configuredAgentIds.has(agentId)) invalid.add(agentId);
@@ -2334,8 +2339,11 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
     nodes: blueprint.nodes.map((node) => {
       if (isAgentBlueprintNode(node)) {
         const config = node.config as AgentNodeConfig;
-        const defaultModelId = defaultModelForAgentRuntime(node.runtimeId, defaults);
-        return config.modelId || !defaultModelId ? node : { ...node, config: { ...config, modelId: defaultModelId } };
+        const runtimeId = node.runtimeId ?? "openclaw";
+        const defaultModelId = defaultModelForAgentRuntime(runtimeId, defaults);
+        return config.modelId || !defaultModelId
+          ? { ...node, runtimeId }
+          : { ...node, runtimeId, config: { ...config, modelId: defaultModelId } };
       }
       if (node.type === "manager") {
         const config = node.config as ManagerNodeConfig;
@@ -2348,12 +2356,15 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
       }
       if (node.type === "parallel_agents") {
         const config = node.config as ParallelAgentsNodeConfig;
-        if (!defaults.openclaw) return node;
+        const runtimeId = node.runtimeId ?? "openclaw";
+        const defaultModelId = defaultModelForAgentRuntime(runtimeId, defaults);
+        if (!defaultModelId) return { ...node, runtimeId };
         return {
           ...node,
+          runtimeId,
           config: {
             ...config,
-            agents: config.agents.map((agent) => (agent.modelId ? agent : { ...agent, modelId: defaults.openclaw }))
+            agents: config.agents.map((agent) => (agent.modelId ? agent : { ...agent, modelId: defaultModelId }))
           }
         };
       }
@@ -2368,10 +2379,28 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
   };
 }
 
-function defaultModelForAgentRuntime(runtimeId: "openclaw" | "codex" | "claude", defaults: RunModelDefaults): string | undefined {
-  if (runtimeId === "openclaw") return defaults.openclaw;
+function defaultModelForAgentRuntime(runtimeId: AgentRuntimeId | undefined, defaults: RunModelDefaults): string | undefined {
   if (runtimeId === "codex") return defaults.codex;
-  return defaults.claude;
+  if (runtimeId === "claude") return defaults.claude;
+  return defaults.openclaw;
+}
+
+function buildBlueprintImportDefaults(
+  config: OpenClawConfigState,
+  runtimeId?: AgentRuntimeId,
+  harnessDefaults = resolveHarnessModelDefaults()
+): BlueprintImportDefaults {
+  return {
+    runtimeId,
+    openclawAgentId: selectDefaultAgentId(config.configuredAgents),
+    modelId: config.defaultModelId,
+    modelIds: {
+      openclaw: config.defaultModelId,
+      codex: harnessDefaults.codex,
+      claude: harnessDefaults.claude
+    },
+    channelId: selectDefaultChannelId(config.configuredChannels)
+  };
 }
 
 function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): HarnessModelDefaults {

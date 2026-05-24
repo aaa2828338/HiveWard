@@ -919,6 +919,93 @@ describe("apiRouter", () => {
     }
   });
 
+  it("uses the selected chat harness as the default runtime when approving generated blueprint proposals", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
+    process.env.HIVEWARD_CODEX_DEFAULT_MODEL = "codex/proposal-default";
+    const output = [
+      "I prepared a Codex-backed blueprint package for approval.",
+      "```hiveward-inbox",
+      JSON.stringify({
+        schema: hivewardInboxSubmissionSchema,
+        type: "blueprint_proposal",
+        blueprintId: blueprint.id,
+        title: "Codex runtime proposal",
+        summary: "Approve a generated package from a Codex chat session.",
+        diffSummary: "Creates a single agent blueprint.",
+        preview: {},
+        blueprintPackage: {
+          schema: "hiveward.blueprint-package/v1",
+          exportedAt: "2026-05-24T00:00:00.000Z",
+          blueprints: [
+            {
+              id: "codex-runtime-proposal",
+              name: "Codex runtime proposal",
+              version: 1,
+              nodes: [
+                {
+                  id: "brief",
+                  type: "agent",
+                  position: { x: 0, y: 0 },
+                  config: {
+                    label: "Brief",
+                    agentName: "brief-agent",
+                    prompt: "Write a brief.",
+                    tools: []
+                  }
+                }
+              ],
+              edges: [],
+              variables: {},
+              display: { viewport: { x: 0, y: 0, zoom: 1 } }
+            }
+          ]
+        }
+      }),
+      "```"
+    ].join("\n");
+    const adapter = new ChatOutputAdapter(output);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          nativeSessionId: "codex-session",
+          message: "Submit this blueprint package for approval.",
+          attachments: [],
+          modelId: "codex/proposal-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "leader",
+            leaderId: "leader-test",
+            blueprintId: blueprint.id
+          }
+        });
+        const text = await response.text();
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("event: inbox_item_created");
+
+        const inbox = await readOkJson<{ items: Array<{ id: string; payload?: Record<string, unknown> }> }>(
+          await fetch(`${baseUrl}/api/inbox`)
+        );
+        expect(inbox.items[0]?.payload?.runtimeId).toBe("codex");
+
+        const approved = await readOkJson<{ importedBlueprints?: BlueprintDefinition[] }>(
+          await fetch(`${baseUrl}/api/inbox/${inbox.items[0]!.id}/approve`, { method: "POST" })
+        );
+        const importedNode = approved.importedBlueprints?.[0]?.nodes.find((node) => node.id === "brief");
+        const importedConfig = importedNode?.config as AgentNodeConfig | undefined;
+        expect(importedNode?.runtimeId).toBe("codex");
+        expect(importedConfig?.modelId).toBe("codex/proposal-default");
+        expect(importedConfig?.openclawAgentId).toBeUndefined();
+      }, adapter);
+    } finally {
+      restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects unsupported Hiveward inbox submission schema versions", async () => {
     const fixture = await createStoreFixture();
     const blueprint = (await fixture.store.listBlueprints())[0]!;

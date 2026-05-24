@@ -1047,6 +1047,7 @@ export function App() {
           roleDirectory={roleDirectory}
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
+          harnessStatuses={harnessStatuses}
           runSummaries={runSummaries}
           runView={latestRunForBlueprint}
           selectedNodeId={selectedNodeId}

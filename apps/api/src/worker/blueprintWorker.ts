@@ -317,6 +317,7 @@ export class BlueprintWorker {
   ): Promise<boolean> {
     const openclawRef = this.resolveAgentOpenClawRef(node, nodeRun);
     if (!openclawRef?.sessionKey) return false;
+    const runtimeId = node.runtimeId ?? "openclaw";
 
     const result = await this.adapter.waitForAgentTask({
       nodeRunId: nodeRun.id,
@@ -324,7 +325,7 @@ export class BlueprintWorker {
       runId: openclawRef.runId ?? openclawRef.sourceId,
       sessionKey: openclawRef.sessionKey,
       source: openclawRef.source,
-      agentId: node.runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
+      agentId: runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
       modelId: (node.config as AgentNodeConfig).modelId
     });
     const finalRef: OpenClawObjectRef = {
@@ -977,12 +978,13 @@ export class BlueprintWorker {
     input: unknown
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
+    const runtimeId = node.runtimeId ?? "openclaw";
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
-      source: resolveAgentRuntimeSource(node.runtimeId),
-      agentId: node.runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      source: resolveAgentRuntimeSource(runtimeId),
+      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
       prompt: config.prompt,
       modelId: config.modelId,
@@ -1042,6 +1044,7 @@ export class BlueprintWorker {
     upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as ParallelAgentsNodeConfig;
+    const runtimeId = this.resolveParallelAgentsRuntimeId(node);
     const input = { upstream };
     const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
     if (config.agents.length === 0) {
@@ -1053,8 +1056,8 @@ export class BlueprintWorker {
         this.runAgentTask({
           blueprintRunId: run.id,
           nodeRunId: nodeRun.id,
-          source: "openclaw",
-          agentId: agent.openclawAgentId ?? "main",
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? agent.openclawAgentId ?? "main" : undefined,
           agentName: agent.agentName,
           prompt: agent.prompt,
           modelId: agent.modelId,
@@ -1092,6 +1095,12 @@ export class BlueprintWorker {
       nodeRunWithInput,
       outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
     );
+  }
+
+  private resolveParallelAgentsRuntimeId(node: BlueprintNode): AgentRuntimeId {
+    return node.runtimeId === "codex" || node.runtimeId === "claude" || node.runtimeId === "openclaw"
+      ? node.runtimeId
+      : "openclaw";
   }
 
   private async executeManagerNode(

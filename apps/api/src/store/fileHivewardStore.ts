@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
+  AgentRuntimeId,
   CatalogSnapshot,
   CompanyOverview,
   CompanyProfile,
@@ -424,6 +425,7 @@ export class FileHivewardStore {
     diffSummary?: string;
     createdByRoleId?: string;
     targetRoleId?: string;
+    runtimeId?: AgentRuntimeId;
   }): Promise<InboxItem> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -448,7 +450,8 @@ export class FileHivewardStore {
         payload: {
           blueprintPackage: input.blueprintPackage,
           preview: input.preview,
-          diffSummary: input.diffSummary
+          diffSummary: input.diffSummary,
+          runtimeId: input.runtimeId
         },
         now
       });
@@ -484,7 +487,10 @@ export class FileHivewardStore {
         if (!importableBlueprintPackage) {
           throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
         }
-        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, importableBlueprintPackage, defaults);
+        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, importableBlueprintPackage, {
+          ...defaults,
+          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? defaults.runtimeId
+        });
       }
       const now = new Date().toISOString();
       const approved: InboxItem = {
@@ -1748,6 +1754,10 @@ function readOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
+  return value === "openclaw" || value === "codex" || value === "claude" ? value : undefined;
 }
 
 function readRequiredCompanyName(value: unknown): string {
