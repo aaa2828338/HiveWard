@@ -157,14 +157,14 @@ export class FileHivewardStore {
     });
   }
 
-  async createCompany(input: { name: string; businessGoal?: string; logoLabel?: string; logoUrl?: string }): Promise<{
+  async createCompany(input: { name?: string; businessGoal?: string; logoLabel?: string; logoUrl?: string }): Promise<{
     companies: CompanyOverview[];
     selectedCompanyId?: string;
   }> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const now = new Date().toISOString();
-      const name = readRequiredCompanyName(input.name);
+      const name = readOptionalString(input.name) ?? nextCompanyName(index.companies);
       const company: CompanyProfile = {
         id: nextCompanyId(index.companies),
         name,
@@ -180,6 +180,48 @@ export class FileHivewardStore {
       index.companyDashboards[company.id] = createDefaultWorkspaceDashboard(now);
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now);
       index.inboxItems[company.id] = [];
+      await this.writeIndexUnlocked(index);
+
+      return {
+        companies: this.buildCompanyOverviews(index),
+        selectedCompanyId: index.selectedCompanyId ?? undefined
+      };
+    });
+  }
+
+  async updateCompany(
+    companyId: string,
+    input: { name?: string; businessGoal?: string; logoLabel?: string; logoUrl?: string }
+  ): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const existingIndex = index.companies.findIndex((company) => company.id === companyId);
+      if (existingIndex < 0) {
+        throw new Error(`Company not found: ${companyId}`);
+      }
+
+      const current = index.companies[existingIndex]!;
+      const nextName = input.name === undefined ? current.name : readRequiredCompanyName(input.name);
+      const renamed = nextName !== current.name;
+      const nextLogoLabel =
+        input.logoLabel === undefined
+          ? renamed && (!current.logoLabel || current.logoLabel === companyInitials(current.name))
+            ? companyInitials(nextName)
+            : current.logoLabel
+          : readOptionalString(input.logoLabel);
+      const nextCompany: CompanyProfile = {
+        ...current,
+        name: nextName,
+        businessGoal: input.businessGoal === undefined ? current.businessGoal : readOptionalString(input.businessGoal) ?? current.businessGoal,
+        logoLabel: nextLogoLabel,
+        logoUrl: input.logoUrl === undefined ? current.logoUrl : readOptionalString(input.logoUrl),
+        updatedAt: new Date().toISOString()
+      };
+
+      index.companies[existingIndex] = nextCompany;
+      index.companyDashboards[companyId] ??= createDefaultWorkspaceDashboard(nextCompany.updatedAt);
+      index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, nextCompany.updatedAt, index.roleDirectories[companyId]);
+      index.inboxItems[companyId] ??= [];
       await this.writeIndexUnlocked(index);
 
       return {
@@ -870,7 +912,7 @@ export class FileHivewardStore {
         id: nextChatSessionId(index.chatSessions),
         companyId,
         harnessId: normalizeHarnessId(input.harnessId),
-        roleScope: normalizeChatRoleScope(input.roleScope),
+        roleScope: normalizeChatRoleScopeForSelectedCompany(index, companyId, input.roleScope, now),
         title: readOptionalString(input.title) ?? "New chat",
         nativeSessionId: readOptionalString(input.nativeSessionId),
         nativeSessionState: readOptionalString(input.nativeSessionId) ? "resumable" : "unknown",
@@ -909,7 +951,9 @@ export class FileHivewardStore {
         agentId: readOptionalString(patch.agentId) ?? current.agentId,
         thinkingEffort: normalizeChatThinkingEffort(patch.thinkingEffort) ?? current.thinkingEffort,
         mode: patch.mode ? normalizeChatMode(patch.mode) : current.mode,
-        roleScope: patch.roleScope ? normalizeChatRoleScope(patch.roleScope) : current.roleScope,
+        roleScope: patch.roleScope
+          ? normalizeChatRoleScopeForSelectedCompany(index, companyId, patch.roleScope, now)
+          : current.roleScope,
         status: nextStatus,
         endedAt,
         updatedAt: now
@@ -1375,7 +1419,7 @@ function normalizeChatSessions(value: unknown, companies: CompanyProfile[], now:
           id,
           companyId: resolvedCompanyId,
           harnessId: normalizeHarnessId(item.harnessId),
-          roleScope: normalizeChatRoleScope(item.roleScope),
+          roleScope: normalizeChatRoleScopeForCompany(item.roleScope, resolvedCompanyId),
           title: readString(item.title) ?? "New chat",
           nativeSessionId: readString(item.nativeSessionId),
           nativeSessionState: normalizeNativeSessionState(item.nativeSessionState) ?? "unknown",
@@ -1436,6 +1480,45 @@ function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
     leaderId: readString(value.leaderId),
     blueprintId: readString(value.blueprintId)
   };
+}
+
+function normalizeChatRoleScopeForCompany(value: unknown, companyId: string): ChatRoleScope | undefined {
+  const scope = normalizeChatRoleScope(value);
+  return scope ? { ...scope, companyId } : undefined;
+}
+
+function normalizeChatRoleScopeForSelectedCompany(
+  index: HivewardStoreIndex,
+  companyId: string,
+  value: unknown,
+  now: string
+): ChatRoleScope | undefined {
+  const scope = normalizeChatRoleScopeForCompany(value, companyId);
+  if (!scope) return undefined;
+  if (scope.role === "ceo") {
+    return {
+      companyId,
+      role: "ceo",
+      blueprintId: readCompanyBlueprintId(index, companyId, scope.blueprintId)
+    };
+  }
+
+  const roles = buildRoleDirectory(index, companyId, now, index.roleDirectories[companyId]);
+  const leader = roles.leaders.find((candidate) => candidate.id === scope.leaderId || candidate.blueprintId === scope.blueprintId);
+  if (!leader) return undefined;
+  return {
+    companyId,
+    role: "leader",
+    leaderId: leader.id,
+    blueprintId: leader.blueprintId
+  };
+}
+
+function readCompanyBlueprintId(index: HivewardStoreIndex, companyId: string, blueprintId: string | undefined): string | undefined {
+  if (!blueprintId) return undefined;
+  return index.blueprintIndex.some((blueprint) => blueprint.companyId === companyId && blueprint.id === blueprintId)
+    ? blueprintId
+    : undefined;
 }
 
 function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): HarnessId {
@@ -1967,6 +2050,20 @@ function nextCompanyId(companies: Array<{ id: string }>): string {
     id = `company-${nanoid(8)}`;
   }
   return id;
+}
+
+function nextCompanyName(companies: Array<{ name: string }>): string {
+  const baseName = "New Company";
+  const used = new Set(companies.map((company) => company.name.trim()).filter(Boolean));
+  if (!used.has(baseName)) return baseName;
+
+  let index = 2;
+  let candidate = `${baseName} ${index}`;
+  while (used.has(candidate)) {
+    index += 1;
+    candidate = `${baseName} ${index}`;
+  }
+  return candidate;
 }
 
 function nextChatSessionId(sessions: Array<{ id: string }>): string {

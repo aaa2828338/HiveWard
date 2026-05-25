@@ -8430,7 +8430,7 @@ h6,
 
 .company-list-card-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   align-items: center;
 }
@@ -8438,6 +8438,25 @@ h6,
 .company-list-card-actions button {
   width: 100%;
   justify-content: center;
+}
+
+.company-rename-modal {
+  max-width: 460px;
+}
+
+.company-rename-form {
+  display: grid;
+  gap: 16px;
+  padding: 20px 22px 22px;
+}
+
+.company-rename-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.company-rename-form .node-modal-actions {
+  margin-top: 0;
 }
 
 html[data-theme="light"] .company-selector-card .company-list-card-copy span {

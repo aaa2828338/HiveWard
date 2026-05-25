@@ -40,6 +40,7 @@ import type {
   PendingApprovalItem,
   PortableBlueprintPackage,
   RuntimeOverview,
+  UpdateCompanyRequest,
   WorkspaceDashboard,
   CanvasPosition,
   BlueprintDefinition,
@@ -594,13 +595,14 @@ export function App() {
     setExpandedSystems((current) => ({ ...current, [systemId]: !current[systemId] }));
   }, []);
 
-  const withBusy = useCallback(async (action: string, work: () => Promise<void>) => {
+  const withBusy = useCallback(async <T,>(action: string, work: () => Promise<T>): Promise<T | undefined> => {
     setBusyAction(action);
     setError(undefined);
     try {
-      await work();
+      return await work();
     } catch (actionError) {
       setError(actionError instanceof Error ? actionError.message : errorMessageForAction(action, messageRef.current));
+      return undefined;
     } finally {
       setBusyAction(undefined);
     }
@@ -665,8 +667,23 @@ export function App() {
   const createCompany = useCallback(
     (input: CreateCompanyRequest) =>
       withBusy("createCompany", async () => {
-        await api.createCompany(input);
+        const directory = await api.createCompany(input);
+        setCompanies(directory.companies);
+        setSelectedCompanyId(directory.selectedCompanyId);
         await hydrateWorkspace();
+        return directory;
+      }),
+    [hydrateWorkspace, withBusy]
+  );
+
+  const updateCompany = useCallback(
+    (companyId: string, input: UpdateCompanyRequest) =>
+      withBusy("updateCompany", async () => {
+        const directory = await api.updateCompany(companyId, input);
+        setCompanies(directory.companies);
+        setSelectedCompanyId(directory.selectedCompanyId);
+        await hydrateWorkspace();
+        return directory;
       }),
     [hydrateWorkspace, withBusy]
   );
@@ -1094,6 +1111,7 @@ export function App() {
           busy={Boolean(busyAction)}
           onEnterCompany={enterCompany}
           onCreateCompany={createCompany}
+          onUpdateCompany={updateCompany}
           onDeleteCompany={deleteCompany}
         />
       );

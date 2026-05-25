@@ -13,16 +13,19 @@ import {
   Loader2,
   MessageSquareText,
   PanelsTopLeft,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
   Send,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import type {
   CatalogSnapshot,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
+  CompanyDirectoryResponse,
   CreateCompanyRequest,
   OpenClawChannelSetupOption,
   OpenClawConfigWizardMetadata,
@@ -36,6 +39,7 @@ import type {
   InboxItem,
   PendingApprovalItem,
   RuntimeOverview,
+  UpdateCompanyRequest,
   WorkspaceDashboard,
   BlueprintDefinition,
   BlueprintNode,
@@ -182,6 +186,7 @@ export function CompanyDirectoryPage({
   busy,
   onEnterCompany,
   onCreateCompany,
+  onUpdateCompany,
   onDeleteCompany
 }: {
   companies: CompanyOverview[];
@@ -189,29 +194,26 @@ export function CompanyDirectoryPage({
   language: Language;
   busy: boolean;
   onEnterCompany: (companyId: string) => void;
-  onCreateCompany: (input: CreateCompanyRequest) => void | Promise<void>;
+  onCreateCompany: (input: CreateCompanyRequest) => Promise<CompanyDirectoryResponse | undefined>;
+  onUpdateCompany: (companyId: string, input: UpdateCompanyRequest) => Promise<CompanyDirectoryResponse | undefined>;
   onDeleteCompany: (companyId: string) => void;
 }) {
-  const [addingCompany, setAddingCompany] = useState(false);
-  const [companyName, setCompanyName] = useState("");
-  const [companyGoal, setCompanyGoal] = useState("");
-  const [companyLogoLabel, setCompanyLogoLabel] = useState("");
+  const [editingCompanyId, setEditingCompanyId] = useState<string | undefined>();
+  const [renameValue, setRenameValue] = useState("");
   const copy =
     language === "zh-CN"
       ? {
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
-          goal: "\u4E1A\u52A1\u76EE\u6807",
           active: "\u5F53\u524D\u516C\u53F8",
           switchTitle: "\u516C\u53F8\u5217\u8868",
           switchSubtitle: "\u9009\u62E9\u516C\u53F8\u540E\uff0c\u5176\u4ED6\u5DE5\u4F5C\u533A\u4F1A\u5207\u5230\u8BE5\u516C\u53F8\u7684\u6570\u636E\u8303\u56F4\u3002",
           addCompany: "\u6DFB\u52A0\u516C\u53F8",
-          newCompanyTitle: "\u65B0\u516C\u53F8",
+          draftCompanyName: "\u65B0\u516C\u53F8",
           companyName: "\u516C\u53F8\u540D\u79F0",
-          namePlaceholder: "\u4F8B\u5982\uFF1AHiveward Studio",
-          goalPlaceholder: "\u5199\u4E0B\u8FD9\u4E2A\u516C\u53F8\u7684\u4E1A\u52A1\u76EE\u6807",
-          logoLabel: "Logo \u6587\u672C",
-          logoPlaceholder: "HW",
-          create: "\u521B\u5EFA\u516C\u53F8",
+          namePlaceholder: "\u8F93\u5165\u516C\u53F8\u540D\u79F0",
+          renameTitle: "\u91CD\u547D\u540D\u516C\u53F8",
+          rename: "\u6539\u540D",
+          save: "\u4FDD\u5B58",
           cancel: "\u53D6\u6D88",
           enter: "\u8FDB\u5165\u516C\u53F8",
           delete: "\u5220\u9664\u516C\u53F8",
@@ -219,44 +221,61 @@ export function CompanyDirectoryPage({
         }
       : {
           noCompanies: "No companies are available.",
-          goal: "Business goal",
           active: "Current company",
           switchTitle: "Companies",
           switchSubtitle: "Choosing a company updates the scope for the rest of the workspace.",
           addCompany: "Add company",
-          newCompanyTitle: "New company",
+          draftCompanyName: "New Company",
           companyName: "Company name",
-          namePlaceholder: "Example: Hiveward Studio",
-          goalPlaceholder: "Describe this company's business goal",
-          logoLabel: "Logo text",
-          logoPlaceholder: "HW",
-          create: "Create company",
+          namePlaceholder: "Enter company name",
+          renameTitle: "Rename company",
+          rename: "Rename",
+          save: "Save",
           cancel: "Cancel",
           enter: "Enter company",
           delete: "Delete company",
           deleteConfirm: (name: string) => `Deleting "${name}" removes its blueprints and run history. Delete this company?`
         };
 
-  const canCreateCompany = companyName.trim().length > 0 && !busy;
+  const editingCompany = editingCompanyId ? companies.find((company) => company.id === editingCompanyId) : undefined;
+  const canRenameCompany = Boolean(editingCompanyId && renameValue.trim()) && !busy;
 
-  const resetCompanyForm = () => {
-    setCompanyName("");
-    setCompanyGoal("");
-    setCompanyLogoLabel("");
-    setAddingCompany(false);
+  useEffect(() => {
+    if (!editingCompany) return;
+    setRenameValue(editingCompany.name);
+  }, [editingCompany]);
+
+  const openRenameDialog = useCallback(
+    (companyId: string, initialName?: string) => {
+      const company = companies.find((item) => item.id === companyId);
+      setEditingCompanyId(companyId);
+      setRenameValue(initialName ?? company?.name ?? "");
+    },
+    [companies]
+  );
+
+  const closeRenameDialog = () => {
+    setEditingCompanyId(undefined);
+    setRenameValue("");
   };
 
-  const submitCompany = () => {
-    const name = companyName.trim();
-    if (!name || busy) return;
+  const createCompany = () => {
+    if (busy) return;
+    void onCreateCompany({ name: nextDraftCompanyName(companies, copy.draftCompanyName) }).then((directory) => {
+      const companyId = directory?.selectedCompanyId;
+      const company = directory?.companies.find((item) => item.id === companyId);
+      if (companyId) openRenameDialog(companyId, company?.name);
+    });
+  };
 
-    void Promise.resolve(
-      onCreateCompany({
-        name,
-        businessGoal: companyGoal.trim() || undefined,
-        logoLabel: companyLogoLabel.trim() || undefined
-      })
-    ).then(resetCompanyForm);
+  const submitRename = () => {
+    const companyId = editingCompanyId;
+    const name = renameValue.trim();
+    if (!companyId || !name || busy) return;
+
+    void onUpdateCompany(companyId, { name }).then((directory) => {
+      if (directory) closeRenameDialog();
+    });
   };
 
   const deleteCompany = (company: CompanyOverview) => {
@@ -275,7 +294,7 @@ export function CompanyDirectoryPage({
           type="button"
           className="primary-action"
           disabled={busy}
-          onClick={() => setAddingCompany((current) => !current)}
+          onClick={createCompany}
         >
           {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
           {copy.addCompany}
@@ -283,50 +302,6 @@ export function CompanyDirectoryPage({
       </div>
 
       <div className="content-card stack-card company-selector-card">
-        {addingCompany && (
-          <div className="company-create-panel">
-            <div className="card-title-block">
-              <h3>{copy.newCompanyTitle}</h3>
-            </div>
-            <div className="form-grid form-grid-wide company-create-form">
-              <label>
-                <span>{copy.companyName}</span>
-                <input
-                  value={companyName}
-                  onChange={(event) => setCompanyName(event.target.value)}
-                  placeholder={copy.namePlaceholder}
-                />
-              </label>
-              <label>
-                <span>{copy.logoLabel}</span>
-                <input
-                  value={companyLogoLabel}
-                  onChange={(event) => setCompanyLogoLabel(event.target.value)}
-                  maxLength={4}
-                  placeholder={copy.logoPlaceholder}
-                />
-              </label>
-              <label className="field-span-full">
-                <span>{copy.goal}</span>
-                <textarea
-                  value={companyGoal}
-                  onChange={(event) => setCompanyGoal(event.target.value)}
-                  placeholder={copy.goalPlaceholder}
-                />
-              </label>
-            </div>
-            <div className="card-actions">
-              <button type="button" onClick={resetCompanyForm} disabled={busy}>
-                {copy.cancel}
-              </button>
-              <button type="button" className="primary-action" onClick={submitCompany} disabled={!canCreateCompany}>
-                {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-                {copy.create}
-              </button>
-            </div>
-          </div>
-        )}
-
         {companies.length === 0 ? (
           <div className="empty-state page-empty">{copy.noCompanies}</div>
         ) : (
@@ -351,6 +326,10 @@ export function CompanyDirectoryPage({
                     <ChevronRight size={16} />
                     {copy.enter}
                   </button>
+                  <button type="button" onClick={() => openRenameDialog(company.id)} disabled={busy}>
+                    <Pencil size={16} />
+                    {copy.rename}
+                  </button>
                   <button type="button" className="danger-action" onClick={() => deleteCompany(company)} disabled={busy}>
                     <Trash2 size={16} />
                     {copy.delete}
@@ -362,8 +341,71 @@ export function CompanyDirectoryPage({
         )}
       </div>
 
+      {editingCompanyId && (
+        <div className="node-modal-backdrop company-rename-backdrop" role="presentation" onMouseDown={closeRenameDialog}>
+          <section
+            className="node-modal company-rename-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="company-rename-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="node-modal-header">
+              <div>
+                <h3 id="company-rename-title">{copy.renameTitle}</h3>
+                <p>{editingCompany?.name ?? copy.draftCompanyName}</p>
+              </div>
+              <button type="button" className="node-modal-close" onClick={closeRenameDialog} disabled={busy} aria-label={copy.cancel}>
+                <X size={18} />
+              </button>
+            </div>
+            <form
+              className="node-modal-form company-rename-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                submitRename();
+              }}
+            >
+              <label>
+                <span>{copy.companyName}</span>
+                <input
+                  autoFocus
+                  value={renameValue}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") closeRenameDialog();
+                  }}
+                  placeholder={copy.namePlaceholder}
+                />
+              </label>
+              <div className="node-modal-actions">
+                <button type="button" onClick={closeRenameDialog} disabled={busy}>
+                  {copy.cancel}
+                </button>
+                <button type="submit" className="primary-action" disabled={!canRenameCompany}>
+                  {busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+                  {copy.save}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
     </section>
   );
+}
+
+function nextDraftCompanyName(companies: CompanyOverview[], baseName: string): string {
+  const used = new Set(companies.map((company) => company.name.trim()).filter(Boolean));
+  if (!used.has(baseName)) return baseName;
+
+  let index = 2;
+  let candidate = `${baseName} ${index}`;
+  while (used.has(candidate)) {
+    index += 1;
+    candidate = `${baseName} ${index}`;
+  }
+  return candidate;
 }
 
 export function CompanyPage({

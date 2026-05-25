@@ -21,7 +21,8 @@ import type {
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
-  StartAgentTaskInput
+  StartAgentTaskInput,
+  WorkspaceDashboard
 } from "@hiveward/shared";
 import { hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
@@ -205,6 +206,247 @@ describe("apiRouter", () => {
           logoLabel: "FO"
         });
         expect(body.selectedCompanyId).toBe(company?.id);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("directly creates, renames, and persists an isolated company workspace", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const initialResponse = await fetch(`${baseUrl}/api/companies`);
+        const initialBody = await readOkJson<{ selectedCompanyId: string }>(initialResponse);
+        const defaultCompanyId = initialBody.selectedCompanyId;
+
+        const createResponse = await fetch(`${baseUrl}/api/companies`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const createdBody = await readOkJson<{
+          companies: Array<{ id: string; name: string; logoLabel?: string }>;
+          selectedCompanyId: string;
+        }>(createResponse);
+        const companyId = createdBody.selectedCompanyId;
+        const createdCompany = createdBody.companies.find((company) => company.id === companyId);
+
+        expect(createdCompany).toMatchObject({
+          name: "New Company",
+          logoLabel: "NC"
+        });
+
+        const emptyWorkspaceResponse = await fetch(`${baseUrl}/api/dashboard-state`);
+        const emptyWorkspaceBody = await readOkJson<{ dashboard: WorkspaceDashboard }>(emptyWorkspaceResponse);
+        expect(emptyWorkspaceBody.dashboard.notes).toEqual([]);
+
+        const now = new Date().toISOString();
+        const companyDashboard: WorkspaceDashboard = {
+          dashboardWidgets: [],
+          savedViews: [],
+          tags: [],
+          notes: [
+            {
+              id: "note-company-only",
+              title: "Company scoped note",
+              body: "Stored only in the new company's workspace.",
+              tagIds: [],
+              createdAt: now,
+              updatedAt: now
+            }
+          ],
+          updatedAt: now
+        };
+        const saveWorkspaceResponse = await fetch(`${baseUrl}/api/dashboard-state`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ dashboard: companyDashboard })
+        });
+        const savedWorkspaceBody = await readOkJson<{ dashboard: WorkspaceDashboard }>(saveWorkspaceResponse);
+        expect(savedWorkspaceBody.dashboard.notes).toHaveLength(1);
+
+        const renameResponse = await fetch(`${baseUrl}/api/companies/${companyId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "Renamed Ops" })
+        });
+        const renamedBody = await readOkJson<{ companies: Array<{ id: string; name: string; logoLabel?: string }> }>(renameResponse);
+        expect(renamedBody.companies.find((company) => company.id === companyId)).toMatchObject({
+          name: "Renamed Ops",
+          logoLabel: "RO"
+        });
+
+        const selectDefaultResponse = await fetch(`${baseUrl}/api/companies/selected`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ companyId: defaultCompanyId })
+        });
+        await readOkJson(selectDefaultResponse);
+        const defaultWorkspaceResponse = await fetch(`${baseUrl}/api/dashboard-state`);
+        const defaultWorkspaceBody = await readOkJson<{ dashboard: WorkspaceDashboard }>(defaultWorkspaceResponse);
+        expect(defaultWorkspaceBody.dashboard.notes.some((note) => note.id === "note-company-only")).toBe(false);
+
+        const selectNewResponse = await fetch(`${baseUrl}/api/companies/selected`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ companyId })
+        });
+        await readOkJson(selectNewResponse);
+        const restoredWorkspaceResponse = await fetch(`${baseUrl}/api/dashboard-state`);
+        const restoredWorkspaceBody = await readOkJson<{ dashboard: WorkspaceDashboard }>(restoredWorkspaceResponse);
+        expect(restoredWorkspaceBody.dashboard.notes).toMatchObject([{ id: "note-company-only" }]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps company CEOs, leaders, blueprints, and role scopes isolated", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const initialCompanies = await readOkJson<{
+          selectedCompanyId: string;
+        }>(await fetch(`${baseUrl}/api/companies`));
+        const defaultCompanyId = initialCompanies.selectedCompanyId;
+        const defaultBlueprints = await readOkJson<{ blueprints: Array<{ id: string; companyId: string; name: string }> }>(
+          await fetch(`${baseUrl}/api/blueprints`)
+        );
+        const defaultBlueprintId = defaultBlueprints.blueprints[0]!.id;
+        const defaultRoles = await readOkJson<{
+          roles: {
+            companyId: string;
+            ceo: { companyId: string; id: string };
+            leaders: Array<{ companyId: string; id: string; blueprintId?: string }>;
+          };
+          architecture: { companyId: string; nodes: Array<{ kind: string; blueprintId?: string }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+
+        expect(defaultRoles.roles.companyId).toBe(defaultCompanyId);
+        expect(defaultRoles.roles.ceo).toMatchObject({ id: "ceo", companyId: defaultCompanyId });
+        expect(defaultRoles.roles.leaders.every((leader) => leader.companyId === defaultCompanyId)).toBe(true);
+        expect(defaultRoles.roles.leaders.map((leader) => leader.blueprintId).sort()).toEqual(
+          defaultBlueprints.blueprints.map((blueprint) => blueprint.id).sort()
+        );
+        expect(defaultRoles.architecture.companyId).toBe(defaultCompanyId);
+
+        const createCompany = await readOkJson<{ selectedCompanyId: string }>(
+          await fetch(`${baseUrl}/api/companies`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: "Isolated Company" })
+          })
+        );
+        const isolatedCompanyId = createCompany.selectedCompanyId;
+
+        const emptyBlueprints = await readOkJson<{ blueprints: Array<{ id: string }> }>(await fetch(`${baseUrl}/api/blueprints`));
+        expect(emptyBlueprints.blueprints).toEqual([]);
+        const emptyRoles = await readOkJson<{
+          roles: { companyId: string; ceo: { companyId: string; id: string }; leaders: unknown[] };
+          architecture: { companyId: string; nodes: Array<{ kind: string }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+        expect(emptyRoles.roles).toMatchObject({
+          companyId: isolatedCompanyId,
+          ceo: { id: "ceo", companyId: isolatedCompanyId },
+          leaders: []
+        });
+        expect(emptyRoles.architecture).toMatchObject({
+          companyId: isolatedCompanyId,
+          nodes: [{ kind: "ceo" }]
+        });
+
+        const createBlueprint = await readOkJson<{ blueprint: { id: string; companyId: string; name: string } }>(
+          await fetch(`${baseUrl}/api/blueprints`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name: "Isolated Blueprint" })
+          })
+        );
+        const isolatedBlueprintId = createBlueprint.blueprint.id;
+        expect(createBlueprint.blueprint).toMatchObject({
+          companyId: isolatedCompanyId,
+          name: "Isolated Blueprint"
+        });
+
+        const isolatedRoles = await readOkJson<{
+          roles: {
+            companyId: string;
+            ceo: { companyId: string; id: string };
+            leaders: Array<{ companyId: string; id: string; blueprintId?: string }>;
+          };
+          architecture: { companyId: string; nodes: Array<{ kind: string; blueprintId?: string }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+        expect(isolatedRoles.roles.companyId).toBe(isolatedCompanyId);
+        expect(isolatedRoles.roles.ceo.companyId).toBe(isolatedCompanyId);
+        expect(isolatedRoles.roles.leaders).toMatchObject([
+          {
+            companyId: isolatedCompanyId,
+            blueprintId: isolatedBlueprintId
+          }
+        ]);
+        expect(isolatedRoles.architecture.nodes.some((node) => node.kind === "leader" && node.blueprintId === isolatedBlueprintId)).toBe(true);
+
+        const selectDefault = await fetch(`${baseUrl}/api/companies/selected`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ companyId: defaultCompanyId })
+        });
+        await readOkJson(selectDefault);
+        const defaultBlueprintsAgain = await readOkJson<{ blueprints: Array<{ id: string; companyId: string }> }>(
+          await fetch(`${baseUrl}/api/blueprints`)
+        );
+        expect(defaultBlueprintsAgain.blueprints.some((blueprint) => blueprint.id === isolatedBlueprintId)).toBe(false);
+        expect(defaultBlueprintsAgain.blueprints.every((blueprint) => blueprint.companyId === defaultCompanyId)).toBe(true);
+        expect((await fetch(`${baseUrl}/api/blueprints/${isolatedBlueprintId}`)).status).toBe(404);
+
+        const defaultRolesAgain = await readOkJson<{
+          roles: { companyId: string; ceo: { companyId: string }; leaders: Array<{ companyId: string; blueprintId?: string }> };
+          architecture: { companyId: string; nodes: Array<{ blueprintId?: string }> };
+        }>(await fetch(`${baseUrl}/api/roles`));
+        expect(defaultRolesAgain.roles.companyId).toBe(defaultCompanyId);
+        expect(defaultRolesAgain.roles.ceo.companyId).toBe(defaultCompanyId);
+        expect(defaultRolesAgain.roles.leaders.some((leader) => leader.blueprintId === isolatedBlueprintId)).toBe(false);
+        expect(defaultRolesAgain.architecture.nodes.some((node) => node.blueprintId === isolatedBlueprintId)).toBe(false);
+
+        const ceoSessionResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            roleScope: { role: "ceo", companyId: isolatedCompanyId, blueprintId: isolatedBlueprintId }
+          })
+        });
+        const ceoSessionBody = await readOkJson<{ session: { companyId: string; roleScope?: { companyId?: string; blueprintId?: string } } }>(
+          ceoSessionResponse
+        );
+        expect(ceoSessionBody.session.companyId).toBe(defaultCompanyId);
+        expect(ceoSessionBody.session.roleScope).toMatchObject({ companyId: defaultCompanyId });
+        expect(ceoSessionBody.session.roleScope?.blueprintId).toBeUndefined();
+
+        const leaderSessionResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "openclaw",
+            roleScope: {
+              role: "leader",
+              companyId: isolatedCompanyId,
+              leaderId: isolatedRoles.roles.leaders[0]!.id,
+              blueprintId: isolatedBlueprintId
+            }
+          })
+        });
+        const leaderSessionBody = await readOkJson<{ session: { roleScope?: unknown } }>(leaderSessionResponse);
+        expect(leaderSessionBody.session.roleScope).toBeUndefined();
+
+        const selectIsolated = await fetch(`${baseUrl}/api/companies/selected`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ companyId: isolatedCompanyId })
+        });
+        await readOkJson(selectIsolated);
+        expect((await fetch(`${baseUrl}/api/blueprints/${defaultBlueprintId}`)).status).toBe(404);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -794,6 +1036,9 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
 
+        const { roles } = await fixture.store.getRoleDirectory();
+        const leader = roles.leaders[0]!;
+        expect(leader).toBeDefined();
         const claudeResponse = await streamSessionChat(baseUrl, {
           harnessId: "claudeCode",
           message: "Say hello from Claude Code.",
@@ -802,8 +1047,8 @@ describe("apiRouter", () => {
           thinkingEffort: "medium",
           roleScope: {
             role: "leader",
-            leaderId: "leader-test",
-            blueprintId: "blueprint-test"
+            leaderId: leader.id,
+            blueprintId: leader.blueprintId
           }
         });
         const claudeText = await claudeResponse.text();

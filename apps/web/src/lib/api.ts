@@ -36,6 +36,7 @@ import type {
   SaveArchitectureBlueprintLayoutRequest,
   SaveBlueprintRequest,
   SelectCompanyRequest,
+  UpdateCompanyRequest,
   ApproveBlueprintRunRequest,
   RejectBlueprintRunRequest,
   ReplyBlueprintRunApprovalRequest,
@@ -290,6 +291,13 @@ export const api = {
     return request<CompanyDirectoryResponse>("/api/companies", {
       method: "POST",
       body: JSON.stringify(input satisfies CreateCompanyRequest)
+    });
+  },
+
+  async updateCompany(companyId: string, input: UpdateCompanyRequest): Promise<CompanyDirectoryResponse> {
+    return request<CompanyDirectoryResponse>(`/api/companies/${encodeURIComponent(companyId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input satisfies UpdateCompanyRequest)
     });
   },
 

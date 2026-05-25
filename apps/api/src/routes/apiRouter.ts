@@ -40,6 +40,7 @@ import type {
   OpenClawVersionInfo,
   ManagerNodeConfig,
   SummaryNodeConfig,
+  UpdateCompanyRequest,
   UpdateOpenClawDefaultModelRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
@@ -182,7 +183,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
 
   router.post("/api/companies", async (req, res, next) => {
     try {
-      const body = req.body as CreateCompanyRequest;
+      const body = (req.body ?? {}) as CreateCompanyRequest;
       res.status(201).json(await store.createCompany(body));
     } catch (error) {
       next(error);
@@ -193,6 +194,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const body = req.body as SelectCompanyRequest;
       res.json(await store.selectCompany(body.companyId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.patch("/api/companies/:companyId", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as UpdateCompanyRequest;
+      res.json(await store.updateCompany(req.params.companyId, body));
     } catch (error) {
       next(error);
     }
@@ -1288,6 +1298,11 @@ async function streamHivewardChatSession({
     roleScope: requestBody.roleScope,
     status: "active"
   }) ?? session;
+  const resolvedRoleScope = session.roleScope;
+  const resolvedRequestBody: ResolvedChatSessionMessage = {
+    ...requestBody,
+    roleScope: resolvedRoleScope
+  };
 
   res.status(200);
   res.setHeader("content-type", "text/event-stream; charset=utf-8");
@@ -1315,12 +1330,12 @@ async function streamHivewardChatSession({
       }) ?? session;
     }
 
-    const roleSkillPrompt = await buildChatRoleSkillPrompt(store, requestBody.roleScope);
+    const roleSkillPrompt = await buildChatRoleSkillPrompt(store, resolvedRoleScope);
     const selectedBlueprintContext =
       requestBody.mode === "blueprint"
-        ? await buildSelectedBlueprintDraftingContext(store, requestBody.roleScope)
+        ? await buildSelectedBlueprintDraftingContext(store, resolvedRoleScope)
         : undefined;
-    const prompt = buildChatPrompt(requestBody, roleSkillPrompt, rebuildContext, selectedBlueprintContext);
+    const prompt = buildChatPrompt(resolvedRequestBody, roleSkillPrompt, rebuildContext, selectedBlueprintContext);
     await adapter.streamChatMessage(
       {
         sessionKey: nativeSessionKey,
@@ -1331,7 +1346,7 @@ async function streamHivewardChatSession({
         thinking: requestBody.thinkingEffort,
         idempotencyKey: userMessage.id,
         timeoutMs: 600_000,
-        skillIds: requestBody.roleScope ? [roleSkillIdForRole(requestBody.roleScope.role)] : undefined
+        skillIds: resolvedRoleScope ? [roleSkillIdForRole(resolvedRoleScope.role)] : undefined
       },
       (event) => {
         if (event.type === "started") {
@@ -1386,7 +1401,7 @@ async function streamHivewardChatSession({
   if (doneEvent.status === "succeeded" && submissionBlock) {
     try {
       const submissionStartedAtMs = Date.now();
-      submission = await materializeChatInboxSubmission(store, requestBody, finalOutput, submissionBlock);
+      submission = await materializeChatInboxSubmission(store, resolvedRequestBody, finalOutput, submissionBlock);
       inboxSubmissionMs = Date.now() - submissionStartedAtMs;
     } catch (submissionError) {
       const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";

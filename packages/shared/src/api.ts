@@ -151,7 +151,14 @@ export interface CompanyDirectoryResponse {
 }
 
 export interface CreateCompanyRequest {
-  name: string;
+  name?: string;
+  businessGoal?: string;
+  logoLabel?: string;
+  logoUrl?: string;
+}
+
+export interface UpdateCompanyRequest {
+  name?: string;
   businessGoal?: string;
   logoLabel?: string;
   logoUrl?: string;
