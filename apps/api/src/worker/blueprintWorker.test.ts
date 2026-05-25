@@ -430,8 +430,25 @@ describe("BlueprintWorker", () => {
       originalInput: {
         upstream: []
       },
+      approvalReplies: [
+        {
+          role: "user",
+          body: "Use the final wording."
+        }
+      ],
+      approvalChat: {
+        previousOutput: "draft answer",
+        latestUserReply: "Use the final wording.",
+        conversation: [
+          {
+            role: "user",
+            body: "Use the final wording."
+          }
+        ]
+      },
       humanApproval: {
         previousOutput: "draft answer",
+        previousReplies: [],
         latestReply: "Use the final wording."
       }
     });
@@ -444,7 +461,23 @@ describe("BlueprintWorker", () => {
     expect(finalView?.run.status).toBe("succeeded");
     expect(finalNode).toMatchObject({
       status: "succeeded",
-      output: "final answer"
+      output: {
+        approvedOutput: "final answer",
+        approval: {
+          status: "approved",
+          comment: "Approved.",
+          replies: [
+            {
+              role: "user",
+              body: "Use the final wording."
+            },
+            {
+              role: "assistant",
+              body: "final answer"
+            }
+          ]
+        }
+      }
     });
     expect(adapter.sendCalls).toHaveLength(1);
     expect(adapter.sendCalls[0]).toMatchObject({

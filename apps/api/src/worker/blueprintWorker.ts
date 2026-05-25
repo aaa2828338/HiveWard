@@ -93,6 +93,22 @@ interface AgentApprovalWaitingOutput {
   replies: AgentApprovalReply[];
 }
 
+interface AgentApprovalChatInput {
+  previousOutput: unknown;
+  latestUserReply: string;
+  conversation: AgentApprovalReply[];
+  instruction: string;
+}
+
+interface ApprovedAgentOutputEnvelope {
+  approvedOutput: unknown;
+  approval: {
+    status: "approved";
+    comment?: string;
+    replies: AgentApprovalReply[];
+  };
+}
+
 interface ManagerSlotContext {
   manager: {
     nodeId: string;
@@ -1746,7 +1762,7 @@ export class BlueprintWorker {
         await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, nodeRun.output.reviewOutput);
       }
     }
-    return nodeRun.output.reviewOutput;
+    return buildApprovedAgentOutput(nodeRun.output.reviewOutput, nodeRun.output.replies, comment);
   }
 
   private async executeAgentConfiguredSend(
@@ -2359,15 +2375,51 @@ function buildAgentApprovalReplyInput(
   previousReplies: AgentApprovalReply[],
   userReply: AgentApprovalReply
 ): Record<string, unknown> {
+  const conversation = [...previousReplies, userReply];
+  const instruction = [
+    "This node is paused at a human approval checkpoint.",
+    "Treat approvalChat.conversation and approvalChat.latestUserReply as authoritative stage feedback or supplemental information.",
+    "Revise the previous stage output into the next reviewable output for this same node.",
+    "If the previous output asked for information, use the latest user reply to produce the requested structured result instead of repeating the same request.",
+    "Only ask again when required information is still missing."
+  ].join(" ");
+  const approvalChat: AgentApprovalChatInput = {
+    previousOutput,
+    latestUserReply: userReply.body,
+    conversation,
+    instruction
+  };
+
   return {
     originalInput,
+    approvalReplies: conversation,
+    approvalChat,
     humanApproval: {
       previousOutput,
       previousReplies,
       latestReply: userReply.body,
-      instruction: "Revise the previous output to address the human review reply. Return only the updated node output."
+      instruction
     }
   };
+}
+
+function buildApprovedAgentOutput(
+  approvedOutput: unknown,
+  replies: AgentApprovalReply[],
+  comment?: string
+): unknown {
+  const decisionComment = comment?.trim();
+  if (replies.length === 0 && !decisionComment) return approvedOutput;
+
+  const envelope: ApprovedAgentOutputEnvelope = {
+    approvedOutput,
+    approval: {
+      status: "approved",
+      ...(decisionComment ? { comment: decisionComment } : {}),
+      replies
+    }
+  };
+  return envelope;
 }
 
 function readOutputRecord(output: unknown): Record<string, unknown> | undefined {
