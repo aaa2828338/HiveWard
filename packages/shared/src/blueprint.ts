@@ -238,9 +238,9 @@ const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
 const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
 
 export function resolveManagerSlotExecutionMode(
-  _config: Pick<ManagerSlotNodeConfig, "executionMode">
+  config: Pick<ManagerSlotNodeConfig, "executionMode" | "parallelLaneCount">
 ): ManagerSlotExecutionMode {
-  return "parallel";
+  return resolveManagerSlotParallelLaneCount(config) > 1 ? "parallel" : "manual";
 }
 
 export function resolveManagerSlotParallelLaneCount(
@@ -2611,7 +2611,7 @@ function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNod
 function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {
   if (value === undefined || value === null || value === "") return "parallel";
   if (typeof value === "string" && managerSlotExecutionModes.has(value as ManagerSlotExecutionMode)) {
-    return "parallel";
+    return value as ManagerSlotExecutionMode;
   }
   throw new Error(`${fieldName} must be manual or parallel.`);
 }

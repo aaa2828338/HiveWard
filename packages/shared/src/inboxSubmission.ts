@@ -78,7 +78,7 @@ export const hivewardInboxSubmissionContract = [
   "- Subordinate nodes inside a slot set parentId to the manager_slot node id.",
   "- A manager_slot may be empty when it is intentionally a planning placeholder or a phase container for later editing.",
   "- When the user asks for a complete runnable business blueprint, prefer adding one or more child agent nodes inside each concrete phase slot.",
-  "- Express parallel work with manager_slot config.executionMode \"parallel\" and config.parallelLaneCount, not with standalone parallel agent nodes.",
+  "- Use manager_slot config.parallelLaneCount to express slot rows: 1 row is single execution; more than 1 row executes child rows in parallel.",
   "- For requested phases such as research, collection, evaluation, QA, or report generation, create child nodes with concrete prompts unless the phase is intentionally left as a placeholder.",
   "- Do not connect a manager directly to an inner agent when manager_slot nodes exist.",
   "- Do not connect manager_slot nodes to each other as a sequence.",

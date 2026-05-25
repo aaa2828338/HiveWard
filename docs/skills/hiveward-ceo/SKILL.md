@@ -27,10 +27,22 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 - Leader: permanent role seat bound to exactly one business blueprint.
 - Business blueprint: executable workflow DAG with nodes, edges, variables, display metadata, and versioned definitions.
 - Architecture blueprint: management view showing CEO -> Leaders. It is not the executable workflow DAG.
-- Manager node: runtime control node inside one business blueprint. It coordinates numbered manager_slot lanes during a run. It is not the CEO or a Leader.
-- Worker/agent node: execution node driven by an external runtime. It receives prompts, tools, model/runtime configuration, permissions, and returns output or errors.
+- Manager node: runtime control node inside one business blueprint. It coordinates numbered `manager_slot` ports during a run. It is not the CEO or a Leader.
+- Worker/agent node: executable `agent` node driven by an external runtime. It receives prompts, tools, model/runtime configuration, permissions, optional approval/send config, and returns output or errors.
+- Manager slot node: `manager_slot` container controlled only by its Manager. Child nodes set `parentId` to the slot id. One slot row is single scoped execution; more than one row runs child rows in parallel.
 - Run: one execution of a business blueprint. It records status, timings, node runs, events, final result, usage facts, and runtime object references.
 - Inbox/approval: governance boundary. Chat has no implicit side effects; formal changes must be submitted as inbox items and later approved by HiveWard.
+
+## Blueprint Node Model
+
+- Executable node types are `agent`, `manager`, `manager_slot`, `loop`, `condition`, and `summary`.
+- Non-executable canvas nodes are `note` and `group`; use them for explanation or visual organization, not as run steps.
+- Removed standalone node types are `approval`, `send`, and `parallel_agents`. Approval and sending are `agent` config options. Parallel work is expressed with `manager_slot.config.parallelLaneCount`.
+- `agent` runs an external harness (`openclaw`, `codex`, or `claude`) with prompt, tools, optional model, working directory, permissions, timeout, output schema, approval, and send settings.
+- `manager` chooses numbered slots through `portCount` and `maxHandoffs`. It may call a configured runtime agent for routing decisions, but it remains a blueprint node.
+- `manager_slot` cannot start as a global run step. A Manager calls it, then the slot executes child `agent`, `condition`, and `summary` nodes inside its scope.
+- `manager_slot.config.parallelLaneCount` defines row semantics: `1` means one scoped chain that honors inner child edges; `>1` means parallel fan-out/fan-in and aggregates child outputs.
+- `loop` reruns downstream work up to `maxIterations`; `condition` emits a boolean routing result; `summary` either structured-merges upstream outputs or calls a harness summary agent.
 
 ## CEO Workflow
 
@@ -38,7 +50,7 @@ For simple greetings or identity questions, answer directly as the HiveWard Comp
 
 1. Identify the selected company and role directory.
 2. Map every Leader to its bound blueprint.
-3. Inspect company-wide run summaries, pending approvals, and recent failures.
+3. Inspect company-wide run summaries, pending approvals, recent failures, and node types before explaining operational risk.
 4. Explain state using stored facts first, then label inference clearly.
 5. For delegation, choose the relevant Leader and submit a `leader_delegation` inbox block only when the user asks for formal delegation.
 6. For blueprint changes, route the change to the bound Leader or prepare a proposal path. Do not claim the blueprint changed until approval/import succeeds.

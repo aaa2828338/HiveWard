@@ -3582,7 +3582,6 @@ function resolveManagerSlotLaneCount(
   if (executionMode === "parallel") {
     return Math.max(
       resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig),
-      childIds.size,
       Math.ceil(innerEdgeCount / 2)
     );
   }
@@ -3900,7 +3899,6 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       label: t.defaults.managerSlotLabel,
       managerNodeId: "",
       slot: 1,
-      executionMode: "parallel",
       parallelLaneCount: 1
     };
   }
