@@ -1178,7 +1178,8 @@ describe("BlueprintWorker", () => {
             label: "Parallel Slot",
             managerNodeId: "manager",
             slot: 1,
-            executionMode: "parallel"
+            executionMode: "parallel",
+            parallelLaneCount: 2
           }
         },
         {
@@ -1220,6 +1221,76 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.output).toMatchObject({
       status: "completed"
     });
+  });
+
+  it("runs a one-lane manager slot as a single scoped chain", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Run the single slot."
+          }
+        },
+        {
+          id: "single-slot",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Single Slot",
+            managerNodeId: "manager",
+            slot: 1,
+            executionMode: "parallel",
+            parallelLaneCount: 1
+          }
+        },
+        {
+          ...createAgentNode("alpha", "Alpha", { x: 120, y: 100 }),
+          parentId: "single-slot"
+        },
+        {
+          ...createAgentNode("beta", "Beta", { x: 360, y: 100 }),
+          parentId: "single-slot"
+        }
+      ],
+      [
+        { id: "manager-slot-out", source: "manager", sourceHandle: "manager-out-1", target: "single-slot", targetHandle: "manager-slot-in", condition: "success" },
+        { id: "slot-manager-in", source: "single-slot", sourceHandle: "manager-slot-out", target: "manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "slot-alpha", source: "single-slot", sourceHandle: "manager-slot-inner-out", target: "alpha", condition: "success" },
+        { id: "alpha-beta", source: "alpha", target: "beta", condition: "success" },
+        { id: "beta-slot", source: "beta", target: "single-slot", targetHandle: "manager-slot-inner-in", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-alpha"),
+      createStartedAgentTask("task-beta")
+    ], [
+      createCompletedAgentTask("task-alpha", "succeeded", "alpha done"),
+      createCompletedAgentTask("task-beta", "succeeded", "beta done")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const slotOutput = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "single-slot")?.output;
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["alpha", "beta"]);
+    expect((adapter.calls[0]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("single-slot");
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string; output?: unknown }> }).upstream?.[0]).toMatchObject({
+      nodeId: "alpha",
+      output: "alpha done"
+    });
+    expect(slotOutput).toBe("beta done");
   });
 
   it("runs an agent-driven manager with the default sequential prompt when instructions are empty", async () => {

@@ -31,16 +31,18 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 
 ## Blueprint Node Logic
 
-- `agent`: calls an external runtime agent/harness with `runtimeId`, prompt, tools, optional model, working directory, permissions, timeout, and output schema.
-- `parallel_agents`: runs multiple agent configs and waits for all results or first success according to `config.waitFor`.
-- `manager`: coordinates numbered `manager_slot` lanes using `config.portCount` and `config.maxHandoffs`. It may use an external runtime agent when configured, but it is still a blueprint node, not the Leader.
-- `manager_slot`: a container/lane controlled by a Manager. Child nodes inside the slot perform the actual phase work and return output to the Manager.
-- `loop`: repeats downstream work up to `config.maxIterations` according to runtime loop handling.
-- `condition`: evaluates `config.expression` and routes true or false edges.
-- `summary`: merges or summarizes prior outputs using `structured_merge` or an external summary agent.
-- `approval`: pauses the run until a human approval decision is recorded.
-- `send`: sends a `bodyTemplate` to a configured channel/target.
-- `note` and `group`: canvas documentation or visual organization; they are not worker execution nodes.
+- Executable node types are `agent`, `manager`, `manager_slot`, `loop`, `condition`, and `summary`.
+- Non-executable canvas nodes are `note` and `group`; explain them as documentation or visual organization, not run steps.
+- Removed standalone node types are `approval`, `send`, and `parallel_agents`. Human approval and sending live inside `agent` config. Parallel work lives in `manager_slot.config.parallelLaneCount`.
+- `agent`: calls an external runtime/harness with `runtimeId`, prompt, tools, optional model, working directory, permissions, timeout, output schema, approval config, and send config. Empty visible output is treated as a run failure.
+- `manager`: coordinates numbered slots using `config.portCount` and `config.maxHandoffs`. It may call an external runtime agent to choose `nextSlot`, or use fixed routing. It records handoff trace and previous slot results.
+- `manager_slot`: a container controlled only by its Manager. It is not a global start node. Child nodes inside the slot must set `parentId` to the slot id.
+- `manager_slot.config.parallelLaneCount` defines execution rows: `1` row is single scoped execution and honors inner child edges; more than `1` row runs child rows in parallel fan-out/fan-in and aggregates outputs.
+- Slot child execution currently supports `agent`, `condition`, and `summary`. Other child node types inside a slot fail at runtime.
+- Empty `manager_slot` nodes are allowed as planning placeholders and return a `manager_slot_empty` completion when called.
+- `loop`: reruns downstream work up to `config.maxIterations`, then completes with loop metadata.
+- `condition`: evaluates `config.expression` and routes `true` or `false` edges.
+- `summary`: uses `structured_merge` for direct merge or `harness_summary` to call a runtime summary agent.
 
 ## Leader Workflow
 
