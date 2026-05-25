@@ -18,6 +18,7 @@ import {
   type BlueprintDefinition,
   type BlueprintEdge,
   type BlueprintNode,
+  type BlueprintNodeRun,
   type BlueprintRunStatus
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
@@ -30,7 +31,7 @@ class ScriptedAdapter implements RuntimeAdapter {
 
   constructor(
     private readonly startResults: StartedAgentTaskResult[],
-    private readonly completionResults: AgentTaskResult[]
+    private readonly completionResults: Array<AgentTaskResult | Error>
   ) {}
 
   async listModels() {
@@ -94,6 +95,9 @@ class ScriptedAdapter implements RuntimeAdapter {
     const result = this.completionResults.shift();
     if (!result) {
       throw new Error("No scripted agent completion result available.");
+    }
+    if (result instanceof Error) {
+      throw result;
     }
     return result;
   }
@@ -318,6 +322,76 @@ describe("BlueprintWorker", () => {
     adapter.complete(createCompletedAgentTask("task-1", "succeeded", "brief ok"));
     const view = await waitForRunTerminal(store, run.id);
     expect(view?.run.status).toBe("succeeded");
+  });
+
+  it("keeps resumed SDK agent nodes running when task lookup is temporarily unavailable", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const storePath = path.join(tempDir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    const baseAgent = createAgentNode("brief", "Brief");
+    const agent: BlueprintNode = {
+      ...baseAgent,
+      runtimeId: "codex" as const,
+      config: {
+        ...baseAgent.config,
+        modelId: "test-model",
+        permissionProfile: "read_only" as const
+      }
+    };
+    const blueprint = createBlueprint([agent], []);
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+
+    const startedAt = new Date().toISOString();
+    const nodeRun: BlueprintNodeRun = {
+      id: "node-run-sdk-resume",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "brief",
+      nodeLabel: "Brief",
+      nodeType: "agent",
+      status: "running",
+      queuedAt: startedAt,
+      startedAt,
+      input: { upstream: [] },
+      openclawRef: {
+        source: "codex",
+        sourceId: "codex-task-1",
+        sourceUpdatedAt: startedAt,
+        taskId: "codex-task-1",
+        runId: "codex-task-1-run",
+        sessionKey: "codex-thread-1"
+      }
+    };
+    await store.upsertNodeRun(nodeRun);
+
+    const missingTaskAdapter = new ScriptedAdapter([], [
+      new Error("SDK task not found: codex-task-1")
+    ]);
+    const firstWorker = new BlueprintWorker(store, missingTaskAdapter);
+    await firstWorker.resumeActiveRuns();
+
+    const stillRunningView = await waitForRunView(store, run.id, (view) =>
+      view.events.some((event) => event.message.includes("is still running"))
+    );
+    expect(missingTaskAdapter.waitCalls).toHaveLength(1);
+    expect(stillRunningView.run.status).toBe("running");
+    expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)?.status).toBe("running");
+    expect(stillRunningView.events.some((event) => event.type === "blueprint.run.failed")).toBe(false);
+
+    const recoveredAdapter = new ScriptedAdapter([], [
+      createCompletedAgentTask("codex-task-1", "succeeded", "brief ok", undefined, "codex")
+    ]);
+    const secondWorker = new BlueprintWorker(store, recoveredAdapter);
+    await secondWorker.resumeActiveRuns();
+
+    const finalView = await waitForRunTerminal(store, run.id);
+    expect(finalView?.run.status).toBe("succeeded");
+    expect(finalView?.nodeRuns.find((candidate) => candidate.id === nodeRun.id)?.status).toBe("succeeded");
+    expect(finalView?.events.some((event) => event.type === "blueprint.run.failed")).toBe(false);
   });
 
   it("cancels a running blueprint and ignores late agent completion", async () => {
@@ -1765,6 +1839,24 @@ async function waitForRunStatus(
   }
 
   throw new Error(`Blueprint run did not reach ${status} in time: ${runId}`);
+}
+
+async function waitForRunView(
+  store: FileHivewardStore,
+  runId: string,
+  predicate: (view: NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>) => boolean
+): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    const view = await store.getRunView(runId);
+    if (view && predicate(view)) {
+      return view;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Blueprint run view did not match the expected state in time: ${runId}`);
 }
 
 async function waitForNodeRun(

@@ -96,6 +96,7 @@ import {
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
+  resolveRunViewStatus,
   shouldShowBlueprintWorkspaceRunState,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
@@ -460,6 +461,8 @@ export function BlueprintStudioPage({
   const currentBlueprintRunView = runView && blueprint && runView.run.blueprintId === blueprint.id ? runView : undefined;
   const currentBlueprintRawLatestStatus =
     currentBlueprintRunView?.run.status ?? currentBlueprintRunStats?.latestStatus;
+  const currentBlueprintEffectiveStatus =
+    currentBlueprintRunView ? resolveRunViewStatus(currentBlueprintRunView) : currentBlueprintRawLatestStatus;
   const currentBlueprintLatestStatus =
     currentBlueprintRunView ? resolveRunViewDisplayStatus(currentBlueprintRunView) : currentBlueprintRunStats?.latestStatus;
   const currentTerminalRunId =
@@ -470,7 +473,7 @@ export function BlueprintStudioPage({
   const currentBlueprintActivity = currentBlueprintLatestStatus
     ? resolveBlueprintActivityState(currentBlueprintLatestStatus, currentTerminalRunSeen)
     : "idle";
-  const isBlueprintInteractionLocked = Boolean(currentBlueprintRawLatestStatus && isPollingRunStatus(currentBlueprintRawLatestStatus));
+  const isBlueprintInteractionLocked = Boolean(currentBlueprintEffectiveStatus && isPollingRunStatus(currentBlueprintEffectiveStatus));
   const isRunButtonBusy = busyAction === "runBlueprint" || busyAction === "cancelBlueprintRun";
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
