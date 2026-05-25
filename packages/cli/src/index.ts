@@ -332,7 +332,8 @@ function runCommand(
     return spawnSync("cmd.exe", ["/d", "/s", "/c", shellCommand(command, args)], {
       cwd: options.cwd,
       encoding: options.stdio === "pipe" ? "utf8" : undefined,
-      stdio: options.stdio
+      stdio: options.stdio,
+      windowsVerbatimArguments: true
     });
   }
 
@@ -347,7 +348,7 @@ function spawnLongRunning(command: string, args: string[], cwd: string, env: Rec
   const childEnv = { ...process.env, ...env };
   const child =
     process.platform === "win32"
-      ? spawn("cmd.exe", ["/d", "/s", "/c", shellCommand(command, args)], { cwd, env: childEnv, stdio: "inherit" })
+      ? spawn("cmd.exe", ["/d", "/s", "/c", shellCommand(command, args)], { cwd, env: childEnv, stdio: "inherit", windowsVerbatimArguments: true })
       : spawn(command, args, { cwd, env: childEnv, stdio: "inherit" });
 
   child.on("exit", (code) => {
