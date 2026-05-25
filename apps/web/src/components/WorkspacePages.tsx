@@ -53,6 +53,7 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
@@ -1831,7 +1832,7 @@ export function AgentsPage({
     }
     if (agentWorkspace.trim()) return;
     if (openClawConfig?.defaultWorkspace) {
-      setAgentWorkspace(joinPath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
+      setAgentWorkspace(joinWorkspacePath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
     }
   }, [agentName, agentWorkspace, openClawConfig?.defaultWorkspace]);
 
@@ -1895,7 +1896,11 @@ export function AgentsPage({
             <input
               value={agentWorkspace}
               onChange={(event) => setAgentWorkspace(event.target.value)}
-              placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : t.catalogConfig.workspacePlaceholder}
+              placeholder={
+                openClawConfig?.defaultWorkspace
+                  ? formatWorkspacePathPlaceholder(openClawConfig.defaultWorkspace)
+                  : t.catalogConfig.workspacePlaceholder
+              }
             />
           </label>
         </div>
@@ -3310,6 +3315,3 @@ function normalizeAgentId(value: string): string {
   return trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
 }
 
-function joinPath(root: string, leaf: string): string {
-  return `${root.replace(/[\\/]+$/, "")}\\${leaf.replace(/^[\\/]+/, "")}`;
-}
