@@ -403,6 +403,11 @@ export class BlueprintWorker {
 
       const readyNodes = this.findReadyNodes(blueprint, nodeRuns);
       if (readyNodes.length === 0) {
+        if (nodeRuns.some((nodeRun) => nodeRun.status === "queued" || nodeRun.status === "running")) {
+          await this.keepRunActive(run, "running");
+          return;
+        }
+
         const pending = blueprint.nodes.filter(
           (node) =>
             this.isGlobalSchedulingNode(blueprint, node) &&
@@ -465,15 +470,32 @@ export class BlueprintWorker {
     if (!openclawRef?.sessionKey) return false;
     const runtimeId = node.runtimeId ?? "openclaw";
 
-    const result = await this.adapter.waitForAgentTask({
-      nodeRunId: nodeRun.id,
-      taskId: openclawRef.taskId ?? openclawRef.sourceId,
-      runId: openclawRef.runId ?? openclawRef.sourceId,
-      sessionKey: openclawRef.sessionKey,
-      source: openclawRef.source,
-      agentId: runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
-      modelId: (node.config as AgentNodeConfig).modelId
-    });
+    let result: AgentTaskResult;
+    try {
+      result = await this.adapter.waitForAgentTask({
+        nodeRunId: nodeRun.id,
+        taskId: openclawRef.taskId ?? openclawRef.sourceId,
+        runId: openclawRef.runId ?? openclawRef.sourceId,
+        sessionKey: openclawRef.sessionKey,
+        source: openclawRef.source,
+        agentId: runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
+        modelId: (node.config as AgentNodeConfig).modelId
+      });
+    } catch (error) {
+      if (this.isRecoverableSdkTaskLookupMiss(error, openclawRef)) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.event(
+          run.id,
+          "node.run.started",
+          `${nodeRun.nodeLabel} is still running; ${formatRuntimeSource(openclawRef.source)} task ${openclawRef.taskId ?? openclawRef.sourceId} is not ready to reconcile yet: ${message}`,
+          nodeRun.id,
+          openclawRef
+        );
+        await this.keepRunActive(run, "running");
+        return false;
+      }
+      throw error;
+    }
     const finalRef: OpenClawObjectRef = {
       ...openclawRef,
       sourceId: result.taskId,
@@ -2106,6 +2128,20 @@ export class BlueprintWorker {
     };
   }
 
+  private async keepRunActive(run: BlueprintRun, status: "running" | "waiting_approval"): Promise<void> {
+    await this.store.updateBlueprintRun({
+      ...run,
+      status,
+      endedAt: undefined,
+      durationMs: undefined
+    });
+  }
+
+  private isRecoverableSdkTaskLookupMiss(error: unknown, openclawRef: OpenClawObjectRef): boolean {
+    if (openclawRef.source !== "codex" && openclawRef.source !== "claude") return false;
+    return error instanceof Error && error.message.startsWith("SDK task not found:");
+  }
+
   private async isRunCancelled(blueprintRunId: string): Promise<boolean> {
     if (this.cancelledRunIds.has(blueprintRunId)) return true;
 
@@ -2486,6 +2522,12 @@ function hasVisibleAgentOutput(output: unknown): output is string {
 
 function stringifyManagerSlotOutput(output: unknown): string {
   return typeof output === "string" ? output : JSON.stringify(output);
+}
+
+function formatRuntimeSource(source: OpenClawObjectRef["source"]): string {
+  if (source === "codex") return "Codex";
+  if (source === "claude") return "Claude";
+  return "OpenClaw";
 }
 
 function buildAgentSessionKey(agentId: string): string {

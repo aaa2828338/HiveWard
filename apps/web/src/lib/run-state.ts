@@ -49,7 +49,6 @@ export function resolveRunViewStatus(runView?: BlueprintRunView): BlueprintRunSt
 export function resolveRunViewDisplayStatus(runView?: BlueprintRunView): BlueprintRunStatus | undefined {
   if (!runView) return undefined;
   if (hasFailedNodeRun(runView)) return "failed";
-  if (runView.run.status === "failed" || runView.run.status === "cancelled") return runView.run.status;
   return isActiveRunView(runView) ? "running" : runView.run.status;
 }
 

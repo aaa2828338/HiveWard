@@ -248,7 +248,7 @@ describe("run state sync", () => {
     const staleTerminalRun = createRunView("running", { runId: "run-stale-terminal", runStatus: "failed" });
 
     expect(resolveRunViewStatus(staleTerminalRun)).toBe("running");
-    expect(resolveRunViewDisplayStatus(staleTerminalRun)).toBe("failed");
+    expect(resolveRunViewDisplayStatus(staleTerminalRun)).toBe("running");
     expect(
       selectRunPollingTarget({
         runs: [staleTerminalRun],
