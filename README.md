@@ -7,7 +7,7 @@
   </picture>
 </p>
 
-<h2 align="center">一人公司的 AI 员工总控调度平台</h2>
+<h2 align="center">让101个Agent合作为你打工</h2>
 
 <p align="center">
   HiveWard 是一个同时支持 Claude Code、Codex、OpenClaw 作为员工的一人公司总控调度平台。
