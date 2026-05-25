@@ -754,6 +754,7 @@ export function ApprovalsPage({
   onApprove,
   onReject,
   onReply,
+  onReplyInboxItem,
   onApproveInboxItem,
   onRejectInboxItem
 }: {
@@ -764,26 +765,46 @@ export function ApprovalsPage({
   onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
+  onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
   onRejectInboxItem: (itemId: string, comment?: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
   const inboxCopy = getInboxCopy(language);
-  const pendingInboxItems = useMemo(() => inboxItems.filter((item) => item.status === "pending"), [inboxItems]);
-  const totalPending = approvals.length + pendingInboxItems.length;
+  const [blueprintFilter, setBlueprintFilter] = useState(allInboxBlueprintFilterValue);
+  const [timeFilter, setTimeFilter] = useState<InboxTimeFilter>("all");
+  const blueprintFilterOptions = useMemo(
+    () => buildInboxBlueprintFilterOptions(inboxItems, approvals, inboxCopy),
+    [approvals, inboxCopy, inboxItems]
+  );
+  const inboxThreadItems = useMemo(
+    () => buildInboxThreadItems(inboxItems, approvals, blueprintFilter, timeFilter),
+    [approvals, blueprintFilter, inboxItems, timeFilter]
+  );
+  const totalInboxItems = inboxItems.length + approvals.length;
+  const pendingInboxCount =
+    inboxItems.filter((item) => item.status === "pending").length +
+    approvals.filter(isActionableApprovalThread).length;
   const [selectedThread, setSelectedThread] = useState<InboxThreadSelection | undefined>(() =>
-    firstInboxThreadSelection(pendingInboxItems, approvals)
+    firstInboxThreadSelection(inboxItems, approvals)
   );
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [localReplies, setLocalReplies] = useState<Record<string, InboxLocalReply[]>>({});
   const selectedInboxItem =
     selectedThread?.kind === "inbox"
-      ? pendingInboxItems.find((item) => item.id === selectedThread.id)
+      ? inboxItems.find((item) => item.id === selectedThread.id)
       : undefined;
   const selectedApproval =
     selectedThread?.kind === "approval"
       ? approvals.find((approval) => approval.nodeRunId === selectedThread.id)
       : undefined;
+  const selectedInboxApproved = selectedInboxItem?.status === "approved";
+  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
+  const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
+  const canApproveSelection = Boolean(
+    selectedApproval ? selectedApproval.canApprove !== false : selectedInboxOperable
+  );
+  const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
   const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
   const selectedMessages = useMemo(
@@ -803,11 +824,20 @@ export function ApprovalsPage({
   );
 
   useEffect(() => {
+    if (
+      blueprintFilter !== allInboxBlueprintFilterValue &&
+      !blueprintFilterOptions.some((option) => option.value === blueprintFilter)
+    ) {
+      setBlueprintFilter(allInboxBlueprintFilterValue);
+    }
+  }, [blueprintFilter, blueprintFilterOptions]);
+
+  useEffect(() => {
     setSelectedThread((current) => {
-      if (current && hasInboxThread(current, pendingInboxItems, approvals)) return current;
-      return firstInboxThreadSelection(pendingInboxItems, approvals);
+      if (current && hasInboxThread(current, inboxThreadItems)) return current;
+      return firstInboxThreadListSelection(inboxThreadItems);
     });
-  }, [approvals, pendingInboxItems]);
+  }, [inboxThreadItems]);
 
   const updateReplyDraft = (value: string) => {
     if (!selectedThreadKey) return;
@@ -820,36 +850,51 @@ export function ApprovalsPage({
   };
 
   const sendLocalReply = () => {
-    if (!selectedThreadKey) return;
+    if (!selectedThreadKey || !canReplyToSelection) return;
     const body = selectedReplyDraft.trim();
     if (!body) return;
     if (selectedApproval?.canReply) {
+      setLocalReplies((current) => ({
+        ...current,
+        [selectedThreadKey]: [
+          ...(current[selectedThreadKey] ?? []),
+          {
+            id: makeLocalInboxReplyId(),
+            body,
+            createdAt: new Date().toISOString()
+          }
+        ]
+      }));
       onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
       clearReplyDraft();
       return;
     }
+    const reply = {
+      id: makeLocalInboxReplyId(),
+      body,
+      createdAt: new Date().toISOString()
+    };
     setLocalReplies((current) => ({
       ...current,
       [selectedThreadKey]: [
         ...(current[selectedThreadKey] ?? []),
-        {
-          id: makeLocalInboxReplyId(),
-          body,
-          createdAt: new Date().toISOString()
-        }
+        reply
       ]
     }));
+    if (selectedInboxItem && !selectedInboxApproved) {
+      onReplyInboxItem(selectedInboxItem.id, body);
+    }
     clearReplyDraft();
   };
 
   const approveSelectedThread = () => {
     const comment = selectedReplyDraft.trim() || undefined;
-    if (selectedInboxItem) {
+    if (selectedInboxItem && !selectedInboxApproved) {
       onApproveInboxItem(selectedInboxItem.id, comment);
       clearReplyDraft();
       return;
     }
-    if (selectedApproval) {
+    if (selectedApproval && selectedApproval.canApprove !== false) {
       onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
       clearReplyDraft();
     }
@@ -857,7 +902,7 @@ export function ApprovalsPage({
 
   const rejectSelectedThread = () => {
     const comment = selectedReplyDraft.trim() || undefined;
-    if (selectedInboxItem) {
+    if (selectedInboxItem && !selectedInboxApproved) {
       onRejectInboxItem(selectedInboxItem.id, comment);
       clearReplyDraft();
       return;
@@ -872,83 +917,125 @@ export function ApprovalsPage({
     <section className="page-grid trace-page-grid inbox-page-grid">
       <div className="trace-page-title inbox-page-title">
         <h2>{approvalsPage.title}</h2>
-        <p>{t.metrics.approvals(totalPending)}</p>
+        <p>{inboxCopy.listMetric(inboxThreadItems.length, totalInboxItems, pendingInboxCount)}</p>
       </div>
 
       <section className="trace-layout inbox-layout">
         <div className="trace-column-shell inbox-column-shell">
           <div className="trace-column-header inbox-column-header">
             <h3>{inboxCopy.listTitle}</h3>
+            <div className="inbox-filters">
+              <label className="inbox-filter-field">
+                <span>{inboxCopy.blueprintFilter}</span>
+                <select value={blueprintFilter} onChange={(event) => setBlueprintFilter(event.target.value)}>
+                  {blueprintFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="inbox-filter-field">
+                <span>{inboxCopy.timeFilter}</span>
+                <select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as InboxTimeFilter)}>
+                  {inboxTimeFilterOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {inboxTimeFilterLabel(option.value, language)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
           <div className="content-card stack-card inbox-list-column">
             <div className="inbox-list" role="list" aria-label={inboxCopy.listTitle}>
-              {totalPending === 0 ? (
+              {inboxThreadItems.length === 0 ? (
                 <div className="inbox-empty-copy">
-                  <strong>{inboxCopy.emptyListTitle}</strong>
-                  <p>{inboxCopy.emptyListBody}</p>
+                  <strong>{totalInboxItems === 0 ? inboxCopy.emptyListTitle : inboxCopy.emptyFilterTitle}</strong>
+                  <p>{totalInboxItems === 0 ? inboxCopy.emptyListBody : inboxCopy.emptyFilterBody}</p>
                 </div>
               ) : (
                 <>
-                {pendingInboxItems.map((item, index) => (
-                  <article
-                    key={item.id}
-                    className={`inbox-row inbox-formal-row${selectedInboxItem?.id === item.id ? " selected" : ""}`}
-                    role="listitem"
-                  >
-                    <button
-                      type="button"
-                      className="inbox-row-main"
-                      aria-pressed={selectedInboxItem?.id === item.id}
-                      onClick={() => setSelectedThread({ kind: "inbox", id: item.id })}
-                    >
-                      <span className="inbox-row-index">{index + 1}</span>
-                      <span className="inbox-row-content">
-                        <span className="inbox-row-topline">
-                          <strong>{item.title}</strong>
-                          <span className="status-pill status-waiting_approval">{formalInboxTypeLabel(item.type, language)}</span>
-                        </span>
-                        <span className="inbox-row-preview">{item.summary}</span>
-                        <span className="inbox-row-meta">
-                          <span>{item.blueprintName ?? item.targetRoleId ?? item.createdByRoleId}</span>
-                          <time dateTime={item.createdAt}>{formatDateTime(item.createdAt, language)}</time>
-                        </span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="inbox-row-action primary-action"
-                      title={t.actions.approve}
-                      aria-label={t.actions.approve}
-                      onClick={() => onApproveInboxItem(item.id)}
-                    >
-                      <BadgeCheck size={16} />
-                    </button>
-                    <button
-                      type="button"
-                      className="inbox-row-action danger-action"
-                      title={inboxCopy.reject}
-                      aria-label={inboxCopy.reject}
-                      onClick={() => onRejectInboxItem(item.id)}
-                    >
-                      <Trash2 size={15} />
-                    </button>
-                  </article>
-                ))}
-                {approvals.map((approval, index) => {
+                {inboxThreadItems.map((thread, index) => {
+                  if (thread.kind === "inbox") {
+                    const item = thread.item;
+                    const selected = selectedThread?.kind === "inbox" && item.id === selectedThread.id;
+                    const processed = item.status === "approved";
+                    return (
+                      <article
+                        key={item.id}
+                        className={`inbox-row inbox-formal-row inbox-row-${item.status}${processed ? " processed" : ""}${selected ? " selected" : ""}`}
+                        role="listitem"
+                      >
+                        <button
+                          type="button"
+                          className="inbox-row-main"
+                          aria-pressed={selected}
+                          onClick={() => setSelectedThread({ kind: "inbox", id: item.id })}
+                        >
+                          <span className="inbox-row-index">{index + 1}</span>
+                          <span className="inbox-row-content">
+                            <span className="inbox-row-topline">
+                              <strong>{item.title}</strong>
+                              <span className={`status-pill ${inboxStatusClassName(item.status)}`}>
+                                {inboxStatusLabel(item.status, language)}
+                              </span>
+                            </span>
+                            <span className="inbox-row-preview">{item.summary}</span>
+                            <span className="inbox-row-meta">
+                              <span>{inboxItemContextLabel(item, language)}</span>
+                              <time dateTime={item.createdAt}>{formatDateTime(item.createdAt, language)}</time>
+                            </span>
+                          </span>
+                        </button>
+                        <div className="inbox-row-actions">
+                          <button
+                            type="button"
+                            className="inbox-row-action primary-action"
+                            title={processed ? inboxCopy.processedAction : t.actions.approve}
+                            aria-label={t.actions.approve}
+                            disabled={processed}
+                            onClick={() => onApproveInboxItem(item.id)}
+                          >
+                            <BadgeCheck size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="inbox-row-action danger-action"
+                            title={processed ? inboxCopy.processedAction : inboxCopy.reject}
+                            aria-label={inboxCopy.reject}
+                            disabled={processed}
+                            onClick={() => onRejectInboxItem(item.id)}
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  }
+
+                  const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
+                  const processed = approval.status === "approved" || approval.status === "rejected";
                   return (
-                    <article key={approval.nodeRunId} className={`inbox-row${selected ? " selected" : ""}`} role="listitem">
+                    <article
+                      key={approval.nodeRunId}
+                      className={`inbox-row inbox-row-${approval.status ?? "pending"}${processed ? " processed" : ""}${selected ? " selected" : ""}`}
+                      role="listitem"
+                    >
                       <button
                         type="button"
                         className="inbox-row-main"
                         aria-pressed={selected}
                         onClick={() => setSelectedThread({ kind: "approval", id: approval.nodeRunId })}
                       >
-                        <span className="inbox-row-index">{pendingInboxItems.length + index + 1}</span>
+                        <span className="inbox-row-index">{index + 1}</span>
                         <span className="inbox-row-content">
                           <span className="inbox-row-topline">
                             <strong>{approvalSubject(approval)}</strong>
-                            <span className="status-pill status-waiting_approval">{t.status.waiting_approval}</span>
+                            <span className={`status-pill ${approvalStatusClassName(approval)}`}>
+                              {approvalStatusLabel(approval, language, t)}
+                            </span>
                           </span>
                           <span className="inbox-row-preview">{approvalPreviewText(approval, inboxCopy, t)}</span>
                           <span className="inbox-row-meta">
@@ -957,24 +1044,28 @@ export function ApprovalsPage({
                           </span>
                         </span>
                       </button>
-                      <button
-                        type="button"
-                        className="inbox-row-action primary-action"
-                        title={t.actions.approve}
-                        aria-label={t.actions.approve}
-                        onClick={() => onApprove(approval.blueprintRunId, approval.nodeRunId)}
-                      >
-                        <BadgeCheck size={16} />
-                      </button>
-                      <button
-                        type="button"
-                        className="inbox-row-action danger-action"
-                        title={inboxCopy.reject}
-                        aria-label={inboxCopy.reject}
-                        onClick={() => onReject(approval.blueprintRunId, approval.nodeRunId)}
-                      >
-                        <Trash2 size={15} />
-                      </button>
+                      <div className="inbox-row-actions">
+                        <button
+                          type="button"
+                          className="inbox-row-action primary-action"
+                          title={approval.canApprove === false ? inboxCopy.processedAction : t.actions.approve}
+                          aria-label={t.actions.approve}
+                          disabled={approval.canApprove === false}
+                          onClick={() => onApprove(approval.blueprintRunId, approval.nodeRunId)}
+                        >
+                          <BadgeCheck size={16} />
+                        </button>
+                        <button
+                          type="button"
+                          className="inbox-row-action danger-action"
+                          title={inboxCopy.reject}
+                          aria-label={inboxCopy.reject}
+                          disabled={!approval.canReject}
+                          onClick={() => onReject(approval.blueprintRunId, approval.nodeRunId)}
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </article>
                   );
                 })}
@@ -995,6 +1086,9 @@ export function ApprovalsPage({
             language={language}
             messages={selectedMessages}
             onApprove={approveSelectedThread}
+            canApprove={canApproveSelection}
+            canReject={canRejectSelection}
+            canReply={canReplyToSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
             onSendReply={sendLocalReply}
@@ -1010,6 +1104,38 @@ type InboxThreadSelection = {
   kind: "approval" | "inbox";
   id: string;
 };
+
+type InboxTimeFilter = "all" | "today" | "last7" | "last30";
+
+type InboxBlueprintFilterOption = {
+  value: string;
+  label: string;
+};
+
+type InboxThreadListItem =
+  | {
+      kind: "inbox";
+      id: string;
+      timestamp: string;
+      blueprintKey: string;
+      item: InboxItem;
+    }
+  | {
+      kind: "approval";
+      id: string;
+      timestamp: string;
+      blueprintKey: string;
+      approval: PendingApprovalItem;
+    };
+
+const allInboxBlueprintFilterValue = "__all_blueprints__";
+
+const inboxTimeFilterOptions = [
+  { value: "all" },
+  { value: "today" },
+  { value: "last7" },
+  { value: "last30" }
+] satisfies Array<{ value: InboxTimeFilter }>;
 
 type InboxLocalReply = {
   id: string;
@@ -1032,6 +1158,9 @@ function InboxConversationPanel({
   language,
   messages,
   replyDraft,
+  canApprove,
+  canReject,
+  canReply,
   onApprove,
   onReject,
   onReplyDraftChange,
@@ -1043,6 +1172,9 @@ function InboxConversationPanel({
   language: Language;
   messages: InboxConversationMessage[];
   replyDraft: string;
+  canApprove: boolean;
+  canReject: boolean;
+  canReply: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
@@ -1055,7 +1187,8 @@ function InboxConversationPanel({
     : approval
       ? approval.blueprintName
       : "";
-  const statusLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : approval ? copy.approvalRequest : "";
+  const statusLabel = inboxItem ? inboxStatusLabel(inboxItem.status, language) : approval ? copy.approvalRequest : "";
+  const typeLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : undefined;
 
   return (
     <section className="content-card inbox-workspace-column inbox-conversation-card" aria-label={copy.detailTitle}>
@@ -1066,6 +1199,7 @@ function InboxConversationPanel({
         </div>
         <div className="chat-context-strip">
           {statusLabel && <span className="bound">{statusLabel}</span>}
+          {typeLabel && <span>{typeLabel}</span>}
           {subtitle && <span>{subtitle}</span>}
         </div>
       </div>
@@ -1098,8 +1232,8 @@ function InboxConversationPanel({
       <div className="chat-composer inbox-conversation-composer">
         <textarea
           value={replyDraft}
-          disabled={!hasSelection}
-          placeholder={hasSelection ? copy.replyPlaceholder : copy.noSelectionBody}
+          disabled={!canReply}
+          placeholder={!hasSelection ? copy.noSelectionBody : canReply ? copy.replyPlaceholder : copy.processedPlaceholder}
           onChange={(event) => onReplyDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -1109,15 +1243,15 @@ function InboxConversationPanel({
           }}
         />
         <div className="inbox-conversation-actions">
-          <button type="button" disabled={!hasSelection || !replyDraft.trim()} onClick={onSendReply}>
+          <button type="button" disabled={!canReply || !replyDraft.trim()} onClick={onSendReply}>
             <Send size={15} />
             {copy.sendReply}
           </button>
-          <button type="button" className="primary-action" disabled={!hasSelection} onClick={onApprove}>
+          <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
             {copy.approve}
           </button>
-          <button type="button" className="danger-action" disabled={!inboxItem && !approval?.canReject} onClick={onReject}>
+          <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
             <Trash2 size={15} />
             {copy.reject}
           </button>
@@ -1128,23 +1262,34 @@ function InboxConversationPanel({
 }
 
 type InboxCopy = {
+  allBlueprints: string;
   approvalRequest: string;
   approve: string;
+  blueprintFilter: string;
   conversation: string;
+  decidedAt: string;
+  decisionComment: string;
   detailTitle: string;
+  emptyFilterBody: string;
+  emptyFilterTitle: string;
   emptyListBody: string;
   emptyListTitle: string;
   from: string;
   listTitle: string;
+  listMetric: (visibleCount: number, totalCount: number, pendingCount: number) => string;
   noSelectionBody: string;
   noSelectionTitle: string;
   noUpstreamOutput: string;
   openedAt: string;
   payload: string;
+  processedAction: string;
+  processedPlaceholder: string;
   reject: string;
   replyPlaceholder: string;
   sendReply: string;
+  status: string;
   system: string;
+  timeFilter: string;
   to: string;
   you: string;
   youAvatar: string;
@@ -1159,23 +1304,35 @@ type InboxContentBlock = {
 function getInboxCopy(language: Language): InboxCopy {
   if (language === "zh-CN") {
     return {
+      allBlueprints: "全部蓝图",
       approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
       approve: "\u6279\u51c6",
+      blueprintFilter: "蓝图",
       conversation: "\u5bf9\u8bdd",
+      decidedAt: "处理时间",
+      decisionComment: "处理备注",
       detailTitle: "\u5bf9\u8bdd\u8be6\u60c5",
+      emptyFilterBody: "调整蓝图或时间筛选后可以继续查看历史收件。",
+      emptyFilterTitle: "当前筛选没有收件",
       emptyListBody: "\u65b0\u7684\u4eba\u5de5\u5ba1\u6279\u4f1a\u6309\u65f6\u95f4\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
-      emptyListTitle: "\u5f53\u524d\u6ca1\u6709\u5f85\u5ba1\u6279\u6536\u4ef6",
+      emptyListTitle: "当前没有收件",
       from: "\u6765\u81ea",
       listTitle: "\u6536\u4ef6",
+      listMetric: (visibleCount, totalCount, pendingCount) =>
+        `显示 ${visibleCount}/${totalCount} 封，${pendingCount} 封待处理`,
       noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u56de\u590d\u6846\u3002",
       noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
       noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
       openedAt: "\u53d1\u8d77\u65f6\u95f4",
       payload: "\u8be6\u7ec6\u5185\u5bb9",
+      processedAction: "已处理，不能重复操作",
+      processedPlaceholder: "这封收件已经处理，不能继续回复或再次审批。",
       reject: "\u9a73\u56de",
       replyPlaceholder: "\u8f93\u5165\u56de\u590d\uff0cShift+Enter \u6362\u884c...",
       sendReply: "\u56de\u590d",
+      status: "状态",
       system: "HiveWard",
+      timeFilter: "时间",
       to: "\u53d1\u7ed9",
       you: "\u4f60",
       youAvatar: "\u4f60"
@@ -1183,27 +1340,170 @@ function getInboxCopy(language: Language): InboxCopy {
   }
 
   return {
+    allBlueprints: "All blueprints",
     approvalRequest: "Approval request",
     approve: "Approve",
+    blueprintFilter: "Blueprint",
     conversation: "Conversation",
+    decidedAt: "Decided",
+    decisionComment: "Decision note",
     detailTitle: "Conversation detail",
+    emptyFilterBody: "Change the blueprint or time filter to view more inbox history.",
+    emptyFilterTitle: "No inbox items match this filter",
     emptyListBody: "New human approvals will appear here by request time.",
-    emptyListTitle: "No pending inbox items",
+    emptyListTitle: "No inbox items",
     from: "From",
     listTitle: "Messages",
+    listMetric: (visibleCount, totalCount, pendingCount) =>
+      `${visibleCount}/${totalCount} shown, ${pendingCount} pending`,
     noSelectionBody: "Select a message on the left to show its conversation and reply box here.",
     noSelectionTitle: "Select a message",
     noUpstreamOutput: "No previous node output was captured.",
     openedAt: "Opened",
     payload: "Payload",
+    processedAction: "Already processed",
+    processedPlaceholder: "This inbox item has already been processed.",
     reject: "Reject",
     replyPlaceholder: "Reply, Shift+Enter for a new line...",
     sendReply: "Reply",
+    status: "Status",
     system: "HiveWard",
+    timeFilter: "Time",
     to: "To",
     you: "You",
     youAvatar: "You"
   };
+}
+
+function buildInboxBlueprintFilterOptions(
+  inboxItems: InboxItem[],
+  approvals: PendingApprovalItem[],
+  copy: InboxCopy
+): InboxBlueprintFilterOption[] {
+  const options = new Map<string, string>();
+  for (const item of inboxItems) {
+    const key = inboxItemBlueprintKey(item);
+    if (key) options.set(key, item.blueprintName ?? item.blueprintId ?? key);
+  }
+  for (const approval of approvals) {
+    const key = approval.blueprintId || approval.blueprintName;
+    if (key) options.set(key, approval.blueprintName || approval.blueprintId);
+  }
+  return [
+    { value: allInboxBlueprintFilterValue, label: copy.allBlueprints },
+    ...[...options.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: "base" }))
+  ];
+}
+
+function buildInboxThreadItems(
+  inboxItems: InboxItem[],
+  approvals: PendingApprovalItem[],
+  blueprintFilter: string,
+  timeFilter: InboxTimeFilter
+): InboxThreadListItem[] {
+  const threads: InboxThreadListItem[] = [
+    ...inboxItems.map((item) => ({
+      kind: "inbox" as const,
+      id: item.id,
+      timestamp: item.createdAt,
+      blueprintKey: inboxItemBlueprintKey(item),
+      item
+    })),
+    ...approvals.map((approval) => ({
+      kind: "approval" as const,
+      id: approval.nodeRunId,
+      timestamp: approval.requestedAt,
+      blueprintKey: approval.blueprintId || approval.blueprintName,
+      approval
+    }))
+  ];
+
+  return threads
+    .filter((thread) => blueprintFilter === allInboxBlueprintFilterValue || thread.blueprintKey === blueprintFilter)
+    .filter((thread) => isInboxTimestampInTimeFilter(thread.timestamp, timeFilter))
+    .sort((left, right) => toSafeTimestamp(right.timestamp) - toSafeTimestamp(left.timestamp));
+}
+
+function firstInboxThreadListSelection(items: InboxThreadListItem[]): InboxThreadSelection | undefined {
+  const first = items[0];
+  return first ? { kind: first.kind, id: first.id } : undefined;
+}
+
+function inboxItemBlueprintKey(item: InboxItem): string {
+  return item.blueprintId || item.blueprintName || "";
+}
+
+function inboxItemContextLabel(item: InboxItem, language: Language): string {
+  return [
+    item.blueprintName ?? item.blueprintId ?? item.targetRoleId ?? item.createdByRoleId,
+    formalInboxTypeLabel(item.type, language)
+  ].filter(Boolean).join(" / ");
+}
+
+function inboxStatusClassName(status: InboxItem["status"]): string {
+  if (status === "approved") return "status-approved";
+  if (status === "rejected") return "status-rejected";
+  return "status-waiting_approval";
+}
+
+function inboxStatusLabel(status: InboxItem["status"], language: Language): string {
+  if (language === "zh-CN") {
+    if (status === "approved") return "已批准";
+    if (status === "rejected") return "已驳回";
+    return "待处理";
+  }
+  if (status === "approved") return "Approved";
+  if (status === "rejected") return "Rejected";
+  return "Pending";
+}
+
+function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
+  return approval.status !== "approved" && approval.status !== "rejected" && approval.status !== "replying";
+}
+
+function approvalStatusClassName(approval: PendingApprovalItem): string {
+  if (approval.status === "approved") return "status-approved";
+  if (approval.status === "rejected") return "status-rejected";
+  if (approval.status === "replying") return "status-running";
+  return "status-waiting_approval";
+}
+
+function approvalStatusLabel(approval: PendingApprovalItem, language: Language, t: Messages): string {
+  if (language === "zh-CN") {
+    if (approval.status === "approved") return "已批准";
+    if (approval.status === "rejected") return "已驳回";
+    if (approval.status === "replying") return "回复中";
+    return "待处理";
+  }
+  if (approval.status === "approved") return "Approved";
+  if (approval.status === "rejected") return "Rejected";
+  if (approval.status === "replying") return "Replying";
+  return t.status.waiting_approval;
+}
+
+function inboxTimeFilterLabel(filter: InboxTimeFilter, language: Language): string {
+  if (language === "zh-CN") {
+    if (filter === "today") return "今天";
+    if (filter === "last7") return "最近 7 天";
+    if (filter === "last30") return "最近 30 天";
+    return "全部时间";
+  }
+  if (filter === "today") return "Today";
+  if (filter === "last7") return "Last 7 days";
+  if (filter === "last30") return "Last 30 days";
+  return "All time";
+}
+
+function isInboxTimestampInTimeFilter(timestamp: string, filter: InboxTimeFilter): boolean {
+  if (filter === "all") return true;
+  const value = toSafeTimestamp(timestamp);
+  if (!value) return false;
+  const today = startOfLocalDay(new Date()).getTime();
+  if (filter === "today") return value >= today;
+  if (filter === "last7") return value >= addDays(new Date(today), -6).getTime();
+  return value >= addDays(new Date(today), -29).getTime();
 }
 
 function formalInboxTypeLabel(type: InboxItem["type"], language: Language): string {
@@ -1277,9 +1577,8 @@ function firstInboxThreadSelection(inboxItems: InboxItem[], approvals: PendingAp
   return undefined;
 }
 
-function hasInboxThread(selection: InboxThreadSelection, inboxItems: InboxItem[], approvals: PendingApprovalItem[]): boolean {
-  if (selection.kind === "inbox") return inboxItems.some((item) => item.id === selection.id);
-  return approvals.some((approval) => approval.nodeRunId === selection.id);
+function hasInboxThread(selection: InboxThreadSelection, items: InboxThreadListItem[]): boolean {
+  return items.some((item) => item.kind === selection.kind && item.id === selection.id);
 }
 
 function inboxThreadKey(selection: InboxThreadSelection): string {
@@ -1326,11 +1625,19 @@ function buildInboxConversationMessages({
           createdAt: reply.createdAt
         }))
       : [];
+  const serverUserReplyBodies = new Set(
+    selection.kind === "approval"
+      ? (approval?.replies ?? [])
+          .filter((reply) => reply.role === "user")
+          .map((reply) => reply.body.trim())
+      : (inboxItem?.replies ?? []).map((reply) => reply.body.trim())
+  );
+  const visibleLocalReplies = replies.filter((reply) => !serverUserReplyBodies.has(reply.body.trim()));
 
   return [
     ...baseMessages,
     ...approvalReplies,
-    ...replies.map((reply) => ({
+    ...visibleLocalReplies.map((reply) => ({
       id: reply.id,
       role: "user" as const,
       speaker: copy.you,
@@ -1345,7 +1652,10 @@ function buildFormalInboxConversation(item: InboxItem, copy: InboxCopy, language
     `${copy.from}: ${item.createdByRoleId}`,
     item.targetRoleId ? `${copy.to}: ${item.targetRoleId}` : undefined,
     item.blueprintName ? `${copy.conversation}: ${item.blueprintName}` : undefined,
-    `${copy.openedAt}: ${formatDateTime(item.createdAt, language)}`
+    `${copy.status}: ${inboxStatusLabel(item.status, language)}`,
+    `${copy.openedAt}: ${formatDateTime(item.createdAt, language)}`,
+    item.decidedAt ? `${copy.decidedAt}: ${formatDateTime(item.decidedAt, language)}` : undefined,
+    item.decisionComment ? `${copy.decisionComment}: ${item.decisionComment}` : undefined
   ].filter((fact): fact is string => Boolean(fact));
   const messages: InboxConversationMessage[] = [
     {
@@ -1367,6 +1677,16 @@ function buildFormalInboxConversation(item: InboxItem, copy: InboxCopy, language
       createdAt: item.createdAt
     });
   }
+
+  messages.push(
+    ...(item.replies ?? []).map((reply) => ({
+      id: reply.id,
+      role: "user" as const,
+      speaker: copy.you,
+      body: reply.body,
+      createdAt: reply.createdAt
+    }))
+  );
 
   return messages;
 }
@@ -2034,9 +2354,51 @@ export function SkillsPage({
   );
 }
 
+function runResultTitle(runView: BlueprintRunView, blueprints: BlueprintDefinition[]): string {
+  return (
+    runView.finalResult?.candidates[0]?.nodeLabel ??
+    runView.finalResult?.failedNode?.nodeLabel ??
+    runView.finalResult?.waitingApprovalNode?.nodeLabel ??
+    blueprintNameFor(blueprints, runView.run.blueprintId)
+  );
+}
+
+function runResultPreview(runView: BlueprintRunView, t: Messages): string {
+  const result = runView.finalResult;
+  if (!result) return t.trace.noOutput;
+  if (result.state === "available") {
+    return summarizeOutput(result.candidates[0]?.output, t);
+  }
+  if (result.state === "failed") {
+    return result.failedNode?.error || summarizeOutput(result.failedNode?.output, t);
+  }
+  if (result.state === "waiting_approval") {
+    return result.waitingApprovalNode?.nodeLabel ?? t.status.waiting_approval;
+  }
+  return t.trace.noOutput;
+}
+
+function runResultStatusClassName(runView: BlueprintRunView): string {
+  const state = runView.finalResult?.state;
+  if (state === "available") return "status-succeeded";
+  if (state === "failed") return "status-failed";
+  if (state === "waiting_approval") return "status-waiting_approval";
+  if (state === "empty") return "status-empty";
+  return `status-${runView.run.status}`;
+}
+
+function runResultStatusLabel(runView: BlueprintRunView, t: Messages, language: Language): string {
+  const state = runView.finalResult?.state;
+  if (state === "available") return language === "zh-CN" ? "已生成" : "Available";
+  if (state === "failed") return t.status.failed;
+  if (state === "waiting_approval") return t.status.waiting_approval;
+  if (state === "empty") return language === "zh-CN" ? "无输出" : "No output";
+  return t.status[runView.run.status];
+}
+
 export function HistoryPage({
   runs,
-  approvals,
+  approvals: _approvals,
   blueprints,
   language,
   t,
@@ -2051,26 +2413,28 @@ export function HistoryPage({
 }) {
   const copy =
     language === "zh-CN"
-      ? {
-          title: "\u5386\u53f2",
-          runHistory: "\u8fd0\u884c\u5386\u53f2",
-          inbox: "\u6536\u4ef6\u7bb1",
-          fromDate: "\u5f00\u59cb\u65e5\u671f",
-          toDate: "\u7ed3\u675f\u65e5\u671f",
-          noRecords: "\u8be5\u65f6\u95f4\u8303\u56f4\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
-          openRun: "\u67e5\u770b\u8fd0\u884c\u8be6\u60c5",
-          startedAt: "\u542f\u52a8\u65f6\u95f4"
-        }
-      : {
-          title: "History",
-          runHistory: "Run history",
-          inbox: "Inbox",
-          fromDate: "Start date",
-          toDate: "End date",
-          noRecords: "No records for this date range.",
-          openRun: "View run detail",
-          startedAt: "Started"
-        };
+        ? {
+            title: "\u5386\u53f2",
+            runHistory: "\u8fd0\u884c\u5386\u53f2",
+            runResults: "运行结果",
+            fromDate: "\u5f00\u59cb\u65e5\u671f",
+            toDate: "\u7ed3\u675f\u65e5\u671f",
+            noRecords: "\u8be5\u65f6\u95f4\u8303\u56f4\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
+            noResults: "该时间范围没有运行结果。",
+            openRun: "\u67e5\u770b\u8fd0\u884c\u8be6\u60c5",
+            startedAt: "\u542f\u52a8\u65f6\u95f4"
+          }
+        : {
+            title: "History",
+            runHistory: "Run history",
+            runResults: "Run results",
+            fromDate: "Start date",
+            toDate: "End date",
+            noRecords: "No records for this date range.",
+            noResults: "No run results for this date range.",
+            openRun: "View run detail",
+            startedAt: "Started"
+          };
   const [startDate, setStartDate] = useState(() => toDateInputValue(addDays(new Date(), -6)));
   const [endDate, setEndDate] = useState(() => toDateInputValue(new Date()));
   const [rangeStart, rangeEnd] = normalizeDateRange(startDate, endDate);
@@ -2080,10 +2444,6 @@ export function HistoryPage({
         isRunInDateRange(runView, rangeStart, rangeEnd)
       ),
     [runs, rangeStart, rangeEnd]
-  );
-  const inboxForRange = useMemo(
-    () => approvals.filter((approval) => isLocalDateInRange(approval.requestedAt, rangeStart, rangeEnd)),
-    [approvals, rangeStart, rangeEnd]
   );
 
   return (
@@ -2138,26 +2498,36 @@ export function HistoryPage({
 
         <div className="trace-column-shell history-column-shell">
           <div className="trace-column-header history-column-header">
-            <h3>{copy.inbox}</h3>
+            <h3>{copy.runResults}</h3>
           </div>
           <div className="content-card stack-card history-card">
             <div className="table-stack history-list">
-              {inboxForRange.length ? (
-                inboxForRange.map((approval) => (
-                  <div key={approval.nodeRunId} className="table-row history-list-row">
+              {runHistoryForRange.length ? (
+                runHistoryForRange.map((runView) => (
+                  <button
+                    key={runView.run.id}
+                    type="button"
+                    className="table-row history-list-row history-list-button"
+                    title={copy.openRun}
+                    onClick={() => onOpenRun(runView.run.id, runView.run.blueprintId)}
+                  >
                     <div className="history-list-main">
-                      <strong>{approval.nodeLabel}</strong>
-                      <p>{approval.blueprintName}</p>
+                      <strong>{runResultTitle(runView, blueprints)}</strong>
+                      <p>{runResultPreview(runView, t)}</p>
                     </div>
-                    <span className="status-pill history-list-status status-waiting_approval">{t.status.waiting_approval}</span>
+                    <span className={`status-pill history-list-status ${runResultStatusClassName(runView)}`}>
+                      {runResultStatusLabel(runView, t, language)}
+                    </span>
                     <div className="history-list-meta">
-                      <span>{approval.blueprintName}</span>
-                      <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
+                      <span>{blueprintNameFor(blueprints, runView.run.blueprintId)}</span>
+                      <time dateTime={runView.run.endedAt ?? runView.run.startedAt}>
+                        {formatDateTime(runView.run.endedAt ?? runView.run.startedAt, language)}
+                      </time>
                     </div>
-                  </div>
+                  </button>
                 ))
               ) : (
-                <div className="empty-state page-empty">{t.empty.noApprovals}</div>
+                <div className="empty-state page-empty">{copy.noResults}</div>
               )}
             </div>
           </div>
@@ -3292,6 +3662,10 @@ function addDays(value: Date, days: number): Date {
   const next = new Date(value);
   next.setDate(next.getDate() + days);
   return next;
+}
+
+function startOfLocalDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
 }
 
 function normalizeDateRange(startDate: string, endDate: string): [string, string] {

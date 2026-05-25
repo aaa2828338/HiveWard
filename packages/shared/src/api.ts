@@ -117,6 +117,10 @@ export interface RejectInboxItemRequest {
   comment?: string;
 }
 
+export interface ReplyInboxItemRequest {
+  message: string;
+}
+
 export interface ApproveInboxItemResponse {
   item: InboxItem;
   importedBlueprints?: BlueprintDefinition[];

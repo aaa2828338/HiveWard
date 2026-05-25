@@ -554,7 +554,7 @@ export class FileHivewardStore {
       const itemIndex = items.findIndex((item) => item.id === itemId);
       if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
       const item = items[itemIndex]!;
-      if (item.status !== "pending") {
+      if (item.status === "approved") {
         return { item };
       }
       let importedBlueprints: BlueprintDefinition[] | undefined;
@@ -596,7 +596,7 @@ export class FileHivewardStore {
       const itemIndex = items.findIndex((item) => item.id === itemId);
       if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
       const item = items[itemIndex]!;
-      if (item.status !== "pending") {
+      if (item.status === "approved") {
         return item;
       }
       const now = new Date().toISOString();
@@ -611,6 +611,44 @@ export class FileHivewardStore {
       index.inboxItems[companyId] = items;
       await this.writeIndexUnlocked(index);
       return rejected;
+    });
+  }
+
+  async replyToInboxItem(itemId: string, message: string): Promise<InboxItem> {
+    return this.enqueue(async () => {
+      const body = readOptionalString(message);
+      if (!body) {
+        throw new Error("Inbox reply message is required.");
+      }
+
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const items = index.inboxItems[companyId] ?? [];
+      const itemIndex = items.findIndex((item) => item.id === itemId);
+      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
+      const item = items[itemIndex]!;
+      if (item.status === "approved") {
+        return item;
+      }
+
+      const now = new Date().toISOString();
+      const replied: InboxItem = {
+        ...item,
+        replies: [
+          ...(item.replies ?? []),
+          {
+            id: `inbox-reply-${nanoid(10)}`,
+            role: "user",
+            body,
+            createdAt: now
+          }
+        ],
+        updatedAt: now
+      };
+      items[itemIndex] = replied;
+      index.inboxItems[companyId] = items;
+      await this.writeIndexUnlocked(index);
+      return replied;
     });
   }
 
@@ -816,10 +854,12 @@ export class FileHivewardStore {
             startedBy: archive.run.startedBy,
             startedAt: archive.run.startedAt,
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
+            status: "pending",
             approverHint: readString(output?.approverHint),
             instructions: readString(output?.instructions),
             ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
             ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
+            canApprove: true,
             canReject: true,
             ...(output?.approvalType === "agent" ? { canReply: true } : {}),
             ...(upstream ? { upstream } : {})
@@ -1386,11 +1426,25 @@ function normalizeInboxItems(value: unknown, companies: CompanyProfile[], now: s
         createdAt: readString(item.createdAt) ?? now,
         updatedAt: readString(item.updatedAt) ?? now,
         decidedAt: readString(item.decidedAt),
-        decisionComment: readString(item.decisionComment)
+        decisionComment: readString(item.decisionComment),
+        replies: normalizeInboxItemReplies(item.replies)
       }];
     });
   }
   return inboxItems;
+}
+
+function normalizeInboxItemReplies(value: unknown): InboxItem["replies"] {
+  if (!Array.isArray(value)) return undefined;
+  const replies = value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const id = readString(item.id);
+    const body = readString(item.body);
+    const createdAt = readString(item.createdAt);
+    if (!id || !body || !createdAt) return [];
+    return [{ id, role: "user" as const, body, createdAt }];
+  });
+  return replies.length ? replies : undefined;
 }
 
 function normalizeInboxItemType(value: unknown): InboxItemType {

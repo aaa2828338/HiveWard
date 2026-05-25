@@ -1188,6 +1188,19 @@ describe("apiRouter", () => {
           blueprintId: blueprint.id
         });
 
+        const replyResponse = await fetch(`${baseUrl}/api/inbox/${inboxBody.items[0]!.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Please tighten the generated package before I approve it." })
+        });
+        const replyBody = await readOkJson<{ item: { replies?: Array<{ role: string; body: string }> } }>(replyResponse);
+        expect(replyBody.item.replies).toMatchObject([
+          {
+            role: "user",
+            body: "Please tighten the generated package before I approve it."
+          }
+        ]);
+
         const approveResponse = await fetch(`${baseUrl}/api/inbox/${inboxBody.items[0]!.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },

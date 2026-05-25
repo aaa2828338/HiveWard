@@ -40,6 +40,7 @@ import type {
   ApproveBlueprintRunRequest,
   RejectBlueprintRunRequest,
   ReplyBlueprintRunApprovalRequest,
+  ReplyInboxItemRequest,
   ChatSessionHistoryResponse,
   ChatSessionMessagesResponse,
   CreateChatSessionRequest,
@@ -392,6 +393,14 @@ export const api = {
     const response = await request<InboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/reject`, {
       method: "POST",
       body: JSON.stringify({ comment })
+    });
+    return response.item;
+  },
+
+  async replyToInboxItem(itemId: string, message: string): Promise<InboxItem> {
+    const response = await request<InboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ message } satisfies ReplyInboxItemRequest)
     });
     return response.item;
   },

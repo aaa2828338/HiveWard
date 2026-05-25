@@ -29,9 +29,11 @@ describe("run state sync", () => {
         startedBy: "tester",
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
+        status: "pending",
         approverHint: "Lead",
         instructions: "Approve before send.",
         reviewOutput: "draft answer",
+        canApprove: true,
         canReply: true,
         canReject: true
       }
@@ -75,6 +77,8 @@ describe("run state sync", () => {
       approverHint: "Lead",
       instructions: "Reply before approve.",
       reviewOutput: "draft answer",
+      status: "pending",
+      canApprove: true,
       canReply: true,
       canReject: true,
       replies: [
@@ -111,6 +115,83 @@ describe("run state sync", () => {
         output: previousOutput
       }
     ]);
+  });
+
+  it("keeps an approval visible while a reply rerun is in progress", () => {
+    const runView = createRunView("running");
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      output: {
+        approvalType: "agent",
+        approverHint: "Lead",
+        instructions: "Reply before approve.",
+        reviewOutput: "draft answer",
+        replies: [
+          {
+            id: "reply-1",
+            role: "user",
+            body: "Tighten the wording.",
+            createdAt: "2026-05-21T01:03:00.000Z"
+          }
+        ]
+      }
+    };
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]).toMatchObject({
+      nodeRunId: "node-run-agent",
+      status: "replying",
+      reviewOutput: "draft answer",
+      canApprove: false,
+      canReply: false,
+      canReject: false,
+      replies: [
+        {
+          id: "reply-1",
+          role: "user",
+          body: "Tighten the wording.",
+          createdAt: "2026-05-21T01:03:00.000Z"
+        }
+      ]
+    });
+  });
+
+  it("keeps an approved approval visible but non-actionable after completion", () => {
+    const existing: PendingApprovalItem[] = [
+      {
+        blueprintId: "blueprint-1",
+        blueprintName: "Blueprint 1",
+        blueprintRunId: "run-1",
+        nodeRunId: "node-run-agent",
+        nodeId: "agent",
+        nodeLabel: "Agent",
+        startedBy: "tester",
+        startedAt: "2026-05-21T01:00:00.000Z",
+        requestedAt: "2026-05-21T01:02:00.000Z",
+        approverHint: "Lead",
+        instructions: "Approve before send.",
+        reviewOutput: "draft answer",
+        canApprove: true,
+        canReply: true,
+        canReject: true
+      }
+    ];
+
+    const runView = createRunView("succeeded");
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      endedAt: "2026-05-21T01:05:00.000Z"
+    };
+
+    expect(syncApprovalsForRun(existing, runView)[0]).toMatchObject({
+      nodeRunId: "node-run-agent",
+      status: "approved",
+      decidedAt: "2026-05-21T01:05:00.000Z",
+      canApprove: false,
+      canReply: false,
+      canReject: false
+    });
   });
 
   it("removes stale inbox items when the same run no longer has a waiting approval node", () => {

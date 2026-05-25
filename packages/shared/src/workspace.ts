@@ -62,6 +62,10 @@ export interface PendingApprovalItem {
   instructions?: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
+  status?: "pending" | "replying" | "approved" | "rejected";
+  decidedAt?: string;
+  decisionComment?: string;
+  canApprove?: boolean;
   canReply?: boolean;
   canReject?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
@@ -106,6 +110,14 @@ export interface InboxItem {
   updatedAt: string;
   decidedAt?: string;
   decisionComment?: string;
+  replies?: InboxItemReply[];
+}
+
+export interface InboxItemReply {
+  id: string;
+  role: "user";
+  body: string;
+  createdAt: string;
 }
 
 export interface WorkspaceDashboard {
