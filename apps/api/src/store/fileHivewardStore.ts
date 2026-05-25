@@ -855,8 +855,6 @@ export class FileHivewardStore {
             startedAt: archive.run.startedAt,
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
             status: "pending",
-            approverHint: readString(output?.approverHint),
-            instructions: readString(output?.instructions),
             ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
             ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
             canApprove: true,

@@ -2528,9 +2528,19 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
       }
       if (node.type === "summary") {
         const config = node.config as SummaryNodeConfig;
-        return config.mode === "openclaw_summary_agent" && !config.modelId && defaults.openclaw
-          ? { ...node, config: { ...config, modelId: defaults.openclaw } }
-          : node;
+        const mode = config.mode as string;
+        if (mode !== "harness_summary" && mode !== "openclaw_summary_agent") return node;
+        const runtimeId = config.runtimeId ?? "openclaw";
+        const defaultModelId = defaultModelForAgentRuntime(runtimeId, defaults);
+        return {
+          ...node,
+          config: {
+            ...config,
+            mode: "harness_summary",
+            runtimeId,
+            modelId: config.modelId || defaultModelId
+          } satisfies SummaryNodeConfig
+        };
       }
       return node;
     })

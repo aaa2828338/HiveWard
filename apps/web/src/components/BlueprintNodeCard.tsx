@@ -17,8 +17,7 @@ import {
   managerSlotInnerOutHandleId,
   type CanvasSize,
   type BlueprintNodeRunStatus,
-  type BlueprintNodeType,
-  type ManagerSlotExecutionMode
+  type BlueprintNodeType
 } from "@hiveward/shared";
 
 export interface BlueprintNodeCardData extends Record<string, unknown> {
@@ -30,8 +29,6 @@ export interface BlueprintNodeCardData extends Record<string, unknown> {
   disabled?: boolean;
   isStartNode?: boolean;
   managerPortCount?: number;
-  managerSlot?: number;
-  managerSlotExecutionMode?: ManagerSlotExecutionMode;
   managerSlotLaneCount?: number;
   managerSlotSize?: CanvasSize;
 }
@@ -216,10 +213,7 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
       {nodeData.type === "manager_slot" && (
         <>
           <div className="manager-slot-box-body" aria-hidden="true">
-            <span className="manager-slot-box-tag">{`Slot ${nodeData.managerSlot ?? ""}`}</span>
-            <span className={`manager-slot-mode-tag manager-slot-mode-${nodeData.managerSlotExecutionMode ?? "manual"}`}>
-              {nodeData.managerSlotExecutionMode === "parallel" ? "Parallel" : "Manual"}
-            </span>
+            <span className="manager-slot-box-tag">{managerSlotLaneCount}</span>
             <span className="manager-slot-box-wall manager-slot-box-wall-left" />
             <span className="manager-slot-box-wall manager-slot-box-wall-right" />
           </div>

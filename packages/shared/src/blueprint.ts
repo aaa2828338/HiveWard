@@ -70,8 +70,6 @@ export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
 
 export interface AgentApprovalConfig {
   enabled: boolean;
-  approverHint?: string;
-  instructions?: string;
 }
 
 export interface AgentSendConfig {
@@ -111,7 +109,8 @@ export interface ConditionNodeConfig extends BlueprintNodeBaseConfig {
 }
 
 export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
-  mode: "structured_merge" | "openclaw_summary_agent";
+  mode: "structured_merge" | "harness_summary";
+  runtimeId?: AgentRuntimeId;
   prompt?: string;
   modelId?: string;
 }
@@ -666,9 +665,7 @@ export function createStarterBlueprint(now: string, companyId = "company-hivewar
           agentName: "delivery-agent",
           prompt: "Prepare the approved delivery note from the merged summary.",
           approval: {
-            enabled: true,
-            approverHint: "Engineering lead",
-            instructions: "Review the delivery note before sending it to the team channel."
+            enabled: true
           },
           send: {
             enabled: true,
@@ -1891,7 +1888,9 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       description: summaryConfig.description,
       resultRole: summaryConfig.resultRole,
       mode: summaryConfig.mode,
-      prompt: summaryConfig.prompt
+      runtimeId: summaryConfig.runtimeId,
+      prompt: summaryConfig.prompt,
+      modelId: summaryConfig.modelId
     };
   }
   return { ...config };
@@ -1947,9 +1946,12 @@ function applyImportDefaultsToConfig(
   }
   if (type === "summary") {
     const summaryConfig = config as SummaryNodeConfig;
+    const runtimeId = summaryConfig.runtimeId ?? "openclaw";
+    const modelId = summaryConfig.modelId ?? defaultModelForImportRuntime(runtimeId, defaults);
     return {
       ...summaryConfig,
-      modelId: summaryConfig.mode === "openclaw_summary_agent" ? defaultModelForImportRuntime("openclaw", defaults) : undefined
+      runtimeId: summaryConfig.mode === "harness_summary" ? runtimeId : summaryConfig.runtimeId,
+      modelId: summaryConfig.mode === "harness_summary" ? modelId : undefined
     };
   }
   return config;
@@ -2038,11 +2040,15 @@ function readPortableBlueprintNodeConfig(
     return readAgentNodeConfig(config, fieldName, base);
   }
   if (type === "summary") {
-    const mode = config.mode === "openclaw_summary_agent" ? "openclaw_summary_agent" : "structured_merge";
+    const mode = readSummaryNodeMode(config.mode);
     return {
-      ...config,
       ...base,
       mode,
+      runtimeId:
+        mode === "harness_summary"
+          ? readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`) ?? "openclaw"
+          : readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`),
+      modelId: readOptionalString(config.modelId),
       prompt: readOptionalString(config.prompt)
     } as SummaryNodeConfig;
   }
@@ -2108,9 +2114,7 @@ function readAgentApprovalConfig(value: unknown, fieldName: string): AgentApprov
     throw new Error(`${fieldName} must be an object.`);
   }
   return {
-    enabled: value.enabled === true,
-    approverHint: readOptionalString(value.approverHint),
-    instructions: readOptionalString(value.instructions)
+    enabled: value.enabled === true
   };
 }
 
@@ -2352,6 +2356,9 @@ function normalizeManagerSlotEdge(
     if (slotConfig.managerNodeId !== target.id) {
       throw new Error(`Manager slot ${source.id} belongs to ${slotConfig.managerNodeId}, not ${target.id}.`);
     }
+    if (edge.sourceHandle && edge.sourceHandle !== managerSlotOutHandle) {
+      throw new Error(`Manager slot edge ${edge.id} must use the left manager return handle for manager connections.`);
+    }
     return {
       ...edge,
       sourceHandle: managerSlotOutHandle,
@@ -2385,11 +2392,17 @@ function normalizeManagerSlotBoundaryEdge(edge: BlueprintEdge, source: Blueprint
     if (otherNode.type === "manager") {
       throw new Error(`Manager slot edge ${edge.id} must use the left manager return handle for manager connections.`);
     }
+    if (otherNode.parentId) {
+      throw new Error(`Manager slot edge ${edge.id} must use inner handles for nodes inside the slot.`);
+    }
     return {
       ...edge,
       sourceHandle: managerSlotForwardOutHandle,
       condition: edge.condition ?? "success"
     };
+  }
+  if (source.type === "manager_slot" && edge.sourceHandle === managerSlotOutHandle) {
+    throw new Error(`Manager slot edge ${edge.id} must use the right forward handle for non-manager connections.`);
   }
   if (otherNode.type === "manager") {
     throw new Error(`Manager slot edge ${edge.id} must use canonical manager-slot handles.`);
@@ -2601,6 +2614,10 @@ function readManagerSlotExecutionMode(value: unknown, fieldName: string): Manage
     return "parallel";
   }
   throw new Error(`${fieldName} must be manual or parallel.`);
+}
+
+function readSummaryNodeMode(value: unknown): SummaryNodeConfig["mode"] {
+  return value === "harness_summary" || value === "openclaw_summary_agent" ? "harness_summary" : "structured_merge";
 }
 
 function isBlueprintNodeType(value: string): value is BlueprintNodeType {

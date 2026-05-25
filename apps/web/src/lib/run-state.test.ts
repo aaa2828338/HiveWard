@@ -30,8 +30,6 @@ describe("run state sync", () => {
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
         status: "pending",
-        approverHint: "Lead",
-        instructions: "Approve before send.",
         reviewOutput: "draft answer",
         canApprove: true,
         canReply: true,
@@ -49,8 +47,6 @@ describe("run state sync", () => {
       nodeType: "agent",
       output: {
         approvalType: "agent",
-        approverHint: "Lead",
-        instructions: "Reply before approve.",
         reviewOutput: "draft answer",
         replies: [
           {
@@ -74,8 +70,6 @@ describe("run state sync", () => {
     expect(approvals[0]).toMatchObject({
       nodeId: "delivery",
       nodeLabel: "Delivery",
-      approverHint: "Lead",
-      instructions: "Reply before approve.",
       reviewOutput: "draft answer",
       status: "pending",
       canApprove: true,
@@ -123,8 +117,6 @@ describe("run state sync", () => {
       ...runView.nodeRuns[0]!,
       output: {
         approvalType: "agent",
-        approverHint: "Lead",
-        instructions: "Reply before approve.",
         reviewOutput: "draft answer",
         replies: [
           {
@@ -169,8 +161,6 @@ describe("run state sync", () => {
         startedBy: "tester",
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
-        approverHint: "Lead",
-        instructions: "Approve before send.",
         reviewOutput: "draft answer",
         canApprove: true,
         canReply: true,
@@ -206,8 +196,6 @@ describe("run state sync", () => {
         startedBy: "tester",
         startedAt: "2026-05-21T01:00:00.000Z",
         requestedAt: "2026-05-21T01:02:00.000Z",
-        approverHint: "Lead",
-        instructions: "Approve before send.",
         reviewOutput: "draft answer",
         canReply: true,
         canReject: true
@@ -383,8 +371,6 @@ function createRunView(
         output: nodeStatus === "waiting_approval"
           ? {
               approvalType: "agent",
-              approverHint: "Lead",
-              instructions: "Approve before send.",
               reviewOutput: "draft answer",
               replies: []
             }

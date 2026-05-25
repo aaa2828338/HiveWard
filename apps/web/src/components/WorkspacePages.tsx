@@ -1613,7 +1613,7 @@ function buildInboxConversationMessages({
     selection.kind === "inbox" && inboxItem
       ? buildFormalInboxConversation(inboxItem, copy, language)
       : selection.kind === "approval" && approval
-        ? buildApprovalConversation(approval, copy, t, language)
+        ? buildApprovalConversation(approval, copy, t)
         : [];
   const approvalReplies =
     selection.kind === "approval"
@@ -1694,40 +1694,15 @@ function buildFormalInboxConversation(item: InboxItem, copy: InboxCopy, language
 function buildApprovalConversation(
   approval: PendingApprovalItem,
   copy: InboxCopy,
-  t: Messages,
-  language: Language
+  t: Messages
 ): InboxConversationMessage[] {
-  const facts = [
-    `${copy.from}: ${approval.startedBy}`,
-    `${copy.conversation}: ${approval.blueprintName}`,
-    `${copy.openedAt}: ${formatDateTime(approval.requestedAt, language)}`
-  ];
-  const instructions = approval.instructions?.trim();
-  const messages: InboxConversationMessage[] = [
-    {
-      id: `${approval.nodeRunId}:request`,
-      role: "assistant",
-      speaker: copy.system,
-      body: [
-        `### ${approvalSubject(approval)}`,
-        instructions || copy.approvalRequest,
-        ...facts.map((fact) => `- ${fact}`)
-      ].join("\n\n"),
-      createdAt: approval.requestedAt
-    }
-  ];
-
-  messages.push(
-    ...approvalContentBlocks(approval, copy, t).map((block) => ({
-      id: block.key,
-      role: "assistant" as const,
-      speaker: block.label,
-      body: block.body,
-      createdAt: approval.requestedAt
-    }))
-  );
-
-  return messages;
+  return approvalContentBlocks(approval, copy, t).map((block) => ({
+    id: block.key,
+    role: "assistant" as const,
+    speaker: block.label,
+    body: block.body,
+    createdAt: approval.requestedAt
+  }));
 }
 
 function formatInboxPayload(payload: Record<string, unknown> | undefined, copy: InboxCopy): string {

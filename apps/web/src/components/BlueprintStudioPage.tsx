@@ -1626,7 +1626,6 @@ export function BlueprintStudioPage({
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
             harnessSkillStatuses={harnessSkillStatuses}
-            nodes={blueprint.nodes}
             node={inspectedNode}
             t={t}
             onClose={() => {
@@ -1872,7 +1871,6 @@ function NodeDetailSidebar({
   configuredAgents,
   harnessStatuses,
   harnessSkillStatuses,
-  nodes,
   node,
   t,
   onClose,
@@ -1883,7 +1881,6 @@ function NodeDetailSidebar({
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
-  nodes: BlueprintNode[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -1912,7 +1909,6 @@ function NodeDetailSidebar({
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
             harnessSkillStatuses={harnessSkillStatuses}
-            nodes={nodes}
             models={models}
             channels={channels}
             onPatchNode={onPatchNode}
@@ -2170,7 +2166,6 @@ function NodeConfigForm({
   configuredAgents,
   harnessStatuses,
   harnessSkillStatuses,
-  nodes,
   models,
   channels,
   onPatchNode,
@@ -2181,7 +2176,6 @@ function NodeConfigForm({
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
-  nodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
@@ -2291,48 +2285,12 @@ function NodeConfigForm({
               onChange={(value) =>
                 onPatchConfig({
                   approval: {
-                    ...config.approval,
                     enabled: value === "yes"
                   }
                 })
               }
             />
           </label>
-          {approvalEnabled && (
-            <>
-              <label>
-                <span>{t.fields.approver}</span>
-                <input
-                  value={config.approval?.approverHint ?? ""}
-                  onChange={(event) =>
-                    onPatchConfig({
-                      approval: {
-                        enabled: true,
-                        approverHint: event.target.value || undefined,
-                        instructions: config.approval?.instructions
-                      }
-                    })
-                  }
-                />
-              </label>
-              <label className="field-span-full">
-                <span>{t.fields.instructions}</span>
-                <textarea
-                  rows={5}
-                  value={config.approval?.instructions ?? ""}
-                  onChange={(event) =>
-                    onPatchConfig({
-                      approval: {
-                        enabled: true,
-                        approverHint: config.approval?.approverHint,
-                        instructions: event.target.value || undefined
-                      }
-                    })
-                  }
-                />
-              </label>
-            </>
-          )}
           {runtimeId === "openclaw" && (
             <>
               <label>
@@ -2504,40 +2462,8 @@ function NodeConfigForm({
 
   if (node.type === "manager_slot") {
     const config = node.config as ManagerSlotNodeConfig;
-    const managerNodes = nodes.filter(
-      (candidate): candidate is BlueprintNode & { type: "manager"; config: ManagerNodeConfig } => candidate.type === "manager"
-    );
-    const managerOptions: BlueprintSelectOption[] = [
-      { value: "", label: t.common.notLinked },
-      ...managerNodes.map((manager) => ({ value: manager.id, label: manager.config.label || manager.id }))
-    ];
-    const switchManager = (managerNodeId: string) => {
-      onPatchConfig({
-        managerNodeId,
-        slot: normalizeBoundedNumberValue(config.slot, 1, maxManagerPortCount, 1)
-      });
-    };
     return (
       <div className="config-form node-modal-form">
-        <div className="config-field">
-          <span>{t.fields.manager}</span>
-          <BlueprintSelect
-            value={config.managerNodeId}
-            options={managerOptions}
-            ariaLabel={t.fields.manager}
-            onChange={switchManager}
-          />
-        </div>
-        <label>
-          <span>{t.fields.slot}</span>
-          <BoundedNumberInput
-            value={config.slot}
-            min={1}
-            max={maxManagerPortCount}
-            fallback={1}
-            onValueChange={(slot) => onPatchConfig({ slot })}
-          />
-        </label>
         <label>
           <span>{t.fields.parallelLanes}</span>
           <BoundedNumberInput
@@ -2584,38 +2510,83 @@ function NodeConfigForm({
 
   if (node.type === "summary") {
     const config = node.config as SummaryNodeConfig;
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: t.common.defaultModel },
-      ...models.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const summaryMode = (config.mode as string) === "harness_summary" || (config.mode as string) === "openclaw_summary_agent"
+      ? "harness_summary"
+      : "structured_merge";
+    const runtimeId = config.runtimeId ?? "openclaw";
+    const selectedModel = config.modelId ?? "";
+    const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const modeOptions: BlueprintSelectOption[] = [
       { value: "structured_merge", label: t.options.structuredMerge },
-      { value: "openclaw_summary_agent", label: t.options.openClawAgent }
+      { value: "harness_summary", label: t.options.harnessSummary }
     ];
+    const harnessOptions: BlueprintSelectOption[] = [
+      { value: "openclaw", label: "OpenClaw" },
+      { value: "codex", label: "Codex" },
+      { value: "claude", label: "Claude Code" }
+    ];
+    const modelOptions: BlueprintSelectOption[] = [
+      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
+      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
+      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
+    ];
+    const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
+    const switchMode = (mode: SummaryNodeConfig["mode"]) => {
+      onPatchConfig(
+        mode === "harness_summary"
+          ? { mode, runtimeId, modelId: undefined }
+          : { mode, modelId: undefined }
+      );
+    };
+    const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
+      onPatchConfig({ runtimeId: nextRuntimeId, modelId: undefined });
+    };
     return (
       <div className="config-form node-modal-form">
         <label>
-          <span>{t.fields.model}</span>
-          <BlueprintSelect
-            value={config.modelId ?? ""}
-            options={modelOptions}
-            ariaLabel={t.fields.model}
-            onChange={(value) => onPatchConfig({ modelId: value || undefined })}
-          />
-        </label>
-        <label>
           <span>{t.fields.mode}</span>
           <BlueprintSelect
-            value={config.mode}
+            value={summaryMode}
             options={modeOptions}
             ariaLabel={t.fields.mode}
-            onChange={(value) => onPatchConfig({ mode: value as SummaryNodeConfig["mode"] })}
+            onChange={(value) => switchMode(value as SummaryNodeConfig["mode"])}
           />
         </label>
-        <label className="field-span-full">
-          <span>{t.fields.prompt}</span>
-          <textarea rows={8} value={config.prompt ?? ""} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
-        </label>
+        {summaryMode === "harness_summary" && (
+          <>
+            <label>
+              <span>{t.fields.harness}</span>
+              <BlueprintSelect
+                value={runtimeId}
+                options={harnessOptions}
+                ariaLabel={t.fields.harness}
+                onChange={(value) => switchRuntime(value as AgentRuntimeId)}
+              />
+            </label>
+            <label>
+              <span>{t.fields.model}</span>
+              {isSdkProvider && runtimeModelOptions.length === 0 ? (
+                <input
+                  value={selectedModel}
+                  placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                  onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
+                />
+              ) : (
+                <BlueprintSelect
+                  value={selectedModel}
+                  options={modelOptions}
+                  ariaLabel={t.fields.model}
+                  onChange={(value) => onPatchConfig({ modelId: value || undefined })}
+                />
+              )}
+            </label>
+            <label className="field-span-full">
+              <span>{t.fields.prompt}</span>
+              <textarea rows={8} value={config.prompt ?? ""} onChange={(event) => onPatchConfig({ prompt: event.target.value || undefined })} />
+            </label>
+          </>
+        )}
       </div>
     );
   }
@@ -3142,7 +3113,7 @@ function addManagerSlotFromMenu(
     size: MANAGER_SLOT_DEFAULT_SIZE,
     config: {
       ...defaultConfig("manager_slot", t),
-      label: `${t.defaults.managerSlotLabel} ${slot}`,
+      label: t.defaults.managerSlotLabel,
       managerNodeId: selectedManager?.id ?? "",
       slot
     } as BlueprintNode["config"]
@@ -3326,7 +3297,7 @@ function applyManagerSlotAssignment(
         ...node,
         config: {
           ...config,
-          label: shouldRenameManagerSlot(config.label) ? `${t?.defaults.managerSlotLabel ?? "Slot"} ${boundedSlot}` : config.label,
+          label: shouldRenameManagerSlot(config.label) ? t?.defaults.managerSlotLabel ?? "Slot" : config.label,
           managerNodeId: managerNode.id,
           slot: boundedSlot
         }
@@ -3415,8 +3386,6 @@ function buildFlowNodes(
   return (blueprint?.nodes ?? []).map((node) => {
     const status = statusByNode.get(node.id)?.status;
     const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
-    const managerSlotConfig = node.type === "manager_slot" ? node.config as ManagerSlotNodeConfig : undefined;
-    const managerSlotExecutionMode = managerSlotConfig ? resolveManagerSlotExecutionMode(managerSlotConfig) : undefined;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     return {
@@ -3438,8 +3407,6 @@ function buildFlowNodes(
         isStartNode: isBlueprintStartNode(blueprint, node, nodesById),
         managerPortCount:
           node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
-        managerSlot: managerSlotConfig?.slot,
-        managerSlotExecutionMode,
         managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,
         managerSlotSize
       }
@@ -3911,7 +3878,8 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
   if (type === "summary") {
     return {
       label: t.defaults.summaryLabel,
-      mode: "structured_merge"
+      mode: "structured_merge",
+      runtimeId: "openclaw"
     };
   }
   if (type === "manager") {

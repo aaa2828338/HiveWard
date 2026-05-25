@@ -196,8 +196,6 @@ function buildApprovalItemFromNodeRun(
     startedAt: runView.run.startedAt,
     requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
     status: isReplying ? "replying" : "pending",
-    approverHint: readOptionalString(output.approverHint),
-    instructions: readOptionalString(output.instructions),
     ...("reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
     ...(replies ? { replies } : {}),
     canApprove: !isReplying,

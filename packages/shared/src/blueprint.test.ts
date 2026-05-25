@@ -478,6 +478,82 @@ describe("blueprint contracts", () => {
     expect(imported.display.viewport?.zoom).toBe(0.85);
   });
 
+  it("rejects manager-slot left outer output connections to non-manager nodes", () => {
+    expect(() =>
+      readPortableBlueprintPackage({
+        schema: "hiveward.blueprint-package/v1",
+        exportedAt: "2026-05-25T00:00:00.000Z",
+        blueprints: [
+          {
+            id: "invalid-manager-slot-output",
+            name: "Invalid manager slot output",
+            version: 1,
+            nodes: [
+              {
+                id: "manager",
+                type: "manager",
+                position: { x: 0, y: 0 },
+                config: { label: "Manager", portCount: 1, maxHandoffs: 4 }
+              },
+              {
+                id: "slot-1",
+                type: "manager_slot",
+                position: { x: 0, y: 0 },
+                config: { label: "Slot 1", managerNodeId: "manager", slot: 1 }
+              },
+              createContractNode("research", "agent", "Research", undefined, { x: 0, y: 0 })
+            ],
+            edges: [
+              { id: "manager-to-slot", source: "manager", target: "slot-1" },
+              { id: "slot-left-to-research", source: "slot-1", sourceHandle: "manager-slot-out", target: "research" },
+              { id: "slot-to-manager", source: "slot-1", target: "manager" }
+            ],
+            variables: {},
+            display: { viewport: { x: 0, y: 0, zoom: 1 } }
+          }
+        ]
+      })
+    ).toThrow("right forward handle");
+  });
+
+  it("normalizes legacy OpenClaw summary-agent configs into harness summary configs", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-25T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "summary-legacy",
+          name: "Summary legacy",
+          version: 1,
+          nodes: [
+            {
+              id: "summary",
+              type: "summary",
+              position: { x: 0, y: 0 },
+              config: {
+                label: "Harness summary",
+                mode: "openclaw_summary_agent",
+                modelId: "openclaw-model",
+                prompt: "Use this prompt."
+              }
+            }
+          ],
+          edges: [],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    expect(blueprintPackage.blueprints[0]?.nodes[0]?.config).toMatchObject({
+      label: "Harness summary",
+      mode: "harness_summary",
+      runtimeId: "openclaw",
+      modelId: "openclaw-model",
+      prompt: "Use this prompt."
+    });
+  });
+
   it("allows empty manager slots as explicit planning containers", () => {
     const blueprintPackage = readPortableBlueprintPackage({
       schema: "hiveward.blueprint-package/v1",

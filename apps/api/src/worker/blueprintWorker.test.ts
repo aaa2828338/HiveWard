@@ -372,6 +372,90 @@ describe("BlueprintWorker", () => {
     expect(nodeRun?.error).toContain("visible output");
   });
 
+  it("runs harness summary nodes through the selected harness with the default merge prompt", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const summary: BlueprintNode = {
+      id: "summary",
+      type: "summary",
+      position: { x: 420, y: 180 },
+      config: {
+        label: "Summary",
+        mode: "harness_summary",
+        runtimeId: "codex",
+        modelId: "gpt-5-codex"
+      }
+    };
+    const blueprint = createBlueprint([
+      createAgentNode("brief", "Brief"),
+      summary
+    ], [
+      { id: "brief-summary", source: "brief", target: "summary", condition: "success" }
+    ]);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-brief"),
+      createStartedAgentTask("task-summary", "codex")
+    ], [
+      createCompletedAgentTask("task-brief", "succeeded", "brief ready"),
+      createCompletedAgentTask("task-summary", "succeeded", "merged brief", undefined, "codex")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls[1]).toMatchObject({
+      source: "codex",
+      agentId: undefined,
+      agentName: "summary-agent",
+      modelId: "gpt-5-codex",
+      prompt: expect.stringContaining("structured merge")
+    });
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "summary")?.output).toBe("merged brief");
+  });
+
+  it("uses a custom prompt for harness summary nodes when provided", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const summary: BlueprintNode = {
+      id: "summary",
+      type: "summary",
+      position: { x: 120, y: 180 },
+      config: {
+        label: "Summary",
+        mode: "harness_summary",
+        runtimeId: "claude",
+        modelId: "inherit",
+        prompt: "Return an executive summary."
+      }
+    };
+    const blueprint = createBlueprint([summary], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-summary", "claude")
+    ], [
+      createCompletedAgentTask("task-summary", "succeeded", "executive summary", undefined, "claude")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls[0]).toMatchObject({
+      source: "claude",
+      agentId: undefined,
+      agentName: "summary-agent",
+      modelId: "inherit",
+      prompt: "Return an executive summary."
+    });
+  });
+
   it("lets Agent approval replies revise output before approval sends the final answer", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -381,9 +465,7 @@ describe("BlueprintWorker", () => {
     delivery.config = {
       ...delivery.config,
       approval: {
-        enabled: true,
-        approverHint: "Lead",
-        instructions: "Review before sending."
+        enabled: true
       },
       send: {
         enabled: true,
@@ -408,8 +490,6 @@ describe("BlueprintWorker", () => {
 
     expect(waitingNode.output).toMatchObject({
       approvalType: "agent",
-      approverHint: "Lead",
-      instructions: "Review before sending.",
       reviewOutput: "draft answer",
       replies: []
     });
@@ -781,12 +861,12 @@ describe("BlueprintWorker", () => {
     const approvalA = createAgentNode("approval-a", "Approval A");
     approvalA.config = {
       ...approvalA.config,
-      approval: { enabled: true, approverHint: "Lead A", instructions: "Approve A." }
+      approval: { enabled: true }
     };
     const approvalB = createAgentNode("approval-b", "Approval B", { x: 260, y: 0 });
     approvalB.config = {
       ...approvalB.config,
-      approval: { enabled: true, approverHint: "Lead B", instructions: "Approve B." }
+      approval: { enabled: true }
     };
     const blueprint = createBlueprint(
       [approvalA, approvalB],
@@ -1554,12 +1634,12 @@ describe("BlueprintWorker", () => {
   });
 });
 
-function createStartedAgentTask(taskId: string): StartedAgentTaskResult {
+function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["source"] = "openclaw"): StartedAgentTaskResult {
   return {
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
-    source: "openclaw",
+    source,
     status: "running",
     updatedAt: new Date().toISOString()
   };
@@ -1569,13 +1649,14 @@ function createCompletedAgentTask(
   taskId: string,
   status: AgentTaskResult["status"],
   output?: string,
-  error?: string
+  error?: string,
+  source: AgentTaskResult["source"] = "openclaw"
 ): AgentTaskResult {
   return {
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
-    source: "openclaw",
+    source,
     status,
     output,
     error,
