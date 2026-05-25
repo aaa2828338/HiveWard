@@ -40,7 +40,6 @@ import {
   Plus,
   Repeat2,
   Search,
-  Send,
   ShieldCheck,
   Settings2,
   Square,
@@ -50,6 +49,7 @@ import {
 } from "lucide-react";
 import {
   isAgentBlueprintNode,
+  isManagerSlotForwardOutHandle,
   isManagerSlotInnerInHandle,
   isManagerSlotInnerOutHandle,
   resolveManagerSlotExecutionMode,
@@ -59,7 +59,6 @@ import {
 import type {
   AgentNodeConfig,
   ArchitectureBlueprintView,
-  ApprovalNodeConfig,
   CanvasPosition,
   CanvasSize,
   CatalogSnapshot,
@@ -74,8 +73,6 @@ import type {
   HarnessSkillStatusResponse,
   NoteNodeConfig,
   OpenClawConfiguredAgent,
-  ParallelAgentsNodeConfig,
-  SendNodeConfig,
   SummaryNodeConfig,
   BlueprintDefinition,
   BlueprintEdge,
@@ -135,9 +132,7 @@ const palette: Array<{ type: BlueprintNodeType; icon: typeof Plus }> = [
   { type: "manager_slot", icon: Network },
   { type: "loop", icon: Repeat2 },
   { type: "condition", icon: GitBranch },
-  { type: "summary", icon: MessagesSquare },
-  { type: "approval", icon: ShieldCheck },
-  { type: "send", icon: Send }
+  { type: "summary", icon: MessagesSquare }
 ];
 
 const managerInHandlePrefix = "manager-in-";
@@ -147,14 +142,11 @@ const managerSlotOutHandle = "manager-slot-out";
 const maxManagerPortCount = 8;
 const blueprintStepTypes = new Set<BlueprintNodeType>([
   "agent",
-  "parallel_agents",
   "manager",
   "manager_slot",
   "loop",
   "condition",
-  "summary",
-  "approval",
-  "send"
+  "summary"
 ]);
 const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
@@ -163,6 +155,12 @@ const architectureLeaderNodeSize: CanvasSize = { width: 340, height: 220 };
 const defaultBlueprintViewport = { x: 0, y: 0, zoom: 1 };
 type BlueprintViewport = typeof defaultBlueprintViewport;
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
+type BlueprintConnectionCandidate = {
+  source?: string | null;
+  target?: string | null;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+};
 type BlueprintDrawerAnchor = {
   left: number;
   width: number;
@@ -808,6 +806,7 @@ export function BlueprintStudioPage({
       if (isBlueprintInteractionLocked) return;
       if (!connection.source || !connection.target) return;
       onUpdateBlueprint((current) => {
+        if (!isBlueprintConnectionAllowed(current, connection)) return current;
         return connectBlueprintNodes(current, connection, t);
       });
     },
@@ -836,7 +835,7 @@ export function BlueprintStudioPage({
         const node: BlueprintNode = {
           id,
           type,
-          runtimeId: type === "agent" || type === "manager" || type === "parallel_agents" ? "openclaw" : undefined,
+          runtimeId: type === "agent" || type === "manager" ? "openclaw" : undefined,
           parentId: shouldNest ? selectedSlot?.id : undefined,
           position: shouldNest
             ? managerSlotChildCenterPosition(selectedSlot!, nodeSize)
@@ -1372,6 +1371,7 @@ export function BlueprintStudioPage({
             }}
             onNodesChange={onNodesChange}
             onConnect={onConnect}
+            isValidConnection={(connection) => Boolean(blueprint && isBlueprintConnectionAllowed(blueprint, connection))}
             nodesDraggable={!isBlueprintInteractionLocked}
             nodesConnectable={!isBlueprintInteractionLocked}
             selectionOnDrag
@@ -2197,6 +2197,22 @@ function NodeConfigForm({
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
+    const approvalEnabled = config.approval?.enabled === true;
+    const sendEnabled = runtimeId === "openclaw" && config.send?.enabled === true;
+    const sendConfig = config.send ?? {
+      enabled: false,
+      channelId: channels[0]?.id ?? "slack",
+      target: "",
+      bodyTemplate: t.defaults.sendBody
+    };
+    const binaryOptions: BlueprintSelectOption[] = [
+      { value: "no", label: t.common.no },
+      { value: "yes", label: t.common.yes }
+    ];
+    const channelOptions: BlueprintSelectOption[] =
+      channels.length === 0
+        ? [{ value: sendConfig.channelId || "slack", label: sendConfig.channelId || "slack" }]
+        : channels.map((channel) => ({ value: channel.id, label: channel.label }));
     const runtimeOptions: BlueprintSelectOption[] = [
       { value: "codex", label: "Codex" },
       { value: "openclaw", label: "OpenClaw" },
@@ -2266,6 +2282,131 @@ function NodeConfigForm({
             t={t}
             onChange={(skillIds) => onPatchConfig({ skillIds })}
           />
+          <label>
+            <span>{t.defaults.approvalLabel}</span>
+            <BlueprintSelect
+              value={approvalEnabled ? "yes" : "no"}
+              options={binaryOptions}
+              ariaLabel={t.defaults.approvalLabel}
+              onChange={(value) =>
+                onPatchConfig({
+                  approval: {
+                    ...config.approval,
+                    enabled: value === "yes"
+                  }
+                })
+              }
+            />
+          </label>
+          {approvalEnabled && (
+            <>
+              <label>
+                <span>{t.fields.approver}</span>
+                <input
+                  value={config.approval?.approverHint ?? ""}
+                  onChange={(event) =>
+                    onPatchConfig({
+                      approval: {
+                        enabled: true,
+                        approverHint: event.target.value || undefined,
+                        instructions: config.approval?.instructions
+                      }
+                    })
+                  }
+                />
+              </label>
+              <label className="field-span-full">
+                <span>{t.fields.instructions}</span>
+                <textarea
+                  rows={5}
+                  value={config.approval?.instructions ?? ""}
+                  onChange={(event) =>
+                    onPatchConfig({
+                      approval: {
+                        enabled: true,
+                        approverHint: config.approval?.approverHint,
+                        instructions: event.target.value || undefined
+                      }
+                    })
+                  }
+                />
+              </label>
+            </>
+          )}
+          {runtimeId === "openclaw" && (
+            <>
+              <label>
+                <span>{t.defaults.sendLabel}</span>
+                <BlueprintSelect
+                  value={sendEnabled ? "yes" : "no"}
+                  options={binaryOptions}
+                  ariaLabel={t.defaults.sendLabel}
+                  onChange={(value) =>
+                    onPatchConfig({
+                      send: {
+                        ...sendConfig,
+                        enabled: value === "yes",
+                        channelId: sendConfig.channelId || channels[0]?.id || "slack",
+                        bodyTemplate: sendConfig.bodyTemplate || t.defaults.sendBody
+                      }
+                    })
+                  }
+                />
+              </label>
+              {sendEnabled && (
+                <>
+                  <label>
+                    <span>{t.fields.channels}</span>
+                    <BlueprintSelect
+                      value={sendConfig.channelId || channelOptions[0]?.value || "slack"}
+                      options={channelOptions}
+                      ariaLabel={t.fields.channels}
+                      onChange={(value) =>
+                        onPatchConfig({
+                          send: {
+                            ...sendConfig,
+                            enabled: true,
+                            channelId: value
+                          }
+                        })
+                      }
+                    />
+                  </label>
+                  <label>
+                    <span>{t.fields.target}</span>
+                    <input
+                      value={sendConfig.target}
+                      onChange={(event) =>
+                        onPatchConfig({
+                          send: {
+                            ...sendConfig,
+                            enabled: true,
+                            target: event.target.value
+                          }
+                        })
+                      }
+                    />
+                  </label>
+                  <label className="field-span-full">
+                    <span>{t.fields.body}</span>
+                    <textarea
+                      rows={5}
+                      value={sendConfig.bodyTemplate}
+                      onChange={(event) =>
+                        onPatchConfig({
+                          send: {
+                            ...sendConfig,
+                            enabled: true,
+                            bodyTemplate: event.target.value
+                          }
+                        })
+                      }
+                    />
+                  </label>
+                </>
+              )}
+            </>
+          )}
         </div>
       </div>
     );
@@ -2441,51 +2582,6 @@ function NodeConfigForm({
     );
   }
 
-  if (node.type === "approval") {
-    const config = node.config as ApprovalNodeConfig;
-    return (
-      <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.approver}</span>
-          <input value={config.approverHint ?? ""} onChange={(event) => onPatchConfig({ approverHint: event.target.value })} />
-        </label>
-        <label className="field-span-full">
-          <span>{t.fields.instructions}</span>
-          <textarea rows={8} value={config.instructions ?? ""} onChange={(event) => onPatchConfig({ instructions: event.target.value })} />
-        </label>
-      </div>
-    );
-  }
-
-  if (node.type === "send") {
-    const config = node.config as SendNodeConfig;
-    const channelOptions: BlueprintSelectOption[] =
-      channels.length === 0
-        ? [{ value: config.channelId, label: config.channelId }]
-        : channels.map((channel) => ({ value: channel.id, label: channel.label }));
-    return (
-      <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.channels}</span>
-          <BlueprintSelect
-            value={config.channelId}
-            options={channelOptions}
-            ariaLabel={t.fields.channels}
-            onChange={(value) => onPatchConfig({ channelId: value })}
-          />
-        </label>
-        <label>
-          <span>{t.fields.target}</span>
-          <input value={config.target} onChange={(event) => onPatchConfig({ target: event.target.value })} />
-        </label>
-        <label className="field-span-full">
-          <span>{t.fields.body}</span>
-          <textarea rows={8} value={config.bodyTemplate} onChange={(event) => onPatchConfig({ bodyTemplate: event.target.value })} />
-        </label>
-      </div>
-    );
-  }
-
   if (node.type === "summary") {
     const config = node.config as SummaryNodeConfig;
     const modelOptions: BlueprintSelectOption[] = [
@@ -2520,149 +2616,6 @@ function NodeConfigForm({
           <span>{t.fields.prompt}</span>
           <textarea rows={8} value={config.prompt ?? ""} onChange={(event) => onPatchConfig({ prompt: event.target.value })} />
         </label>
-      </div>
-    );
-  }
-
-  if (node.type === "parallel_agents") {
-    const config = node.config as ParallelAgentsNodeConfig;
-    const runtimeId = node.runtimeId ?? "openclaw";
-    const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
-    const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
-    const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const agentOptions = configuredAgents ?? [];
-    const runtimeOptions: BlueprintSelectOption[] = [
-      { value: "codex", label: "Codex" },
-      { value: "openclaw", label: "OpenClaw" },
-      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
-    ];
-    const waitForOptions: BlueprintSelectOption[] = [
-      { value: "all", label: t.options.waitForAll },
-      { value: "first_success", label: t.options.firstSuccess }
-    ];
-    const updateAgent = (index: number, patch: Partial<AgentNodeConfig>) => {
-      onPatchConfig({
-        agents: config.agents.map((agent, agentIndex) => (agentIndex === index ? { ...agent, ...patch } : agent))
-      });
-    };
-    const addAgent = () => {
-      const agent = createDefaultParallelAgent(t, agentOptions[0]?.id ?? "main");
-      onPatchConfig({
-        agents: [...config.agents, { ...agent, ...buildRuntimeConfigPatch(agent, runtimeId, agentOptions) }]
-      });
-    };
-    const removeAgent = (index: number) => {
-      onPatchConfig({
-        agents: config.agents.filter((_, agentIndex) => agentIndex !== index)
-      });
-    };
-    const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
-      onPatchNode({ runtimeId: nextRuntimeId });
-      onPatchConfig({
-        agents: config.agents.map((agent) => ({
-          ...agent,
-          ...buildRuntimeConfigPatch(agent, nextRuntimeId, agentOptions)
-        }))
-      });
-    };
-
-    return (
-      <div className="config-form node-modal-form">
-        <label>
-          <span>{t.fields.harness}</span>
-          <BlueprintSelect
-            value={runtimeId}
-            options={runtimeOptions}
-            ariaLabel={t.fields.harness}
-            onChange={(value) => switchRuntime(value as AgentRuntimeId)}
-          />
-        </label>
-        <label>
-          <span>{t.fields.waitFor}</span>
-          <BlueprintSelect
-            value={config.waitFor}
-            options={waitForOptions}
-            ariaLabel={t.fields.waitFor}
-            onChange={(value) => onPatchConfig({ waitFor: value as ParallelAgentsNodeConfig["waitFor"] })}
-          />
-        </label>
-        <label>
-          <span>{t.metrics.agents(config.agents.length)}</span>
-          <input value={config.agents.map((agent) => agent.agentName).join(", ")} readOnly />
-        </label>
-        <div className="field-span-full parallel-agent-list">
-          {config.agents.length === 0 ? (
-            <div className="empty-state compact-empty-state">{t.empty.noParallelAgents}</div>
-          ) : (
-            config.agents.map((agent, index) => {
-              const selectedModel = agent.modelId ?? "";
-              const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
-              const modelOptions: BlueprintSelectOption[] = [
-                { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-                ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-                ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-              ];
-
-              return (
-                <div key={`${agent.openclawAgentId ?? "main"}-${index}`} className="parallel-agent-card">
-                  <div className="parallel-agent-card-header">
-                    <h4>{`${runtimeLabel(runtimeId)} Agent ${index + 1}`}</h4>
-                    <button type="button" className="icon-button" onClick={() => removeAgent(index)}>
-                      <X size={14} />
-                    </button>
-                  </div>
-                  <div className="config-form parallel-agent-form">
-                    <label>
-                      <span>{t.fields.model}</span>
-                      {isSdkProvider && runtimeModelOptions.length === 0 ? (
-                        <input
-                          value={selectedModel}
-                          placeholder={runtimeDefaultModelLabel(runtimeId, t)}
-                          onChange={(event) => updateAgent(index, { modelId: event.target.value || undefined })}
-                        />
-                      ) : (
-                        <BlueprintSelect
-                          value={selectedModel}
-                          options={modelOptions}
-                          ariaLabel={t.fields.model}
-                          onChange={(value) => updateAgent(index, { modelId: value || undefined })}
-                        />
-                      )}
-                    </label>
-                    <AgentSkillField
-                      className="field-span-full"
-                      selectedSkills={agent.skillIds ?? []}
-                      skills={skills}
-                      t={t}
-                      onChange={(skillIds) => updateAgent(index, { skillIds })}
-                    />
-                    <label className="field-span-full">
-                      <span>{t.fields.systemPrompt}</span>
-                      <textarea
-                        className="node-system-prompt-input"
-                        rows={6}
-                        value={agent.prompt}
-                        onChange={(event) => updateAgent(index, { prompt: event.target.value })}
-                      />
-                    </label>
-                    <label className="field-span-full">
-                      <span>{t.fields.userPrompt}</span>
-                      <textarea
-                        className="node-user-prompt-input"
-                        rows={4}
-                        value={agent.userPrompt ?? ""}
-                        onChange={(event) => updateAgent(index, { userPrompt: event.target.value || undefined })}
-                      />
-                    </label>
-                  </div>
-                </div>
-              );
-            })
-          )}
-          <button type="button" onClick={addAgent}>
-            {t.actions.addParallelAgent}
-          </button>
-        </div>
       </div>
     );
   }
@@ -2851,6 +2804,7 @@ function buildRuntimeConfigPatch(
   return {
     ...patch,
     openclawAgentId: undefined,
+    send: undefined,
     permissionProfile: config.permissionProfile ?? "read_only",
     timeoutMs: config.timeoutMs ?? 600000
   };
@@ -3240,7 +3194,41 @@ function nextAvailableManagerSlot(blueprint: BlueprintDefinition, managerNode: B
   return undefined;
 }
 
+function isBlueprintConnectionAllowed(blueprint: BlueprintDefinition, connection: BlueprintConnectionCandidate): boolean {
+  if (!connection.source || !connection.target || connection.source === connection.target) return false;
+  const source = blueprint.nodes.find((node) => node.id === connection.source);
+  const target = blueprint.nodes.find((node) => node.id === connection.target);
+  if (!source || !target) return false;
+
+  if (source.type === "manager" && connection.sourceHandle?.startsWith(managerOutHandlePrefix)) {
+    return target.type === "manager_slot" && connection.targetHandle === managerSlotInHandle;
+  }
+
+  if (target.type === "manager" && connection.targetHandle?.startsWith(managerInHandlePrefix)) {
+    return source.type === "manager_slot" && connection.sourceHandle === managerSlotOutHandle;
+  }
+
+  if (source.type === "manager_slot" && connection.sourceHandle === managerSlotOutHandle) {
+    return target.type === "manager" && Boolean(connection.targetHandle?.startsWith(managerInHandlePrefix));
+  }
+
+  if (source.type === "manager_slot" && isManagerSlotForwardOutHandle(connection.sourceHandle)) {
+    return target.type !== "manager" && target.type !== "manager_slot" && !target.parentId;
+  }
+
+  if (source.type === "manager_slot" && isManagerSlotInnerOutHandle(connection.sourceHandle)) {
+    return target.parentId === source.id;
+  }
+
+  if (target.type === "manager_slot" && isManagerSlotInnerInHandle(connection.targetHandle)) {
+    return source.parentId === target.id;
+  }
+
+  return source.type !== "manager_slot" && target.type !== "manager_slot";
+}
+
 function connectBlueprintNodes(blueprint: BlueprintDefinition, connection: Connection, t: Messages): BlueprintDefinition {
+  if (!isBlueprintConnectionAllowed(blueprint, connection)) return blueprint;
   const assignment = readManagerSlotConnection(blueprint, connection);
   if (assignment) {
     return applyManagerSlotAssignment(blueprint, assignment, t);
@@ -3920,32 +3908,10 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       expression: "true"
     };
   }
-  if (type === "approval") {
-    return {
-      label: t.defaults.approvalLabel,
-      approverHint: t.defaults.approvalOwner,
-      instructions: t.defaults.approvalInstructions
-    };
-  }
-  if (type === "send") {
-    return {
-      label: t.defaults.sendLabel,
-      channelId: "slack",
-      target: "#engineering",
-      bodyTemplate: t.defaults.sendBody
-    };
-  }
   if (type === "summary") {
     return {
       label: t.defaults.summaryLabel,
       mode: "structured_merge"
-    };
-  }
-  if (type === "parallel_agents") {
-    return {
-      label: t.defaults.parallelAgentsLabel,
-      agents: [createDefaultParallelAgent(t)],
-      waitFor: "all"
     };
   }
   if (type === "manager") {
@@ -4023,14 +3989,4 @@ function defaultVisibleEdgeLabel(condition?: BlueprintEdge["condition"]): string
     return condition;
   }
   return undefined;
-}
-
-function createDefaultParallelAgent(t: Messages, agentId = "main"): AgentNodeConfig {
-  return {
-    label: t.defaults.agentLabel,
-    openclawAgentId: agentId,
-    agentName: t.defaults.agentName,
-    prompt: t.defaults.agentPrompt,
-    tools: []
-  };
 }

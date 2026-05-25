@@ -13,6 +13,7 @@ import {
 import type {
   AgentNodeConfig,
   BlueprintDefinition,
+  BlueprintRun,
   ChatHistoryMessage,
   ChatStreamEvent,
   HivewardChatMessage,
@@ -293,6 +294,56 @@ describe("apiRouter", () => {
         expect(body.run.events).toEqual([]);
         expect(adapter.runtimeOverviewCalls).toBe(0);
       }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes blueprint approval approve, reject, and reply actions to the worker", async () => {
+    const fixture = await createStoreFixture();
+    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string }> = [];
+    const worker = {
+      async approveRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
+        calls.push({ action: "approve", nodeRunId, comment });
+        return { ...run, status: "running" as const };
+      },
+      async rejectRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
+        calls.push({ action: "reject", nodeRunId, comment });
+        return { ...run, status: "running" as const };
+      },
+      async replyToApproval(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, message: string) {
+        calls.push({ action: "reply", nodeRunId, message });
+        return { ...run, status: "waiting_approval" as const };
+      }
+    } as unknown as BlueprintWorker;
+
+    try {
+      const blueprint = (await fixture.store.listBlueprints())[0]!;
+      const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good." })
+        }));
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reject`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-2", comment: "Needs work." })
+        }));
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-3", message: "Please revise this answer." })
+        }));
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+
+      expect(calls).toEqual([
+        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good." },
+        { action: "reject", nodeRunId: "node-run-2", comment: "Needs work." },
+        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." }
+      ]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

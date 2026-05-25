@@ -876,16 +876,38 @@ export function App() {
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
   const approveRun = useCallback(
-    (blueprintRunId?: string, nodeRunId?: string) => {
+    (blueprintRunId?: string, nodeRunId?: string, comment?: string) => {
       const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId);
+        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment);
         applyRunView(updated);
         setSelectedRunId(updated.run.id);
       });
     },
     [applyRunView, latestRunForBlueprint?.run.id, withBusy]
+  );
+
+  const rejectRunApproval = useCallback(
+    (blueprintRunId: string, nodeRunId: string, comment?: string) => {
+      void withBusy("rejectRunApproval", async () => {
+        const updated = await api.rejectBlueprintRun(blueprintRunId, nodeRunId, comment);
+        applyRunView(updated);
+        setSelectedRunId(updated.run.id);
+      });
+    },
+    [applyRunView, withBusy]
+  );
+
+  const replyToRunApproval = useCallback(
+    (blueprintRunId: string, nodeRunId: string, message: string) => {
+      void withBusy("replyRunApproval", async () => {
+        const updated = await api.replyToBlueprintRunApproval(blueprintRunId, nodeRunId, message);
+        applyRunView(updated);
+        setSelectedRunId(updated.run.id);
+      });
+    },
+    [applyRunView, withBusy]
   );
 
   const approveInboxItem = useCallback(
@@ -1174,6 +1196,8 @@ export function App() {
           language={language}
           t={t}
           onApprove={approveRun}
+          onReject={rejectRunApproval}
+          onReply={replyToRunApproval}
           onApproveInboxItem={approveInboxItem}
           onRejectInboxItem={rejectInboxItem}
         />

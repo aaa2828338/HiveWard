@@ -147,6 +147,10 @@ export function syncApprovalsForRun(
         requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
         approverHint: readOptionalString(output?.approverHint),
         instructions: readOptionalString(output?.instructions),
+        ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
+        ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
+        canReject: true,
+        ...(output?.approvalType === "agent" ? { canReply: true } : {}),
         ...(upstream ? { upstream } : {})
       };
     });
@@ -161,6 +165,21 @@ function sortRunSummaries(summaries: BlueprintRunSummary[]): BlueprintRunSummary
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replies"] {
+  if (!Array.isArray(value)) return undefined;
+  const replies = value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const id = readOptionalString(item.id);
+    const role: "assistant" | "user" | undefined =
+      item.role === "assistant" || item.role === "user" ? item.role : undefined;
+    const body = readOptionalString(item.body);
+    const createdAt = readOptionalString(item.createdAt);
+    if (!id || !role || !body || !createdAt) return [];
+    return [{ id, role, body, createdAt }];
+  });
+  return replies.length ? replies : undefined;
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {

@@ -60,7 +60,18 @@ export interface PendingApprovalItem {
   requestedAt: string;
   approverHint?: string;
   instructions?: string;
+  reviewOutput?: unknown;
+  replies?: PendingApprovalReply[];
+  canReply?: boolean;
+  canReject?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
+}
+
+export interface PendingApprovalReply {
+  id: string;
+  role: "assistant" | "user";
+  body: string;
+  createdAt: string;
 }
 
 export interface PendingApprovalUpstreamItem {

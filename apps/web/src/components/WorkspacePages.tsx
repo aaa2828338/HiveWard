@@ -53,6 +53,7 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
@@ -709,6 +710,8 @@ export function ApprovalsPage({
   language,
   t,
   onApprove,
+  onReject,
+  onReply,
   onApproveInboxItem,
   onRejectInboxItem
 }: {
@@ -716,7 +719,9 @@ export function ApprovalsPage({
   inboxItems: InboxItem[];
   language: Language;
   t: Messages;
-  onApprove: (blueprintRunId: string, nodeRunId: string) => void;
+  onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
+  onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
+  onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
   onRejectInboxItem: (itemId: string, comment?: string) => void;
 }) {
@@ -776,6 +781,11 @@ export function ApprovalsPage({
     if (!selectedThreadKey) return;
     const body = selectedReplyDraft.trim();
     if (!body) return;
+    if (selectedApproval?.canReply) {
+      onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
+      clearReplyDraft();
+      return;
+    }
     setLocalReplies((current) => ({
       ...current,
       [selectedThreadKey]: [
@@ -798,15 +808,21 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval) {
-      onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId);
+      onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
       clearReplyDraft();
     }
   };
 
   const rejectSelectedThread = () => {
-    if (!selectedInboxItem) return;
     const comment = selectedReplyDraft.trim() || undefined;
-    onRejectInboxItem(selectedInboxItem.id, comment);
+    if (selectedInboxItem) {
+      onRejectInboxItem(selectedInboxItem.id, comment);
+      clearReplyDraft();
+      return;
+    }
+    if (selectedApproval?.canReject) {
+      onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
+    }
     clearReplyDraft();
   };
 
@@ -907,6 +923,15 @@ export function ApprovalsPage({
                         onClick={() => onApprove(approval.blueprintRunId, approval.nodeRunId)}
                       >
                         <BadgeCheck size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        className="inbox-row-action danger-action"
+                        title={inboxCopy.reject}
+                        aria-label={inboxCopy.reject}
+                        onClick={() => onReject(approval.blueprintRunId, approval.nodeRunId)}
+                      >
+                        <Trash2 size={15} />
                       </button>
                     </article>
                   );
@@ -1050,7 +1075,7 @@ function InboxConversationPanel({
             <BadgeCheck size={15} />
             {copy.approve}
           </button>
-          <button type="button" className="danger-action" disabled={!inboxItem} onClick={onReject}>
+          <button type="button" className="danger-action" disabled={!inboxItem && !approval?.canReject} onClick={onReject}>
             <Trash2 size={15} />
             {copy.reject}
           </button>
@@ -1170,6 +1195,17 @@ function approvalPreviewText(approval: PendingApprovalItem, copy: InboxCopy, t: 
 }
 
 function approvalContentBlocks(approval: PendingApprovalItem, copy: InboxCopy, t: Messages): InboxContentBlock[] {
+  if (approval.reviewOutput !== undefined) {
+    const formatted = (formatOutput(approval.reviewOutput) ?? "").trim();
+    return [
+      {
+        key: `${approval.nodeRunId}:review-output`,
+        label: approval.nodeLabel || t.trace.modelOutput,
+        body: formatted || t.trace.noOutput
+      }
+    ];
+  }
+
   const upstream = approval.upstream ?? [];
   if (!upstream.length) {
     return [
@@ -1238,9 +1274,20 @@ function buildInboxConversationMessages({
       : selection.kind === "approval" && approval
         ? buildApprovalConversation(approval, copy, t, language)
         : [];
+  const approvalReplies =
+    selection.kind === "approval"
+      ? (approval?.replies ?? []).map((reply) => ({
+          id: reply.id,
+          role: reply.role,
+          speaker: reply.role === "user" ? copy.you : approval?.nodeLabel ?? copy.system,
+          body: reply.body,
+          createdAt: reply.createdAt
+        }))
+      : [];
 
   return [
     ...baseMessages,
+    ...approvalReplies,
     ...replies.map((reply) => ({
       id: reply.id,
       role: "user" as const,
@@ -1785,7 +1832,7 @@ export function AgentsPage({
     }
     if (agentWorkspace.trim()) return;
     if (openClawConfig?.defaultWorkspace) {
-      setAgentWorkspace(joinPath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
+      setAgentWorkspace(joinWorkspacePath(openClawConfig.defaultWorkspace, normalizeAgentId(agentName)));
     }
   }, [agentName, agentWorkspace, openClawConfig?.defaultWorkspace]);
 
@@ -1849,7 +1896,11 @@ export function AgentsPage({
             <input
               value={agentWorkspace}
               onChange={(event) => setAgentWorkspace(event.target.value)}
-              placeholder={openClawConfig?.defaultWorkspace ? `${openClawConfig.defaultWorkspace}\\<agent-id>` : t.catalogConfig.workspacePlaceholder}
+              placeholder={
+                openClawConfig?.defaultWorkspace
+                  ? formatWorkspacePathPlaceholder(openClawConfig.defaultWorkspace)
+                  : t.catalogConfig.workspacePlaceholder
+              }
             />
           </label>
         </div>
@@ -3264,6 +3315,3 @@ function normalizeAgentId(value: string): string {
   return trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
 }
 
-function joinPath(root: string, leaf: string): string {
-  return `${root.replace(/[\\/]+$/, "")}\\${leaf.replace(/^[\\/]+/, "")}`;
-}

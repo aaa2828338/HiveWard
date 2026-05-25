@@ -2742,6 +2742,10 @@ dd {
   transform: translate(-50%, -50%);
 }
 
+.manager-slot-box-forward-out {
+  transform: translate(50%, -50%);
+}
+
 .manager-slot-box-inner-out {
   left: var(--manager-slot-frame-side);
   right: auto;

@@ -9,11 +9,10 @@ import {
   MessagesSquare,
   Network,
   Repeat2,
-  Send,
-  ShieldCheck,
   XCircle
 } from "lucide-react";
 import {
+  managerSlotForwardOutHandleId,
   managerSlotInnerInHandleId,
   managerSlotInnerOutHandleId,
   type CanvasSize,
@@ -39,14 +38,11 @@ export interface BlueprintNodeCardData extends Record<string, unknown> {
 
 const typeIcon: Record<BlueprintNodeType, typeof Bot> = {
   agent: Bot,
-  parallel_agents: MessagesSquare,
   manager: Network,
   manager_slot: Network,
   loop: Repeat2,
   condition: GitBranch,
   summary: MessagesSquare,
-  approval: ShieldCheck,
-  send: Send,
   note: MessagesSquare,
   group: MessagesSquare
 };
@@ -138,6 +134,13 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
             className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-external-out"
             type="source"
             position={Position.Left}
+            style={{ top: 58 }}
+          />
+          <Handle
+            id={managerSlotForwardOutHandleId()}
+            className="node-handle output-handle manager-slot-box-handle manager-slot-box-external manager-slot-box-forward-out"
+            type="source"
+            position={Position.Right}
             style={{ top: 58 }}
           />
           <Handle

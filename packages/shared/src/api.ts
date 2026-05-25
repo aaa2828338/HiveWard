@@ -124,6 +124,17 @@ export interface ApproveInboxItemResponse {
 
 export interface ApproveBlueprintRunRequest {
   nodeRunId?: string;
+  comment?: string;
+}
+
+export interface RejectBlueprintRunRequest {
+  nodeRunId?: string;
+  comment?: string;
+}
+
+export interface ReplyBlueprintRunApprovalRequest {
+  nodeRunId: string;
+  message: string;
 }
 
 export interface DashboardStateResponse {

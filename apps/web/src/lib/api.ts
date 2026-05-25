@@ -37,6 +37,8 @@ import type {
   SaveBlueprintRequest,
   SelectCompanyRequest,
   ApproveBlueprintRunRequest,
+  RejectBlueprintRunRequest,
+  ReplyBlueprintRunApprovalRequest,
   ChatSessionHistoryResponse,
   ChatSessionMessagesResponse,
   CreateChatSessionRequest,
@@ -427,10 +429,26 @@ export const api = {
     return response.run ?? undefined;
   },
 
-  async approveBlueprintRun(runId: string, nodeRunId?: string): Promise<BlueprintRunResponse["run"]> {
+  async approveBlueprintRun(runId: string, nodeRunId?: string, comment?: string): Promise<BlueprintRunResponse["run"]> {
     const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
       method: "POST",
-      body: JSON.stringify({ nodeRunId } satisfies ApproveBlueprintRunRequest)
+      body: JSON.stringify({ nodeRunId, comment } satisfies ApproveBlueprintRunRequest)
+    });
+    return response.run;
+  },
+
+  async rejectBlueprintRun(runId: string, nodeRunId?: string, comment?: string): Promise<BlueprintRunResponse["run"]> {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ nodeRunId, comment } satisfies RejectBlueprintRunRequest)
+    });
+    return response.run;
+  },
+
+  async replyToBlueprintRunApproval(runId: string, nodeRunId: string, message: string): Promise<BlueprintRunResponse["run"]> {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ nodeRunId, message } satisfies ReplyBlueprintRunApprovalRequest)
     });
     return response.run;
   },

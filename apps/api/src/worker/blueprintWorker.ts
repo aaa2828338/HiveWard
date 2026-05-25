@@ -8,15 +8,12 @@ import {
   resolveManagerSlotExecutionMode,
   type AgentNodeConfig,
   type AgentRuntimeId,
-  type ApprovalNodeConfig,
   type AgentTaskResult,
   type ConditionNodeConfig,
   type LoopNodeConfig,
   type ManagerNodeConfig,
   type ManagerSlotNodeConfig,
   type OpenClawObjectRef,
-  type ParallelAgentsNodeConfig,
-  type SendNodeConfig,
   type StartAgentTaskInput,
   type SummaryNodeConfig,
   type BlueprintDefinition,
@@ -30,14 +27,11 @@ import type { FileHivewardStore } from "../store/fileHivewardStore";
 
 const executableTypes = new Set([
   "agent",
-  "parallel_agents",
   "manager",
   "manager_slot",
   "loop",
   "condition",
-  "summary",
-  "approval",
-  "send"
+  "summary"
 ]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
@@ -82,6 +76,21 @@ interface ManagerDecision {
   status: "continue" | "retry" | "complete";
   nextSlot?: number;
   reason?: string;
+}
+
+interface AgentApprovalReply {
+  id: string;
+  role: "assistant" | "user";
+  body: string;
+  createdAt: string;
+}
+
+interface AgentApprovalWaitingOutput {
+  approvalType: "agent";
+  approverHint?: string;
+  instructions?: string;
+  reviewOutput: unknown;
+  replies: AgentApprovalReply[];
 }
 
 interface ManagerSlotContext {
@@ -157,7 +166,7 @@ export class BlueprintWorker {
     return runningRun;
   }
 
-  async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string): Promise<BlueprintRun> {
+  async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
@@ -170,18 +179,134 @@ export class BlueprintWorker {
       throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
     }
 
-    const now = new Date().toISOString();
-    await this.store.upsertNodeRun({
-      ...waiting,
-      status: "succeeded",
-      endedAt: now,
-      output: { approved: true }
-    });
-    await this.event(run.id, "node.run.completed", `${waiting.nodeLabel} approved.`, waiting.id);
+    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment);
+    await this.completeNode(waiting, approvedOutput, waiting.openclawRef);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
     this.scheduleRun(blueprint, running);
     return running;
+  }
+
+  async rejectRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
+    if (this.isTerminalRunStatus(run.status)) {
+      throw new Error("Run is already finished.");
+    }
+
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    const waiting = nodeRuns.find((nodeRun) =>
+      nodeRun.status === "waiting_approval" && (!nodeRunId || nodeRun.id === nodeRunId)
+    );
+    if (!waiting) {
+      throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
+    }
+
+    await this.failNode(waiting, comment?.trim() || "Rejected by human reviewer.");
+    const running = { ...run, status: "running" as const };
+    await this.store.updateBlueprintRun(running);
+    this.scheduleRun(blueprint, running);
+    return running;
+  }
+
+  async replyToApproval(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    nodeRunId: string,
+    message: string
+  ): Promise<BlueprintRun> {
+    if (this.isTerminalRunStatus(run.status)) {
+      throw new Error("Run is already finished.");
+    }
+
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
+    if (!waiting) {
+      throw new Error("Requested approval is no longer waiting.");
+    }
+    if (!message.trim()) {
+      throw new Error("Approval reply message is required.");
+    }
+    if (!isAgentApprovalWaitingOutput(waiting.output)) {
+      throw new Error("Only Agent approval requests can receive replies.");
+    }
+
+    const node = blueprint.nodes.find((candidate) => candidate.id === waiting.nodeId);
+    if (!node || !isAgentBlueprintNode(node)) {
+      throw new Error("Approval reply target Agent node was not found.");
+    }
+
+    const now = new Date().toISOString();
+    const userReply: AgentApprovalReply = {
+      id: `approval-reply-${nanoid(10)}`,
+      role: "user",
+      body: message.trim(),
+      createdAt: now
+    };
+    const runningNodeRun: BlueprintNodeRun = {
+      ...waiting,
+      status: "running",
+      output: {
+        ...waiting.output,
+        replies: [...waiting.output.replies, userReply]
+      }
+    };
+    await this.store.upsertNodeRun(runningNodeRun);
+    await this.event(run.id, "node.run.started", `${waiting.nodeLabel} received a review reply.`, waiting.id);
+    await this.store.updateBlueprintRun({ ...run, status: "running" });
+
+    try {
+      const config = node.config as AgentNodeConfig;
+      const runtimeId = node.runtimeId ?? "openclaw";
+      let nodeRunWithRef = runningNodeRun;
+      const { result, openclawRef } = await this.runAgentTask({
+        blueprintRunId: run.id,
+        nodeRunId: waiting.id,
+        source: resolveAgentRuntimeSource(runtimeId),
+        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        agentName: config.agentName,
+        prompt: this.resolveAgentPrompt(config),
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: config.outputSchema,
+        input: buildAgentApprovalReplyInput(waiting.input, waiting.output.reviewOutput, waiting.output.replies, userReply),
+        skillIds: config.skillIds,
+        tools: config.tools
+      }, async (startedRef) => {
+        nodeRunWithRef = await this.recordNodeOpenClawRef(nodeRunWithRef, startedRef);
+      });
+
+      if (result.status !== "succeeded") {
+        await this.failNode({ ...nodeRunWithRef, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
+      } else if (!hasVisibleAgentOutput(result.output)) {
+        await this.failNode({ ...nodeRunWithRef, openclawRef, usage: result.usage }, this.missingAgentOutputError(openclawRef));
+      } else {
+        const assistantReply: AgentApprovalReply = {
+          id: `approval-reply-${nanoid(10)}`,
+          role: "assistant",
+          body: result.output,
+          createdAt: new Date().toISOString()
+        };
+        await this.waitForAgentApproval(
+          { ...nodeRunWithRef, openclawRef, usage: result.usage },
+          config,
+          result.output,
+          [...waiting.output.replies, userReply, assistantReply]
+        );
+      }
+    } catch (error) {
+      const failure = error instanceof Error ? error.message : "Unknown approval reply failure.";
+      await this.failNode(runningNodeRun, failure);
+    }
+
+    const latestNodeRun = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
+    const nextStatus = latestNodeRun?.status === "waiting_approval" ? "waiting_approval" as const : "running" as const;
+    const nextRun = { ...run, status: nextStatus };
+    await this.store.updateBlueprintRun(nextRun);
+    if (nextRun.status === "running") {
+      this.scheduleRun(blueprint, nextRun);
+    }
+    return nextRun;
   }
 
   async cancelRun(run: BlueprintRun): Promise<BlueprintRun> {
@@ -292,7 +417,7 @@ export class BlueprintWorker {
     for (const nodeRun of runningNodeRuns) {
       const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
       if (node && isAgentBlueprintNode(node)) {
-        if (await this.reconcileRunningAgentNode(node, nodeRun)) return true;
+        if (await this.reconcileRunningAgentNode(blueprint, run, node, nodeRun)) return true;
       }
     }
 
@@ -314,6 +439,8 @@ export class BlueprintWorker {
   }
 
   private async reconcileRunningAgentNode(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
     node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun
   ): Promise<boolean> {
@@ -339,7 +466,7 @@ export class BlueprintWorker {
       sessionKey: result.sessionKey,
       usageRef: result.usage?.id
     };
-    await this.applyAgentTaskResult({ ...nodeRun, openclawRef: finalRef }, result, finalRef);
+    await this.applyAgentTaskResult(blueprint, run, node, { ...nodeRun, openclawRef: finalRef }, result, finalRef);
     return true;
   }
 
@@ -767,24 +894,6 @@ export class BlueprintWorker {
       };
     }
 
-    if (target.type === "parallel_agents") {
-      const config = target.config as ParallelAgentsNodeConfig;
-      return {
-        nodeId: target.id,
-        label: config.label,
-        type: target.type,
-        description: config.description,
-        waitFor: config.waitFor,
-        agents: config.agents.map((agent) => ({
-          label: agent.label,
-          openclawAgentId: agent.openclawAgentId,
-          agentName: agent.agentName,
-          description: agent.description,
-          ...readPrompt(this.resolveAgentPrompt(agent))
-        }))
-      };
-    }
-
     if (target.type === "manager") {
       const config = target.config as ManagerNodeConfig;
       return {
@@ -927,8 +1036,6 @@ export class BlueprintWorker {
     try {
       if (isAgentBlueprintNode(node)) {
         await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
-      } else if (node.type === "parallel_agents") {
-        await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, input.upstream);
       } else if (node.type === "manager") {
         await this.executeManagerNode(blueprint, run, node, nodeRun, input.upstream);
       } else if (node.type === "manager_slot") {
@@ -939,10 +1046,6 @@ export class BlueprintWorker {
         await this.completeNode(nodeRun, { result: this.evaluateCondition(blueprint, node.config as ConditionNodeConfig) });
       } else if (node.type === "summary") {
         await this.executeSummaryNodeWithUpstream(run, node, nodeRun, input.upstream);
-      } else if (node.type === "approval") {
-        await this.waitForApproval(node, nodeRun);
-      } else if (node.type === "send") {
-        await this.executeSendNodeWithUpstream(run, node, nodeRun, blueprint.name, input.upstream);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown node failure";
@@ -987,7 +1090,7 @@ export class BlueprintWorker {
   }
 
   private async executeAgentNodeWithInput(
-    _blueprint: BlueprintDefinition,
+    blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun,
@@ -1014,10 +1117,13 @@ export class BlueprintWorker {
     }, async (startedRef) => {
       nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
     });
-    return this.applyAgentTaskResult(nodeRunWithInput, result, openclawRef);
+    return this.applyAgentTaskResult(blueprint, run, node, nodeRunWithInput, result, openclawRef);
   }
 
   private async applyAgentTaskResult(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun,
     result: AgentTaskResult,
     openclawRef: OpenClawObjectRef
@@ -1032,93 +1138,22 @@ export class BlueprintWorker {
       return { ...result, status: "failed", error, output: undefined };
     }
 
+    const config = node.config as AgentNodeConfig;
+    if (config.approval?.enabled) {
+      await this.waitForAgentApproval({ ...nodeRun, openclawRef, usage: result.usage }, config, result.output);
+      return result;
+    }
+
+    if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
+      await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, result.output);
+    }
+
     await this.completeNode(
       { ...nodeRun, openclawRef, usage: result.usage },
       result.output,
       openclawRef
     );
     return result;
-  }
-
-  private async executeParallelAgentsNode(
-    blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    node: BlueprintNode,
-    nodeRun: BlueprintNodeRun
-  ): Promise<void> {
-    await this.executeParallelAgentsNodeWithUpstream(
-      run,
-      node,
-      nodeRun,
-      await this.collectUpstreamOutputs(blueprint, run.id, node)
-    );
-  }
-
-  private async executeParallelAgentsNodeWithUpstream(
-    run: BlueprintRun,
-    node: BlueprintNode,
-    nodeRun: BlueprintNodeRun,
-    upstream: UpstreamOutput
-  ): Promise<void> {
-    const config = node.config as ParallelAgentsNodeConfig;
-    const runtimeId = this.resolveParallelAgentsRuntimeId(node);
-    const input = { upstream };
-    const nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
-    if (config.agents.length === 0) {
-      throw new Error("Parallel agents node has no agents configured.");
-    }
-
-    const outputs = await Promise.all(
-      config.agents.map((agent) =>
-        this.runAgentTask({
-          blueprintRunId: run.id,
-          nodeRunId: nodeRun.id,
-          source: resolveAgentRuntimeSource(runtimeId),
-          agentId: runtimeId === "openclaw" ? agent.openclawAgentId ?? "main" : undefined,
-          agentName: agent.agentName,
-          prompt: this.resolveAgentPrompt(agent),
-          modelId: agent.modelId,
-          permissionProfile: agent.permissionProfile,
-          workingDirectory: agent.workingDirectory,
-          timeoutMs: agent.timeoutMs,
-          outputSchema: agent.outputSchema,
-          input,
-          skillIds: agent.skillIds,
-          tools: agent.tools
-        })
-      )
-    );
-
-    if (config.waitFor === "first_success") {
-      const winnerIndex = outputs.findIndex((output) => output.result.status === "succeeded" && hasVisibleAgentOutput(output.result.output));
-      if (winnerIndex < 0) {
-        const firstFailure = outputs[0];
-        await this.failNode(nodeRunWithInput, firstFailure?.result.error ?? "No parallel agent returned visible output.");
-        return;
-      }
-      await this.completeNode(nodeRunWithInput, {
-        waitFor: config.waitFor,
-        winner: this.formatParallelAgentOutput(config.agents[winnerIndex]!, outputs[winnerIndex]!.result),
-        results: outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
-      });
-      return;
-    }
-
-    const failed = outputs.find((output) => output.result.status !== "succeeded" || !hasVisibleAgentOutput(output.result.output));
-    if (failed) {
-      await this.failNode(nodeRunWithInput, failed.result.error ?? this.missingAgentOutputError(failed.openclawRef));
-      return;
-    }
-    await this.completeNode(
-      nodeRunWithInput,
-      outputs.map((output, index) => this.formatParallelAgentOutput(config.agents[index]!, output.result))
-    );
-  }
-
-  private resolveParallelAgentsRuntimeId(node: BlueprintNode): AgentRuntimeId {
-    return node.runtimeId === "codex" || node.runtimeId === "claude" || node.runtimeId === "openclaw"
-      ? node.runtimeId
-      : "openclaw";
   }
 
   private async executeManagerNode(
@@ -1396,14 +1431,10 @@ export class BlueprintWorker {
     const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
     if (isAgentBlueprintNode(node)) {
       await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
-    } else if (node.type === "parallel_agents") {
-      await this.executeParallelAgentsNodeWithUpstream(run, node, nodeRun, upstream);
     } else if (node.type === "condition") {
       await this.completeNode(nodeRun, { result: this.evaluateCondition(blueprint, node.config as ConditionNodeConfig) });
     } else if (node.type === "summary") {
       await this.executeSummaryNodeWithUpstream(run, node, nodeRun, upstream);
-    } else if (node.type === "send") {
-      await this.executeSendNodeWithUpstream(run, node, nodeRun, blueprint.name, upstream);
     } else {
       await this.failNode(nodeRun, `Node type ${node.type} is not supported inside a manager slot yet.`);
     }
@@ -1677,52 +1708,66 @@ export class BlueprintWorker {
     );
   }
 
-  private async waitForApproval(node: BlueprintNode, nodeRun: BlueprintNodeRun): Promise<void> {
-    const config = node.config as ApprovalNodeConfig;
+  private async waitForAgentApproval(
+    nodeRun: BlueprintNodeRun,
+    config: AgentNodeConfig,
+    reviewOutput: unknown,
+    replies: AgentApprovalReply[] = []
+  ): Promise<void> {
     const waiting: BlueprintNodeRun = {
       ...nodeRun,
       status: "waiting_approval",
       output: {
-        approverHint: config.approverHint,
-        instructions: config.instructions
-      }
+        approvalType: "agent",
+        approverHint: config.approval?.approverHint,
+        instructions: config.approval?.instructions,
+        reviewOutput,
+        replies
+      } satisfies AgentApprovalWaitingOutput
     };
     await this.store.upsertNodeRun(waiting);
-    await this.event(nodeRun.blueprintRunId, "node.run.waiting_approval", `${node.config.label} is waiting for approval.`, nodeRun.id);
+    await this.event(nodeRun.blueprintRunId, "node.run.waiting_approval", `${nodeRun.nodeLabel} is waiting for approval.`, nodeRun.id);
   }
 
-  private async executeSendNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode, nodeRun: BlueprintNodeRun): Promise<void> {
-    await this.executeSendNodeWithUpstream(
-      run,
-      node,
-      nodeRun,
-      blueprint.name,
-      await this.collectUpstreamOutputs(blueprint, run.id, node)
-    );
-  }
-
-  private async executeSendNodeWithUpstream(
+  private async resolveApprovedOutput(
+    blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    node: BlueprintNode,
+    nodeRun: BlueprintNodeRun,
+    comment?: string
+  ): Promise<unknown> {
+    if (!isAgentApprovalWaitingOutput(nodeRun.output)) {
+      return { approved: true, comment: comment?.trim() || undefined };
+    }
+
+    const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+    if (node && isAgentBlueprintNode(node)) {
+      const config = node.config as AgentNodeConfig;
+      if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
+        await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, nodeRun.output.reviewOutput);
+      }
+    }
+    return nodeRun.output.reviewOutput;
+  }
+
+  private async executeAgentConfiguredSend(
+    run: BlueprintRun,
     nodeRun: BlueprintNodeRun,
     blueprintName: string,
-    upstream: UpstreamOutput
+    config: NonNullable<AgentNodeConfig["send"]>,
+    output: unknown
   ): Promise<void> {
-    const config = node.config as SendNodeConfig;
-    const nodeRunWithInput = await this.recordNodeInput(nodeRun, { upstream });
-    const summaryPayload = upstream.length <= 1 ? (upstream[0]?.output ?? {}) : upstream;
+    if (!config.enabled) return;
     const body = config.bodyTemplate
       .replaceAll("{{blueprint.name}}", blueprintName)
-      .replaceAll("{{summary}}", JSON.stringify(summaryPayload))
-      .replaceAll("{{upstream}}", JSON.stringify(upstream));
-    const result = await this.adapter.sendChannelMessage({
+      .replaceAll("{{summary}}", JSON.stringify(output))
+      .replaceAll("{{upstream}}", JSON.stringify([{ nodeId: nodeRun.nodeId, nodeLabel: nodeRun.nodeLabel, nodeRunId: nodeRun.id, output }]));
+    await this.adapter.sendChannelMessage({
       channelId: config.channelId,
       target: config.target,
       body,
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id
     });
-    await this.completeNode(nodeRunWithInput, result);
   }
 
   private evaluateCondition(blueprint: BlueprintDefinition, config: ConditionNodeConfig): boolean {
@@ -2219,20 +2264,6 @@ export class BlueprintWorker {
     return typeof result === "boolean" ? result : undefined;
   }
 
-  private formatParallelAgentOutput(agent: AgentNodeConfig, result: AgentTaskResult) {
-    return {
-      agentId: agent.openclawAgentId ?? "main",
-      agentName: agent.agentName,
-      status: result.status,
-      output: result.output,
-      error: result.error,
-      taskId: result.taskId,
-      runId: result.runId,
-      sessionKey: result.sessionKey,
-      updatedAt: result.updatedAt
-    };
-  }
-
   private missingAgentOutputError(openclawRef: OpenClawObjectRef): string {
     const location = [
       openclawRef.runId ? `runId ${openclawRef.runId}` : undefined,
@@ -2315,6 +2346,28 @@ export class BlueprintWorker {
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function isAgentApprovalWaitingOutput(value: unknown): value is AgentApprovalWaitingOutput {
+  if (!isRecord(value)) return false;
+  return value.approvalType === "agent" && "reviewOutput" in value && Array.isArray(value.replies);
+}
+
+function buildAgentApprovalReplyInput(
+  originalInput: unknown,
+  previousOutput: unknown,
+  previousReplies: AgentApprovalReply[],
+  userReply: AgentApprovalReply
+): Record<string, unknown> {
+  return {
+    originalInput,
+    humanApproval: {
+      previousOutput,
+      previousReplies,
+      latestReply: userReply.body,
+      instruction: "Revise the previous output to address the human review reply. Return only the updated node output."
+    }
+  };
 }
 
 function readOutputRecord(output: unknown): Record<string, unknown> | undefined {

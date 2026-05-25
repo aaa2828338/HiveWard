@@ -284,13 +284,13 @@ export class FileHivewardStore {
       const existingIndex = index.blueprintIndex.findIndex((item) => item.id === blueprint.id && item.companyId === companyId);
       const currentVersion = existingIndex >= 0 ? index.blueprintIndex[existingIndex]!.version : blueprint.version;
       const currentCreatedAt = existingIndex >= 0 ? index.blueprintIndex[existingIndex]!.createdAt : now;
-      const nextBlueprint: BlueprintDefinition = {
+      const nextBlueprint = stripRemovedBlueprintNodes({
         ...blueprint,
         companyId,
         version: existingIndex >= 0 ? currentVersion + 1 : blueprint.version,
         updatedAt: now,
         createdAt: currentCreatedAt
-      };
+      });
 
       await this.writeBlueprintUnlocked(nextBlueprint);
       if (existingIndex >= 0) {
@@ -575,12 +575,13 @@ export class FileHivewardStore {
   async createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
+      const runnableBlueprint = stripRemovedBlueprintNodes(blueprint);
       const run: BlueprintRun = {
         id: `run-${nanoid(10)}`,
-        companyId: blueprint.companyId,
-        blueprintId: blueprint.id,
-        blueprintName: blueprint.name,
-        blueprintVersion: blueprint.version,
+        companyId: runnableBlueprint.companyId,
+        blueprintId: runnableBlueprint.id,
+        blueprintName: runnableBlueprint.name,
+        blueprintVersion: runnableBlueprint.version,
         status: "queued",
         startedBy,
         startedAt: new Date().toISOString(),
@@ -589,11 +590,11 @@ export class FileHivewardStore {
         totalCostUsd: 0,
         openclawRefs: []
       };
-      const summary = toBlueprintRunSummary(run, blueprint);
+      const summary = toBlueprintRunSummary(run, runnableBlueprint);
       const archive: BlueprintRunArchive = {
         schema: blueprintRunArchiveSchema,
         run: summary,
-        blueprintSnapshot: blueprint,
+        blueprintSnapshot: runnableBlueprint,
         nodeRuns: [],
         events: [],
         finalResult: null
@@ -775,6 +776,10 @@ export class FileHivewardStore {
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
             approverHint: readString(output?.approverHint),
             instructions: readString(output?.instructions),
+            ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
+            ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
+            canReject: true,
+            ...(output?.approvalType === "agent" ? { canReply: true } : {}),
             ...(upstream ? { upstream } : {})
           };
           return [item];
@@ -1028,28 +1033,29 @@ export class FileHivewardStore {
   }
 
   private async readBlueprintUnlocked(id: string): Promise<BlueprintDefinition> {
-    return JSON.parse(await readFile(this.blueprintPath(id), "utf8")) as BlueprintDefinition;
+    return stripRemovedBlueprintNodes(JSON.parse(await readFile(this.blueprintPath(id), "utf8")) as BlueprintDefinition);
   }
 
   private async writeBlueprintUnlocked(blueprint: BlueprintDefinition): Promise<void> {
-    await safeWriteJson(this.blueprintPath(blueprint.id), blueprint);
+    const sanitizedBlueprint = stripRemovedBlueprintNodes(blueprint);
+    await safeWriteJson(this.blueprintPath(sanitizedBlueprint.id), sanitizedBlueprint);
   }
 
   private async readRunArchiveUnlocked(id: string): Promise<BlueprintRunArchive> {
     const rawArchive = JSON.parse(await readFile(this.runArchivePath(id), "utf8")) as Partial<BlueprintRunArchive>;
     const archive = rawArchive as BlueprintRunArchive;
-    return {
+    return stripRemovedBlueprintRunArchive({
       schema: blueprintRunArchiveSchema,
       run: archive.run,
       blueprintSnapshot: archive.blueprintSnapshot,
       nodeRuns: Array.isArray(archive.nodeRuns) ? archive.nodeRuns : [],
       events: Array.isArray(archive.events) ? archive.events : [],
       finalResult: archive.finalResult ?? null
-    };
+    });
   }
 
   private async writeRunArchiveUnlocked(archive: BlueprintRunArchive): Promise<void> {
-    await safeWriteJson(this.runArchivePath(archive.run.id), archive);
+    await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(archive));
   }
 
   private async importBlueprintPackageUnlocked(
@@ -1151,7 +1157,7 @@ export class FileHivewardStore {
     const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
     const selectedCompanyId = normalizeSelectedCompanyId(state.selectedCompanyId, companies, primaryCompanyId);
     const normalizedBlueprints = Array.isArray(state.blueprints)
-      ? state.blueprints.map((blueprint) => ({
+      ? state.blueprints.map((blueprint) => stripRemovedBlueprintNodes({
           ...blueprint,
           companyId: readScopedCompanyId(blueprint.companyId, primaryCompanyId)
         }))
@@ -1245,6 +1251,42 @@ export class FileHivewardStore {
     }
     return companyId;
   }
+}
+
+const removedStandaloneBlueprintNodeTypes = new Set(["approval", "send", "parallel_agents"]);
+
+function stripRemovedBlueprintNodes(blueprint: BlueprintDefinition): BlueprintDefinition {
+  const nodes = blueprint.nodes.filter((node) => !isRemovedStandaloneBlueprintNodeType(node.type));
+  if (nodes.length === blueprint.nodes.length) return blueprint;
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  return {
+    ...blueprint,
+    nodes,
+    edges: blueprint.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target))
+  };
+}
+
+function stripRemovedBlueprintRunArchive(archive: BlueprintRunArchive): BlueprintRunArchive {
+  const blueprintSnapshot = stripRemovedBlueprintNodes(archive.blueprintSnapshot);
+  const snapshotNodeIds = new Set(blueprintSnapshot.nodes.map((node) => node.id));
+  const nodeRuns = archive.nodeRuns.filter((nodeRun) =>
+    !isRemovedStandaloneBlueprintNodeType(nodeRun.nodeType) &&
+    (snapshotNodeIds.size === 0 || snapshotNodeIds.has(nodeRun.nodeId))
+  );
+  const nodeRunIds = new Set(nodeRuns.map((nodeRun) => nodeRun.id));
+  const events = archive.events.filter((event) => !event.nodeRunId || nodeRunIds.has(event.nodeRunId));
+  return {
+    ...archive,
+    blueprintSnapshot,
+    nodeRuns,
+    events,
+    finalResult: resolveFinalRunResult(blueprintSnapshot, nodeRuns, archive.run.status)
+  };
+}
+
+function isRemovedStandaloneBlueprintNodeType(type: unknown): boolean {
+  return typeof type === "string" && removedStandaloneBlueprintNodeTypes.has(type);
 }
 
 async function safeWriteJson(filePath: string, value: unknown): Promise<void> {
@@ -1818,6 +1860,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replies"] {
+  if (!Array.isArray(value)) return undefined;
+  const replies = value.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const id = readString(item.id);
+    const role: "assistant" | "user" | undefined =
+      item.role === "assistant" || item.role === "user" ? item.role : undefined;
+    const body = readString(item.body);
+    const createdAt = readString(item.createdAt);
+    if (!id || !role || !body || !createdAt) return [];
+    return [{ id, role, body, createdAt }];
+  });
+  return replies.length ? replies : undefined;
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {
