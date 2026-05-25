@@ -45,6 +45,10 @@ const defaultManagerPrompt = [
   "Return only JSON with keys: status, nextSlot, reason.",
   "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" when the workflow is done."
 ].join("\n");
+const defaultSummaryHarnessPrompt = [
+  "Perform a structured merge of the upstream node outputs.",
+  "Preserve each upstream node label and output, deduplicate overlapping facts, and return the merged result in a clear structured form."
+].join("\n");
 const managerDecisionOutputSchema: Record<string, unknown> = {
   type: "object",
   required: ["status"],
@@ -87,8 +91,6 @@ interface AgentApprovalReply {
 
 interface AgentApprovalWaitingOutput {
   approvalType: "agent";
-  approverHint?: string;
-  instructions?: string;
   reviewOutput: unknown;
   replies: AgentApprovalReply[];
 }
@@ -305,7 +307,6 @@ export class BlueprintWorker {
         };
         await this.waitForAgentApproval(
           { ...nodeRunWithRef, openclawRef, usage: result.usage },
-          config,
           result.output,
           [...waiting.output.replies, userReply, assistantReply]
         );
@@ -1156,7 +1157,7 @@ export class BlueprintWorker {
 
     const config = node.config as AgentNodeConfig;
     if (config.approval?.enabled) {
-      await this.waitForAgentApproval({ ...nodeRun, openclawRef, usage: result.usage }, config, result.output);
+      await this.waitForAgentApproval({ ...nodeRun, openclawRef, usage: result.usage }, result.output);
       return result;
     }
 
@@ -1687,14 +1688,15 @@ export class BlueprintWorker {
     const config = node.config as SummaryNodeConfig;
     const input = { upstream };
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
-    if (config.mode === "openclaw_summary_agent") {
+    if (isHarnessSummaryMode(config)) {
+      const runtimeId = resolveSummaryRuntimeId(config);
       const { result, openclawRef } = await this.runAgentTask({
         blueprintRunId: run.id,
         nodeRunId: nodeRun.id,
-        source: "openclaw",
-        agentId: "main",
+        source: resolveAgentRuntimeSource(runtimeId),
+        agentId: runtimeId === "openclaw" ? "main" : undefined,
         agentName: "summary-agent",
-        prompt: config.prompt ?? "Summarize upstream node outputs.",
+        prompt: config.prompt?.trim() || defaultSummaryHarnessPrompt,
         modelId: config.modelId,
         input,
         tools: []
@@ -1726,7 +1728,6 @@ export class BlueprintWorker {
 
   private async waitForAgentApproval(
     nodeRun: BlueprintNodeRun,
-    config: AgentNodeConfig,
     reviewOutput: unknown,
     replies: AgentApprovalReply[] = []
   ): Promise<void> {
@@ -1735,8 +1736,6 @@ export class BlueprintWorker {
       status: "waiting_approval",
       output: {
         approvalType: "agent",
-        approverHint: config.approval?.approverHint,
-        instructions: config.approval?.instructions,
         reviewOutput,
         replies
       } satisfies AgentApprovalWaitingOutput
@@ -2452,6 +2451,17 @@ function isManagerCompletionEnvelope(output: unknown): boolean {
   if (!record) return false;
   const status = readString(record.status)?.toLowerCase();
   return status === "completed" && Array.isArray(record.trace);
+}
+
+function isHarnessSummaryMode(config: SummaryNodeConfig): boolean {
+  const mode = config.mode as string;
+  return mode === "harness_summary" || mode === "openclaw_summary_agent";
+}
+
+function resolveSummaryRuntimeId(config: SummaryNodeConfig): AgentRuntimeId {
+  return config.runtimeId === "codex" || config.runtimeId === "claude" || config.runtimeId === "openclaw"
+    ? config.runtimeId
+    : "openclaw";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

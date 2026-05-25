@@ -58,8 +58,6 @@ export interface PendingApprovalItem {
   startedBy: string;
   startedAt: string;
   requestedAt: string;
-  approverHint?: string;
-  instructions?: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
   status?: "pending" | "replying" | "approved" | "rejected";

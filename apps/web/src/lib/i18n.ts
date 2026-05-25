@@ -54,9 +54,7 @@ export interface Messages {
     agentName: string;
     agentLabel: string;
     agentPrompt: string;
-    approvalInstructions: string;
     approvalLabel: string;
-    approvalOwner: string;
     conditionLabel: string;
     groupLabel: string;
     loopLabel: string;
@@ -111,7 +109,6 @@ export interface Messages {
     channels: string;
     description: string;
     agentName: string;
-    approver: string;
     expression: string;
     harness: string;
     instructions: string;
@@ -190,6 +187,7 @@ export interface Messages {
   };
   options: {
     firstSuccess: string;
+    harnessSummary: string;
     openClawAgent: string;
     structuredMerge: string;
     waitForAll: string;
@@ -283,9 +281,7 @@ export const messages: Record<Language, Messages> = {
       agentName: "agent",
       agentLabel: "Agent",
       agentPrompt: "Execute this Hiveward blueprint node through the selected runtime.",
-      approvalInstructions: "Review the merged output.",
       approvalLabel: "Approval",
-      approvalOwner: "Owner",
       conditionLabel: "Condition",
       groupLabel: "Group",
       loopLabel: "Loop",
@@ -341,7 +337,6 @@ export const messages: Record<Language, Messages> = {
       channels: "Channels",
       description: "Description",
       agentName: "Agent name",
-      approver: "Approver",
       expression: "Expression",
       harness: "Harness",
       instructions: "Instructions",
@@ -490,6 +485,7 @@ export const messages: Record<Language, Messages> = {
     },
     options: {
       firstSuccess: "first success",
+      harnessSummary: "harness summary",
       openClawAgent: "OpenClaw agent",
       structuredMerge: "structured merge",
       waitForAll: "all"
@@ -606,9 +602,7 @@ export const messages: Record<Language, Messages> = {
       agentName: "agent",
       agentLabel: "Agent",
       agentPrompt: "通过所选执行器运行这个 Hiveward Agent 节点。",
-      approvalInstructions: "审核汇总后的输出。",
       approvalLabel: "人工审批",
-      approvalOwner: "负责人",
       conditionLabel: "条件",
       groupLabel: "分组",
       loopLabel: "循环",
@@ -666,7 +660,6 @@ export const messages: Record<Language, Messages> = {
       channels: "\u9891\u9053",
       description: "说明",
       agentName: "Agent 名称",
-      approver: "审批人",
       expression: "表达式",
       instructions: "说明",
       label: "标签",
@@ -811,6 +804,7 @@ export const messages: Record<Language, Messages> = {
     },
     options: {
       firstSuccess: "首个成功",
+      harnessSummary: "Harness 总结",
       openClawAgent: "OpenClaw Agent",
       structuredMerge: "结构化合并",
       waitForAll: "全部完成"
