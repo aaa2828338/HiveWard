@@ -1,4 +1,5 @@
 import type {
+  BlueprintNodeRun,
   BlueprintNodeRunStatus,
   BlueprintRunStatus,
   BlueprintRunSummary,
@@ -130,33 +131,80 @@ export function syncApprovalsForRun(
   current: PendingApprovalItem[],
   runView: BlueprintRunView
 ): PendingApprovalItem[] {
-  const pendingForRun = runView.nodeRuns
-    .filter((nodeRun) => nodeRun.status === "waiting_approval")
-    .map((nodeRun): PendingApprovalItem => {
-      const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
-      const upstream = readPendingApprovalUpstream(nodeRun.input);
-      return {
-        blueprintId: runView.run.blueprintId,
-        blueprintName: runView.run.blueprintName,
-        blueprintRunId: runView.run.id,
-        nodeRunId: nodeRun.id,
-        nodeId: nodeRun.nodeId,
-        nodeLabel: nodeRun.nodeLabel,
-        startedBy: runView.run.startedBy,
-        startedAt: runView.run.startedAt,
-        requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
-        approverHint: readOptionalString(output?.approverHint),
-        instructions: readOptionalString(output?.instructions),
-        ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
-        ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
-        canReject: true,
-        ...(output?.approvalType === "agent" ? { canReply: true } : {}),
-        ...(upstream ? { upstream } : {})
-      };
-    });
+  const previousForRun = new Map(
+    current
+      .filter((approval) => approval.blueprintRunId === runView.run.id)
+      .map((approval) => [approval.nodeRunId, approval])
+  );
+  const approvalsForRun = runView.nodeRuns.flatMap((nodeRun) => {
+    const approval = buildApprovalItemFromNodeRun(runView, nodeRun);
+    if (approval) return [approval];
 
-  return [...pendingForRun, ...current.filter((approval) => approval.blueprintRunId !== runView.run.id)]
+    const previous = previousForRun.get(nodeRun.id);
+    if (!previous) return [];
+    if (nodeRun.status === "succeeded") {
+      return [
+        {
+          ...previous,
+          status: "approved" as const,
+          decidedAt: nodeRun.endedAt,
+          canApprove: false,
+          canReply: false,
+          canReject: false
+        }
+      ];
+    }
+    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
+      return [
+        {
+          ...previous,
+          status: "rejected" as const,
+          decidedAt: nodeRun.endedAt,
+          decisionComment: nodeRun.error,
+          canApprove: false,
+          canReply: false,
+          canReject: false
+        }
+      ];
+    }
+    return [];
+  });
+
+  return [...approvalsForRun, ...current.filter((approval) => approval.blueprintRunId !== runView.run.id)]
     .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
+}
+
+function buildApprovalItemFromNodeRun(
+  runView: BlueprintRunView,
+  nodeRun: BlueprintNodeRun
+): PendingApprovalItem | undefined {
+  const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+  if (!output || output.approvalType !== "agent") return undefined;
+  if (nodeRun.status !== "waiting_approval" && nodeRun.status !== "running") return undefined;
+
+  const upstream = readPendingApprovalUpstream(nodeRun.input);
+  const replies = readPendingApprovalReplies(output.replies);
+  const isReplying = nodeRun.status === "running";
+  return {
+    blueprintId: runView.run.blueprintId,
+    blueprintName: runView.run.blueprintName,
+    blueprintRunId: runView.run.id,
+    nodeRunId: nodeRun.id,
+    nodeId: nodeRun.nodeId,
+    nodeLabel: nodeRun.nodeLabel,
+    startedBy: runView.run.startedBy,
+    startedAt: runView.run.startedAt,
+    requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
+    status: isReplying ? "replying" : "pending",
+    approverHint: readOptionalString(output.approverHint),
+    instructions: readOptionalString(output.instructions),
+    ...("reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
+    ...(replies ? { replies } : {}),
+    canApprove: !isReplying,
+    canReject: !isReplying,
+    canReply: !isReplying,
+    ...(upstream ? { upstream } : {})
+  };
 }
 
 function sortRunSummaries(summaries: BlueprintRunSummary[]): BlueprintRunSummary[] {

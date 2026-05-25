@@ -59,6 +59,7 @@ import type {
   RejectBlueprintRunRequest,
   RejectInboxItemRequest,
   ReplyBlueprintRunApprovalRequest,
+  ReplyInboxItemRequest,
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
@@ -577,6 +578,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.post("/api/inbox/:itemId/reply", async (req, res, next) => {
+    try {
+      const body = normalizeReplyInboxItemRequest(req.body);
+      res.json({ item: await store.replyToInboxItem(readRouteParam(req.params.itemId, "itemId"), body.message) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/dashboard-state", async (_req, res, next) => {
     try {
       res.json({ dashboard: await store.getDashboardState() });
@@ -1088,6 +1098,17 @@ function normalizeRejectInboxItemRequest(value: unknown): RejectInboxItemRequest
   return {
     comment: readOptionalString(value.comment)
   };
+}
+
+function normalizeReplyInboxItemRequest(value: unknown): ReplyInboxItemRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Inbox reply request must be a JSON object.");
+  }
+  const message = readOptionalString(value.message);
+  if (!message) {
+    throw new Error("Inbox reply message is required.");
+  }
+  return { message };
 }
 
 function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequest {

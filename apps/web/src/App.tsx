@@ -522,6 +522,10 @@ export function App() {
     () => runs.filter(isActiveRunView).length,
     [runs]
   );
+  const pendingApprovalCount = useMemo(
+    () => approvals.filter(isActionableApproval).length,
+    [approvals]
+  );
   const pendingInboxCount = useMemo(() => inboxItems.filter((item) => item.status === "pending").length, [inboxItems]);
   const pollingRunId = useMemo(
     () =>
@@ -570,16 +574,16 @@ export function App() {
       company: companies.length,
       blueprint: blueprints.length,
       runs: activeTaskCount,
-      approvals: approvals.length + pendingInboxCount,
+      approvals: pendingApprovalCount + pendingInboxCount,
       models: openClawConfig?.configuredModels.length ?? 0,
       agents: openClawConfig?.configuredAgents.length ?? 0,
       skills: catalog?.tools.length ?? 0,
-      schedule: runs.length + approvals.length + pendingInboxCount,
+      schedule: runs.length + pendingApprovalCount + pendingInboxCount,
       channels: openClawConfig?.configuredChannels.length ?? 0
     }),
     [
       companies.length,
-      approvals.length,
+      pendingApprovalCount,
       pendingInboxCount,
       activeTaskCount,
       openClawConfig?.configuredModels.length,
@@ -927,6 +931,16 @@ export function App() {
     [applyRunView, withBusy]
   );
 
+  const replyToInboxItem = useCallback(
+    (itemId: string, message: string) => {
+      void withBusy("replyInboxItem", async () => {
+        const item = await api.replyToInboxItem(itemId, message);
+        setInboxItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+      });
+    },
+    [withBusy]
+  );
+
   const approveInboxItem = useCallback(
     (itemId: string, comment?: string) => {
       void withBusy("approveInboxItem", async () => {
@@ -1216,6 +1230,7 @@ export function App() {
           onApprove={approveRun}
           onReject={rejectRunApproval}
           onReply={replyToRunApproval}
+          onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
           onRejectInboxItem={rejectInboxItem}
         />
@@ -1953,6 +1968,10 @@ function emptyRuntimeOverview(): RuntimeOverview {
     sessions: [],
     tasks: []
   };
+}
+
+function isActionableApproval(approval: PendingApprovalItem): boolean {
+  return approval.status !== "approved" && approval.status !== "rejected" && approval.status !== "replying";
 }
 
 function defaultWidgetTitle(type: DashboardWidgetType, t: Messages): string {
