@@ -49,6 +49,7 @@ import type {
   ChatAttachment,
   ChatHistoryMessage,
   ChatMode,
+  ChatPermissionMode,
   ChatRuntimeRef,
   ChatSessionStatus,
   ChatThinkingEffort,
@@ -128,6 +129,7 @@ type ResolvedChatSessionMessage = {
   agentId?: string;
   nativeSessionKey?: string;
   thinkingEffort?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   includePlatformContext?: boolean;
   mode?: ChatMode;
   roleScope?: ChatRoleScope;
@@ -1041,6 +1043,7 @@ function normalizeCreateHivewardChatSessionRequest(value: unknown): CreateHivewa
   if (rawThinkingEffort && !thinkingEffort) {
     throw new Error("Chat thinkingEffort must be off, minimal, low, medium, high, adaptive, xhigh, or max.");
   }
+  const permissionMode = normalizeChatPermissionModeForRequest(value.permissionMode, "Chat permissionMode");
   return {
     harnessId,
     title: readOptionalString(value.title)?.slice(0, 120),
@@ -1048,6 +1051,7 @@ function normalizeCreateHivewardChatSessionRequest(value: unknown): CreateHivewa
     modelId: readOptionalString(value.modelId),
     agentId: readOptionalString(value.agentId),
     thinkingEffort,
+    permissionMode,
     mode: normalizeChatMode(value.mode),
     roleScope: normalizeChatRoleScope(value.roleScope)
   };
@@ -1070,6 +1074,7 @@ function normalizeUpdateHivewardChatSessionRequest(value: unknown): UpdateHivewa
   if (value.nativeSessionState !== undefined && !nativeSessionState) {
     throw new Error("Native session state must be unknown, resumable, or missing.");
   }
+  const permissionMode = normalizeChatPermissionModeForRequest(value.permissionMode, "Chat session permissionMode");
   return {
     title: readOptionalString(value.title)?.slice(0, 120),
     nativeSessionId: readOptionalString(value.nativeSessionId),
@@ -1077,6 +1082,7 @@ function normalizeUpdateHivewardChatSessionRequest(value: unknown): UpdateHivewa
     modelId: readOptionalString(value.modelId),
     agentId: readOptionalString(value.agentId),
     thinkingEffort,
+    permissionMode,
     mode: value.mode === undefined ? undefined : normalizeChatMode(value.mode),
     roleScope: normalizeChatRoleScope(value.roleScope),
     status
@@ -1191,6 +1197,7 @@ function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequ
     modelId: readOptionalString(value.modelId),
     agentId: readOptionalString(value.agentId),
     thinkingEffort,
+    permissionMode: normalizeChatPermissionModeForRequest(value.permissionMode, "Chat permissionMode"),
     includePlatformContext: typeof value.includePlatformContext === "boolean" ? value.includePlatformContext : undefined,
     mode: value.mode === undefined ? undefined : normalizeChatMode(value.mode),
     roleScope: normalizeChatRoleScope(value.roleScope),
@@ -1200,6 +1207,12 @@ function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequ
 
 function normalizeChatMode(value: unknown): ChatMode {
   return value === "blueprint" ? "blueprint" : "chat";
+}
+
+function normalizeChatPermissionModeForRequest(value: unknown, fieldName: string): ChatPermissionMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "safe" || value === "full_access") return value;
+  throw new Error(`${fieldName} must be safe or full_access.`);
 }
 
 function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
@@ -1344,6 +1357,7 @@ async function streamHivewardChatSession({
     agentId: body.agentId ?? session.agentId,
     nativeSessionKey: shouldRebuildFromHivewardHistory ? undefined : session.nativeSessionId,
     thinkingEffort: body.thinkingEffort ?? session.thinkingEffort ?? "medium",
+    permissionMode: body.permissionMode ?? session.permissionMode ?? "safe",
     includePlatformContext: body.includePlatformContext ?? messagesBefore.length === 0,
     mode: body.mode ?? session.mode,
     roleScope: body.roleScope ?? session.roleScope
@@ -1372,6 +1386,7 @@ async function streamHivewardChatSession({
     modelId: requestBody.modelId,
     agentId,
     thinkingEffort: requestBody.thinkingEffort,
+    permissionMode: requestBody.permissionMode,
     mode: requestBody.mode,
     roleScope: requestBody.roleScope,
     status: "active"
@@ -1422,6 +1437,7 @@ async function streamHivewardChatSession({
         attachments: requestBody.attachments ?? [],
         modelId,
         thinking: requestBody.thinkingEffort,
+        permissionMode: requestBody.permissionMode,
         idempotencyKey: userMessage.id,
         timeoutMs: 600_000,
         skillIds: resolvedRoleScope ? [roleSkillIdForRole(resolvedRoleScope.role)] : undefined

@@ -270,7 +270,7 @@ describe("agent SDK runtime", () => {
     expect(result.usage?.outputTokens).toBe(30);
   });
 
-  it("streams Codex chat through a full-access native thread", async () => {
+  it("streams Codex chat through a read-only native thread by default", async () => {
     const workspace = createWorkspace({ git: true });
     let threadOptions: ThreadOptions | undefined;
     let turnOptions: TurnOptions | undefined;
@@ -320,11 +320,11 @@ describe("agent SDK runtime", () => {
     expect(threadOptions).toMatchObject({
       workingDirectory: workspace,
       model: "test-model",
-      sandboxMode: "danger-full-access",
+      sandboxMode: "read-only",
       approvalPolicy: "never",
-      networkAccessEnabled: true,
-      webSearchMode: "live",
-      webSearchEnabled: true,
+      networkAccessEnabled: false,
+      webSearchMode: "disabled",
+      webSearchEnabled: false,
       modelReasoningEffort: "high"
     });
     expect(turnOptions?.signal).toBeInstanceOf(AbortSignal);
@@ -340,6 +340,43 @@ describe("agent SDK runtime", () => {
         usage: expect.objectContaining({ inputTokens: 5, outputTokens: 12 })
       })
     ]);
+  });
+
+  it("opts Codex chat into full local access when requested", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-thread-full-access",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        finalResponse: "done",
+        usage: null
+      })
+    );
+
+    await runtime.streamChatMessage(
+      {
+        source: "codex",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "test-model",
+        permissionMode: "full_access",
+        idempotencyKey: "chat-full-access"
+      },
+      () => undefined
+    );
+
+    expect(threadOptions).toMatchObject({
+      sandboxMode: "danger-full-access",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+      webSearchEnabled: true
+    });
   });
 
   it("emits Codex runtime events and streams official agent message updates", async () => {
@@ -499,13 +536,15 @@ describe("agent SDK runtime", () => {
 
     expect(options).toMatchObject({
       cwd: workspace,
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
+      permissionMode: "dontAsk",
+      tools: ["Read", "Glob", "Grep", "LS"],
+      allowedTools: ["Read", "Glob", "Grep", "LS"],
       resume: "claude-session-existing",
       settingSources: ["user", "project"],
       skills: ["hiveward-leader"],
       effort: "medium"
     });
+    expect(options).not.toHaveProperty("allowDangerouslySkipPermissions");
     expect(options?.model).toBeUndefined();
     expect(events).toEqual([
       expect.objectContaining({ type: "started", source: "claude", status: "running" }),
@@ -518,6 +557,54 @@ describe("agent SDK runtime", () => {
         output: "hello from claude"
       })
     ]);
+  });
+
+  it("opts Claude Code chat into full local access when requested", async () => {
+    const workspace = createWorkspace();
+    let options: Parameters<ClaudeQueryFn>[0]["options"];
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      (params) => {
+        options = params.options;
+        return fakeClaudeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "done",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-full-access",
+            session_id: "claude-session-full-access"
+          } as unknown as SDKMessage
+        ])(params);
+      }
+    );
+
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "inherit",
+        permissionMode: "full_access",
+        idempotencyKey: "chat-claude-full-access"
+      },
+      () => undefined
+    );
+
+    expect(options).toMatchObject({
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true
+    });
   });
 
   it("streams Claude Code official partial messages and runtime progress events", async () => {

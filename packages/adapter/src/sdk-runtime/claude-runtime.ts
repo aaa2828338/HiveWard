@@ -51,12 +51,18 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     });
 
     try {
+      const fullAccess = input.permissionMode === "full_access";
       const sdkOptions: Options = {
         abortController,
         cwd: this.options.workspaceRoot,
         model: normalizeClaudeModel(input.modelId),
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
+        permissionMode: fullAccess ? "bypassPermissions" : mapClaudePermission("read_only"),
+        ...(fullAccess
+          ? { allowDangerouslySkipPermissions: true }
+          : {
+              tools: mapClaudeAvailableTools("read_only", []),
+              allowedTools: mapClaudeTools("read_only", [])
+            }),
         resume: input.sessionKey || undefined,
         settingSources: ["user", "project"],
         skills: input.skillIds?.length ? input.skillIds : undefined,

@@ -288,6 +288,7 @@ export type ChatNativeSessionState = "unknown" | "resumable" | "missing";
 export type ChatMessageStatus = "sent" | "streaming" | "failed";
 
 export type ChatMode = "chat" | "blueprint";
+export type ChatPermissionMode = "safe" | "full_access";
 
 export interface ChatRuntimeRef {
   taskId: string;
@@ -312,6 +313,7 @@ export interface HivewardChatSession {
   modelId?: string;
   agentId?: string;
   thinkingEffort?: ChatThinkingEffort;
+  permissionMode: ChatPermissionMode;
   mode: ChatMode;
   status: ChatSessionStatus;
   createdAt: string;
@@ -340,6 +342,7 @@ export interface SendChatSessionMessageRequest {
   modelId?: string;
   agentId?: string;
   thinkingEffort?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   includePlatformContext?: boolean;
   mode?: ChatMode;
   roleScope?: ChatRoleScope;
@@ -375,6 +378,7 @@ export interface CreateHivewardChatSessionRequest {
   modelId?: string;
   agentId?: string;
   thinkingEffort?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   mode?: ChatMode;
   roleScope?: ChatRoleScope;
 }
@@ -386,6 +390,7 @@ export interface UpdateHivewardChatSessionRequest {
   modelId?: string;
   agentId?: string;
   thinkingEffort?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   mode?: ChatMode;
   roleScope?: ChatRoleScope;
   status?: ChatSessionStatus;

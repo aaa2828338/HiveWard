@@ -9033,6 +9033,78 @@ h6,
   gap: var(--section-gap);
 }
 
+.harness-permission-card {
+  align-content: start;
+}
+
+.harness-permission-toggle {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.harness-permission-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.harness-permission-switch {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.harness-permission-switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted-strong);
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.harness-permission-toggle.enabled .harness-permission-switch {
+  border-color: rgb(245 154 11 / 0.45);
+  background: rgb(245 154 11 / 0.16);
+}
+
+.harness-permission-toggle.enabled .harness-permission-switch::after {
+  transform: translateX(18px);
+  background: var(--accent-strong);
+}
+
+.harness-permission-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.harness-permission-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.harness-permission-copy small,
+.harness-permission-warning {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.harness-permission-warning {
+  margin: 0;
+}
+
 .openclaw-panel-metrics {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 10px;
@@ -9596,6 +9668,7 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 
 .chat-control-group,
 .chat-control-field,
+.chat-permission-field,
 .chat-select-field,
 .chat-toggle-field {
   display: grid;
@@ -9701,6 +9774,11 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
 
 .chat-select-button.open .chat-select-arrow {
   transform: translateX(2px);
+}
+
+.chat-permission-field.enabled .chat-select-button {
+  border-color: rgb(245 154 11 / 0.45);
+  background: rgb(245 154 11 / 0.12);
 }
 
 .chat-select-option {
@@ -10016,8 +10094,56 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
+  padding: 7px 9px;
+  border: 1px solid rgb(148 163 184 / 0.16);
+  border-radius: var(--radius-sm);
+  background: rgb(148 163 184 / 0.05);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.chat-message-runtime-status {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgb(148 163 184 / 0.18);
+  border-left: 2px solid rgb(148 163 184 / 0.38);
+  border-radius: var(--radius-sm);
+  background: rgb(148 163 184 / 0.06);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.chat-message-runtime-status svg {
+  margin-top: 1px;
+  color: rgb(148 163 184 / 0.72);
+}
+
+.chat-runtime-status {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.chat-runtime-status > span:first-child {
+  color: var(--muted-strong, var(--muted));
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.chat-runtime-label {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  opacity: 0.82;
 }
 
 .chat-message-status {

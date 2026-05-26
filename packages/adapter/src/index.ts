@@ -9,6 +9,7 @@ import type {
   RuntimeOverview,
   ChatHistoryMessage,
   ChatAttachment,
+  ChatPermissionMode,
   ChatStreamEvent,
   ChatThinkingEffort,
   HarnessId,
@@ -70,6 +71,7 @@ export interface RuntimeChatStreamInput {
   attachments: ChatAttachment[];
   modelId?: string;
   thinking?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   idempotencyKey: string;
   timeoutMs?: number;
   skillIds?: HarnessSkillId[];

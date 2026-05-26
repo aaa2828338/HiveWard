@@ -155,11 +155,11 @@ npm run dev
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
 
-### Default Permission Notice
+### Permission Notice
 
-In the current beta, chat harnesses run with full-access permissions by default. Codex and Claude Code chat harnesses can read and write files in the current workspace, execute commands, access the network, and use live web search. This makes Hiveward closer to the native CLI experience, but it also means the model may modify files, run scripts, read local context, or make external network requests.
+In the current beta, Codex and Claude Code chat harnesses use safe mode by default. They are not automatically granted full file write, command execution, network, or live web-search access.
 
-Use the default full-access mode only in local repositories and environments you trust. Avoid running it directly in directories that contain sensitive credentials, production secrets, or files you cannot recover.
+If you want a higher-efficiency experience closer to the native CLIs, enable full-access mode manually from the relevant harness configuration page. Use it only in local repositories and environments you trust. Avoid running it directly in directories that contain sensitive credentials, production secrets, or files you cannot recover.
 
 ## Development and repository hygiene
 

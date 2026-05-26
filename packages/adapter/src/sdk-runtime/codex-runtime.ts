@@ -65,14 +65,15 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       assertGitWorkspace(this.options.workspaceRoot, this.options.workspaceRoot);
 
       const codex = this.createCodexClient();
+      const fullAccess = input.permissionMode === "full_access";
       const threadOptions: ThreadOptions = {
         model: input.modelId,
         workingDirectory: this.options.workspaceRoot,
-        sandboxMode: "danger-full-access",
+        sandboxMode: fullAccess ? "danger-full-access" : mapCodexSandbox("read_only"),
         approvalPolicy: "never",
-        networkAccessEnabled: true,
-        webSearchMode: "live",
-        webSearchEnabled: true,
+        networkAccessEnabled: fullAccess,
+        webSearchMode: fullAccess ? "live" : "disabled",
+        webSearchEnabled: fullAccess,
         modelReasoningEffort: mapCodexReasoningEffort(input.thinking)
       };
       const thread = input.sessionKey && codex.resumeThread

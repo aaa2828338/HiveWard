@@ -103,6 +103,7 @@ export class FileHivewardChatStore {
         modelId: readOptionalString(input.modelId),
         agentId: readOptionalString(input.agentId),
         thinkingEffort: normalizeChatThinkingEffort(input.thinkingEffort),
+        permissionMode: normalizeChatPermissionMode(input.permissionMode) ?? "safe",
         mode: normalizeChatMode(input.mode),
         status: "active",
         createdAt: now,
@@ -136,6 +137,7 @@ export class FileHivewardChatStore {
         modelId: readOptionalString(patch.modelId) ?? current.modelId,
         agentId: readOptionalString(patch.agentId) ?? current.agentId,
         thinkingEffort: normalizeChatThinkingEffort(patch.thinkingEffort) ?? current.thinkingEffort,
+        permissionMode: normalizeChatPermissionMode(patch.permissionMode) ?? current.permissionMode ?? "safe",
         mode: patch.mode ? normalizeChatMode(patch.mode) : current.mode,
         roleScope: patch.roleScope ?? current.roleScope,
         status: nextStatus,
@@ -354,6 +356,7 @@ function normalizeChatSessions(value: unknown, companies: CompanyProfile[] | und
           modelId: readString(item.modelId),
           agentId: readString(item.agentId),
           thinkingEffort: normalizeChatThinkingEffort(item.thinkingEffort),
+          permissionMode: normalizeChatPermissionMode(item.permissionMode) ?? "safe",
           mode: normalizeChatMode(item.mode),
           status: normalizeChatSessionStatus(item.status) ?? "active",
           createdAt: readString(item.createdAt) ?? now,
@@ -437,6 +440,10 @@ function normalizeChatThinkingEffort(value: unknown): ChatThinkingEffort | undef
     value === "max"
     ? value
     : undefined;
+}
+
+function normalizeChatPermissionMode(value: unknown): HivewardChatSession["permissionMode"] | undefined {
+  return value === "safe" || value === "full_access" ? value : undefined;
 }
 
 function normalizeChatSessionStatus(value: unknown): ChatSessionStatus | undefined {

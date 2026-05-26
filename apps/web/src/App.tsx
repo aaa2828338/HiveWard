@@ -51,7 +51,8 @@ import type {
   CanvasPosition,
   BlueprintDefinition,
   BlueprintRunSummary,
-  BlueprintRunView
+  BlueprintRunView,
+  ChatPermissionMode
 } from "@hiveward/shared";
 import { api } from "./lib/api";
 import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
@@ -104,6 +105,7 @@ const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
 const harnessSkillHarnessIds: HarnessId[] = ["openclaw", "claudeCode", "codex"];
 
 type AppTheme = "light" | "dark";
+type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex">;
 
 type OpenClawPanelCopy = {
   title: string;
@@ -164,6 +166,9 @@ export function App() {
   const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
   const [harnessSkillStatuses, setHarnessSkillStatuses] = useState<Partial<Record<HarnessId, HarnessSkillStatusResponse>>>({});
+  const [chatPermissionModes, setChatPermissionModes] = useState<Record<SdkChatHarnessId, ChatPermissionMode>>(() =>
+    getInitialChatPermissionModes()
+  );
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
@@ -219,6 +224,10 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("hiveward-language", language);
   }, [language]);
+
+  useEffect(() => {
+    localStorage.setItem("hiveward-chat-permission-modes", JSON.stringify(chatPermissionModes));
+  }, [chatPermissionModes]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1073,6 +1082,10 @@ export function App() {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   }, []);
 
+  const setSdkChatPermissionMode = useCallback((harnessId: SdkChatHarnessId, permissionMode: ChatPermissionMode) => {
+    setChatPermissionModes((current) => ({ ...current, [harnessId]: permissionMode }));
+  }, []);
+
   useEffect(() => {
     if (!systemMenuOpen) return;
 
@@ -1220,6 +1233,7 @@ export function App() {
           blueprints={blueprints}
           roleDirectory={roleDirectory}
           language={language}
+          harnessPermissionModes={chatPermissionModes}
           onInboxItemCreated={handleChatInboxItemCreated}
         />
       );
@@ -1356,6 +1370,8 @@ export function App() {
           busy={busyAction === "refreshHarnessStatus"}
           skillStatus={harnessSkillStatuses.claudeCode}
           skillBusy={installingClaudeCodeSkills}
+          permissionMode={chatPermissionModes.claudeCode}
+          onPermissionModeChange={(permissionMode) => setSdkChatPermissionMode("claudeCode", permissionMode)}
           onRefresh={refreshHarnessStatus}
           onInstallSkills={() => installHarnessSkills("claudeCode")}
         />
@@ -1372,6 +1388,8 @@ export function App() {
           busy={busyAction === "refreshHarnessStatus"}
           skillStatus={harnessSkillStatuses.codex}
           skillBusy={installingCodexSkills}
+          permissionMode={chatPermissionModes.codex}
+          onPermissionModeChange={(permissionMode) => setSdkChatPermissionMode("codex", permissionMode)}
           onRefresh={refreshHarnessStatus}
           onInstallSkills={() => installHarnessSkills("codex")}
         />
@@ -1804,6 +1822,8 @@ function HarnessConfigPage({
   busy,
   skillStatus,
   skillBusy,
+  permissionMode,
+  onPermissionModeChange,
   onRefresh,
   onInstallSkills
 }: {
@@ -1815,11 +1835,14 @@ function HarnessConfigPage({
   busy: boolean;
   skillStatus?: HarnessSkillStatusResponse;
   skillBusy: boolean;
+  permissionMode?: ChatPermissionMode;
+  onPermissionModeChange?: (permissionMode: ChatPermissionMode) => void;
   onRefresh: () => void;
   onInstallSkills: () => void;
 }) {
   const copy = harnessStatusCopy(language);
   const skillUi = openClawPanelSkillCopy(language);
+  const permissionCopy = harnessPermissionCopy(language);
   const connectionState = status?.connectionState ?? "unavailable";
   const healthy = connectionState === "connected" || connectionState === "available";
   return (
@@ -1842,6 +1865,30 @@ function HarnessConfigPage({
       </div>
 
       <HarnessStatusBlock status={status} language={language} fallbackLabel={fallbackLabel} />
+
+      {permissionMode && onPermissionModeChange ? (
+        <div className="content-card stack-card harness-permission-card">
+          <div className="card-title-block">
+            <h3>{permissionCopy.title}</h3>
+            <p>{permissionCopy.description}</p>
+          </div>
+          <label className={`harness-permission-toggle ${permissionMode === "full_access" ? "enabled" : ""}`}>
+            <input
+              type="checkbox"
+              checked={permissionMode === "full_access"}
+              onChange={(event) => onPermissionModeChange(event.target.checked ? "full_access" : "safe")}
+            />
+            <span className="harness-permission-switch" aria-hidden="true" />
+            <span className="harness-permission-copy">
+              <strong>{permissionMode === "full_access" ? permissionCopy.fullLabel : permissionCopy.safeLabel}</strong>
+              <small>{permissionMode === "full_access" ? permissionCopy.fullBody : permissionCopy.safeBody}</small>
+            </span>
+          </label>
+          <p className="harness-permission-warning">
+            {permissionMode === "full_access" ? permissionCopy.fullWarning : permissionCopy.safeWarning}
+          </p>
+        </div>
+      ) : null}
 
       <HarnessSkillsCard
         ui={skillUi}
@@ -1976,9 +2023,9 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
       communityPlaceholder: "二维码位置已预留，收到图片后可直接贴到这里。",
       permissionNotice: {
         eyebrow: (versionLabel) => `${versionLabel} 本地运行公告`,
-        title: "完全访问权限已默认开启",
-        body: "Codex 和 Claude Code 聊天 harness 默认可读写工作区文件、执行命令、访问网络，并使用实时网页搜索。请只在你信任的本地仓库中使用。",
-        risk: "风险：模型可能修改文件、运行脚本、读取本地上下文或向网络发起请求。"
+        title: "完全访问权限需要手动开启",
+        body: "Codex 和 Claude Code 聊天 Harness 默认使用安全模式。你可以在各自配置页里手动开启完整本地权限。",
+        risk: "全权限会允许模型读写工作区文件、执行命令、访问网络和使用实时网页搜索；请只在信任的本地仓库中开启。"
       },
       readmeSections: [
         {
@@ -2056,9 +2103,9 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
     communityPlaceholder: "QR slot is ready. The image can be placed here when available.",
     permissionNotice: {
       eyebrow: (versionLabel) => `${versionLabel} local runtime notice`,
-      title: "Full-access harnesses are enabled by default",
-      body: "Codex and Claude Code chat harnesses can read and write workspace files, run commands, use network access, and perform live web search. Use this only in local workspaces you trust.",
-      risk: "Risk: the model may modify files, run scripts, read local context, or make network requests."
+      title: "Full access is opt-in",
+      body: "Codex and Claude Code chat harnesses use safe mode by default. You can enable full local access from each harness configuration page.",
+      risk: "Full access allows workspace writes, command execution, network access, and live web search. Enable it only in local repositories you trust."
     },
     readmeSections: [
       {
@@ -2144,6 +2191,30 @@ function openClawPanelSkillCopy(language: Language): HarnessSkillsCardCopy {
           unsupported: "Unsupported",
           error: "Error"
         }
+      };
+}
+
+function harnessPermissionCopy(language: Language) {
+  return language === "zh-CN"
+    ? {
+        title: "聊天权限",
+        description: "默认使用安全模式。需要更高效率时，可以手动给当前 Harness 开启完整本地权限。",
+        safeLabel: "安全模式",
+        safeBody: "默认。限制为只读/受限工具，不主动开启联网和实时搜索。",
+        safeWarning: "当前不会默认给聊天 Harness 读写文件、执行命令、联网和网页搜索的完整权限。",
+        fullLabel: "全权限模式",
+        fullBody: "允许读写工作区、执行命令、联网和实时网页搜索。",
+        fullWarning: "只在你信任的本地仓库里开启。模型可能修改文件、运行脚本或访问网络。"
+      }
+    : {
+        title: "Chat permissions",
+        description: "Safe mode is the default. Enable full local access only when you need the native harness speed.",
+        safeLabel: "Safe mode",
+        safeBody: "Default. Uses read-only/limited tools and does not enable network or live web search by default.",
+        safeWarning: "Chat harnesses are not granted full file write, command, network, or web-search access by default.",
+        fullLabel: "Full-access mode",
+        fullBody: "Allows workspace writes, command execution, network access, and live web search.",
+        fullWarning: "Enable only in local repositories you trust. The model may modify files, run scripts, or access the network."
       };
 }
 
@@ -2327,6 +2398,24 @@ function getInitialTheme(): AppTheme {
   if (stored === "light" || stored === "dark") return stored;
   if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
+}
+
+function getInitialChatPermissionModes(): Record<SdkChatHarnessId, ChatPermissionMode> {
+  const fallback: Record<SdkChatHarnessId, ChatPermissionMode> = {
+    claudeCode: "safe",
+    codex: "safe"
+  };
+  const stored = localStorage.getItem("hiveward-chat-permission-modes");
+  if (!stored) return fallback;
+  try {
+    const parsed = JSON.parse(stored) as Partial<Record<SdkChatHarnessId, ChatPermissionMode>>;
+    return {
+      claudeCode: parsed.claudeCode === "full_access" ? "full_access" : "safe",
+      codex: parsed.codex === "full_access" ? "full_access" : "safe"
+    };
+  } catch {
+    return fallback;
+  }
 }
 
 function formatDurationMs(value: number | undefined, fallback: string): string {
