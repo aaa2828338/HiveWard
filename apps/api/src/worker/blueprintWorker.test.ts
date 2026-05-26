@@ -644,6 +644,130 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls[0]?.body).toContain("final answer");
   });
 
+  it("approves the selected Agent approval reply instead of the latest review output", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2"),
+      createStartedAgentTask("task-3")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-2", "succeeded", "first usable plan"),
+      createCompletedAgentTask("task-3", "succeeded", "second plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+
+    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Give me a concrete plan.");
+    const firstReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const firstReplyNode = firstReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const firstReplyOutput = firstReplyNode.output as {
+      replies: Array<{ id: string; role: string; body: string; selected?: boolean }>;
+    };
+    const firstAssistantReply = firstReplyOutput.replies.find((reply) => reply.role === "assistant")!;
+
+    await worker.selectApprovalReply(blueprint, firstReplyView.run, firstReplyNode.id, firstAssistantReply.id);
+    const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const selectedOutput = selectedNode.output as {
+      selectedReplyId: string;
+      replies: Array<{ id: string; selected?: boolean }>;
+    };
+    expect(selectedOutput.selectedReplyId).toBe(firstAssistantReply.id);
+    expect(selectedOutput.replies.find((reply) => reply.id === firstAssistantReply.id)?.selected).toBe(true);
+
+    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Try one more variant.");
+    const secondReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const secondReplyNode = secondReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const secondReplyOutput = secondReplyNode.output as {
+      reviewOutput: string;
+      selectedReplyId: string;
+    };
+
+    expect(secondReplyOutput.reviewOutput).toBe("second plan");
+    expect(secondReplyOutput.selectedReplyId).toBe(firstAssistantReply.id);
+
+    await worker.approveRun(blueprint, secondReplyView.run, secondReplyNode.id);
+    const finalView = await waitForRunTerminal(store, run.id);
+    const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(finalView?.run.status).toBe("succeeded");
+    expect(finalNode?.output).toMatchObject({
+      approvedOutput: "first usable plan",
+      approval: {
+        status: "approved",
+        selectedReplyId: firstAssistantReply.id
+      }
+    });
+  });
+
+  it("keeps the selected original approval message stable while later replies revise review output", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2")
+    ], [
+      createCompletedAgentTask("task-1", "succeeded", "original plan"),
+      createCompletedAgentTask("task-2", "succeeded", "revised plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+
+    await worker.selectApprovalReply(blueprint, waitingView.run, waitingNode.id, "reviewOutput");
+    const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+
+    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Show another option.");
+    const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId: string; selectedOutput: string };
+
+    expect(repliedOutput.reviewOutput).toBe("revised plan");
+    expect(repliedOutput.selectedReplyId).toBe("reviewOutput");
+    expect(repliedOutput.selectedOutput).toBe("original plan");
+
+    await worker.approveRun(blueprint, repliedView.run, repliedNode.id);
+    const finalView = await waitForRunTerminal(store, run.id);
+    const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(finalView?.run.status).toBe("succeeded");
+    expect(finalNode?.output).toMatchObject({
+      approvedOutput: "original plan",
+      approval: {
+        status: "approved",
+        selectedReplyId: "reviewOutput"
+      }
+    });
+  });
+
   it("fails the run instead of getting stuck when an Agent approval reply rerun fails", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));

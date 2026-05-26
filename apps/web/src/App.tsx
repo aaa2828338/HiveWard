@@ -897,11 +897,11 @@ export function App() {
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
   const approveRun = useCallback(
-    (blueprintRunId?: string, nodeRunId?: string, comment?: string) => {
+    (blueprintRunId?: string, nodeRunId?: string, comment?: string, selectedReplyId?: string) => {
       const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment);
+        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment, selectedReplyId);
         applyRunView(updated);
         setSelectedRunId(updated.run.id);
       });
@@ -924,6 +924,17 @@ export function App() {
     (blueprintRunId: string, nodeRunId: string, message: string) => {
       void withBusy("replyRunApproval", async () => {
         const updated = await api.replyToBlueprintRunApproval(blueprintRunId, nodeRunId, message);
+        applyRunView(updated);
+        setSelectedRunId(updated.run.id);
+      });
+    },
+    [applyRunView, withBusy]
+  );
+
+  const selectRunApprovalReply = useCallback(
+    (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => {
+      void withBusy("selectRunApprovalReply", async () => {
+        const updated = await api.selectBlueprintRunApprovalReply(blueprintRunId, nodeRunId, selectedReplyId);
         applyRunView(updated);
         setSelectedRunId(updated.run.id);
       });
@@ -1230,6 +1241,7 @@ export function App() {
           onApprove={approveRun}
           onReject={rejectRunApproval}
           onReply={replyToRunApproval}
+          onSelectApprovalReply={selectRunApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
           onRejectInboxItem={rejectInboxItem}
@@ -2055,6 +2067,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
+  if (action === "selectRunApprovalReply") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;

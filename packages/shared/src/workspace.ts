@@ -55,11 +55,13 @@ export interface PendingApprovalItem {
   nodeRunId: string;
   nodeId: string;
   nodeLabel: string;
+  harnessId?: string;
   startedBy: string;
   startedAt: string;
   requestedAt: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
+  selectedReplyId?: string;
   status?: "pending" | "replying" | "approved" | "rejected";
   decidedAt?: string;
   decisionComment?: string;
@@ -74,6 +76,7 @@ export interface PendingApprovalReply {
   role: "assistant" | "user";
   body: string;
   createdAt: string;
+  selected?: boolean;
 }
 
 export interface PendingApprovalUpstreamItem {

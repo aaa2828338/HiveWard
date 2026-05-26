@@ -843,6 +843,10 @@ export class FileHivewardStore {
           if (archive.run.companyId !== companyId || archive.blueprintSnapshot.companyId !== companyId) return [];
 
           const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+          const selectedReplyId = readString(output?.selectedReplyId);
+          const replies = readPendingApprovalReplies(output?.replies, selectedReplyId);
+          const blueprintNode = archive.blueprintSnapshot.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+          const harnessId = blueprintNode?.type === "agent" ? readString(blueprintNode.runtimeId) ?? "openclaw" : undefined;
           const upstream = readPendingApprovalUpstream(nodeRun.input);
           const item: PendingApprovalItem = {
             blueprintId: archive.blueprintSnapshot.id,
@@ -851,12 +855,14 @@ export class FileHivewardStore {
             nodeRunId: nodeRun.id,
             nodeId: nodeRun.nodeId,
             nodeLabel: nodeRun.nodeLabel,
+            ...(harnessId ? { harnessId } : {}),
             startedBy: archive.run.startedBy,
             startedAt: archive.run.startedAt,
             requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
             status: "pending",
             ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
-            ...(readPendingApprovalReplies(output?.replies) ? { replies: readPendingApprovalReplies(output?.replies) } : {}),
+            ...(replies ? { replies } : {}),
+            ...(selectedReplyId ? { selectedReplyId } : {}),
             canApprove: true,
             canReject: true,
             ...(output?.approvalType === "agent" ? { canReply: true } : {}),
@@ -1997,7 +2003,7 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replies"] {
+function readPendingApprovalReplies(value: unknown, selectedReplyId?: string): PendingApprovalItem["replies"] {
   if (!Array.isArray(value)) return undefined;
   const replies = value.flatMap((item) => {
     if (!isRecord(item)) return [];
@@ -2007,7 +2013,7 @@ function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replie
     const body = readString(item.body);
     const createdAt = readString(item.createdAt);
     if (!id || !role || !body || !createdAt) return [];
-    return [{ id, role, body, createdAt }];
+    return [{ id, role, body, createdAt, ...(selectedReplyId === id ? { selected: true } : {}) }];
   });
   return replies.length ? replies : undefined;
 }

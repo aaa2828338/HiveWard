@@ -543,10 +543,16 @@ describe("apiRouter", () => {
 
   it("routes blueprint approval approve, reject, and reply actions to the worker", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string }> = [];
+    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
     const worker = {
-      async approveRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
-        calls.push({ action: "approve", nodeRunId, comment });
+      async approveRun(
+        _blueprint: BlueprintDefinition,
+        run: BlueprintRun,
+        nodeRunId?: string,
+        comment?: string,
+        selectedReplyId?: string
+      ) {
+        calls.push({ action: "approve", nodeRunId, comment, selectedReplyId });
         return { ...run, status: "running" as const };
       },
       async rejectRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
@@ -555,6 +561,10 @@ describe("apiRouter", () => {
       },
       async replyToApproval(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, message: string) {
         calls.push({ action: "reply", nodeRunId, message });
+        return { ...run, status: "waiting_approval" as const };
+      },
+      async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, selectedReplyId: string) {
+        calls.push({ action: "select", nodeRunId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -567,7 +577,7 @@ describe("apiRouter", () => {
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good." })
+          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" })
         }));
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reject`, {
           method: "POST",
@@ -579,12 +589,18 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ nodeRunId: "node-run-3", message: "Please revise this answer." })
         }));
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/select-approval-reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-4", selectedReplyId: "reply-4" })
+        }));
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good." },
+        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" },
         { action: "reject", nodeRunId: "node-run-2", comment: "Needs work." },
-        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." }
+        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." },
+        { action: "select", nodeRunId: "node-run-4", selectedReplyId: "reply-4" }
       ]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

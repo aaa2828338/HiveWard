@@ -63,6 +63,7 @@ import type {
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
+  SelectBlueprintRunApprovalRequest,
   ChatStreamEvent,
   BlueprintDefinition,
   HivewardChatMessage,
@@ -841,7 +842,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeApproveBlueprintRunRequest(req.body);
-      const updated = await worker.approveRun(blueprint, run, body.nodeRunId, body.comment);
+      const updated = await worker.approveRun(blueprint, run, body.nodeRunId, body.comment, body.selectedReplyId);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -891,6 +892,27 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.post("/api/blueprint-runs/:runId/select-approval-reply", async (req, res, next) => {
+    try {
+      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
+      if (!run) {
+        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
+        return;
+      }
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) {
+        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
+        return;
+      }
+      const body = normalizeSelectBlueprintRunApprovalRequest(req.body);
+      const updated = await worker.selectApprovalReply(blueprint, run, body.nodeRunId, body.selectedReplyId);
+      const view = await store.getRunView(updated.id);
+      res.json({ run: view });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/catalog/snapshot", async (_req, res, next) => {
     try {
       res.json({ snapshot: (await store.getCatalogSnapshot()) ?? emptyCatalogSnapshot() });
@@ -917,7 +939,8 @@ function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRu
   }
   return {
     nodeRunId: readOptionalString(value.nodeRunId),
-    comment: readOptionalString(value.comment)
+    comment: readOptionalString(value.comment),
+    selectedReplyId: readOptionalString(value.selectedReplyId)
   };
 }
 
@@ -945,6 +968,21 @@ function normalizeReplyBlueprintRunApprovalRequest(value: unknown): ReplyBluepri
     throw new Error("Approval reply message is required.");
   }
   return { nodeRunId, message };
+}
+
+function normalizeSelectBlueprintRunApprovalRequest(value: unknown): SelectBlueprintRunApprovalRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Approval selection request must be a JSON object.");
+  }
+  const nodeRunId = readOptionalString(value.nodeRunId);
+  const selectedReplyId = readOptionalString(value.selectedReplyId);
+  if (!nodeRunId) {
+    throw new Error("Approval selection nodeRunId is required.");
+  }
+  if (!selectedReplyId) {
+    throw new Error("Approval selection selectedReplyId is required.");
+  }
+  return { nodeRunId, selectedReplyId };
 }
 
 function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {

@@ -38,6 +38,7 @@ const managerOutHandlePrefix = "manager-out-";
 const defaultManagerAgentName = "manager";
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
+const reviewOutputSelectionId = "reviewOutput";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Choose which numbered slot should receive the next handoff by reading the upstream input, previousResults, and delegationRoster.",
@@ -87,12 +88,15 @@ interface AgentApprovalReply {
   role: "assistant" | "user";
   body: string;
   createdAt: string;
+  selected?: boolean;
 }
 
 interface AgentApprovalWaitingOutput {
   approvalType: "agent";
   reviewOutput: unknown;
   replies: AgentApprovalReply[];
+  selectedReplyId?: string;
+  selectedOutput?: unknown;
 }
 
 interface AgentApprovalChatInput {
@@ -108,6 +112,7 @@ interface ApprovedAgentOutputEnvelope {
     status: "approved";
     comment?: string;
     replies: AgentApprovalReply[];
+    selectedReplyId?: string;
   };
 }
 
@@ -184,7 +189,13 @@ export class BlueprintWorker {
     return runningRun;
   }
 
-  async approveRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
+  async approveRun(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    nodeRunId?: string,
+    comment?: string,
+    selectedReplyId?: string
+  ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
@@ -197,12 +208,44 @@ export class BlueprintWorker {
       throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
     }
 
-    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment);
+    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId);
     await this.completeNode(waiting, approvedOutput, waiting.openclawRef);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
     this.scheduleRun(blueprint, running);
     return running;
+  }
+
+  async selectApprovalReply(
+    _blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    nodeRunId: string,
+    selectedReplyId: string
+  ): Promise<BlueprintRun> {
+    if (this.isTerminalRunStatus(run.status)) {
+      throw new Error("Run is already finished.");
+    }
+
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
+    if (!waiting) {
+      throw new Error("Requested approval is no longer waiting.");
+    }
+    if (!isAgentApprovalWaitingOutput(waiting.output)) {
+      throw new Error("Only Agent approval requests can select a solution.");
+    }
+
+    const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId);
+    if (!normalizedSelectedReplyId) {
+      throw new Error("Approval selection id is required.");
+    }
+    const selectedOutput = applyAgentApprovalSelection(waiting.output, normalizedSelectedReplyId);
+
+    await this.store.upsertNodeRun({
+      ...waiting,
+      output: selectedOutput
+    });
+    return { ...run, status: "waiting_approval" as const };
   }
 
   async rejectRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
@@ -264,7 +307,7 @@ export class BlueprintWorker {
       status: "running",
       output: {
         ...waiting.output,
-        replies: [...waiting.output.replies, userReply]
+        replies: markSelectedApprovalReplies([...waiting.output.replies, userReply], waiting.output.selectedReplyId)
       }
     };
     await this.store.upsertNodeRun(runningNodeRun);
@@ -305,10 +348,16 @@ export class BlueprintWorker {
           body: result.output,
           createdAt: new Date().toISOString()
         };
+        const nextReplies = [...waiting.output.replies, userReply, assistantReply];
+        const selectedReplyId = isAgentApprovalSelectionAvailable(nextReplies, waiting.output.selectedReplyId)
+          ? waiting.output.selectedReplyId
+          : undefined;
         await this.waitForAgentApproval(
           { ...nodeRunWithRef, openclawRef, usage: result.usage },
           result.output,
-          [...waiting.output.replies, userReply, assistantReply]
+          nextReplies,
+          selectedReplyId,
+          selectedReplyId ? waiting.output.selectedOutput : undefined
         );
       }
     } catch (error) {
@@ -1751,7 +1800,9 @@ export class BlueprintWorker {
   private async waitForAgentApproval(
     nodeRun: BlueprintNodeRun,
     reviewOutput: unknown,
-    replies: AgentApprovalReply[] = []
+    replies: AgentApprovalReply[] = [],
+    selectedReplyId?: string,
+    selectedOutput?: unknown
   ): Promise<void> {
     const waiting: BlueprintNodeRun = {
       ...nodeRun,
@@ -1759,7 +1810,9 @@ export class BlueprintWorker {
       output: {
         approvalType: "agent",
         reviewOutput,
-        replies
+        replies: markSelectedApprovalReplies(replies, selectedReplyId),
+        ...(selectedReplyId ? { selectedReplyId } : {}),
+        ...(selectedOutput !== undefined ? { selectedOutput } : {})
       } satisfies AgentApprovalWaitingOutput
     };
     await this.store.upsertNodeRun(waiting);
@@ -1770,20 +1823,23 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     nodeRun: BlueprintNodeRun,
-    comment?: string
+    comment?: string,
+    selectedReplyId?: string
   ): Promise<unknown> {
     if (!isAgentApprovalWaitingOutput(nodeRun.output)) {
       return { approved: true, comment: comment?.trim() || undefined };
     }
 
+    const approvalOutput = applyAgentApprovalSelection(nodeRun.output, selectedReplyId);
+    const approvedOutput = resolveAgentApprovalSelectedOutput(approvalOutput);
     const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
     if (node && isAgentBlueprintNode(node)) {
       const config = node.config as AgentNodeConfig;
       if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
-        await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, nodeRun.output.reviewOutput);
+        await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, approvedOutput);
       }
     }
-    return buildApprovedAgentOutput(nodeRun.output.reviewOutput, nodeRun.output.replies, comment);
+    return buildApprovedAgentOutput(approvedOutput, approvalOutput.replies, comment, approvalOutput.selectedReplyId);
   }
 
   private async executeAgentConfiguredSend(
@@ -2404,6 +2460,79 @@ function isAgentApprovalWaitingOutput(value: unknown): value is AgentApprovalWai
   return value.approvalType === "agent" && "reviewOutput" in value && Array.isArray(value.replies);
 }
 
+function normalizeAgentApprovalSelectionId(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function isReviewOutputSelectionId(value: string | undefined): boolean {
+  return value === reviewOutputSelectionId;
+}
+
+function isAgentApprovalSelectionAvailable(replies: AgentApprovalReply[], selectedReplyId: string | undefined): boolean {
+  if (!selectedReplyId || isReviewOutputSelectionId(selectedReplyId)) return true;
+  return replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+}
+
+function assertAgentApprovalSelection(output: AgentApprovalWaitingOutput, selectedReplyId: string): void {
+  if (isReviewOutputSelectionId(selectedReplyId)) return;
+  if (output.replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant")) return;
+  throw new Error("Only assistant approval replies can be selected.");
+}
+
+function applyAgentApprovalSelection(
+  output: AgentApprovalWaitingOutput,
+  selectedReplyId: string | undefined
+): AgentApprovalWaitingOutput {
+  const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId) ?? output.selectedReplyId;
+  if (!normalizedSelectedReplyId) {
+    return {
+      ...output,
+      replies: markSelectedApprovalReplies(output.replies, undefined)
+    };
+  }
+  assertAgentApprovalSelection(output, normalizedSelectedReplyId);
+  const selectedOutput = selectedReplyId
+    ? resolveAgentApprovalSelectionSnapshot(output, normalizedSelectedReplyId)
+    : output.selectedOutput;
+  return {
+    ...output,
+    selectedReplyId: normalizedSelectedReplyId,
+    ...(selectedOutput !== undefined ? { selectedOutput } : {}),
+    replies: markSelectedApprovalReplies(output.replies, normalizedSelectedReplyId)
+  };
+}
+
+function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput): unknown {
+  const selectedReplyId = normalizeAgentApprovalSelectionId(output.selectedReplyId);
+  if (!selectedReplyId) return output.reviewOutput;
+  if (isReviewOutputSelectionId(selectedReplyId)) {
+    return "selectedOutput" in output ? output.selectedOutput : output.reviewOutput;
+  }
+  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+  if (!selectedReply) {
+    throw new Error("Selected approval reply is no longer available.");
+  }
+  return selectedReply.body;
+}
+
+function resolveAgentApprovalSelectionSnapshot(output: AgentApprovalWaitingOutput, selectedReplyId: string): unknown {
+  if (isReviewOutputSelectionId(selectedReplyId)) return output.reviewOutput;
+  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+  return selectedReply?.body;
+}
+
+function markSelectedApprovalReplies(
+  replies: AgentApprovalReply[],
+  selectedReplyId: string | undefined
+): AgentApprovalReply[] {
+  return replies.map((reply) => {
+    const { selected: _selected, ...unselectedReply } = reply;
+    return selectedReplyId && reply.id === selectedReplyId
+      ? { ...unselectedReply, selected: true }
+      : unselectedReply;
+  });
+}
+
 function buildAgentApprovalReplyInput(
   originalInput: unknown,
   previousOutput: unknown,
@@ -2413,10 +2542,14 @@ function buildAgentApprovalReplyInput(
   const conversation = [...previousReplies, userReply];
   const instruction = [
     "This node is paused at a human approval checkpoint.",
-    "Treat approvalChat.conversation and approvalChat.latestUserReply as authoritative stage feedback or supplemental information.",
-    "Revise the previous stage output into the next reviewable output for this same node.",
-    "If the previous output asked for information, use the latest user reply to produce the requested structured result instead of repeating the same request.",
-    "Only ask again when required information is still missing."
+    "Treat approvalChat.conversation and approvalChat.latestUserReply as an in-progress meeting with the human, not as a command to produce a formal report every turn.",
+    "Infer the user's immediate intent from the latest reply and the conversation history.",
+    "When the user is clarifying, asking for simpler wording, exploring options, or steering direction, answer conversationally in plain language and move the discussion forward.",
+    "Use the user's language and match their requested tone unless a formal artifact is being finalized.",
+    "When the user explicitly asks to finalize, generate a report, use a proposal, wrap up, or indicates the discussion is settled, produce the final reviewable artifact for this node.",
+    "If the user asks whether something is feasible, give the feasible path, tradeoffs, and any blocker before offering a final artifact.",
+    "Do not repeat the previous formal template unless the latest user intent calls for a formal artifact.",
+    "If required information is still missing, ask only the specific missing question."
   ].join(" ");
   const approvalChat: AgentApprovalChatInput = {
     previousOutput,
@@ -2441,17 +2574,19 @@ function buildAgentApprovalReplyInput(
 function buildApprovedAgentOutput(
   approvedOutput: unknown,
   replies: AgentApprovalReply[],
-  comment?: string
+  comment?: string,
+  selectedReplyId?: string
 ): unknown {
   const decisionComment = comment?.trim();
-  if (replies.length === 0 && !decisionComment) return approvedOutput;
+  if (replies.length === 0 && !decisionComment && !selectedReplyId) return approvedOutput;
 
   const envelope: ApprovedAgentOutputEnvelope = {
     approvedOutput,
     approval: {
       status: "approved",
       ...(decisionComment ? { comment: decisionComment } : {}),
-      replies
+      replies,
+      ...(selectedReplyId ? { selectedReplyId } : {})
     }
   };
   return envelope;

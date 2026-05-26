@@ -9699,6 +9699,37 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   font-size: 14px;
 }
 
+.inbox-message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.inbox-solution-button {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid rgb(245 154 11 / 0.45);
+  border-radius: 7px;
+  background: rgb(245 154 11 / 0.10);
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.inbox-solution-button:hover:not(:disabled) {
+  border-color: rgb(245 154 11 / 0.70);
+  background: rgb(245 154 11 / 0.16);
+}
+
+.inbox-solution-button.selected {
+  border-color: rgb(63 185 121 / 0.45);
+  background: rgb(63 185 121 / 0.12);
+  color: var(--semantic-green);
+}
+
 .chat-message-pending {
   display: inline-flex;
   align-items: center;

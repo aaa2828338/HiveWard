@@ -129,6 +129,12 @@ export interface ApproveInboxItemResponse {
 export interface ApproveBlueprintRunRequest {
   nodeRunId?: string;
   comment?: string;
+  selectedReplyId?: string;
+}
+
+export interface SelectBlueprintRunApprovalRequest {
+  nodeRunId: string;
+  selectedReplyId: string;
 }
 
 export interface RejectBlueprintRunRequest {
