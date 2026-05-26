@@ -53,11 +53,13 @@ import type {
 } from "@hiveward/shared";
 import type { Language } from "../lib/i18n";
 import { api } from "../lib/api";
+import { shouldRefreshStreamingChatMessages, shouldShowRuntimeStatus, toChatRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type ChatMessage = HivewardChatMessage & {
   status?: "sent" | "streaming" | "failed";
   runtimeRef?: ChatRuntimeRef;
+  runtimeStatus?: ChatRuntimeStatusView;
   progressText?: string;
   speakerLabel?: string;
   agentId?: string;
@@ -456,6 +458,24 @@ export function ChatPage({
   }, [messages]);
 
   useEffect(() => {
+    if (!activeSessionView?.messages.some((message) => message.status === "streaming")) return;
+
+    const interval = window.setInterval(() => {
+      void api.getHivewardChatMessages(activeSessionView.id).then((serverMessages) => {
+        const shouldRefresh = shouldRefreshStreamingChatMessages({
+          localMessages: activeSessionView.messages,
+          serverMessages
+        });
+        if (shouldRefresh) {
+          void loadSessionMessages(activeSessionView.id);
+        }
+      }).catch(() => undefined);
+    }, 8_000);
+
+    return () => window.clearInterval(interval);
+  }, [activeSessionView?.id, activeSessionView?.messages, loadSessionMessages]);
+
+  useEffect(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea) return;
     textarea.style.height = `${composerMinHeightPx}px`;
@@ -739,7 +759,7 @@ export function ChatPage({
         updateActiveSessionViewMessages((current) =>
           current.map((item) =>
             item.id === assistantId
-              ? { ...item, progressText: undefined, content: item.content || copy.stopped, status: "sent" }
+              ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || copy.stopped, status: "sent" }
               : item
           )
         );
@@ -750,7 +770,7 @@ export function ChatPage({
       updateActiveSessionViewMessages((current) =>
         current.map((item) =>
           item.id === assistantId
-            ? { ...item, progressText: undefined, content: item.content || message, status: "failed" }
+            ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || message, status: "failed" }
             : item
         )
       );
@@ -988,14 +1008,22 @@ export function ChatPage({
                         {message.role === "user" ? copy.youAvatar : <Bot size={16} />}
                       </div>
                       <div className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
-                        {visibleContent ? (
-                          <MarkdownRenderer value={visibleContent} className="chat-message-body" />
-                        ) : (
+                        {visibleContent ? <MarkdownRenderer value={visibleContent} className="chat-message-body" /> : null}
+                        {shouldShowRuntimeStatus(message) && message.runtimeStatus ? (
+                          <div className="chat-message-runtime-status">
+                            <Loader2 className="spin" size={15} />
+                            <span className="chat-runtime-status">
+                              <span>{formatChatRuntimeStatusTitle(message.runtimeStatus, copy)}</span>
+                              <span className="chat-runtime-label">{message.runtimeStatus.label}</span>
+                            </span>
+                          </div>
+                        ) : null}
+                        {!visibleContent && !shouldShowRuntimeStatus(message) ? (
                           <div className="chat-message-pending">
                             <Loader2 className="spin" size={15} />
                             {message.progressText ?? copy.waiting(formatHarnessLabel(message.harnessId ?? harnessId))}
                           </div>
-                        )}
+                        ) : null}
                         {message.attachments?.length ? (
                           <div className="chat-message-attachments">
                             {message.attachments.map((attachment) => (
@@ -1237,7 +1265,22 @@ function applyChatEvent(
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
-          ? { ...message, content: event.replace ? event.text : `${message.content}${event.text}`, progressText: undefined }
+          ? {
+              ...message,
+              content: event.replace ? event.text : `${message.content}${event.text}`,
+              progressText: undefined
+            }
+          : message
+      )
+    );
+    return;
+  }
+
+  if (event.type === "runtime_state") {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === assistantId
+          ? { ...message, runtimeStatus: toChatRuntimeStatus(event) }
           : message
       )
     );
@@ -1252,6 +1295,7 @@ function applyChatEvent(
           ? {
               ...message,
               progressText: message.content ? undefined : copy.acceptedWaiting(harnessLabel),
+              runtimeStatus: undefined,
               runtimeRef: toRuntimeRef(event)
             }
           : message
@@ -1267,6 +1311,7 @@ function applyChatEvent(
           ? {
               ...message,
               progressText: undefined,
+              runtimeStatus: undefined,
               content: message.content || event.output || event.error || "",
               status: event.status === "failed" || event.status === "cancelled" ? "failed" : "sent",
               runtimeRef: toRuntimeRef(event)
@@ -1284,7 +1329,7 @@ function applyChatEvent(
   setMessages((current) =>
     current.map((message) =>
       message.id === assistantId
-        ? { ...message, progressText: undefined, content: message.content || event.message, status: "failed" }
+        ? { ...message, progressText: undefined, runtimeStatus: undefined, content: message.content || event.message, status: "failed" }
         : message
     )
   );
@@ -1300,6 +1345,12 @@ function formatWaitingProgress(
   const seconds = elapsedSeconds % 60;
   const elapsed = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
   return `${accepted ? copy.acceptedWaiting(harnessLabel) : copy.waiting(harnessLabel)} ${elapsed}`;
+}
+
+function formatChatRuntimeStatusTitle(status: ChatRuntimeStatusView, copy: ReturnType<typeof chatCopy>): string {
+  if (status.phase === "command") return copy.runtimeCommand;
+  if (status.phase === "tool") return copy.runtimeTool;
+  return copy.runtimeThinking;
 }
 
 function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: ReturnType<typeof chatCopy>): string {
@@ -1766,6 +1817,9 @@ function chatCopy(language: Language) {
       failed: "\u5931\u8d25",
       waiting: (harnessLabel: string) => `\u7b49\u5f85 ${harnessLabel} \u8fd4\u56de...`,
       acceptedWaiting: (harnessLabel: string) => `\u5df2\u53d1\u7ed9 ${harnessLabel}\uff0c\u7b49\u5f85\u6a21\u578b\u6216\u5de5\u5177\u5b8c\u6210...`,
+      runtimeThinking: "\u6b63\u5728\u5904\u7406...",
+      runtimeTool: "\u6b63\u5728\u4f7f\u7528\u5de5\u5177...",
+      runtimeCommand: "\u6b63\u5728\u6267\u884c\u547d\u4ee4...",
       usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
       usageModel: "\u6a21\u578b",
       usageTokens: "Token \u6d88\u8017",
@@ -1860,6 +1914,9 @@ function chatCopy(language: Language) {
     failed: "Failed",
     waiting: (harnessLabel: string) => `Waiting for ${harnessLabel}...`,
     acceptedWaiting: (harnessLabel: string) => `Sent to ${harnessLabel}. Waiting for the model or tools to finish...`,
+    runtimeThinking: "Working...",
+    runtimeTool: "Using tools...",
+    runtimeCommand: "Running command...",
     usageSummary: "Model and token usage",
     usageModel: "Model",
     usageTokens: "Token usage",

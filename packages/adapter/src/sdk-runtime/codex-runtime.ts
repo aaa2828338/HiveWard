@@ -12,6 +12,7 @@ import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAb
 import { mapCodexSandbox, normalizePermissionProfile } from "./permissions";
 import { buildSdkChatPrompt, mapCodexReasoningEffort } from "./chat-envelope";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
+import { runtimeLabelFromRecord } from "./runtime-state";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { assertGitWorkspace, resolveSdkWorkingDirectory } from "./workspace";
@@ -67,10 +68,11 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       const threadOptions: ThreadOptions = {
         model: input.modelId,
         workingDirectory: this.options.workspaceRoot,
-        sandboxMode: "read-only",
+        sandboxMode: "danger-full-access",
         approvalPolicy: "never",
-        networkAccessEnabled: false,
-        webSearchMode: "disabled",
+        networkAccessEnabled: true,
+        webSearchMode: "live",
+        webSearchEnabled: true,
         modelReasoningEffort: mapCodexReasoningEffort(input.thinking)
       };
       const thread = input.sessionKey && codex.resumeThread
@@ -309,6 +311,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     const { events } = await thread.runStreamed(prompt, turnOptions);
     let output = "";
     let usage: Usage | null = null;
+    const agentMessageTexts = new Map<string, string>();
     for await (const event of events) {
       if (event.type === "thread.started") {
         onSessionKey(event.thread_id);
@@ -321,14 +324,53 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       if (event.type === "turn.failed") {
         throw new Error(event.error.message);
       }
-      if (event.type !== "item.completed" || event.item.type !== "agent_message" || !event.item.text) {
+      if (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed") {
         continue;
       }
-      output = output ? `${output}\n${event.item.text}` : event.item.text;
-      onEvent({ type: "delta", text: event.item.text });
+      if (event.item.type !== "agent_message") {
+        onEvent(toCodexRuntimeState(event));
+        continue;
+      }
+      if (!event.item.text) {
+        continue;
+      }
+      agentMessageTexts.set(event.item.id, event.item.text);
+      const nextOutput = Array.from(agentMessageTexts.values()).filter(Boolean).join("\n");
+      if (nextOutput === output) {
+        continue;
+      }
+      if (nextOutput.startsWith(output)) {
+        onEvent({ type: "delta", text: nextOutput.slice(output.length) });
+      } else {
+        onEvent({ type: "delta", text: nextOutput, replace: true });
+      }
+      output = nextOutput;
     }
     return { text: output, usage };
   }
+}
+
+function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): ChatStreamEvent {
+  return {
+    type: "runtime_state",
+    source: "codex",
+    phase: codexRuntimePhaseForItem(event.item.type),
+    label: runtimeLabelFromRecord(event.item as Record<string, unknown>, event.item.type)
+  };
+}
+
+function codexRuntimePhaseForItem(itemType: string): Extract<ChatStreamEvent, { type: "runtime_state" }>["phase"] {
+  if (itemType === "command_execution") return "command";
+  if (
+    itemType === "mcp_tool_call" ||
+    itemType === "tool_use_summary" ||
+    itemType === "web_search" ||
+    itemType === "file_change" ||
+    itemType.includes("tool")
+  ) {
+    return "tool";
+  }
+  return "thinking";
 }
 
 function requireConfiguredModel(modelId: string | undefined): void {
