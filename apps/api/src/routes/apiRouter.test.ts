@@ -1048,6 +1048,7 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.source).toBe("codex");
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("");
         expect(adapter.lastChatStreamInput?.modelId).toBe("codex/chat-default");
+        expect(adapter.lastChatStreamInput?.permissionMode).toBe("safe");
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
@@ -1061,6 +1062,7 @@ describe("apiRouter", () => {
           attachments: [],
           modelId: "inherit",
           thinkingEffort: "medium",
+          permissionMode: "full_access",
           roleScope: {
             role: "leader",
             leaderId: leader.id,
@@ -1074,6 +1076,7 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.source).toBe("claude");
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("");
         expect(adapter.lastChatStreamInput?.modelId).toBeUndefined();
+        expect(adapter.lastChatStreamInput?.permissionMode).toBe("full_access");
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-leader"]);
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-leader");
       }, adapter);
@@ -1945,6 +1948,7 @@ type StreamSessionChatTestInput = {
   modelId?: string;
   agentId?: string;
   thinkingEffort?: HivewardChatSession["thinkingEffort"];
+  permissionMode?: HivewardChatSession["permissionMode"];
   includePlatformContext?: boolean;
   mode?: HivewardChatSession["mode"];
   roleScope?: HivewardChatSession["roleScope"];
@@ -1962,6 +1966,7 @@ async function streamSessionChat(baseUrl: string, input: StreamSessionChatTestIn
       modelId: input.modelId,
       agentId: input.agentId,
       thinkingEffort: input.thinkingEffort,
+      permissionMode: input.permissionMode,
       mode: input.mode,
       roleScope: input.roleScope
     })
@@ -1977,6 +1982,7 @@ async function streamSessionChat(baseUrl: string, input: StreamSessionChatTestIn
       modelId: input.modelId,
       agentId: input.agentId,
       thinkingEffort: input.thinkingEffort,
+      permissionMode: input.permissionMode,
       includePlatformContext: input.includePlatformContext,
       mode: input.mode,
       roleScope: input.roleScope,

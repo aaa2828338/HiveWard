@@ -25,6 +25,7 @@ import {
   Pencil,
   Plus,
   Send,
+  ShieldCheck,
   Sparkles,
   Square,
   Trash2,
@@ -36,6 +37,7 @@ import type {
   CatalogSnapshot,
   ChatAttachment,
   ChatMode,
+  ChatPermissionMode,
   ChatRoleScope,
   ChatRuntimeRef,
   ChatStreamEvent,
@@ -53,11 +55,13 @@ import type {
 } from "@hiveward/shared";
 import type { Language } from "../lib/i18n";
 import { api } from "../lib/api";
+import { shouldRefreshStreamingChatMessages, shouldShowRuntimeStatus, toChatRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type ChatMessage = HivewardChatMessage & {
   status?: "sent" | "streaming" | "failed";
   runtimeRef?: ChatRuntimeRef;
+  runtimeStatus?: ChatRuntimeStatusView;
   progressText?: string;
   speakerLabel?: string;
   agentId?: string;
@@ -94,6 +98,7 @@ export function ChatPage({
   blueprints,
   roleDirectory,
   language,
+  harnessPermissionModes,
   onInboxItemCreated
 }: {
   catalog?: CatalogSnapshot;
@@ -105,6 +110,7 @@ export function ChatPage({
   blueprints: BlueprintDefinition[];
   roleDirectory?: CompanyRoleDirectory;
   language: Language;
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   onInboxItemCreated?: (item: InboxItem) => void;
 }) {
   const copy = chatCopy(language);
@@ -173,6 +179,9 @@ export function ChatPage({
     : undefined;
   const titleBlueprint = chatMode === "blueprint" ? selectedChatBlueprint : selectedRoleBlueprint;
   const selectedRoleLabel = selectedRole?.label ?? copy.ceoRole;
+  const activePermissionMode = resolveHarnessPermissionMode(harnessId, harnessPermissionModes, activeSessionView);
+  const canConfigurePermission =
+    Boolean(activeSessionView) && activeSessionView?.harnessId === harnessId && supportsChatPermissionMode(harnessId);
 
   const applySessionRoleScope = useCallback(
     (roleScope: ChatRoleScope | undefined) => {
@@ -200,6 +209,7 @@ export function ChatPage({
             modelId: defaultModelId || undefined,
             agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
             thinkingEffort,
+            permissionMode: resolveHarnessPermissionMode(harnessId, harnessPermissionModes),
             mode: chatMode,
             roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
           });
@@ -240,6 +250,7 @@ export function ChatPage({
       copy,
       defaultModelId,
       harnessId,
+      harnessPermissionModes,
       applySessionRoleScope,
       selectedCompanyId,
       selectedBlueprintScopeId,
@@ -337,6 +348,53 @@ export function ChatPage({
     }
   }, [activeSessionView, copy.sessionEndFailed]);
 
+  const updateActiveSessionPermissionMode = useCallback(
+    async (value: string) => {
+      if (!activeSessionView || activeSessionView.harnessId !== harnessId || !supportsChatPermissionMode(harnessId)) return;
+      const permissionMode = value === "full_access" ? "full_access" : "safe";
+      const previousPermissionMode = activeSessionView.permissionMode ?? activePermissionMode ?? "safe";
+      setError(undefined);
+      setSessionViews((current) =>
+        current.map((sessionView) =>
+          sessionView.id === activeSessionView.id
+            ? {
+                ...sessionView,
+                permissionMode,
+                updatedAt: new Date().toISOString()
+              }
+            : sessionView
+        )
+      );
+      try {
+        const updated = await api.updateHivewardChatSession(activeSessionView.id, { permissionMode });
+        setSessionViews((current) =>
+          current.map((sessionView) =>
+            sessionView.id === updated.id
+              ? {
+                  ...updated,
+                  messages: sessionView.messages
+                }
+              : sessionView
+          )
+        );
+      } catch (permissionError) {
+        setSessionViews((current) =>
+          current.map((sessionView) =>
+            sessionView.id === activeSessionView.id
+              ? {
+                  ...sessionView,
+                  permissionMode: previousPermissionMode,
+                  updatedAt: new Date().toISOString()
+                }
+              : sessionView
+          )
+        );
+        setError(permissionError instanceof Error ? permissionError.message : copy.permissionUpdateFailed);
+      }
+    },
+    [activePermissionMode, activeSessionView, copy.permissionUpdateFailed, harnessId]
+  );
+
   const bindActiveSessionView = useCallback(
     (event: Extract<ChatStreamEvent, { type: "started" | "done" }>, eventHarnessId: HarnessId) => {
       updateActiveSessionView((sessionView) => ({
@@ -359,6 +417,7 @@ export function ChatPage({
         modelId: modelId || undefined,
         agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
         thinkingEffort,
+        permissionMode: resolveHarnessPermissionMode(harnessId, harnessPermissionModes),
         mode: chatMode,
         roleScope
       });
@@ -372,7 +431,7 @@ export function ChatPage({
     } catch (sessionError) {
       setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
     }
-  }, [agentId, chatMode, copy, harnessId, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]);
+  }, [agentId, chatMode, copy, harnessId, harnessPermissionModes, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]);
 
   const loadSessionMessages = useCallback(
     async (sessionViewId: string) => {
@@ -456,6 +515,24 @@ export function ChatPage({
   }, [messages]);
 
   useEffect(() => {
+    if (!activeSessionView?.messages.some((message) => message.status === "streaming")) return;
+
+    const interval = window.setInterval(() => {
+      void api.getHivewardChatMessages(activeSessionView.id).then((serverMessages) => {
+        const shouldRefresh = shouldRefreshStreamingChatMessages({
+          localMessages: activeSessionView.messages,
+          serverMessages
+        });
+        if (shouldRefresh) {
+          void loadSessionMessages(activeSessionView.id);
+        }
+      }).catch(() => undefined);
+    }, 8_000);
+
+    return () => window.clearInterval(interval);
+  }, [activeSessionView?.id, activeSessionView?.messages, loadSessionMessages]);
+
+  useEffect(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea) return;
     textarea.style.height = `${composerMinHeightPx}px`;
@@ -521,6 +598,13 @@ export function ChatPage({
   const thinkingOptions = useMemo<SelectOption[]>(
     () => buildThinkingOptions(selectedModelOption?.thinkingLevels, copy),
     [copy, selectedModelOption?.thinkingLevels]
+  );
+  const permissionOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: "safe", label: copy.permissionSafe },
+      { value: "full_access", label: copy.permissionFull }
+    ],
+    [copy]
   );
   const modeOptions = useMemo<SelectOption[]>(
     () => [
@@ -589,6 +673,7 @@ export function ChatPage({
           modelId: modelId || undefined,
           agentId: nextHarnessId === "openclaw" ? agentId || undefined : undefined,
           thinkingEffort,
+          permissionMode: resolveHarnessPermissionMode(nextHarnessId, harnessPermissionModes),
           mode: chatMode,
           roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
         });
@@ -599,7 +684,7 @@ export function ChatPage({
         setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
       }
     },
-    [agentId, applySessionRoleScope, chatMode, copy, loadSessionMessages, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
+    [agentId, applySessionRoleScope, chatMode, copy, harnessPermissionModes, loadSessionMessages, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
   );
 
   const selectAgent = useCallback(
@@ -649,6 +734,7 @@ export function ChatPage({
     const sendHarnessId = harnessId;
     const sendHarnessLabel = formatHarnessLabel(sendHarnessId);
     const sendIsOpenClawHarness = sendHarnessId === "openclaw";
+    const sendPermissionMode = resolveHarnessPermissionMode(sendHarnessId, harnessPermissionModes, activeSessionView);
     const sendModelId = modelOptions.some((option) => option.value === modelId) ? modelId : defaultModelId;
     const sendModelOption = modelOptions.find((option) => option.value === sendModelId);
     const sendThinkingEffort = resolveSupportedThinkingEffort(
@@ -718,6 +804,7 @@ export function ChatPage({
           modelId: sendModelId || undefined,
           agentId: sendIsOpenClawHarness ? agentId || undefined : undefined,
           thinkingEffort: sendThinkingEffort,
+          permissionMode: sendPermissionMode,
           includePlatformContext,
           mode: chatMode,
           roleScope,
@@ -739,7 +826,7 @@ export function ChatPage({
         updateActiveSessionViewMessages((current) =>
           current.map((item) =>
             item.id === assistantId
-              ? { ...item, progressText: undefined, content: item.content || copy.stopped, status: "sent" }
+              ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || copy.stopped, status: "sent" }
               : item
           )
         );
@@ -750,7 +837,7 @@ export function ChatPage({
       updateActiveSessionViewMessages((current) =>
         current.map((item) =>
           item.id === assistantId
-            ? { ...item, progressText: undefined, content: item.content || message, status: "failed" }
+            ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || message, status: "failed" }
             : item
         )
       );
@@ -841,6 +928,11 @@ export function ChatPage({
                 <button type="button" title={copy.mode} aria-label={copy.mode} onClick={() => setSettingsCollapsed(false)}>
                   <LayoutTemplate size={16} />
                 </button>
+                {canConfigurePermission && (
+                  <button type="button" title={copy.permission} aria-label={copy.permission} onClick={() => setSettingsCollapsed(false)}>
+                    <ShieldCheck size={16} />
+                  </button>
+                )}
               </div>
             ) : (
               <div className="chat-settings-body">
@@ -911,6 +1003,18 @@ export function ChatPage({
                   options={modeOptions}
                   onChange={(value) => setChatMode(value as ChatMode)}
                 />
+
+                {canConfigurePermission && (
+                  <div className={`chat-permission-field ${activePermissionMode === "full_access" ? "enabled" : ""}`}>
+                    <ChatSelect
+                      label={copy.permission}
+                      icon={<ShieldCheck size={14} />}
+                      value={activePermissionMode ?? "safe"}
+                      options={permissionOptions}
+                      onChange={(value) => void updateActiveSessionPermissionMode(value)}
+                    />
+                  </div>
+                )}
               </div>
             )}
           </aside>
@@ -988,14 +1092,22 @@ export function ChatPage({
                         {message.role === "user" ? copy.youAvatar : <Bot size={16} />}
                       </div>
                       <div className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
-                        {visibleContent ? (
-                          <MarkdownRenderer value={visibleContent} className="chat-message-body" />
-                        ) : (
+                        {visibleContent ? <MarkdownRenderer value={visibleContent} className="chat-message-body" /> : null}
+                        {shouldShowRuntimeStatus(message) && message.runtimeStatus ? (
+                          <div className="chat-message-runtime-status">
+                            <Loader2 className="spin" size={15} />
+                            <span className="chat-runtime-status">
+                              <span>{formatChatRuntimeStatusTitle(message.runtimeStatus, copy)}</span>
+                              <span className="chat-runtime-label">{message.runtimeStatus.label}</span>
+                            </span>
+                          </div>
+                        ) : null}
+                        {!visibleContent && !shouldShowRuntimeStatus(message) ? (
                           <div className="chat-message-pending">
                             <Loader2 className="spin" size={15} />
                             {message.progressText ?? copy.waiting(formatHarnessLabel(message.harnessId ?? harnessId))}
                           </div>
-                        )}
+                        ) : null}
                         {message.attachments?.length ? (
                           <div className="chat-message-attachments">
                             {message.attachments.map((attachment) => (
@@ -1237,7 +1349,22 @@ function applyChatEvent(
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
-          ? { ...message, content: event.replace ? event.text : `${message.content}${event.text}`, progressText: undefined }
+          ? {
+              ...message,
+              content: event.replace ? event.text : `${message.content}${event.text}`,
+              progressText: undefined
+            }
+          : message
+      )
+    );
+    return;
+  }
+
+  if (event.type === "runtime_state") {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === assistantId
+          ? { ...message, runtimeStatus: toChatRuntimeStatus(event) }
           : message
       )
     );
@@ -1252,6 +1379,7 @@ function applyChatEvent(
           ? {
               ...message,
               progressText: message.content ? undefined : copy.acceptedWaiting(harnessLabel),
+              runtimeStatus: undefined,
               runtimeRef: toRuntimeRef(event)
             }
           : message
@@ -1267,6 +1395,7 @@ function applyChatEvent(
           ? {
               ...message,
               progressText: undefined,
+              runtimeStatus: undefined,
               content: message.content || event.output || event.error || "",
               status: event.status === "failed" || event.status === "cancelled" ? "failed" : "sent",
               runtimeRef: toRuntimeRef(event)
@@ -1284,7 +1413,7 @@ function applyChatEvent(
   setMessages((current) =>
     current.map((message) =>
       message.id === assistantId
-        ? { ...message, progressText: undefined, content: message.content || event.message, status: "failed" }
+        ? { ...message, progressText: undefined, runtimeStatus: undefined, content: message.content || event.message, status: "failed" }
         : message
     )
   );
@@ -1300,6 +1429,12 @@ function formatWaitingProgress(
   const seconds = elapsedSeconds % 60;
   const elapsed = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
   return `${accepted ? copy.acceptedWaiting(harnessLabel) : copy.waiting(harnessLabel)} ${elapsed}`;
+}
+
+function formatChatRuntimeStatusTitle(status: ChatRuntimeStatusView, copy: ReturnType<typeof chatCopy>): string {
+  if (status.phase === "command") return copy.runtimeCommand;
+  if (status.phase === "tool") return copy.runtimeTool;
+  return copy.runtimeThinking;
 }
 
 function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: ReturnType<typeof chatCopy>): string {
@@ -1675,6 +1810,19 @@ function formatHarnessLabel(harnessId: string): string {
   return "OpenClaw";
 }
 
+function resolveHarnessPermissionMode(
+  harnessId: HarnessId,
+  harnessPermissionModes: Partial<Record<HarnessId, ChatPermissionMode>> | undefined,
+  session?: HivewardChatSession
+): ChatPermissionMode | undefined {
+  if (!supportsChatPermissionMode(harnessId)) return undefined;
+  return session?.permissionMode ?? harnessPermissionModes?.[harnessId] ?? "safe";
+}
+
+function supportsChatPermissionMode(harnessId: HarnessId): boolean {
+  return harnessId === "codex" || harnessId === "claudeCode";
+}
+
 function formatHarnessStatusMeta(status: HarnessStatus | undefined, copy: ReturnType<typeof chatCopy>): string {
   if (!status) return copy.harnessUnknown;
   if (status.connectionState === "connected") return copy.harnessConnected;
@@ -1754,6 +1902,10 @@ function chatCopy(language: Language) {
       thinkingAdaptive: "\u81ea\u9002\u5e94",
       thinkingXHigh: "\u6781\u9ad8",
       thinkingMax: "\u6700\u5927",
+      permission: "\u6743\u9650",
+      permissionSafe: "\u5b89\u5168\u6a21\u5f0f",
+      permissionFull: "\u5168\u6743\u9650",
+      permissionUpdateFailed: "\u4f1a\u8bdd\u6743\u9650\u66f4\u65b0\u5931\u8d25\u3002",
       mode: "\u6a21\u5f0f",
       modeChat: "\u804a\u5929",
       modeBlueprint: "\u6784\u5efa\u84dd\u56fe",
@@ -1766,6 +1918,9 @@ function chatCopy(language: Language) {
       failed: "\u5931\u8d25",
       waiting: (harnessLabel: string) => `\u7b49\u5f85 ${harnessLabel} \u8fd4\u56de...`,
       acceptedWaiting: (harnessLabel: string) => `\u5df2\u53d1\u7ed9 ${harnessLabel}\uff0c\u7b49\u5f85\u6a21\u578b\u6216\u5de5\u5177\u5b8c\u6210...`,
+      runtimeThinking: "\u6b63\u5728\u5904\u7406...",
+      runtimeTool: "\u6b63\u5728\u4f7f\u7528\u5de5\u5177...",
+      runtimeCommand: "\u6b63\u5728\u6267\u884c\u547d\u4ee4...",
       usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
       usageModel: "\u6a21\u578b",
       usageTokens: "Token \u6d88\u8017",
@@ -1848,6 +2003,10 @@ function chatCopy(language: Language) {
     thinkingAdaptive: "Adaptive",
     thinkingXHigh: "Extra high",
     thinkingMax: "Max",
+    permission: "Permission",
+    permissionSafe: "Safe mode",
+    permissionFull: "Full access",
+    permissionUpdateFailed: "Failed to update session permission.",
     mode: "Mode",
     modeChat: "Chat",
     modeBlueprint: "Build blueprint",
@@ -1860,6 +2019,9 @@ function chatCopy(language: Language) {
     failed: "Failed",
     waiting: (harnessLabel: string) => `Waiting for ${harnessLabel}...`,
     acceptedWaiting: (harnessLabel: string) => `Sent to ${harnessLabel}. Waiting for the model or tools to finish...`,
+    runtimeThinking: "Working...",
+    runtimeTool: "Using tools...",
+    runtimeCommand: "Running command...",
     usageSummary: "Model and token usage",
     usageModel: "Model",
     usageTokens: "Token usage",

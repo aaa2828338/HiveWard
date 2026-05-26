@@ -18,6 +18,7 @@ import { AgentSdkError, formatAgentSdkError, formatAgentSdkProviderError, getErr
 import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
 import { buildSdkChatPrompt, mapClaudeEffort, mapClaudeThinking } from "./chat-envelope";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
+import { isRecord, readString, runtimeLabelFromRecord } from "./runtime-state";
 import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { resolveSdkWorkingDirectory } from "./workspace";
@@ -50,25 +51,43 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     });
 
     try {
+      const fullAccess = input.permissionMode === "full_access";
       const sdkOptions: Options = {
         abortController,
         cwd: this.options.workspaceRoot,
         model: normalizeClaudeModel(input.modelId),
-        permissionMode: mapClaudePermission("read_only"),
-        tools: mapClaudeAvailableTools("read_only", []),
-        allowedTools: mapClaudeTools("read_only", []),
+        permissionMode: fullAccess ? "bypassPermissions" : mapClaudePermission("read_only"),
+        ...(fullAccess
+          ? { allowDangerouslySkipPermissions: true }
+          : {
+              tools: mapClaudeAvailableTools("read_only", []),
+              allowedTools: mapClaudeTools("read_only", [])
+            }),
         resume: input.sessionKey || undefined,
         settingSources: ["user", "project"],
         skills: input.skillIds?.length ? input.skillIds : undefined,
         thinking: mapClaudeThinking(input.thinking),
-        effort: mapClaudeEffort(input.thinking)
+        effort: mapClaudeEffort(input.thinking),
+        includePartialMessages: true,
+        includeHookEvents: true
       };
       const prompt = buildSdkChatPrompt(input.message, input.attachments);
       let finalMessage: SDKResultMessage | undefined;
+      let streamedOutput = "";
 
       for await (const message of this.queryFn({ prompt, options: sdkOptions })) {
         if (hasSessionId(message)) {
           sessionKey = message.session_id;
+        }
+        const deltaText = readClaudePartialDeltaText(message);
+        if (deltaText) {
+          streamedOutput = `${streamedOutput}${deltaText}`;
+          onEvent({ type: "delta", text: deltaText });
+          continue;
+        }
+        if (shouldEmitClaudeRuntimeEvent(message)) {
+          onEvent(toClaudeRuntimeState(message));
+          continue;
         }
         if (message.type === "result") {
           finalMessage = message;
@@ -97,8 +116,12 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         finalMessage.structured_output === undefined
           ? finalMessage.result
           : formatStructuredOutput(finalMessage.structured_output);
-      if (output) {
-        onEvent({ type: "delta", text: output });
+      if (output && output !== streamedOutput) {
+        if (!streamedOutput || output.startsWith(streamedOutput)) {
+          onEvent({ type: "delta", text: output.slice(streamedOutput.length) });
+        } else {
+          onEvent({ type: "delta", text: output, replace: true });
+        }
       }
       onEvent({
         type: "done",
@@ -334,6 +357,45 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")
     });
   }
+}
+
+function shouldEmitClaudeRuntimeEvent(message: SDKMessage): boolean {
+  if (message.type === "assistant" || message.type === "user" || message.type === "result" || message.type === "stream_event") {
+    return false;
+  }
+  return true;
+}
+
+function toClaudeRuntimeState(message: SDKMessage): ChatStreamEvent {
+  return {
+    type: "runtime_state",
+    source: "claude",
+    phase: claudeRuntimePhaseForMessage(message),
+    label: claudeRuntimeLabelForMessage(message)
+  };
+}
+
+function claudeRuntimePhaseForMessage(message: SDKMessage): Extract<ChatStreamEvent, { type: "runtime_state" }>["phase"] {
+  const record = message as Record<string, unknown>;
+  const subtype = readString(record.subtype);
+  if (subtype === "command_execution") return "command";
+  if (message.type === "tool_progress" || message.type.includes("tool") || subtype?.includes("tool")) return "tool";
+  return "thinking";
+}
+
+function claudeRuntimeLabelForMessage(message: SDKMessage): string {
+  const record = message as Record<string, unknown>;
+  return runtimeLabelFromRecord(record, readString(record.subtype) ?? message.type);
+}
+
+function readClaudePartialDeltaText(message: SDKMessage): string | undefined {
+  if (message.type !== "stream_event") return undefined;
+  const streamEvent = (message as { event?: unknown }).event;
+  if (!isRecord(streamEvent)) return undefined;
+  const delta = streamEvent.delta;
+  if (!isRecord(delta)) return undefined;
+  if (delta.type === "text_delta") return readString(delta.text);
+  return undefined;
 }
 
 function requireConfiguredModel(modelId: string | undefined): void {

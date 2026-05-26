@@ -2,6 +2,7 @@ import type {
   AgentSdkProvider,
   AgentTaskResult,
   ChatAttachment,
+  ChatPermissionMode,
   ChatStreamEvent,
   ChatThinkingEffort,
   HarnessSkillId,
@@ -25,6 +26,7 @@ export interface AgentSdkChatStreamInput {
   attachments: ChatAttachment[];
   modelId?: string;
   thinking?: ChatThinkingEffort;
+  permissionMode?: ChatPermissionMode;
   idempotencyKey: string;
   timeoutMs?: number;
   skillIds?: HarnessSkillId[];

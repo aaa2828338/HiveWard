@@ -155,6 +155,12 @@ npm run dev
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
 
+### Permission Notice
+
+In the current beta, Codex and Claude Code chat harnesses use safe mode by default. They are not automatically granted full file write, command execution, network, or live web-search access.
+
+If you want a higher-efficiency experience closer to the native CLIs, enable full-access mode manually from the relevant harness configuration page. Use it only in local repositories and environments you trust. Avoid running it directly in directories that contain sensitive credentials, production secrets, or files you cannot recover.
+
 ## Development and repository hygiene
 
 See [Development Setup](docs/development-setup.md) for the supported Node.js/npm versions, local environment template, and runtime configuration variables.
