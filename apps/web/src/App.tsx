@@ -1647,6 +1647,13 @@ function HivewardHomePage({
         )}
       </div>
 
+      <article className="hiveward-home-notice">
+        <span>{ui.permissionNotice.eyebrow(versionLabel)}</span>
+        <h3>{ui.permissionNotice.title}</h3>
+        <p>{ui.permissionNotice.body}</p>
+        <p>{ui.permissionNotice.risk}</p>
+      </article>
+
       <div className="hiveward-readme-layout">
         <article className="hiveward-readme-main">
           {ui.readmeSections.map((section) => (
@@ -1929,6 +1936,12 @@ interface HivewardHomeCopy {
   none: string;
   communityTitle: string;
   communityPlaceholder: string;
+  permissionNotice: {
+    eyebrow: (versionLabel: string) => string;
+    title: string;
+    body: string;
+    risk: string;
+  };
   readmeSections: Array<{
     title: string;
     paragraphs: string[];
@@ -1961,6 +1974,12 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
       none: "-",
       communityTitle: "交流群",
       communityPlaceholder: "二维码位置已预留，收到图片后可直接贴到这里。",
+      permissionNotice: {
+        eyebrow: (versionLabel) => `${versionLabel} 本地运行公告`,
+        title: "完全访问权限已默认开启",
+        body: "Codex 和 Claude Code 聊天 harness 默认可读写工作区文件、执行命令、访问网络，并使用实时网页搜索。请只在你信任的本地仓库中使用。",
+        risk: "风险：模型可能修改文件、运行脚本、读取本地上下文或向网络发起请求。"
+      },
       readmeSections: [
         {
           title: "什么是 HiveWard？",
@@ -2035,6 +2054,12 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
     none: "-",
     communityTitle: "Community",
     communityPlaceholder: "QR slot is ready. The image can be placed here when available.",
+    permissionNotice: {
+      eyebrow: (versionLabel) => `${versionLabel} local runtime notice`,
+      title: "Full-access harnesses are enabled by default",
+      body: "Codex and Claude Code chat harnesses can read and write workspace files, run commands, use network access, and perform live web search. Use this only in local workspaces you trust.",
+      risk: "Risk: the model may modify files, run scripts, read local context, or make network requests."
+    },
     readmeSections: [
       {
         title: "What is HiveWard?",

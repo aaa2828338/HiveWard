@@ -270,7 +270,7 @@ describe("agent SDK runtime", () => {
     expect(result.usage?.outputTokens).toBe(30);
   });
 
-  it("streams Codex chat through a read-only native thread", async () => {
+  it("streams Codex chat through a full-access native thread", async () => {
     const workspace = createWorkspace({ git: true });
     let threadOptions: ThreadOptions | undefined;
     let turnOptions: TurnOptions | undefined;
@@ -320,8 +320,11 @@ describe("agent SDK runtime", () => {
     expect(threadOptions).toMatchObject({
       workingDirectory: workspace,
       model: "test-model",
-      sandboxMode: "read-only",
+      sandboxMode: "danger-full-access",
       approvalPolicy: "never",
+      networkAccessEnabled: true,
+      webSearchMode: "live",
+      webSearchEnabled: true,
       modelReasoningEffort: "high"
     });
     expect(turnOptions?.signal).toBeInstanceOf(AbortSignal);
@@ -335,6 +338,84 @@ describe("agent SDK runtime", () => {
         sessionKey: "codex-thread-chat",
         output: "hello from codex",
         usage: expect.objectContaining({ inputTokens: 5, outputTokens: 12 })
+      })
+    ]);
+  });
+
+  it("emits Codex runtime events and streams official agent message updates", async () => {
+    const workspace = createWorkspace({ git: true });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-thread-chat-events",
+        streamEvents: [
+          { type: "thread.started", thread_id: "codex-thread-chat-events" },
+          { type: "item.started", item: { id: "reason-1", type: "reasoning", text: "Inspecting files" } },
+          {
+            type: "item.updated",
+            item: {
+              id: "cmd-1",
+              type: "command_execution",
+              command: "rg stream",
+              aggregated_output: "apps/web/src/components/ChatPage.tsx",
+              status: "in_progress"
+            }
+          },
+          { type: "item.started", item: { id: "msg-1", type: "agent_message", text: "Hel" } },
+          { type: "item.updated", item: { id: "msg-1", type: "agent_message", text: "Hello" } },
+          { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "Hello" } },
+          {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 3,
+              cached_input_tokens: 0,
+              output_tokens: 2,
+              reasoning_output_tokens: 1
+            }
+          }
+        ],
+        finalResponse: "unused",
+        usage: null
+      })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "codex",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "test-model",
+        thinking: "medium",
+        idempotencyKey: "chat-events-1"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "codex", status: "running" }),
+      expect.objectContaining({
+        type: "runtime_state",
+        source: "codex",
+        phase: "thinking",
+        label: "reasoning"
+      }),
+      expect.objectContaining({
+        type: "runtime_state",
+        source: "codex",
+        phase: "command",
+        label: "rg stream"
+      }),
+      { type: "delta", text: "Hel" },
+      { type: "delta", text: "lo" },
+      expect.objectContaining({
+        type: "done",
+        source: "codex",
+        status: "succeeded",
+        output: "Hello",
+        usage: expect.objectContaining({ inputTokens: 3, outputTokens: 3 })
       })
     ]);
   });
@@ -418,7 +499,8 @@ describe("agent SDK runtime", () => {
 
     expect(options).toMatchObject({
       cwd: workspace,
-      permissionMode: "dontAsk",
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
       resume: "claude-session-existing",
       settingSources: ["user", "project"],
       skills: ["hiveward-leader"],
@@ -434,6 +516,95 @@ describe("agent SDK runtime", () => {
         status: "succeeded",
         sessionKey: "claude-session-chat",
         output: "hello from claude"
+      })
+    ]);
+  });
+
+  it("streams Claude Code official partial messages and runtime progress events", async () => {
+    const workspace = createWorkspace();
+    let options: Parameters<ClaudeQueryFn>[0]["options"];
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      (params) => {
+        options = params.options;
+        return fakeClaudeQuery([
+          {
+            type: "stream_event",
+            event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hel" } },
+            parent_tool_use_id: null,
+            uuid: "partial-1",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage,
+          {
+            type: "tool_progress",
+            tool_use_id: "tool-1",
+            tool_name: "Read",
+            parent_tool_use_id: null,
+            elapsed_time_seconds: 2,
+            uuid: "tool-progress-1",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage,
+          {
+            type: "stream_event",
+            event: { type: "content_block_delta", delta: { type: "text_delta", text: "lo" } },
+            parent_tool_use_id: null,
+            uuid: "partial-2",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage,
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "Hello",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-chat",
+            session_id: "claude-session-chat"
+          } as unknown as SDKMessage
+        ])(params);
+      }
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "claude",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "inherit",
+        thinking: "medium",
+        idempotencyKey: "chat-claude-events"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(options).toMatchObject({
+      includePartialMessages: true,
+      includeHookEvents: true
+    });
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "claude", status: "running" }),
+      { type: "delta", text: "Hel" },
+      expect.objectContaining({
+        type: "runtime_state",
+        source: "claude",
+        phase: "tool",
+        label: "Read"
+      }),
+      { type: "delta", text: "lo" },
+      expect.objectContaining({
+        type: "done",
+        source: "claude",
+        status: "succeeded",
+        output: "Hello"
       })
     ]);
   });

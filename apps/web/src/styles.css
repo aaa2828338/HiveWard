@@ -904,6 +904,35 @@ pre {
   background: rgb(19 38 47 / 0.03);
 }
 
+.hiveward-home-notice {
+  display: grid;
+  gap: 9px;
+  padding: 15px 16px;
+  border: 1px solid rgb(245 154 11 / 0.22);
+  border-radius: var(--surface-radius);
+  background: rgb(245 154 11 / 0.08);
+  color: var(--muted);
+}
+
+.hiveward-home-notice span {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.hiveward-home-notice h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--title-section-size);
+}
+
+.hiveward-home-notice p {
+  margin: 0;
+  max-width: 76ch;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .error-banner {
   position: sticky;
   top: 0;

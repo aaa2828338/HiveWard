@@ -429,6 +429,12 @@ export type ChatStreamEvent =
       replace?: boolean;
     }
   | {
+      type: "runtime_state";
+      source: OpenClawObjectSource;
+      phase: "thinking" | "tool" | "command";
+      label: string;
+    }
+  | {
       type: "done";
       taskId: string;
       runId: string;
