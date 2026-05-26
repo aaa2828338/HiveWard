@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
@@ -23,14 +23,7 @@ import type {
   BlueprintRunArchive,
   BlueprintRunSummary,
   BlueprintRunView,
-  ChatAttachment,
-  ChatMessageStatus,
-  ChatMode,
-  ChatNativeSessionState,
   ChatRoleScope,
-  ChatRuntimeRef,
-  ChatSessionStatus,
-  ChatThinkingEffort,
   CreateHivewardChatSessionRequest,
   HarnessId,
   HivewardChatMessage,
@@ -50,6 +43,8 @@ import {
   readPortableBlueprintPackage,
   resolveFinalRunResult
 } from "@hiveward/shared";
+import { FileHivewardChatStore, type LegacyHivewardChatState } from "./fileHivewardChatStore";
+import { isFileNotFoundError, safeWriteJson } from "./jsonFile";
 
 const storeIndexSchema = "hiveward.store-index/v1";
 
@@ -73,8 +68,6 @@ interface HivewardStoreIndex {
   companyDashboards: Record<string, WorkspaceDashboard>;
   roleDirectories: Record<string, CompanyRoleDirectory>;
   inboxItems: Record<string, InboxItem[]>;
-  chatSessions: HivewardChatSession[];
-  chatMessages: Record<string, HivewardChatMessage[]>;
 }
 
 type RawHivewardStoreIndex = Partial<HivewardStoreIndex> & {
@@ -99,6 +92,7 @@ export class FileHivewardStore {
   private readonly dataDir: string;
   private readonly blueprintsDir: string;
   private readonly runsDir: string;
+  private readonly chatStore: FileHivewardChatStore;
   private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/hiveward-store.json")) {
@@ -106,6 +100,7 @@ export class FileHivewardStore {
     this.dataDir = dirname(filePath);
     this.blueprintsDir = join(this.dataDir, "blueprints");
     this.runsDir = join(this.dataDir, "runs");
+    this.chatStore = new FileHivewardChatStore(join(this.dataDir, "hiveward-chat-store.json"));
   }
 
   async init(): Promise<void> {
@@ -114,7 +109,8 @@ export class FileHivewardStore {
       await mkdir(this.blueprintsDir, { recursive: true });
       await mkdir(this.runsDir, { recursive: true });
       try {
-        const index = await this.readIndexUnlocked();
+        const { index, legacyChat } = await this.readIndexWithLegacyChatUnlocked();
+        await this.chatStore.init(index.companies, legacyChat);
         await this.writeIndexUnlocked(index);
       } catch (error) {
         if (!isFileNotFoundError(error)) {
@@ -136,12 +132,11 @@ export class FileHivewardStore {
           roleDirectories: {},
           inboxItems: {
             [seededCompanyId]: []
-          },
-          chatSessions: [],
-          chatMessages: {}
+          }
         };
         index.roleDirectories[seededCompanyId] = buildRoleDirectory(index, seededCompanyId, now);
         await Promise.all(blueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
+        await this.chatStore.init(index.companies);
         await this.writeIndexUnlocked(index);
       }
     });
@@ -268,11 +263,6 @@ export class FileHivewardStore {
       index.companies.splice(existingIndex, 1);
       index.blueprintIndex = index.blueprintIndex.filter((blueprint) => blueprint.companyId !== companyId);
       index.runIndex = index.runIndex.filter((run) => run.companyId !== companyId);
-      const chatSessionIds = index.chatSessions.filter((session) => session.companyId === companyId).map((session) => session.id);
-      index.chatSessions = index.chatSessions.filter((session) => session.companyId !== companyId);
-      for (const sessionId of chatSessionIds) {
-        delete index.chatMessages[sessionId];
-      }
       delete index.companyDashboards[companyId];
       delete index.roleDirectories[companyId];
       delete index.inboxItems[companyId];
@@ -282,6 +272,7 @@ export class FileHivewardStore {
       }
 
       await this.writeIndexUnlocked(index);
+      await this.chatStore.deleteCompanyChats(companyId);
       await Promise.all([
         ...blueprintIds.map((id) => rm(this.blueprintPath(id), { force: true })),
         ...runIds.map((id) => rm(this.runArchivePath(id), { force: true }))
@@ -917,10 +908,7 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      return index.chatSessions
-        .filter((session) => session.companyId === companyId)
-        .slice()
-        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+      return this.chatStore.listChatSessions(companyId);
     });
   }
 
@@ -929,7 +917,7 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return undefined;
-      return index.chatSessions.find((session) => session.id === id && session.companyId === companyId);
+      return this.chatStore.getChatSession(companyId, id);
     });
   }
 
@@ -938,12 +926,7 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return undefined;
-      return index.chatSessions.find(
-        (session) =>
-          session.companyId === companyId &&
-          session.harnessId === input.harnessId &&
-          session.nativeSessionId === input.nativeSessionId
-      );
+      return this.chatStore.findChatSessionByNative({ companyId, ...input });
     });
   }
 
@@ -952,26 +935,8 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.requireSelectedCompanyId(index);
       const now = new Date().toISOString();
-      const session: HivewardChatSession = {
-        id: nextChatSessionId(index.chatSessions),
-        companyId,
-        harnessId: normalizeHarnessId(input.harnessId),
-        roleScope: normalizeChatRoleScopeForSelectedCompany(index, companyId, input.roleScope, now),
-        title: readOptionalString(input.title) ?? "New chat",
-        nativeSessionId: readOptionalString(input.nativeSessionId),
-        nativeSessionState: readOptionalString(input.nativeSessionId) ? "resumable" : "unknown",
-        modelId: readOptionalString(input.modelId),
-        agentId: readOptionalString(input.agentId),
-        thinkingEffort: normalizeChatThinkingEffort(input.thinkingEffort),
-        mode: normalizeChatMode(input.mode),
-        status: "active",
-        createdAt: now,
-        updatedAt: now
-      };
-      index.chatSessions.unshift(session);
-      index.chatMessages[session.id] = [];
-      await this.writeIndexUnlocked(index);
-      return session;
+      const roleScope = normalizeChatRoleScopeForSelectedCompany(index, companyId, input.roleScope, now);
+      return this.chatStore.createChatSession(companyId, { ...input, roleScope });
     });
   }
 
@@ -980,46 +945,32 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return undefined;
-      const sessionIndex = index.chatSessions.findIndex((session) => session.id === id && session.companyId === companyId);
-      if (sessionIndex < 0) return undefined;
-      const current = index.chatSessions[sessionIndex]!;
       const now = new Date().toISOString();
-      const nextStatus = normalizeChatSessionStatus(patch.status) ?? current.status;
-      const endedAt = nextStatus === "ended" ? current.endedAt ?? now : current.endedAt;
-      const next: HivewardChatSession = {
-        ...current,
-        title: readOptionalString(patch.title) ?? current.title,
-        nativeSessionId: Object.hasOwn(patch, "nativeSessionId") ? readOptionalString(patch.nativeSessionId) : current.nativeSessionId,
-        nativeSessionState: normalizeNativeSessionState(patch.nativeSessionState) ?? current.nativeSessionState,
-        modelId: readOptionalString(patch.modelId) ?? current.modelId,
-        agentId: readOptionalString(patch.agentId) ?? current.agentId,
-        thinkingEffort: normalizeChatThinkingEffort(patch.thinkingEffort) ?? current.thinkingEffort,
-        mode: patch.mode ? normalizeChatMode(patch.mode) : current.mode,
-        roleScope: patch.roleScope
-          ? normalizeChatRoleScopeForSelectedCompany(index, companyId, patch.roleScope, now)
-          : current.roleScope,
-        status: nextStatus,
-        endedAt,
-        updatedAt: now
-      };
-      index.chatSessions[sessionIndex] = next;
-      await this.writeIndexUnlocked(index);
-      return next;
+      const roleScope = patch.roleScope
+        ? normalizeChatRoleScopeForSelectedCompany(index, companyId, patch.roleScope, now)
+        : undefined;
+      return this.chatStore.updateChatSession(companyId, id, {
+        ...patch,
+        ...(patch.roleScope ? { roleScope } : {})
+      });
     });
   }
 
   async endChatSession(id: string): Promise<HivewardChatSession | undefined> {
-    return this.updateChatSession(id, { status: "ended" });
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      if (!companyId) return undefined;
+      return this.chatStore.endChatSession(companyId, id);
+    });
   }
 
   async listChatMessages(sessionId: string): Promise<HivewardChatMessage[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
-      if (!companyId || !index.chatSessions.some((session) => session.id === sessionId && session.companyId === companyId)) {
-        return [];
-      }
-      return (index.chatMessages[sessionId] ?? []).slice().sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      if (!companyId) return [];
+      return this.chatStore.listChatMessages(companyId, sessionId);
     });
   }
 
@@ -1033,33 +984,7 @@ export class FileHivewardStore {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
-      const sessionIndex = index.chatSessions.findIndex((session) => session.id === input.sessionId && session.companyId === companyId);
-      if (sessionIndex < 0) {
-        throw new Error(`Chat session not found: ${input.sessionId}`);
-      }
-      const now = new Date().toISOString();
-      const message: HivewardChatMessage = {
-        id: input.id ?? nextChatMessageId(index.chatMessages[input.sessionId] ?? []),
-        sessionId: input.sessionId,
-        role: normalizeChatMessageRole(input.role),
-        content: input.content,
-        attachments: normalizeStoredChatAttachments(input.attachments),
-        harnessId: normalizeHarnessId(input.harnessId),
-        modelId: readOptionalString(input.modelId),
-        nativeMessageId: readOptionalString(input.nativeMessageId),
-        status: normalizeChatMessageStatus(input.status) ?? "sent",
-        runtimeRef: normalizeChatRuntimeRef(input.runtimeRef),
-        createdAt: input.createdAt ?? now,
-        updatedAt: input.updatedAt
-      };
-      index.chatMessages[input.sessionId] = [...(index.chatMessages[input.sessionId] ?? []), message];
-      index.chatSessions[sessionIndex] = {
-        ...index.chatSessions[sessionIndex]!,
-        title: deriveChatSessionTitle(index.chatSessions[sessionIndex]!, message),
-        updatedAt: now
-      };
-      await this.writeIndexUnlocked(index);
-      return message;
+      return this.chatStore.appendChatMessage(companyId, input);
     });
   }
 
@@ -1071,30 +996,7 @@ export class FileHivewardStore {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
-      const sessionIndex = index.chatSessions.findIndex((session) => session.id === sessionId && session.companyId === companyId);
-      if (sessionIndex < 0) return undefined;
-      const messages = index.chatMessages[sessionId] ?? [];
-      const messageIndex = messages.findIndex((message) => message.id === messageId);
-      if (messageIndex < 0) return undefined;
-      const now = new Date().toISOString();
-      const current = messages[messageIndex]!;
-      const next: HivewardChatMessage = {
-        ...current,
-        content: patch.content ?? current.content,
-        status: normalizeChatMessageStatus(patch.status) ?? current.status,
-        runtimeRef: patch.runtimeRef === undefined ? current.runtimeRef : normalizeChatRuntimeRef(patch.runtimeRef),
-        nativeMessageId: readOptionalString(patch.nativeMessageId) ?? current.nativeMessageId,
-        modelId: readOptionalString(patch.modelId) ?? current.modelId,
-        updatedAt: now
-      };
-      messages[messageIndex] = next;
-      index.chatMessages[sessionId] = messages;
-      index.chatSessions[sessionIndex] = {
-        ...index.chatSessions[sessionIndex]!,
-        updatedAt: now
-      };
-      await this.writeIndexUnlocked(index);
-      return next;
+      return this.chatStore.updateChatMessage(companyId, sessionId, messageId, patch);
     });
   }
 
@@ -1108,12 +1010,25 @@ export class FileHivewardStore {
   }
 
   private async readIndexUnlocked(): Promise<HivewardStoreIndex> {
+    return (await this.readIndexWithLegacyChatUnlocked()).index;
+  }
+
+  private async readIndexWithLegacyChatUnlocked(): Promise<{
+    index: HivewardStoreIndex;
+    legacyChat?: LegacyHivewardChatState;
+  }> {
     const raw = await readFile(this.filePath, "utf8");
     const parsed = JSON.parse(raw) as LegacyHivewardStoreState;
     if (parsed.schema === storeIndexSchema) {
-      return this.normalizeIndex(parsed as RawHivewardStoreIndex);
+      return {
+        index: this.normalizeIndex(parsed as RawHivewardStoreIndex),
+        legacyChat: extractLegacyChatState(parsed)
+      };
     }
-    return this.migrateLegacyStateUnlocked(parsed);
+    return {
+      index: await this.migrateLegacyStateUnlocked(parsed),
+      legacyChat: extractLegacyChatState(parsed)
+    };
   }
 
   private async writeIndexUnlocked(index: HivewardStoreIndex): Promise<void> {
@@ -1227,11 +1142,8 @@ export class FileHivewardStore {
       catalogSnapshot: rawIndex.catalogSnapshot,
       companyDashboards,
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now),
-      chatSessions: normalizeChatSessions(rawIndex.chatSessions, companies, now),
-      chatMessages: {}
+      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now)
     };
-    index.chatMessages = normalizeChatMessages(rawIndex.chatMessages, index.chatSessions, now);
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, rawIndex.roleDirectories?.[company.id]);
     }
@@ -1271,11 +1183,8 @@ export class FileHivewardStore {
       catalogSnapshot: state.catalogSnapshot,
       companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now),
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(state.inboxItems, companies, now),
-      chatSessions: normalizeChatSessions(state.chatSessions, companies, now),
-      chatMessages: {}
+      inboxItems: normalizeInboxItems(state.inboxItems, companies, now)
     };
-    index.chatMessages = normalizeChatMessages(state.chatMessages, index.chatSessions, now);
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, state.roleDirectories?.[company.id]);
     }
@@ -1294,7 +1203,6 @@ export class FileHivewardStore {
       };
       await this.writeRunArchiveUnlocked(archive);
     }
-    await this.writeIndexUnlocked(index);
     return index;
   }
 
@@ -1377,17 +1285,18 @@ function isRemovedStandaloneBlueprintNodeType(type: unknown): boolean {
   return typeof type === "string" && removedStandaloneBlueprintNodeTypes.has(type);
 }
 
-async function safeWriteJson(filePath: string, value: unknown): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${nanoid(8)}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(tempPath, filePath);
-}
-
 function normalizeCompanies(value: unknown, now: string): CompanyProfile[] {
   return Array.isArray(value) && value.length > 0
     ? (value as CompanyProfile[]).map((company) => normalizeCompany(company, now))
     : createDefaultCompanies(now);
+}
+
+function extractLegacyChatState(value: LegacyHivewardStoreState): LegacyHivewardChatState | undefined {
+  if (!Object.hasOwn(value, "chatSessions") && !Object.hasOwn(value, "chatMessages")) return undefined;
+  return {
+    chatSessions: value.chatSessions,
+    chatMessages: value.chatMessages
+  };
 }
 
 function normalizeCompanyDashboards(
@@ -1464,70 +1373,6 @@ function normalizeInboxItemType(value: unknown): InboxItemType {
   return "report";
 }
 
-function normalizeChatSessions(value: unknown, companies: CompanyProfile[], now: string): HivewardChatSession[] {
-  const companyIds = new Set(companies.map((company) => company.id));
-  const fallbackCompanyId = companies[0]?.id ?? defaultCompanyId;
-  return Array.isArray(value)
-    ? value.flatMap((item) => {
-        if (!isRecord(item)) return [];
-        const id = readString(item.id) ?? `chat-session-${nanoid(8)}`;
-        const companyId = readString(item.companyId);
-        const resolvedCompanyId = companyId && companyIds.has(companyId) ? companyId : fallbackCompanyId;
-        return [{
-          id,
-          companyId: resolvedCompanyId,
-          harnessId: normalizeHarnessId(item.harnessId),
-          roleScope: normalizeChatRoleScopeForCompany(item.roleScope, resolvedCompanyId),
-          title: readString(item.title) ?? "New chat",
-          nativeSessionId: readString(item.nativeSessionId),
-          nativeSessionState: normalizeNativeSessionState(item.nativeSessionState) ?? "unknown",
-          modelId: readString(item.modelId),
-          agentId: readString(item.agentId),
-          thinkingEffort: normalizeChatThinkingEffort(item.thinkingEffort),
-          mode: normalizeChatMode(item.mode),
-          status: normalizeChatSessionStatus(item.status) ?? "active",
-          createdAt: readString(item.createdAt) ?? now,
-          updatedAt: readString(item.updatedAt) ?? readString(item.createdAt) ?? now,
-          endedAt: readString(item.endedAt)
-        }];
-      })
-    : [];
-}
-
-function normalizeChatMessages(value: unknown, sessions: HivewardChatSession[], now: string): Record<string, HivewardChatMessage[]> {
-  const sessionIds = new Set(sessions.map((session) => session.id));
-  const messagesBySession: Record<string, HivewardChatMessage[]> = {};
-  for (const session of sessions) {
-    messagesBySession[session.id] = [];
-  }
-
-  if (!isRecord(value)) return messagesBySession;
-  for (const [sessionId, messages] of Object.entries(value)) {
-    if (!sessionIds.has(sessionId) || !Array.isArray(messages)) continue;
-    const session = sessions.find((candidate) => candidate.id === sessionId);
-    messagesBySession[sessionId] = messages.flatMap((item) => normalizeChatMessage(item, sessionId, session?.harnessId ?? "openclaw", now));
-  }
-  return messagesBySession;
-}
-
-function normalizeChatMessage(value: unknown, sessionId: string, fallbackHarnessId: HarnessId, now: string): HivewardChatMessage[] {
-  if (!isRecord(value)) return [];
-  return [{
-    id: readString(value.id) ?? `chat-message-${nanoid(8)}`,
-    sessionId,
-    role: normalizeChatMessageRole(value.role),
-    content: readString(value.content) ?? "",
-    attachments: normalizeStoredChatAttachments(value.attachments),
-    harnessId: normalizeHarnessId(value.harnessId, fallbackHarnessId),
-    modelId: readString(value.modelId),
-    nativeMessageId: readString(value.nativeMessageId),
-    status: normalizeChatMessageStatus(value.status) ?? "sent",
-    runtimeRef: normalizeChatRuntimeRef(value.runtimeRef),
-    createdAt: readString(value.createdAt) ?? now,
-    updatedAt: readString(value.updatedAt)
-  }];
-}
-
 function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
   if (!isRecord(value)) return undefined;
   const role = value.role === "leader" ? "leader" : value.role === "ceo" ? "ceo" : undefined;
@@ -1577,96 +1422,6 @@ function readCompanyBlueprintId(index: HivewardStoreIndex, companyId: string, bl
   return index.blueprintIndex.some((blueprint) => blueprint.companyId === companyId && blueprint.id === blueprintId)
     ? blueprintId
     : undefined;
-}
-
-function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): HarnessId {
-  if (value === "codex" || value === "claudeCode" || value === "openclaw") return value;
-  return fallback;
-}
-
-function normalizeChatMode(value: unknown): ChatMode {
-  return value === "blueprint" ? "blueprint" : "chat";
-}
-
-function normalizeChatThinkingEffort(value: unknown): ChatThinkingEffort | undefined {
-  return value === "off" ||
-    value === "minimal" ||
-    value === "low" ||
-    value === "medium" ||
-    value === "high" ||
-    value === "adaptive" ||
-    value === "xhigh" ||
-    value === "max"
-    ? value
-    : undefined;
-}
-
-function normalizeChatSessionStatus(value: unknown): ChatSessionStatus | undefined {
-  return value === "active" || value === "ended" || value === "native_missing" || value === "failed" ? value : undefined;
-}
-
-function normalizeNativeSessionState(value: unknown): ChatNativeSessionState | undefined {
-  return value === "unknown" || value === "resumable" || value === "missing" ? value : undefined;
-}
-
-function normalizeChatMessageRole(value: unknown): HivewardChatMessage["role"] {
-  if (value === "assistant" || value === "system") return value;
-  return "user";
-}
-
-function normalizeChatMessageStatus(value: unknown): ChatMessageStatus | undefined {
-  return value === "sent" || value === "streaming" || value === "failed" ? value : undefined;
-}
-
-function normalizeStoredChatAttachments(value: unknown): ChatAttachment[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const attachments = value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const id = readString(item.id);
-    const name = readString(item.name);
-    const mediaType = readString(item.mediaType);
-    const size = typeof item.size === "number" && Number.isFinite(item.size) ? item.size : undefined;
-    if (!id || !name || !mediaType || size === undefined) return [];
-    return [{
-      id,
-      name,
-      mediaType,
-      size,
-      text: readString(item.text),
-      truncated: item.truncated === true
-    }];
-  });
-  return attachments.length ? attachments : undefined;
-}
-
-function normalizeChatRuntimeRef(value: unknown): ChatRuntimeRef | undefined {
-  if (!isRecord(value)) return undefined;
-  const taskId = readString(value.taskId);
-  const runId = readString(value.runId);
-  const sessionKey = readString(value.sessionKey);
-  const source = value.source === "openclaw" || value.source === "codex" || value.source === "claude" ? value.source : undefined;
-  const status = readString(value.status);
-  const updatedAt = readString(value.updatedAt);
-  if (!taskId || !runId || !sessionKey || !source || !status || !updatedAt) return undefined;
-  return {
-    taskId,
-    runId,
-    sessionKey,
-    source,
-    status,
-    updatedAt,
-    error: readString(value.error),
-    usage: isRecord(value.usage) ? value.usage as unknown as ChatRuntimeRef["usage"] : undefined,
-    timings: isRecord(value.timings) ? value.timings as unknown as ChatRuntimeRef["timings"] : undefined
-  };
-}
-
-function deriveChatSessionTitle(session: HivewardChatSession, message: HivewardChatMessage): string {
-  if (session.title && session.title !== "New chat") return session.title;
-  if (message.role !== "user") return session.title || "New chat";
-  const content = message.content.trim();
-  if (!content) return session.title || "New chat";
-  return content.length > 42 ? `${content.slice(0, 42)}...` : content;
 }
 
 function buildRoleDirectory(
@@ -1991,10 +1746,6 @@ function createArchivePlaceholderBlueprint(run: BlueprintRunSummary, now: string
   };
 }
 
-function isFileNotFoundError(error: unknown): boolean {
-  return isRecord(error) && error.code === "ENOENT";
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -2122,24 +1873,6 @@ function nextCompanyName(companies: Array<{ name: string }>): string {
     candidate = `${baseName} ${index}`;
   }
   return candidate;
-}
-
-function nextChatSessionId(sessions: Array<{ id: string }>): string {
-  const used = new Set(sessions.map((session) => session.id));
-  let id = `chat-session-${nanoid(10)}`;
-  while (used.has(id)) {
-    id = `chat-session-${nanoid(10)}`;
-  }
-  return id;
-}
-
-function nextChatMessageId(messages: Array<{ id: string }>): string {
-  const used = new Set(messages.map((message) => message.id));
-  let id = `chat-message-${nanoid(10)}`;
-  while (used.has(id)) {
-    id = `chat-message-${nanoid(10)}`;
-  }
-  return id;
 }
 
 function companyInitials(name: string): string {
