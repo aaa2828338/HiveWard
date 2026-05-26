@@ -522,6 +522,38 @@ export interface OpenClawVersionResponse {
   version: OpenClawVersionInfo;
 }
 
+export type HivewardUpdateSource = "git" | "npm";
+
+export interface HivewardUpdateStatus {
+  source: HivewardUpdateSource;
+  currentVersion: string;
+  latestVersion?: string;
+  currentCommit?: string;
+  latestCommit?: string;
+  currentBranch?: string;
+  remoteBranch?: string;
+  remoteUrl?: string;
+  repositoryUrl: string;
+  registryUrl?: string;
+  distTag?: string;
+  checkedAt: string;
+  updateAvailable: boolean;
+  canApply: boolean;
+  applyCommand: string;
+  restartRequired: boolean;
+  error?: string;
+}
+
+export interface HivewardUpdateResponse {
+  update: HivewardUpdateStatus;
+}
+
+export interface ApplyHivewardUpdateResponse {
+  update: HivewardUpdateStatus;
+  applied: boolean;
+  output: string;
+}
+
 export interface ConfigureOpenClawModelAuthRequest {
   providerId: string;
   methodId: string;

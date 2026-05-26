@@ -336,11 +336,54 @@ pre {
   box-shadow: 0 0 0 3px rgb(34 197 94 / 0.14);
 }
 
+.sidebar-system-version.update-available .sidebar-system-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgb(245 154 11 / 0.18);
+}
+
+.sidebar-system-version.update-available {
+  animation: hiveward-version-update-breathe 1.8s ease-in-out infinite;
+}
+
 .sidebar-system-version strong {
   color: #eff7f7;
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
+}
+
+.sidebar-system-update-badge {
+  min-width: 0;
+  max-width: 40px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  padding: 2px 6px;
+  background: rgb(245 154 11 / 0.18);
+  color: #ffd28d;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes hiveward-version-update-breathe {
+  0%,
+  100% {
+    border-color: rgb(245 154 11 / 0.32);
+    box-shadow: 0 0 0 0 rgb(245 154 11 / 0);
+  }
+
+  50% {
+    border-color: rgb(245 154 11 / 0.72);
+    box-shadow: 0 0 0 4px rgb(245 154 11 / 0.16);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-system-version.update-available {
+    animation: none;
+  }
 }
 
 .sidebar-system-settings {
@@ -673,13 +716,192 @@ pre {
 .hiveward-home-page {
   min-height: calc(100vh - 48px);
   display: grid;
-  place-items: center;
+  align-content: start;
+  gap: 20px;
+}
+
+.hiveward-home-hero,
+.hiveward-update-panel,
+.hiveward-readme-layout {
+  min-width: 0;
+}
+
+.hiveward-home-hero {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+  padding: 4px 0 18px;
+  border-bottom: 1px solid var(--line);
 }
 
 .hiveward-home-logo {
-  width: clamp(180px, 22vw, 320px);
+  width: clamp(72px, 9vw, 112px);
   height: auto;
   display: block;
+}
+
+.hiveward-home-title {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.hiveward-home-title span {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.hiveward-home-title h2,
+.hiveward-readme-section h3,
+.hiveward-community-panel h3,
+.hiveward-update-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.hiveward-home-title h2 {
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.hiveward-home-title p {
+  max-width: 780px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.hiveward-home-actions,
+.hiveward-update-head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.primary-link-button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  padding: 0 14px;
+  background: var(--paper-strong);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.primary-link-button:hover {
+  border-color: #8aa8a5;
+  background: #f5faf9;
+}
+
+.hiveward-update-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--surface-radius);
+  background: var(--paper-strong);
+}
+
+.hiveward-update-head {
+  justify-content: space-between;
+}
+
+.hiveward-update-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.hiveward-update-head h3 {
+  font-size: var(--title-section-size);
+}
+
+.openclaw-panel-state.update {
+  color: var(--accent-strong);
+}
+
+.hiveward-update-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.hiveward-readme-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 22px;
+  align-items: start;
+}
+
+.hiveward-readme-main {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+}
+
+.hiveward-readme-section {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.hiveward-readme-section h3,
+.hiveward-community-panel h3 {
+  font-size: var(--title-section-size);
+}
+
+.hiveward-readme-section p,
+.hiveward-readme-section li,
+.hiveward-community-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.hiveward-readme-section ul {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 0;
+  padding-left: 20px;
+}
+
+.hiveward-community-panel {
+  position: sticky;
+  top: 18px;
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--surface-radius);
+  background: var(--paper-strong);
+}
+
+.hiveward-community-qr {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: rgb(19 38 47 / 0.03);
 }
 
 .error-banner {
@@ -6693,6 +6915,20 @@ html[data-theme="light"] .openclaw-panel-metric.offline strong {
 }
 
 @media (max-width: 1080px) {
+  .hiveward-home-hero,
+  .hiveward-readme-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hiveward-home-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .hiveward-community-panel {
+    position: static;
+  }
+
   .openclaw-control-grid {
     grid-template-columns: 1fr;
   }
@@ -6708,6 +6944,23 @@ html[data-theme="light"] .openclaw-panel-metric.offline strong {
 }
 
 @media (max-width: 520px) {
+  .hiveward-home-hero {
+    gap: 12px;
+  }
+
+  .hiveward-home-title h2 {
+    font-size: 22px;
+  }
+
+  .hiveward-update-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hiveward-update-head button {
+    width: 100%;
+  }
+
   .openclaw-panel-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

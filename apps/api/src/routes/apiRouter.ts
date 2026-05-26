@@ -68,7 +68,8 @@ import type {
   BlueprintDefinition,
   HivewardChatMessage,
   HivewardChatSession,
-  StartBlueprintRunRequest
+  StartBlueprintRunRequest,
+  ApplyHivewardUpdateResponse
 } from "@hiveward/shared";
 import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
@@ -77,6 +78,7 @@ import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
+import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 
 interface ApiRouterDeps {
   store: FileHivewardStore;
@@ -229,6 +231,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.get("/api/openclaw-version", async (_req, res, next) => {
     try {
       res.json({ version: await openClawConfigStore.getVersion() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/hiveward-update", async (_req, res, next) => {
+    try {
+      res.json({ update: await getHivewardUpdateStatus() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/hiveward-update/apply", async (_req, res, next) => {
+    try {
+      const result: ApplyHivewardUpdateResponse = await applyHivewardUpdate();
+      res.json(result);
     } catch (error) {
       next(error);
     }

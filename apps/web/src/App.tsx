@@ -6,8 +6,12 @@ import {
   ChevronRight,
   Cloud,
   Database,
+  Download,
+  ExternalLink,
+  Github,
   History,
   Inbox,
+  Info,
   Languages,
   LayoutTemplate,
   ListChecks,
@@ -30,6 +34,8 @@ import type {
   HarnessSkillInstallStatus,
   HarnessSkillStatusResponse,
   HarnessStatus,
+  ApplyHivewardUpdateResponse,
+  HivewardUpdateStatus,
   ArchitectureBlueprintView,
   CompanyRoleDirectory,
   InboxItem,
@@ -91,8 +97,10 @@ const systemLabels: Record<AppSystemId, string> = {
 
 const RUN_POLL_INTERVAL_MS = 2500;
 const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
+const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
+const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
 const harnessSkillHarnessIds: HarnessId[] = ["openclaw", "claudeCode", "codex"];
 
 type AppTheme = "light" | "dark";
@@ -151,6 +159,9 @@ export function App() {
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
+  const [hivewardUpdate, setHivewardUpdate] = useState<HivewardUpdateStatus | undefined>();
+  const [hivewardUpdateResult, setHivewardUpdateResult] = useState<ApplyHivewardUpdateResponse | undefined>();
+  const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
   const [harnessSkillStatuses, setHarnessSkillStatuses] = useState<Partial<Record<HarnessId, HarnessSkillStatusResponse>>>({});
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
@@ -454,7 +465,10 @@ export function App() {
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
   const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
-  const hivewardVersionTitle = `Hiveward ${hivewardVersionLabel}`;
+  const hivewardHomeUi = useMemo(() => hivewardHomeCopy(language), [language]);
+  const hivewardVersionTitle = hivewardUpdate?.updateAvailable
+    ? `${hivewardHomeUi.updateAvailable}: ${hivewardVersionLabel}`
+    : `Hiveward ${hivewardVersionLabel}`;
   const gatewaySettings = openClawConfig?.gateway;
   const gatewayStatusLabel = gatewaySettings?.url ? openClawPanelUi.configured : openClawPanelUi.notConfigured;
   const gatewaySourceLabel =
@@ -745,6 +759,44 @@ export function App() {
       }),
     [withBusy]
   );
+
+  const checkHivewardUpdate = useCallback(async () => {
+    setHivewardUpdateChecking(true);
+    try {
+      const nextUpdate = await api.getHivewardUpdate();
+      setHivewardUpdate(nextUpdate);
+    } catch (updateError) {
+      setHivewardUpdate({
+        source: "git",
+        currentVersion: hivewardPackage.version,
+        repositoryUrl: hivewardRepositoryUrl,
+        checkedAt: new Date().toISOString(),
+        updateAvailable: false,
+        canApply: false,
+        applyCommand: "",
+        restartRequired: true,
+        error: updateError instanceof Error ? updateError.message : String(updateError)
+      });
+    } finally {
+      setHivewardUpdateChecking(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkHivewardUpdate();
+    const timer = window.setInterval(() => {
+      void checkHivewardUpdate();
+    }, HIVEWARD_UPDATE_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [checkHivewardUpdate]);
+
+  const applyHivewardUpdateAction = useCallback(() => {
+    void withBusy("applyHivewardUpdate", async () => {
+      const result = await api.applyHivewardUpdate();
+      setHivewardUpdateResult(result);
+      setHivewardUpdate(result.update);
+    });
+  }, [withBusy]);
 
   const refreshHarnessStatus = useCallback(
     () =>
@@ -1125,7 +1177,19 @@ export function App() {
 
   const renderSection = () => {
     if (section === "hivewardHome") {
-      return <HivewardHomePage />;
+      return (
+        <HivewardHomePage
+          ui={hivewardHomeUi}
+          language={language}
+          versionLabel={hivewardVersionLabel}
+          update={hivewardUpdate}
+          updateResult={hivewardUpdateResult}
+          checking={hivewardUpdateChecking}
+          updating={busyAction === "applyHivewardUpdate"}
+          onCheckUpdate={checkHivewardUpdate}
+          onApplyUpdate={applyHivewardUpdateAction}
+        />
+      );
     }
     if (section === "companyDirectory") {
       return (
@@ -1433,16 +1497,18 @@ export function App() {
             <div className="sidebar-system-control">
               <button
                 type="button"
-                className={`sidebar-system-version online ${section === "hivewardHome" ? "active" : ""}`}
+                className={`sidebar-system-version ${hivewardUpdate?.updateAvailable ? "update-available" : "online"} ${section === "hivewardHome" ? "active" : ""}`}
                 aria-label={hivewardVersionTitle}
                 title={hivewardVersionTitle}
                 onClick={() => {
                   setSystemMenuOpen(false);
                   setSection("hivewardHome");
+                  void checkHivewardUpdate();
                 }}
               >
                 <span className="sidebar-system-dot" aria-hidden="true" />
                 <strong>{hivewardVersionLabel}</strong>
+                {hivewardUpdate?.updateAvailable && <span className="sidebar-system-update-badge">{hivewardHomeUi.newBadge}</span>}
               </button>
               <button
                 type="button"
@@ -1495,10 +1561,118 @@ export function App() {
   );
 }
 
-function HivewardHomePage() {
+function HivewardHomePage({
+  ui,
+  language,
+  versionLabel,
+  update,
+  updateResult,
+  checking,
+  updating,
+  onCheckUpdate,
+  onApplyUpdate
+}: {
+  ui: HivewardHomeCopy;
+  language: Language;
+  versionLabel: string;
+  update?: HivewardUpdateStatus;
+  updateResult?: ApplyHivewardUpdateResponse;
+  checking: boolean;
+  updating: boolean;
+  onCheckUpdate: () => void;
+  onApplyUpdate: () => void;
+}) {
+  const updateAvailable = Boolean(update?.updateAvailable);
+  const updateStatusLabel = update?.error
+    ? ui.updateUnknown
+    : updateAvailable
+      ? ui.updateAvailable
+      : update
+        ? ui.upToDate
+        : ui.updateUnknown;
+  const updateTone = update?.error ? "offline" : updateAvailable ? "update" : "online";
+  const latestLabel = update?.latestVersion
+    ? `v${update.latestVersion}`
+    : update?.latestCommit
+      ? shortCommit(update.latestCommit)
+      : ui.none;
+  const sourceLabel = update?.source === "npm" ? "npm" : "GitHub";
+  const canApply = Boolean(update?.updateAvailable && update.canApply && !updating);
+
   return (
     <section className="hiveward-home-page" aria-label="Hiveward">
-      <img className="hiveward-home-logo" src="/brand/hiveward-hive.png" alt="Hiveward" />
+      <div className="hiveward-home-hero">
+        <img className="hiveward-home-logo" src="/brand/hiveward-hive.png" alt="Hiveward" />
+        <div className="hiveward-home-title">
+          <span>{versionLabel}</span>
+          <h2>{ui.title}</h2>
+          <p>{ui.subtitle}</p>
+        </div>
+        <div className="hiveward-home-actions">
+          <a className="primary-link-button" href={hivewardRepositoryUrl} target="_blank" rel="noreferrer">
+            <Github size={16} />
+            {ui.github}
+            <ExternalLink size={13} />
+          </a>
+          <button type="button" onClick={onCheckUpdate} disabled={checking || updating}>
+            <RefreshCw size={14} className={checking ? "spin" : undefined} />
+            {checking ? ui.checking : ui.checkUpdate}
+          </button>
+        </div>
+      </div>
+
+      <div className="hiveward-update-panel">
+        <div className="hiveward-update-head">
+          <div>
+            <span className={`openclaw-panel-state ${updateTone}`}>{updateStatusLabel}</span>
+            <h3>{ui.updateTitle}</h3>
+          </div>
+          <button type="button" onClick={onApplyUpdate} disabled={!canApply}>
+            <Download size={14} className={updating ? "spin" : undefined} />
+            {updating ? ui.updating : ui.applyUpdate}
+          </button>
+        </div>
+        <div className="openclaw-panel-metrics">
+          <OpenClawPanelMetric label={ui.current} value={versionLabel} />
+          <OpenClawPanelMetric label={ui.latest} value={latestLabel} tone={updateAvailable ? "offline" : "online"} />
+          <OpenClawPanelMetric label={ui.source} value={sourceLabel} />
+          <OpenClawPanelMetric label={ui.lastChecked} value={formatDateTimeLabel(update?.checkedAt, language, ui.none)} />
+        </div>
+        {update?.error && <p className="hiveward-update-note">{update.error}</p>}
+        {update && !update.canApply && update.updateAvailable && <p className="hiveward-update-note">{ui.cannotAutoApply}</p>}
+        {updateResult && (
+          <p className="hiveward-update-note">
+            {updateResult.applied ? ui.updateApplied : updateResult.output || ui.updateSkipped}
+          </p>
+        )}
+      </div>
+
+      <div className="hiveward-readme-layout">
+        <article className="hiveward-readme-main">
+          {ui.readmeSections.map((section) => (
+            <section key={section.title} className="hiveward-readme-section">
+              <h3>{section.title}</h3>
+              {section.paragraphs.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+              {section.items && (
+                <ul>
+                  {section.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ))}
+        </article>
+        <aside className="hiveward-community-panel">
+          <div className="hiveward-community-qr">
+            <Info size={22} />
+          </div>
+          <h3>{ui.communityTitle}</h3>
+          <p>{ui.communityPlaceholder}</p>
+        </aside>
+      </div>
     </section>
   );
 }
@@ -1726,6 +1900,192 @@ function HarnessSkillsCard({
       )}
     </div>
   );
+}
+
+function shortCommit(commit: string): string {
+  return commit.slice(0, 7);
+}
+
+interface HivewardHomeCopy {
+  title: string;
+  subtitle: string;
+  github: string;
+  updateTitle: string;
+  updateAvailable: string;
+  upToDate: string;
+  updateUnknown: string;
+  checkUpdate: string;
+  checking: string;
+  applyUpdate: string;
+  updating: string;
+  updateApplied: string;
+  updateSkipped: string;
+  cannotAutoApply: string;
+  newBadge: string;
+  current: string;
+  latest: string;
+  source: string;
+  lastChecked: string;
+  none: string;
+  communityTitle: string;
+  communityPlaceholder: string;
+  readmeSections: Array<{
+    title: string;
+    paragraphs: string[];
+    items?: string[];
+  }>;
+}
+
+function hivewardHomeCopy(language: Language): HivewardHomeCopy {
+  if (language === "zh-CN") {
+    return {
+      title: "HiveWard",
+      subtitle: "开源 Agent Company 工作区，把模型、Agent、蓝图、审批、运行和历史组织成一个可管理的操作系统。",
+      github: "GitHub 仓库",
+      updateTitle: "版本更新",
+      updateAvailable: "发现更新",
+      upToDate: "已是最新",
+      updateUnknown: "状态未知",
+      checkUpdate: "检查更新",
+      checking: "检查中",
+      applyUpdate: "自动更新",
+      updating: "更新中",
+      updateApplied: "更新已执行，重启 HiveWard 后生效。",
+      updateSkipped: "未执行更新。",
+      cannotAutoApply: "当前 checkout 无法自动更新；通常需要在 main 分支且工作区干净。",
+      newBadge: "更新",
+      current: "当前",
+      latest: "远端",
+      source: "来源",
+      lastChecked: "最后检查",
+      none: "-",
+      communityTitle: "交流群",
+      communityPlaceholder: "二维码位置已预留，收到图片后可直接贴到这里。",
+      readmeSections: [
+        {
+          title: "什么是 HiveWard？",
+          paragraphs: [
+            "HiveWard 是面向 Agent Company 的开源工作区。它不试图成为另一个模型，也不把所有工作藏进聊天框，而是给 Agent 团队一个可见、可治理、可审查的运行结构。",
+            "可以把它理解成下一代 AI 组织的运营台：公司是边界，蓝图是组织图，模型是资源池，收件箱是治理层，历史记录是执行账本。"
+          ]
+        },
+        {
+          title: "什么是蓝图？",
+          paragraphs: [
+            "蓝图不是静态图，而是一份可运行的 Agent 工作定义，描述谁做什么、按什么顺序做、何时汇总或审批，以及如何交付结果。"
+          ],
+          items: [
+            "节点：Agent、Manager、并行 Slot、汇总、审批和交付步骤。",
+            "连线：成功路径、失败路径、执行顺序和回滚路线。",
+            "运行记录：每个执行步骤的状态、输入、输出、OpenClaw 引用、成本和时间证据。"
+          ]
+        },
+        {
+          title: "为什么选择 HiveWard？",
+          paragraphs: [
+            "现代 Agent 工具已经能写代码、研究和执行任务，但复杂工作一多，聊天窗口加重复复制提示词的体验很快会到达上限。",
+            "HiveWard 从另一个假设出发：Agent 不应该只是更聪明的聊天伙伴，而应该成为被组织、被管理、可审计的工作单元。"
+          ]
+        },
+        {
+          title: "它如何工作？",
+          paragraphs: [
+            "选择公司，设计蓝图，配置模型，启动运行，然后在收件箱里审批和复盘。HiveWard 负责产品层的组织、监控和治理，OpenClaw 等运行时负责真实执行。"
+          ]
+        },
+        {
+          title: "核心能力",
+          paragraphs: [],
+          items: [
+            "公司上下文：按公司组织目标、蓝图、运行和审批。",
+            "蓝图编排：用可视化节点描述 Agent 团队结构。",
+            "Manager 调度：让 Manager 节点选择 Slot、分派 Agent、要求返工或结束流程。",
+            "人类治理：把需要判断的步骤集中到收件箱。",
+            "运行账本：让每次执行都能被审查和复盘。"
+          ]
+        },
+        {
+          title: "当前状态",
+          paragraphs: ["当前版本面向本地演示和早期使用。核心产品界面已经可用，API 和交互细节仍会继续演进。"]
+        }
+      ]
+    };
+  }
+
+  return {
+    title: "HiveWard",
+    subtitle: "An open-source Agent Company workspace that organizes models, agents, blueprints, approvals, runs, and history into one managed operating system.",
+    github: "GitHub repo",
+    updateTitle: "Version updates",
+    updateAvailable: "Update available",
+    upToDate: "Up to date",
+    updateUnknown: "Unknown",
+    checkUpdate: "Check updates",
+    checking: "Checking",
+    applyUpdate: "Auto update",
+    updating: "Updating",
+    updateApplied: "Update applied. Restart HiveWard to use the new version.",
+    updateSkipped: "Update was not applied.",
+    cannotAutoApply: "Automatic update needs a clean checkout on the main branch.",
+    newBadge: "New",
+    current: "Current",
+    latest: "Remote",
+    source: "Source",
+    lastChecked: "Last checked",
+    none: "-",
+    communityTitle: "Community",
+    communityPlaceholder: "QR slot is ready. The image can be placed here when available.",
+    readmeSections: [
+      {
+        title: "What is HiveWard?",
+        paragraphs: [
+          "HiveWard is an open-source workspace for Agent Companies. It gives agent teams a visible, governable, reviewable operating structure instead of hiding all work inside a chat box.",
+          "Think of it as an operations desk for the next generation of AI organizations: company as scope, blueprint as organization chart, models as resource pool, inbox as governance layer, and history as execution ledger."
+        ]
+      },
+      {
+        title: "What is a blueprint?",
+        paragraphs: [
+          "A blueprint is a runnable agent work definition that describes who does what, in which order, when work must be summarized or approved, and how results are delivered."
+        ],
+        items: [
+          "Nodes: agents, managers, parallel lanes, summaries, approvals, and delivery steps.",
+          "Edges: success paths, failure paths, sequencing, and rollback routes.",
+          "Run records: node status, inputs, outputs, OpenClaw references, cost, and timing evidence."
+        ]
+      },
+      {
+        title: "Why HiveWard?",
+        paragraphs: [
+          "Modern agent tools can write code, research, and execute tasks, but complex work quickly outgrows a chat window and repeated prompt copying.",
+          "HiveWard starts from a different assumption: agents should become organized, managed, and auditable work units."
+        ]
+      },
+      {
+        title: "How it works",
+        paragraphs: [
+          "Choose a company, design a blueprint, configure models, start a run, then approve and review through the inbox. HiveWard owns the product layer while OpenClaw and other runtimes own real execution."
+        ]
+      },
+      {
+        title: "Core capabilities",
+        paragraphs: [],
+        items: [
+          "Company context for goals, blueprints, runs, and approvals.",
+          "Blueprint orchestration with visual nodes.",
+          "Manager dispatch across Slots and agents.",
+          "Human governance through the inbox.",
+          "Run history that turns execution into reviewable evidence."
+        ]
+      },
+      {
+        title: "Current status",
+        paragraphs: [
+          "The current version is ready for local demos and early use. Core product surfaces are in place while APIs and interaction details continue to evolve."
+        ]
+      }
+    ]
+  };
 }
 
 function openClawPanelSkillCopy(language: Language): HarnessSkillsCardCopy {

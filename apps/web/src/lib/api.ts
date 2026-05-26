@@ -17,6 +17,8 @@ import type {
   HarnessSkillStatusResponse,
   HarnessStatus,
   HarnessStatusResponse,
+  ApplyHivewardUpdateResponse,
+  HivewardUpdateResponse,
   ImportBlueprintPackageRequest,
   ImportBlueprintPackageResponse,
   InstallHarnessSkillsResponse,
@@ -231,6 +233,17 @@ export const api = {
   async getOpenClawVersion(): Promise<OpenClawVersionInfo> {
     const response = await request<OpenClawVersionResponse>("/api/openclaw-version");
     return response.version;
+  },
+
+  async getHivewardUpdate(): Promise<HivewardUpdateResponse["update"]> {
+    const response = await request<HivewardUpdateResponse>("/api/hiveward-update");
+    return response.update;
+  },
+
+  async applyHivewardUpdate(): Promise<ApplyHivewardUpdateResponse> {
+    return request<ApplyHivewardUpdateResponse>("/api/hiveward-update/apply", {
+      method: "POST"
+    });
   },
 
   async getHarnessStatus(): Promise<HarnessStatus[]> {
