@@ -134,6 +134,72 @@ describe("FileHivewardStore chat storage isolation", () => {
     await expect(store.listChatMessages("chat-session-legacy")).resolves.toHaveLength(2);
   });
 
+  it("drops legacy chat sessions for unknown companies instead of assigning them to the default company", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const storePath = join(dir, "hiveward-store.json");
+    const chatStorePath = join(dir, "hiveward-chat-store.json");
+    const now = new Date().toISOString();
+
+    writeFileSync(storePath, JSON.stringify({
+      schema: "hiveward.store-index/v1",
+      companies: [{
+        id: "company-hiveward-studio",
+        name: "Hiveward Studio",
+        logoLabel: "HW",
+        businessGoal: "Keep storage boundaries clean.",
+        createdAt: now,
+        updatedAt: now
+      }],
+      selectedCompanyId: "company-hiveward-studio",
+      blueprintIndex: [],
+      runIndex: [],
+      companyDashboards: {},
+      roleDirectories: {},
+      inboxItems: {},
+      chatSessions: [
+        {
+          id: "chat-session-valid",
+          companyId: "company-hiveward-studio",
+          harnessId: "codex",
+          title: "Valid chat",
+          mode: "chat",
+          status: "active",
+          createdAt: now,
+          updatedAt: now
+        },
+        {
+          id: "chat-session-unknown-company",
+          companyId: "company-deleted",
+          harnessId: "codex",
+          title: "Orphaned chat",
+          mode: "chat",
+          status: "active",
+          createdAt: now,
+          updatedAt: now
+        }
+      ],
+      chatMessages: {
+        "chat-session-valid": [createStoredChatMessage("chat-session-valid", 1, new Date(now))],
+        "chat-session-unknown-company": [createStoredChatMessage("chat-session-unknown-company", 2, new Date(now))]
+      }
+    }, null, 2));
+
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    const chatStore = JSON.parse(readFileSync(chatStorePath, "utf8")) as {
+      chatSessions?: Array<{ id: string; companyId: string }>;
+      chatMessages?: Record<string, Array<{ content: string }>>;
+    };
+
+    expect(chatStore.chatSessions).toEqual([
+      expect.objectContaining({ id: "chat-session-valid", companyId: "company-hiveward-studio" })
+    ]);
+    expect(chatStore.chatMessages?.["chat-session-valid"]).toHaveLength(1);
+    expect(chatStore.chatMessages?.["chat-session-unknown-company"]).toBeUndefined();
+    await expect(store.listChatMessages("chat-session-unknown-company")).resolves.toEqual([]);
+  });
+
   it("keeps chat writes out of the main store file", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
     const storePath = join(dir, "hiveward-store.json");

@@ -16,7 +16,6 @@ import type {
   HivewardChatSession,
   UpdateHivewardChatSessionRequest
 } from "@hiveward/shared";
-import { defaultCompanyId } from "@hiveward/shared";
 import { isFileNotFoundError, safeWriteJson } from "./jsonFile";
 
 const chatStoreSchema = "hiveward.chat-store/v1";
@@ -337,22 +336,18 @@ function enforceMessageRetention(state: HivewardChatStoreState, sessionId: strin
 
 function normalizeChatSessions(value: unknown, companies: CompanyProfile[] | undefined, now: string): HivewardChatSession[] {
   const companyIds = new Set((companies ?? []).map((company) => company.id));
-  const fallbackCompanyId = companies?.[0]?.id ?? defaultCompanyId;
   return Array.isArray(value)
     ? value.flatMap((item) => {
         if (!isRecord(item)) return [];
         const id = readString(item.id) ?? `chat-session-${nanoid(8)}`;
         const companyId = readString(item.companyId);
-        const resolvedCompanyId = companyIds.size === 0 || !companyId
-          ? companyId ?? fallbackCompanyId
-          : companyIds.has(companyId)
-            ? companyId
-            : fallbackCompanyId;
+        if (companyIds.size > 0 && (!companyId || !companyIds.has(companyId))) return [];
+        if (!companyId) return [];
         return [{
           id,
-          companyId: resolvedCompanyId,
+          companyId,
           harnessId: normalizeHarnessId(item.harnessId),
-          roleScope: normalizeChatRoleScopeForCompany(item.roleScope, resolvedCompanyId),
+          roleScope: normalizeChatRoleScopeForCompany(item.roleScope, companyId),
           title: readString(item.title) ?? "New chat",
           nativeSessionId: readString(item.nativeSessionId),
           nativeSessionState: normalizeNativeSessionState(item.nativeSessionState) ?? "unknown",
