@@ -165,6 +165,11 @@ const hivewardHarnessSkills: Array<{
     id: "hiveward-leader",
     label: "HiveWard Leader",
     sourceDir: join(repositoryRoot, "docs", "skills", "hiveward-leader")
+  },
+  {
+    id: "hiveward-skill-decomposer",
+    label: "HiveWard Skill Decomposer",
+    sourceDir: join(repositoryRoot, "apps", "api", "harness-skills", "hiveward-skill-decomposer")
   }
 ];
 
@@ -1206,7 +1211,7 @@ function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequ
 }
 
 function normalizeChatMode(value: unknown): ChatMode {
-  return value === "blueprint" ? "blueprint" : "chat";
+  return value === "blueprint" || value === "skill_split" ? value : "chat";
 }
 
 function normalizeChatPermissionModeForRequest(value: unknown, fieldName: string): ChatPermissionMode | undefined {
@@ -1440,7 +1445,7 @@ async function streamHivewardChatSession({
         permissionMode: requestBody.permissionMode,
         idempotencyKey: userMessage.id,
         timeoutMs: 600_000,
-        skillIds: resolvedRoleScope ? [roleSkillIdForRole(resolvedRoleScope.role)] : undefined
+        skillIds: chatSkillIdsForRequest(resolvedRoleScope, requestBody.mode)
       },
       (event) => {
         if (event.type === "started") {
@@ -1563,7 +1568,11 @@ function buildChatPrompt(
     roleSkillPrompt,
     rebuildContext,
     selectedBlueprintContext,
-    input.mode === "blueprint" ? buildBlueprintDraftingContext(input.message) : undefined
+    input.mode === "blueprint"
+      ? buildBlueprintDraftingContext(input.message)
+      : input.mode === "skill_split"
+        ? buildSkillSplitContext(input.message)
+        : undefined
   ].filter((block): block is string => Boolean(block));
   if (!contextBlocks.length) return input.message.trim();
   return [...contextBlocks, "", "User message:", input.message.trim()].join("\n");
@@ -1904,10 +1913,49 @@ const hivewardBlueprintSubmissionContext = [
   hivewardInboxSubmissionContract
 ].join("\n");
 
+const hivewardSkillSplitGuidance = [
+  "Skill split mode:",
+  "You are the HiveWard CEO chat role helping the user turn one skill material into a new multi-agent HiveWard business blueprint proposal.",
+  "The skill material is conversation input only. Do not save it as a HiveWard skill, do not create a skill library entry, and do not claim it was imported.",
+  "Ask the user for skill material when it is missing. Accept pasted SKILL.md text, uploaded files, local file paths, downloadable URLs, GitHub file URLs, or GitHub repository URLs.",
+  "Do not claim you have read a path, URL, or repository unless the selected harness actually loaded it through available tools or the user pasted or uploaded the content.",
+  "If the material cannot be accessed, ask the user to paste or upload the skill content.",
+  "Use the installed hiveward-skill-decomposer skill when available. If it is not loadable, follow the compact fallback invariants in this prompt.",
+  "The decomposer invariant is: skill package structure is evidence, Skill IR is the contract, and blueprint proposal is the governed output.",
+  "Treat a skill as a package, not only SKILL.md. Accept Markdown-only skills as complete only when the user identifies the Markdown as the whole skill.",
+  "Build Skill IR before mapping to blueprint nodes. The IR must capture source completeness, package inventory, classification, phases, scripts, assets, risks, validation, unresolved items, difficulty, model profile, and parallelism hints.",
+  "Inspect scripts statically as controlled assets. Do not execute scripts by default, and do not claim scripts are embedded in JSON-only blueprint packages.",
+  "Use node economy: split only on real work boundaries such as independent I/O contracts, different tools or permissions, validation checkpoints, safe parallelism, retry/failure branches, script side effects, or decision points.",
+  "Record desired per-phase thinking effort in Skill IR and proposal notes, but do not claim current blueprint runtime enforces per-node thinking effort.",
+  "Default to creating a new business blueprint. Modify an existing blueprint only when the user explicitly asks for that target and provides enough context.",
+  "Do not place the CEO role inside the generated runtime blueprint. CEO is the chat designer, not a workflow node.",
+  "Use only existing HiveWard blueprint node types: manager, manager_slot, agent, summary, condition, note, and group.",
+  "Use manager and manager_slot for runtime coordination, agent nodes for concrete worker responsibilities, summary nodes for aggregation, and condition nodes for explicit branching.",
+  "Do not use removed or invented node types such as approval, send, parallel_agents, fetch, parse, http.get, file.write, or save.",
+  "Parallel work must use manager_slot.config.parallelLaneCount. Human approval and sending must remain agent config options.",
+  "A usable decomposition response must identify source completeness, list inspected package parts, include a Skill IR summary, explain classification confidence, list unresolved assumptions, and include blueprint exposure metadata for future CEO catalog matching.",
+  "For script-backed skills, the proposal states where required scripts live, whether those paths will exist after import, required permissions, side effects, validation commands, and any approval requirement.",
+  "Before formal submission, explain the skill purpose, inferred inputs and outputs, proposed agents, manager-slot structure, validation checkpoints, and unresolved questions.",
+  "If the user asks to submit for approval before enough skill material exists, ask for the missing material instead of fabricating a blueprint package."
+].join("\n");
+
+const hivewardSkillSplitSubmissionContext = [
+  hivewardSkillSplitGuidance,
+  "If the user explicitly asks to submit the generated blueprint for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
+  "",
+  hivewardInboxSubmissionContract
+].join("\n");
+
 function buildBlueprintDraftingContext(message: string): string {
   return shouldIncludeBlueprintSubmissionContract(message)
     ? hivewardBlueprintSubmissionContext
     : hivewardBlueprintDraftingGuidance;
+}
+
+function buildSkillSplitContext(message: string): string {
+  return shouldIncludeBlueprintSubmissionContract(message)
+    ? hivewardSkillSplitSubmissionContext
+    : hivewardSkillSplitGuidance;
 }
 
 function shouldIncludeBlueprintSubmissionContract(message: string): boolean {
@@ -2018,6 +2066,20 @@ function runtimeIdForChatHarness(harnessId: HarnessId): AgentRuntimeId {
 
 function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
   return role === "leader" ? "hiveward-leader" : "hiveward-ceo";
+}
+
+function chatSkillIdsForRequest(
+  roleScope: ChatRoleScope | undefined,
+  mode: ChatMode | undefined
+): HarnessSkillId[] | undefined {
+  const skillIds: HarnessSkillId[] = [];
+  if (roleScope) {
+    skillIds.push(roleSkillIdForRole(roleScope.role));
+  }
+  if (mode === "skill_split") {
+    skillIds.push("hiveward-skill-decomposer");
+  }
+  return skillIds.length ? skillIds : undefined;
 }
 
 function resolveChatModelId(

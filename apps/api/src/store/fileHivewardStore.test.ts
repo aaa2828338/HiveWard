@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -51,6 +51,293 @@ describe("FileHivewardStore blueprint node sanitization", () => {
         nodeRuns: [{ nodeId: "draft", nodeType: "agent" }]
       }
     ]);
+  });
+});
+
+describe("FileHivewardStore blueprint workspaces", () => {
+  it("creates a local bundle skeleton for new blueprints", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const storePath = join(dir, "hiveward-store.json");
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    const blueprint = await store.createBlueprint({
+      name: "Skill Decomposer Blueprint",
+      description: "Use when decomposing a supplied skill into a governed proposal."
+    });
+    const workspacePath = join(dir, "blueprint-workspaces", blueprint.id);
+
+    expect(store.getBlueprintWorkspacePath(blueprint.id)).toBe(workspacePath);
+    expect(existsSync(join(workspacePath, "BLUEPRINT.md"))).toBe(true);
+    expect(existsSync(join(workspacePath, "manifest.json"))).toBe(true);
+    expect(existsSync(join(workspacePath, "blueprints", `${blueprint.id}.json`))).toBe(true);
+    for (const folder of ["skills", "mcp", "scripts", "artifacts", "tmp"]) {
+      expect(existsSync(join(workspacePath, folder))).toBe(true);
+    }
+
+    const blueprintEntry = readFileSync(join(workspacePath, "BLUEPRINT.md"), "utf8");
+    expect(blueprintEntry).toContain("name: skill-decomposer-blueprint");
+    expect(blueprintEntry).toContain(`primaryBlueprintId: ${blueprint.id}`);
+
+    const manifest = JSON.parse(readFileSync(join(workspacePath, "manifest.json"), "utf8")) as {
+      schema?: string;
+      kind?: string;
+      primaryBlueprintId?: string;
+      description?: string;
+      inputs?: unknown[];
+      outputs?: unknown[];
+      runModes?: string[];
+      requiredResources?: { skills?: unknown[]; scripts?: unknown[]; mcp?: unknown[] };
+    };
+    expect(manifest).toMatchObject({
+      schema: "hiveward.blueprint-bundle/v1",
+      kind: "blueprint_exposure",
+      primaryBlueprintId: blueprint.id,
+      description: "Use when decomposing a supplied skill into a governed proposal.",
+      runModes: ["draft", "approval_required"],
+      requiredResources: {
+        skills: [],
+        scripts: [],
+        mcp: []
+      }
+    });
+    expect(Array.isArray(manifest.inputs)).toBe(true);
+    expect(Array.isArray(manifest.outputs)).toBe(true);
+
+    const mirroredBlueprint = JSON.parse(readFileSync(join(workspacePath, "blueprints", `${blueprint.id}.json`), "utf8")) as {
+      id?: string;
+      name?: string;
+    };
+    expect(mirroredBlueprint).toMatchObject({
+      id: blueprint.id,
+      name: "Skill Decomposer Blueprint"
+    });
+  });
+
+  it("creates bundle skeletons for imported blueprints without changing JSON-only package behavior", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+
+    const imported = await store.importBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-27T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "portable-skill-decomposer",
+          name: "Portable Skill Decomposer",
+          description: "Use when importing a decomposer-generated blueprint package.",
+          version: 1,
+          nodes: [],
+          edges: [],
+          variables: {},
+          display: {}
+        }
+      ]
+    });
+    const blueprint = imported[0]!;
+    const workspacePath = join(dir, "blueprint-workspaces", blueprint.id);
+
+    expect(existsSync(join(workspacePath, "manifest.json"))).toBe(true);
+    expect(existsSync(join(workspacePath, "blueprints", `${blueprint.id}.json`))).toBe(true);
+    await expect(store.getBlueprint(blueprint.id)).resolves.toMatchObject({
+      id: blueprint.id,
+      name: "Portable Skill Decomposer"
+    });
+  });
+
+  it("stores blueprint-owned skill source snapshots with hashes and script inventory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const blueprint = await store.createBlueprint({ name: "Script Backed Blueprint" });
+
+    const snapshot = await store.storeBlueprintSkillSource({
+      blueprintId: blueprint.id,
+      sourcePath: join(process.cwd(), "fixtures", "skill-packages", "script-backed-skill"),
+      sourceLabel: "script-backed-skill",
+      skillIr: createValidSkillIr("script-backed-skill")
+    });
+
+    expect(snapshot.skillSourceId).toMatch(/^skill-src-/);
+    expect(snapshot.workingDirectory).toBe(join(dir, "blueprint-workspaces", blueprint.id, "skills", snapshot.skillSourceId));
+    expect(snapshot.sourceCompleteness).toBe("full_package");
+    expect(snapshot.scriptInventory).toMatchObject([
+      {
+        path: "scripts/generate.mjs",
+        runtime: "node",
+        shouldExecuteByDefault: false
+      }
+    ]);
+    expect(existsSync(join(snapshot.workingDirectory, "SKILL.md"))).toBe(true);
+    expect(existsSync(join(snapshot.workingDirectory, "references", "contract.md"))).toBe(true);
+    expect(existsSync(join(snapshot.workingDirectory, "scripts", "generate.mjs"))).toBe(true);
+    expect(existsSync(join(snapshot.workingDirectory, "assets", "template.txt"))).toBe(true);
+
+    const sourceMetadata = JSON.parse(readFileSync(join(snapshot.workingDirectory, "hiveward-skill-source.json"), "utf8")) as {
+      schema?: string;
+      capturedFiles?: string[];
+      fileHashes?: Record<string, string>;
+      scriptInventory?: Array<{ path: string; runtime: string }>;
+    };
+    expect(sourceMetadata.schema).toBe("hiveward.skill-source/v1");
+    expect(sourceMetadata.capturedFiles).toEqual(expect.arrayContaining([
+      "SKILL.md",
+      "references/contract.md",
+      "scripts/generate.mjs",
+      "assets/template.txt"
+    ]));
+    expect(sourceMetadata.fileHashes?.["scripts/generate.mjs"]).toMatch(/^[a-f0-9]{64}$/);
+    expect(sourceMetadata.scriptInventory).toMatchObject([{ path: "scripts/generate.mjs", runtime: "node" }]);
+
+    const storedIr = JSON.parse(readFileSync(join(snapshot.workingDirectory, "skill-ir.json"), "utf8")) as { schema?: string };
+    expect(storedIr.schema).toBe("hiveward.skill-ir/v1");
+
+    const manifest = JSON.parse(readFileSync(join(dir, "blueprint-workspaces", blueprint.id, "manifest.json"), "utf8")) as {
+      requiredResources?: { skills?: string[]; scripts?: string[] };
+    };
+    expect(manifest.requiredResources?.skills).toContain(snapshot.skillSourceId);
+    expect(manifest.requiredResources?.scripts).toContain(`${snapshot.skillSourceId}/scripts/generate.mjs`);
+  });
+
+  it("rejects skill IR script references that escape the blueprint skill source snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const blueprint = await store.createBlueprint({ name: "Boundary Blueprint" });
+
+    await expect(store.storeBlueprintSkillSource({
+      blueprintId: blueprint.id,
+      sourcePath: join(process.cwd(), "fixtures", "skill-packages", "markdown-only-skill.md"),
+      sourceLabel: "unsafe",
+      skillIr: {
+        ...createValidSkillIr("unsafe"),
+        scripts: [
+          {
+            path: "../escape.sh",
+            runtime: "bash",
+            purpose: "Escape workspace.",
+            expectedInputs: [],
+            expectedOutputs: [],
+            sideEffects: ["writes outside workspace"],
+            requiredPermissions: ["workspace_write"],
+            shouldExecuteByDefault: false
+          }
+        ]
+      }
+    })).rejects.toThrow("outside the blueprint skill source workspace");
+  });
+
+  it("rejects skill package snapshots that contain symbolic links", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const blueprint = await store.createBlueprint({ name: "Symlink Boundary Blueprint" });
+    const outsideDir = join(dir, "outside-source");
+    const skillDir = join(dir, "malicious-skill");
+    mkdirSync(join(skillDir, "scripts"), { recursive: true });
+    mkdirSync(outsideDir, { recursive: true });
+    writeFileSync(join(skillDir, "SKILL.md"), [
+      "---",
+      "name: malicious-skill",
+      "description: Use when testing symlink rejection.",
+      "---",
+      "",
+      "# Malicious Skill",
+      ""
+    ].join("\n"));
+    writeFileSync(join(outsideDir, "external.mjs"), "export const leaked = true;\n");
+    symlinkSync(join(outsideDir, "external.mjs"), join(skillDir, "scripts", "external.mjs"));
+
+    await expect(store.storeBlueprintSkillSource({
+      blueprintId: blueprint.id,
+      sourcePath: skillDir,
+      sourceLabel: "malicious-skill",
+      skillIr: createValidSkillIr("malicious-skill")
+    })).rejects.toThrow("symbolic links");
+  });
+
+  it("preserves blueprint-owned skill source references when the blueprint is saved later", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const blueprint = await store.createBlueprint({ name: "Persistent Skill Source Blueprint" });
+    const snapshot = await store.storeBlueprintSkillSource({
+      blueprintId: blueprint.id,
+      sourcePath: join(process.cwd(), "fixtures", "skill-packages", "script-backed-skill"),
+      sourceLabel: "script-backed-skill",
+      skillIr: createValidSkillIr("script-backed-skill")
+    });
+
+    await store.saveBlueprint({
+      ...blueprint,
+      description: "Updated description after source capture."
+    });
+
+    const manifest = JSON.parse(readFileSync(join(dir, "blueprint-workspaces", blueprint.id, "manifest.json"), "utf8")) as {
+      description?: string;
+      requiredResources?: { skills?: string[]; scripts?: string[] };
+      skillSources?: Array<{ skillSourceId?: string }>;
+    };
+    expect(manifest.description).toBe("Updated description after source capture.");
+    expect(manifest.requiredResources?.skills).toContain(snapshot.skillSourceId);
+    expect(manifest.requiredResources?.scripts).toContain(`${snapshot.skillSourceId}/scripts/generate.mjs`);
+    expect(manifest.skillSources?.map((item) => item.skillSourceId)).toContain(snapshot.skillSourceId);
+  });
+
+  it("preserves custom blueprint exposure metadata when the blueprint is saved later", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const blueprint = await store.createBlueprint({
+      name: "Exposure Blueprint",
+      description: "Initial generated description."
+    });
+    const manifestPath = join(dir, "blueprint-workspaces", blueprint.id, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    writeFileSync(manifestPath, JSON.stringify({
+      ...manifest,
+      aliases: ["skill-split"],
+      intentTags: ["decomposition", "blueprint-generation"],
+      triggerPhrases: ["turn this skill into a blueprint"],
+      notFor: ["runtime execution"],
+      inputs: [{ name: "skillPackage", required: true }],
+      outputs: [{ name: "blueprintPackage", required: true }],
+      runModes: ["approval_required"],
+      permissions: ["read_only", "workspace_write"],
+      sideEffects: ["writes blueprint proposal"],
+      requiredResources: {
+        skills: ["existing-skill"],
+        scripts: ["existing-skill/scripts/generate.mjs"],
+        mcp: ["filesystem"]
+      },
+      skillSources: [{ skillSourceId: "existing-skill" }]
+    }, null, 2));
+
+    await store.saveBlueprint({
+      ...blueprint,
+      description: "Updated generated description."
+    });
+
+    const savedManifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    expect(savedManifest).toMatchObject({
+      description: "Updated generated description.",
+      aliases: ["skill-split"],
+      intentTags: ["decomposition", "blueprint-generation"],
+      triggerPhrases: ["turn this skill into a blueprint"],
+      notFor: ["runtime execution"],
+      inputs: [{ name: "skillPackage", required: true }],
+      outputs: [{ name: "blueprintPackage", required: true }],
+      runModes: ["approval_required"],
+      permissions: ["read_only", "workspace_write"],
+      sideEffects: ["writes blueprint proposal"],
+      requiredResources: {
+        skills: ["existing-skill"],
+        scripts: ["existing-skill/scripts/generate.mjs"],
+        mcp: ["filesystem"]
+      },
+      skillSources: [{ skillSourceId: "existing-skill" }]
+    });
   });
 });
 
@@ -388,6 +675,88 @@ function createDirtyBlueprint(now: string): BlueprintDefinition {
       { id: "edge-approval-send", source: "approval", target: "send" },
       { id: "edge-send-parallel", source: "send", target: "parallel" }
     ]
+  };
+}
+
+function createValidSkillIr(name: string) {
+  return {
+    schema: "hiveward.skill-ir/v1",
+    source: {
+      kind: "local_path",
+      label: name,
+      completeness: "full_package",
+      sourceFiles: ["SKILL.md"]
+    },
+    identity: {
+      name,
+      description: "A fixture skill.",
+      triggers: [name]
+    },
+    classification: {
+      primaryType: "process",
+      traits: ["script_backed"],
+      confidence: "high",
+      reasoning: "The fixture has an ordered process and a script asset."
+    },
+    packageInventory: {
+      hasPackageRoot: true,
+      hasSkillMd: true,
+      references: [],
+      scripts: ["scripts/generate.mjs"],
+      assets: [],
+      metadataFiles: []
+    },
+    operatingModel: {
+      summary: "Inspect, generate, and validate.",
+      inputs: ["source file"],
+      outputs: ["artifact"],
+      requiredTools: ["shell"],
+      requiredPermissions: ["read_only"],
+      sideEffects: []
+    },
+    phases: [
+      {
+        id: "inspect",
+        label: "Inspect",
+        purpose: "Inspect source material.",
+        inputs: ["source file"],
+        outputs: ["inventory"],
+        tools: [],
+        permissions: ["read_only"],
+        validation: ["Inventory is complete."],
+        dependencies: [],
+        difficulty: "simple",
+        modelProfile: {
+          modelClass: "standard",
+          thinkingEffort: "low",
+          reason: "Small fixture."
+        },
+        canRunInParallel: false
+      }
+    ],
+    scripts: [
+      {
+        path: "scripts/generate.mjs",
+        runtime: "node",
+        purpose: "Generate an artifact.",
+        expectedInputs: ["source file"],
+        expectedOutputs: ["artifact"],
+        sideEffects: ["writes artifact"],
+        requiredPermissions: ["workspace_write"],
+        shouldExecuteByDefault: false
+      }
+    ],
+    references: [],
+    assets: [],
+    risks: [],
+    validation: [
+      {
+        id: "complete",
+        description: "Output is valid.",
+        appliesToPhaseIds: ["inspect"]
+      }
+    ],
+    unresolved: []
   };
 }
 

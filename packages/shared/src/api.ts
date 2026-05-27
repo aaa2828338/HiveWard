@@ -219,7 +219,7 @@ export interface HarnessStatusResponse {
   statuses: HarnessStatus[];
 }
 
-export type HarnessSkillId = "hiveward-ceo" | "hiveward-leader";
+export type HarnessSkillId = "hiveward-ceo" | "hiveward-leader" | "hiveward-skill-decomposer";
 
 export type HarnessSkillInstallStatus = "installed" | "missing" | "stale" | "unsupported" | "error";
 
@@ -287,7 +287,7 @@ export type ChatNativeSessionState = "unknown" | "resumable" | "missing";
 
 export type ChatMessageStatus = "sent" | "streaming" | "failed";
 
-export type ChatMode = "chat" | "blueprint";
+export type ChatMode = "chat" | "blueprint" | "skill_split";
 export type ChatPermissionMode = "safe" | "full_access";
 
 export interface ChatRuntimeRef {
