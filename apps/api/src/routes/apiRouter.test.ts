@@ -1768,7 +1768,7 @@ describe("apiRouter", () => {
             source: "environment",
             hasHiveWardSkills: false
           });
-          expect(initialBody.skills.map((skill) => skill.status)).toEqual(["missing", "missing"]);
+          expect(initialBody.skills.map((skill) => skill.status)).toEqual(["missing", "missing", "missing"]);
 
           const installResponse = await fetch(`${baseUrl}/api/harness-skills/openclaw/install`, {
             method: "POST"
@@ -1779,10 +1779,11 @@ describe("apiRouter", () => {
             skills: Array<{ id: string; status: string; installed: boolean }>;
           }>(installResponse);
 
-          expect(installBody.installedCount).toBe(2);
+          expect(installBody.installedCount).toBe(3);
           expect(installBody.skills.map((skill) => [skill.id, skill.status, skill.installed])).toEqual([
             ["hiveward-ceo", "installed", true],
-            ["hiveward-leader", "installed", true]
+            ["hiveward-leader", "installed", true],
+            ["hiveward-skill-decomposer", "installed", true]
           ]);
           expect(installBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
             root: join(openClawHome, "skills"),
@@ -1791,6 +1792,7 @@ describe("apiRouter", () => {
           });
           expect(existsSync(join(openClawHome, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
           expect(existsSync(join(openClawHome, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(openClawHome, "skills", "hiveward-skill-decomposer", "SKILL.md"))).toBe(true);
         },
         new TrackingAdapter(),
         openClawConfigStore
@@ -1834,6 +1836,7 @@ describe("apiRouter", () => {
           expect(initialBody.installCandidates?.some((candidate) => candidate.source === "project")).toBe(true);
           expect(initialBody.skills.map((skill) => [skill.status, skill.installed])).toEqual([
             ["missing", false],
+            ["missing", false],
             ["missing", false]
           ]);
 
@@ -1846,10 +1849,11 @@ describe("apiRouter", () => {
             skills: Array<{ id: string; status: string; installed: boolean }>;
           }>(installResponse);
 
-          expect(installBody.installedCount).toBe(2);
+          expect(installBody.installedCount).toBe(3);
           expect(installBody.skills.map((skill) => [skill.id, skill.status, skill.installed])).toEqual([
             ["hiveward-ceo", "installed", true],
-            ["hiveward-leader", "installed", true]
+            ["hiveward-leader", "installed", true],
+            ["hiveward-skill-decomposer", "installed", true]
           ]);
           expect(installBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
             root: join(root, "skills"),
@@ -1858,6 +1862,7 @@ describe("apiRouter", () => {
           });
           expect(existsSync(join(root, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
           expect(existsSync(join(root, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(root, "skills", "hiveward-skill-decomposer", "SKILL.md"))).toBe(true);
         }
       });
     } finally {
@@ -1991,6 +1996,70 @@ describe("apiRouter", () => {
     } finally {
       restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects CEO skill decomposition guidance in skill split mode", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "帮我拆分一个 skill",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "skill_split",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.message).toContain("Skill split mode:");
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-skill-decomposer");
+        expect(adapter.lastChatStreamInput?.message).toContain("Ask the user for skill material");
+        expect(adapter.lastChatStreamInput?.message).toContain("source completeness");
+        expect(adapter.lastChatStreamInput?.message).toContain("Skill IR summary");
+        expect(adapter.lastChatStreamInput?.message).toContain("blueprint exposure metadata");
+        expect(adapter.lastChatStreamInput?.message).toContain("states where required scripts live");
+        expect(adapter.lastChatStreamInput?.message).toContain("Do not place the CEO role inside the generated runtime blueprint");
+        expect(adapter.lastChatStreamInput?.message).toContain("do not claim current blueprint runtime enforces per-node thinking effort");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("Current selected blueprint JSON:");
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo", "hiveward-skill-decomposer"]);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the inbox submission contract for skill split approval requests", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "已经拿到 skill 内容了，请提交拆分后的蓝图提案到审批",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "skill_split",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.message).toContain("Skill split mode:");
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+      }, adapter);
+    } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2677,6 +2746,33 @@ describe("apiRouter", () => {
           title: "Renamed chat"
         });
       }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists skill split chat mode on HiveWard chat sessions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const createResponse = await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Skill split",
+            mode: "skill_split"
+          })
+        });
+        const created = await readOkJson<{ session: HivewardChatSession }>(createResponse);
+
+        expect(created.session.mode).toBe("skill_split");
+
+        const readResponse = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}`);
+        const readBack = await readOkJson<{ session: HivewardChatSession }>(readResponse);
+
+        expect(readBack.session.mode).toBe("skill_split");
+      });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

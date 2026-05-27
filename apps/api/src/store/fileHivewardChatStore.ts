@@ -426,7 +426,7 @@ function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): H
 }
 
 function normalizeChatMode(value: unknown): ChatMode {
-  return value === "blueprint" ? "blueprint" : "chat";
+  return value === "blueprint" || value === "skill_split" ? value : "chat";
 }
 
 function normalizeChatThinkingEffort(value: unknown): ChatThinkingEffort | undefined {
