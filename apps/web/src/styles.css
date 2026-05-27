@@ -842,11 +842,12 @@ pre {
 
 .hiveward-readme-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
   gap: 22px;
   align-items: start;
 }
 
+.hiveward-readme-left,
 .hiveward-readme-main {
   min-width: 0;
   display: grid;
@@ -895,13 +896,15 @@ pre {
 }
 
 .hiveward-community-qr {
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--line-strong);
+  overflow: hidden;
+  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  color: var(--muted);
-  background: rgb(19 38 47 / 0.03);
+  background: #111;
+}
+
+.hiveward-community-qr img {
+  width: 100%;
+  display: block;
 }
 
 .hiveward-home-notice {
