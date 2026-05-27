@@ -12,7 +12,6 @@ import {
   Github,
   History,
   Inbox,
-  Info,
   Languages,
   LayoutTemplate,
   ListChecks,
@@ -1761,34 +1760,36 @@ function HivewardHomePage({
         )}
       </div>
 
-      <article className="hiveward-home-notice">
-        <span>{ui.permissionNotice.eyebrow(versionLabel)}</span>
-        <h3>{ui.permissionNotice.title}</h3>
-        <p>{ui.permissionNotice.body}</p>
-        <p>{ui.permissionNotice.risk}</p>
-      </article>
-
       <div className="hiveward-readme-layout">
-        <article className="hiveward-readme-main">
-          {ui.readmeSections.map((section) => (
-            <section key={section.title} className="hiveward-readme-section">
-              <h3>{section.title}</h3>
-              {section.paragraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
-              {section.items && (
-                <ul>
-                  {section.items.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          ))}
-        </article>
+        <div className="hiveward-readme-left">
+          <article className="hiveward-home-notice">
+            <span>{ui.permissionNotice.eyebrow(versionLabel)}</span>
+            <h3>{ui.permissionNotice.title}</h3>
+            <p>{ui.permissionNotice.body}</p>
+            <p>{ui.permissionNotice.risk}</p>
+          </article>
+
+          <article className="hiveward-readme-main">
+            {ui.readmeSections.map((section) => (
+              <section key={section.title} className="hiveward-readme-section">
+                <h3>{section.title}</h3>
+                {section.paragraphs.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+                {section.items && (
+                  <ul>
+                    {section.items.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            ))}
+          </article>
+        </div>
         <aside className="hiveward-community-panel">
           <div className="hiveward-community-qr">
-            <Info size={22} />
+            <img src="/community/wechat-group.jpg" alt={ui.communityTitle} />
           </div>
           <h3>{ui.communityTitle}</h3>
           <p>{ui.communityPlaceholder}</p>
@@ -2650,7 +2651,7 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
       lastChecked: "最后检查",
       none: "-",
       communityTitle: "交流群",
-      communityPlaceholder: "二维码位置已预留，收到图片后可直接贴到这里。",
+      communityPlaceholder: "扫码加入 HiveWard 交流群，获取更新、反馈问题和交流蓝图玩法。",
       permissionNotice: {
         eyebrow: (versionLabel) => `${versionLabel} 本地运行公告`,
         title: "完全访问权限需要手动开启",
@@ -2730,7 +2731,7 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
     lastChecked: "Last checked",
     none: "-",
     communityTitle: "Community",
-    communityPlaceholder: "QR slot is ready. The image can be placed here when available.",
+    communityPlaceholder: "Scan to join the HiveWard community group for updates, feedback, and blueprint workflow discussion.",
     permissionNotice: {
       eyebrow: (versionLabel) => `${versionLabel} local runtime notice`,
       title: "Full access is opt-in",

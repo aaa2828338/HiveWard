@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.3 - 2026-05-27
+
+Small homepage polish release for the community QR card.
+
+### 中文
+
+- 将首页交流群二维码换成真实图片，并把公告与二维码卡片排到同一屏内，更容易一眼看到入口。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.3.3`。
+
+### English
+
+- Replaced the homepage community QR placeholder with the real image and aligned the notice with the QR card so the entry point is easier to spot.
+- Bumped repository, workspace package, and internal dependency versions to `0.3.3`.
+
 ## v0.3.2 - 2026-05-27
 
 Small bugfix release for Blueprint Studio control usability and public project copy.
