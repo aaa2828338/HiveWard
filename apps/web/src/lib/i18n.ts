@@ -404,6 +404,7 @@ export const messages: Record<Language, Messages> = {
       schedule: "History",
       channels: "Channels",
       claudeCodeConfig: "Config",
+      claudeCodeModels: "Models",
       codexConfig: "Config"
     },
     nodeTypes: {
@@ -464,6 +465,10 @@ export const messages: Record<Language, Messages> = {
       claudeCodeConfig: {
         title: "Claude code Config",
         description: "Check whether the local Claude Code harness is installed and ready."
+      },
+      claudeCodeModels: {
+        title: "Claude Code Models",
+        description: "Inspect and write local Claude Code model mappings."
       },
       codexConfig: {
         title: "Codex Config",
@@ -723,6 +728,7 @@ export const messages: Record<Language, Messages> = {
       skills: "Skills",
       channels: "\u9891\u9053",
       claudeCodeConfig: "\u914d\u7f6e",
+      claudeCodeModels: "\u6a21\u578b",
       codexConfig: "\u914d\u7f6e"
     },
     nodeTypes: {
@@ -783,6 +789,10 @@ export const messages: Record<Language, Messages> = {
       claudeCodeConfig: {
         title: "Claude code \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Claude Code harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      claudeCodeModels: {
+        title: "Claude Code \u6a21\u578b",
+        description: "\u67e5\u770b\u5e76\u5199\u5165\u672c\u673a Claude Code \u6a21\u578b\u6620\u5c04\u3002"
       },
       codexConfig: {
         title: "Codex \u914d\u7f6e",

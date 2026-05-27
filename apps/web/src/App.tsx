@@ -4,6 +4,7 @@ import {
   Building2,
   ChevronDown,
   ChevronRight,
+  CheckCircle2,
   Cloud,
   Database,
   Download,
@@ -20,11 +21,17 @@ import {
   Puzzle,
   Radio,
   RefreshCw,
+  Save,
   Settings,
-  Sun
+  Sun,
+  Trash2,
+  X
 } from "lucide-react";
 import type {
   CatalogSnapshot,
+  ClaudeCodeModelConfig,
+  ClaudeCodeModelPreset,
+  ClaudeCodeSavedModelProfile,
   CompanyOverview,
   CreateCompanyRequest,
   ConfigureOpenClawChannelRequest,
@@ -46,6 +53,7 @@ import type {
   PendingApprovalItem,
   PortableBlueprintPackage,
   RuntimeOverview,
+  UpdateClaudeCodeModelConfigRequest,
   UpdateCompanyRequest,
   WorkspaceDashboard,
   CanvasPosition,
@@ -56,6 +64,7 @@ import type {
 } from "@hiveward/shared";
 import { api } from "./lib/api";
 import { appSectionGroups, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
+import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
@@ -66,6 +75,7 @@ import {
   ChannelsPage,
   CompanyDirectoryPage,
   CompanyPage,
+  ConfiguredModelCard,
   HistoryPage,
   ModelsPage,
   RunsPage,
@@ -86,6 +96,7 @@ const sidebarIcons = {
   schedule: History,
   channels: Radio,
   claudeCodeConfig: Settings,
+  claudeCodeModels: Database,
   codexConfig: Settings
 };
 
@@ -165,6 +176,9 @@ export function App() {
   const [hivewardUpdateResult, setHivewardUpdateResult] = useState<ApplyHivewardUpdateResponse | undefined>();
   const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
+  const [claudeCodeModelConfig, setClaudeCodeModelConfig] = useState<ClaudeCodeModelConfig | undefined>();
+  const [claudeCodeModelPresets, setClaudeCodeModelPresets] = useState<ClaudeCodeModelPreset[]>([]);
+  const [claudeCodeSavedModelProfiles, setClaudeCodeSavedModelProfiles] = useState<ClaudeCodeSavedModelProfile[]>([]);
   const [harnessSkillStatuses, setHarnessSkillStatuses] = useState<Partial<Record<HarnessId, HarnessSkillStatusResponse>>>({});
   const [chatPermissionModes, setChatPermissionModes] = useState<Record<SdkChatHarnessId, ChatPermissionMode>>(() =>
     getInitialChatPermissionModes()
@@ -286,6 +300,7 @@ export function App() {
         nextOpenClawWizard,
         nextOpenClawModelUsage,
         nextHarnessStatuses,
+        nextClaudeCodeModelResponse,
         nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
@@ -301,6 +316,7 @@ export function App() {
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
         api.getHarnessStatus().catch(() => []),
+        api.getClaudeCodeModelConfig().catch(() => undefined),
         loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
@@ -322,6 +338,9 @@ export function App() {
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
       setHarnessStatuses(nextHarnessStatuses);
+      setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
+      setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
+      setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
       setHarnessSkillStatuses(nextHarnessSkillStatuses);
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
@@ -602,7 +621,8 @@ export function App() {
       agents: openClawConfig?.configuredAgents.length ?? 0,
       skills: catalog?.tools.length ?? 0,
       schedule: runs.length + pendingApprovalCount + pendingInboxCount,
-      channels: openClawConfig?.configuredChannels.length ?? 0
+      channels: openClawConfig?.configuredChannels.length ?? 0,
+      claudeCodeModels: countConfiguredClaudeCodeModels(claudeCodeModelConfig)
     }),
     [
       companies.length,
@@ -612,6 +632,7 @@ export function App() {
       openClawConfig?.configuredModels.length,
       openClawConfig?.configuredAgents.length,
       openClawConfig?.configuredChannels.length,
+      claudeCodeModelConfig,
       catalog?.tools.length,
       runs.length,
       blueprints.length
@@ -810,11 +831,15 @@ export function App() {
   const refreshHarnessStatus = useCallback(
     () =>
       withBusy("refreshHarnessStatus", async () => {
-        const [nextHarnessStatuses, nextHarnessSkillStatuses] = await Promise.all([
+        const [nextHarnessStatuses, nextClaudeCodeModelResponse, nextHarnessSkillStatuses] = await Promise.all([
           api.getHarnessStatus(),
+          api.getClaudeCodeModelConfig().catch(() => undefined),
           loadHarnessSkillStatuses()
         ]);
         setHarnessStatuses(nextHarnessStatuses);
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
         setHarnessSkillStatuses(nextHarnessSkillStatuses);
       }),
     [withBusy]
@@ -866,6 +891,58 @@ export function App() {
       void withBusy(`setOpenClawDefaultModel:${modelId}`, async () => {
         const nextOpenClawConfig = await api.updateOpenClawDefaultModel(modelId);
         setOpenClawConfig(nextOpenClawConfig);
+      });
+    },
+    [withBusy]
+  );
+
+  const updateClaudeCodeModelConfig = useCallback(
+    (input: UpdateClaudeCodeModelConfigRequest) => {
+      void withBusy("updateClaudeCodeModelConfig", async () => {
+        const nextClaudeCodeModelResponse = await api.updateClaudeCodeModelConfig(input);
+        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
+        setHarnessStatuses(nextHarnessStatuses);
+      });
+    },
+    [harnessStatuses, withBusy]
+  );
+
+  const saveClaudeCodeModelProfile = useCallback(
+    () => {
+      void withBusy("saveClaudeCodeModelProfile", async () => {
+        const nextClaudeCodeModelResponse = await api.saveClaudeCodeModelProfile();
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
+      });
+    },
+    [withBusy]
+  );
+
+  const applyClaudeCodeModelProfile = useCallback(
+    (profileId: string) => {
+      void withBusy(`applyClaudeCodeModelProfile:${profileId}`, async () => {
+        const nextClaudeCodeModelResponse = await api.applyClaudeCodeModelProfile(profileId);
+        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
+        setHarnessStatuses(nextHarnessStatuses);
+      });
+    },
+    [harnessStatuses, withBusy]
+  );
+
+  const deleteClaudeCodeModelProfile = useCallback(
+    (profileId: string) => {
+      void withBusy(`deleteClaudeCodeModelProfile:${profileId}`, async () => {
+        const nextClaudeCodeModelResponse = await api.deleteClaudeCodeModelProfile(profileId);
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
       });
     },
     [withBusy]
@@ -1377,6 +1454,25 @@ export function App() {
         />
       );
     }
+    if (section === "claudeCodeModels") {
+      return (
+        <ClaudeCodeModelsPage
+          config={claudeCodeModelConfig}
+          presets={claudeCodeModelPresets}
+          savedProfiles={claudeCodeSavedModelProfiles}
+          status={claudeCodeHarnessStatus}
+          language={language}
+          busy={busyAction === "updateClaudeCodeModelConfig"}
+          busyAction={busyAction}
+          refreshBusy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+          onUpdate={updateClaudeCodeModelConfig}
+          onSaveProfile={saveClaudeCodeModelProfile}
+          onApplyProfile={applyClaudeCodeModelProfile}
+          onDeleteProfile={deleteClaudeCodeModelProfile}
+        />
+      );
+    }
     if (section === "codexConfig") {
       return (
         <HarnessConfigPage
@@ -1825,7 +1921,8 @@ function HarnessConfigPage({
   permissionMode,
   onPermissionModeChange,
   onRefresh,
-  onInstallSkills
+  onInstallSkills,
+  children
 }: {
   title: string;
   description: string;
@@ -1839,6 +1936,7 @@ function HarnessConfigPage({
   onPermissionModeChange?: (permissionMode: ChatPermissionMode) => void;
   onRefresh: () => void;
   onInstallSkills: () => void;
+  children?: ReactNode;
 }) {
   const copy = harnessStatusCopy(language);
   const skillUi = openClawPanelSkillCopy(language);
@@ -1890,6 +1988,8 @@ function HarnessConfigPage({
         </div>
       ) : null}
 
+      {children}
+
       <HarnessSkillsCard
         ui={skillUi}
         skillStatus={skillStatus}
@@ -1899,6 +1999,536 @@ function HarnessConfigPage({
       />
     </section>
   );
+}
+
+type ClaudeCodeModelSlotField = "fallbackModelId" | "haikuModelId" | "sonnetModelId" | "opusModelId";
+
+function ClaudeCodeModelsPage({
+  config,
+  presets,
+  savedProfiles,
+  status,
+  language,
+  busy,
+  busyAction,
+  refreshBusy,
+  onRefresh,
+  onUpdate,
+  onSaveProfile,
+  onApplyProfile,
+  onDeleteProfile
+}: {
+  config?: ClaudeCodeModelConfig;
+  presets: ClaudeCodeModelPreset[];
+  savedProfiles: ClaudeCodeSavedModelProfile[];
+  status?: HarnessStatus;
+  language: Language;
+  busy: boolean;
+  busyAction?: string;
+  refreshBusy: boolean;
+  onRefresh: () => void;
+  onUpdate: (input: UpdateClaudeCodeModelConfigRequest) => void;
+  onSaveProfile: () => void;
+  onApplyProfile: (profileId: string) => void;
+  onDeleteProfile: (profileId: string) => void;
+}) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          configuredModels: "\u5df2\u914d\u7f6e\u6a21\u578b",
+          savedModels: "\u5df2\u4fdd\u5b58\u6a21\u578b",
+          configureModels: "\u6a21\u578b\u914d\u7f6e",
+          refresh: "\u91cd\u65b0\u68c0\u67e5",
+          refreshing: "\u68c0\u67e5\u4e2d",
+          empty: "\u914d\u7f6e\u6570\u636e\u5c1a\u672a\u52a0\u8f7d",
+          noSavedProfiles: "\u5c1a\u672a\u4fdd\u5b58\u6a21\u578b\u914d\u7f6e",
+          saveCurrent: "\u4fdd\u5b58\u5f53\u524d\u914d\u7f6e",
+          savingCurrent: "\u4fdd\u5b58\u4e2d",
+          applyProfile: "\u542f\u7528",
+          activeProfile: "\u5df2\u542f\u7528",
+          applyingProfile: "\u542f\u7528\u4e2d",
+          deleteProfile: "\u5220\u9664",
+          switchModel: "\u5207\u6362",
+          saveSwitch: "\u4fdd\u5b58",
+          cancel: "\u53d6\u6d88",
+          provider: "\u5e73\u53f0",
+          defaultModel: "\u9ed8\u8ba4",
+          lightModel: "\u8f7b\u91cf",
+          primaryModel: "\u4e3b\u529b",
+          advancedModel: "\u9ad8\u9636"
+        }
+      : {
+          configuredModels: "Configured models",
+          savedModels: "Saved models",
+          configureModels: "Model config",
+          refresh: "Refresh",
+          refreshing: "Checking",
+          empty: "Config data not loaded",
+          noSavedProfiles: "No saved model configs yet",
+          saveCurrent: "Save current config",
+          savingCurrent: "Saving",
+          applyProfile: "Use",
+          activeProfile: "Enabled",
+          applyingProfile: "Using",
+          deleteProfile: "Delete",
+          switchModel: "Switch",
+          saveSwitch: "Save",
+          cancel: "Cancel",
+          provider: "Provider",
+          defaultModel: "Default",
+          lightModel: "Light",
+          primaryModel: "Primary",
+          advancedModel: "Advanced"
+        };
+  const modelCardCopy =
+    language === "zh-CN"
+      ? {
+          usage: "\u7528\u91cf",
+          calls: "\u8c03\u7528",
+          tokens: "Token",
+          cost: "\u8d39\u7528",
+          recent7d: "\u6700\u8fd1 7 \u5929",
+          defaultOption: "\u9ed8\u8ba4"
+        }
+      : {
+          usage: "Usage",
+          calls: "Calls",
+          tokens: "Tokens",
+          cost: "Cost",
+          recent7d: "Last 7 days",
+          defaultOption: "Default"
+        };
+  const configuredModels = useMemo(() => buildConfiguredClaudeCodeModels(config, presets, language), [config, language, presets]);
+  const modelOptions = useMemo(() => buildClaudeCodeModelOptions(status, presets), [presets, status?.models]);
+  const activeProviderModelOptions = useMemo(
+    () => buildClaudeCodeModelOptions(status, presets, config?.providerPresetId),
+    [config?.providerPresetId, presets, status?.models]
+  );
+  const [visibleSavedProfiles, setVisibleSavedProfiles] = useState<ClaudeCodeSavedModelProfile[]>(() => getVisibleClaudeCodeSavedProfiles(savedProfiles));
+  const [slotDrafts, setSlotDrafts] = useState<Partial<Record<ClaudeCodeModelSlotField, string>>>({});
+  const [editingSlot, setEditingSlot] = useState<ClaudeCodeModelSlotField | undefined>();
+
+  useEffect(() => {
+    setVisibleSavedProfiles((current) => getVisibleClaudeCodeSavedProfiles(savedProfiles, current));
+  }, [savedProfiles]);
+
+  useEffect(() => {
+    setSlotDrafts(Object.fromEntries(configuredModels.map((model) => [model.modelField, model.id])) as Partial<Record<ClaudeCodeModelSlotField, string>>);
+  }, [configuredModels]);
+
+  const startSwitchModelSlot = (modelField: ClaudeCodeModelSlotField) => {
+    setEditingSlot(modelField);
+  };
+
+  const updateSlotDraft = (modelField: ClaudeCodeModelSlotField, value: string) => {
+    setSlotDrafts((current) => ({ ...current, [modelField]: value }));
+  };
+
+  const switchModelSlot = (modelField: ClaudeCodeModelSlotField) => {
+    const nextModelId = String(slotDrafts[modelField] ?? "").trim();
+    if (!nextModelId) return;
+    onUpdate({ [modelField]: nextModelId } as UpdateClaudeCodeModelConfigRequest);
+    setEditingSlot(undefined);
+  };
+
+  return (
+    <>
+      <section className="page-grid">
+        <div className="content-card stack-card">
+          <div className="card-toolbar">
+            <div className="card-title-block">
+              <h3>{copy.configuredModels}</h3>
+            </div>
+            <div className="card-actions">
+              <button type="button" disabled={busyAction === "saveClaudeCodeModelProfile" || configuredModels.length === 0} onClick={onSaveProfile}>
+                {busyAction === "saveClaudeCodeModelProfile" ? <RefreshCw size={16} className="spin" /> : <Save size={16} />}
+                {busyAction === "saveClaudeCodeModelProfile" ? copy.savingCurrent : copy.saveCurrent}
+              </button>
+              <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
+                <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
+                {refreshBusy ? copy.refreshing : copy.refresh}
+              </button>
+            </div>
+          </div>
+          <div className="model-card-grid claude-code-model-list">
+            {configuredModels.length ? (
+              configuredModels.map((model) => (
+                <ConfiguredModelCard
+                  key={`${model.modelField}:${model.id}`}
+                  model={{ id: model.id, provider: model.providerId, label: model.id }}
+                  badgeLabel={model.label}
+                  copy={modelCardCopy}
+                  language={language}
+                  className="claude-code-model-card"
+                  actions={
+                    editingSlot === model.modelField ? undefined : (
+                      <button type="button" disabled={busy} onClick={() => startSwitchModelSlot(model.modelField)}>
+                        <Settings size={14} />
+                        {copy.switchModel}
+                      </button>
+                    )
+                  }
+                >
+                  {editingSlot === model.modelField ? (
+                    <div className="claude-code-model-switch-panel">
+                      <select
+                        autoFocus
+                        value={String(slotDrafts[model.modelField] ?? model.id)}
+                        onChange={(event) => updateSlotDraft(model.modelField, event.target.value)}
+                      >
+                        {modelOptionsWithCurrent(activeProviderModelOptions, model.id).map(([id, label]) => (
+                          <option key={id} value={id}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="model-card-actions claude-code-model-actions">
+                        <button
+                          type="button"
+                          disabled={busy || !String(slotDrafts[model.modelField] ?? "").trim() || String(slotDrafts[model.modelField] ?? "").trim() === model.id}
+                          onClick={() => switchModelSlot(model.modelField)}
+                        >
+                          <Save size={14} />
+                          {copy.saveSwitch}
+                        </button>
+                        <button type="button" onClick={() => setEditingSlot(undefined)}>
+                          <X size={14} />
+                          {copy.cancel}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </ConfiguredModelCard>
+              ))
+            ) : (
+              <div className="empty-state page-empty">{copy.empty}</div>
+            )}
+          </div>
+        </div>
+
+        <div className="content-card stack-card">
+          <div className="card-toolbar">
+            <div className="card-title-block">
+              <h3>{copy.savedModels}</h3>
+            </div>
+          </div>
+          <div className="model-card-grid claude-code-model-list">
+            {visibleSavedProfiles.length ? (
+              visibleSavedProfiles.map((profile) => {
+                const applying = busyAction === `applyClaudeCodeModelProfile:${profile.id}`;
+                const deleting = busyAction === `deleteClaudeCodeModelProfile:${profile.id}`;
+                const active = isClaudeCodeSavedProfileActiveProvider(profile, config);
+                return (
+                  <ConfiguredModelCard
+                    key={profile.id}
+                    model={{
+                      id: profile.fallbackModelId ?? profile.name,
+                      provider: profile.providerPresetId ?? profile.providerPresetName ?? profile.baseUrl ?? profile.name,
+                      label: profile.name
+                    }}
+                    badgeLabel={profile.providerPresetName}
+                    copy={modelCardCopy}
+                    language={language}
+                    className={`claude-code-model-card${active ? " selected" : ""}`}
+                    actions={
+                      <>
+                        <button type="button" disabled={Boolean(busyAction) || active} onClick={() => onApplyProfile(profile.id)}>
+                          {applying ? <RefreshCw size={14} className="spin" /> : active ? <CheckCircle2 size={14} /> : <Settings size={14} />}
+                          {applying ? copy.applyingProfile : active ? copy.activeProfile : copy.applyProfile}
+                        </button>
+                        <button type="button" disabled={Boolean(busyAction)} onClick={() => onDeleteProfile(profile.id)}>
+                          {deleting ? <RefreshCw size={14} className="spin" /> : <Trash2 size={14} />}
+                          {copy.deleteProfile}
+                        </button>
+                      </>
+                    }
+                  >
+                    <div className="model-card-meta claude-code-profile-meta">
+                      {profile.providerPresetName && <span>{`${copy.provider}: ${profile.providerPresetName}`}</span>}
+                      {profile.fallbackModelId && <span>{`${copy.defaultModel}: ${profile.fallbackModelId}`}</span>}
+                      {profile.haikuModelId && <span>{`${copy.lightModel}: ${profile.haikuModelId}`}</span>}
+                      {profile.sonnetModelId && <span>{`${copy.primaryModel}: ${profile.sonnetModelId}`}</span>}
+                      {profile.opusModelId && <span>{`${copy.advancedModel}: ${profile.opusModelId}`}</span>}
+                    </div>
+                  </ConfiguredModelCard>
+                );
+              })
+            ) : (
+              <div className="empty-state page-empty">{copy.noSavedProfiles}</div>
+            )}
+          </div>
+        </div>
+
+        <div>
+          <ClaudeCodeModelConfigCard
+            title={copy.configureModels}
+            config={config}
+            presets={presets}
+            modelOptions={modelOptions}
+            language={language}
+            busy={busy}
+            onUpdate={onUpdate}
+          />
+        </div>
+      </section>
+    </>
+  );
+}
+
+function ClaudeCodeModelConfigCard({
+  title,
+  config,
+  presets,
+  modelOptions,
+  language,
+  busy,
+  onUpdate
+}: {
+  title?: string;
+  config?: ClaudeCodeModelConfig;
+  presets: ClaudeCodeModelPreset[];
+  modelOptions: ClaudeCodeModelOptionEntry[];
+  language: Language;
+  busy: boolean;
+  onUpdate: (input: UpdateClaudeCodeModelConfigRequest) => void;
+}) {
+  const copy =
+    language === "zh-CN"
+      ? {
+          title: "Claude Code \u6a21\u578b",
+          preset: "\u9884\u8bbe",
+          authToken: "API Key / Token",
+          authRequired: "\u8bf7\u8f93\u5165\u8be5\u5e73\u53f0\u7684 API Key / Token\u3002",
+          authPlaceholder: "API Key / Token",
+          slotRequired: "\u8bf7\u9009\u62e9\u9884\u8bbe\u6216\u9ed8\u8ba4\u6a21\u578b\u3002",
+          selectModel: "\u9009\u62e9\u6a21\u578b",
+          fallbackModel: "\u9ed8\u8ba4\u6a21\u578b",
+          save: "\u5199\u5165 Claude Code",
+          saving: "\u5199\u5165\u4e2d"
+        }
+      : {
+          title: "Claude Code models",
+          preset: "Preset",
+          authToken: "API Key / Token",
+          authRequired: "Enter this provider's API Key / Token.",
+          authPlaceholder: "API Key / Token",
+          slotRequired: "Choose a preset or default model.",
+          selectModel: "Select model",
+          fallbackModel: "Default model",
+          save: "Write to Claude Code",
+          saving: "Writing"
+        };
+  const [draft, setDraft] = useState<UpdateClaudeCodeModelConfigRequest>({});
+  const [localError, setLocalError] = useState<string | undefined>();
+  const applyPresetToDraft = useCallback((presetId: string) => {
+    const preset = presets.find((item) => item.id === presetId);
+    setLocalError(undefined);
+    if (!preset) {
+      setDraft((current) => ({ ...current, presetId, authValue: "" }));
+      return;
+    }
+    setDraft((current) => ({
+      ...current,
+      presetId,
+      baseUrl: preset.baseUrl ?? "",
+      authEnvKey: preset.authEnvKey ?? "ANTHROPIC_AUTH_TOKEN",
+      authValue: "",
+      extraEnv: preset.extraEnv,
+      fallbackModelId: preset.fallbackModelId ?? "",
+      haikuModelId: undefined,
+      haikuModelName: undefined,
+      sonnetModelId: undefined,
+      sonnetModelName: undefined,
+      opusModelId: undefined,
+      opusModelName: undefined
+    }));
+  }, [presets]);
+
+  useEffect(() => {
+    const preset = presets.find((item) => item.id === config?.providerPresetId);
+    setDraft({
+      presetId: config?.providerPresetId ?? "",
+      baseUrl: preset?.baseUrl ?? config?.baseUrl ?? "",
+      authEnvKey: preset?.authEnvKey ?? config?.authEnvKey ?? "ANTHROPIC_AUTH_TOKEN",
+      authValue: "",
+      extraEnv: preset?.extraEnv ?? config?.extraEnv,
+      fallbackModelId: preset?.fallbackModelId ?? config?.fallbackModelId ?? "",
+      haikuModelId: undefined,
+      haikuModelName: undefined,
+      sonnetModelId: undefined,
+      sonnetModelName: undefined,
+      opusModelId: undefined,
+      opusModelName: undefined
+    });
+    setLocalError(undefined);
+  }, [config, presets]);
+
+  const updateField = (field: keyof UpdateClaudeCodeModelConfigRequest, value: string) => {
+    setLocalError(undefined);
+    setDraft((current) => ({ ...current, [field]: value }));
+  };
+  const selectedPreset = presets.find((item) => item.id === draft.presetId);
+  const scopedModelOptions = selectedPreset ? buildClaudeCodeModelOptions(undefined, presets, selectedPreset.id) : modelOptions;
+  const visibleModelOptions = selectedPreset ? scopedModelOptions : modelOptionsWithCurrent(modelOptions, String(draft.fallbackModelId ?? ""));
+  const requiresAuth = Boolean(draft.presetId || draft.baseUrl);
+  const presetChanged = Boolean(draft.presetId && draft.presetId !== config?.providerPresetId);
+  const baseUrlChanged = Boolean(draft.baseUrl && draft.baseUrl !== config?.baseUrl);
+  const selectedAuthEnvKey = selectedPreset?.authEnvKey ?? draft.authEnvKey ?? "ANTHROPIC_AUTH_TOKEN";
+  const authEnvChanged = Boolean(config?.authEnvKey && selectedAuthEnvKey !== config.authEnvKey);
+  const canReuseAuth = Boolean(config?.authConfigured && !presetChanged && !baseUrlChanged && !authEnvChanged);
+  const hasAuthInput = Boolean(String(draft.authValue ?? "").trim());
+  const hasModelSlotInput = Boolean(String(draft.fallbackModelId ?? "").trim());
+  const submitDraft = () => {
+    if (requiresAuth && !canReuseAuth && !hasAuthInput) {
+      setLocalError(copy.authRequired);
+      return;
+    }
+    if (!selectedPreset && !hasModelSlotInput) {
+      setLocalError(copy.slotRequired);
+      return;
+    }
+    onUpdate({
+      presetId: draft.presetId,
+      baseUrl: draft.baseUrl,
+      authValue: draft.authValue,
+      extraEnv: draft.extraEnv,
+      fallbackModelId: draft.fallbackModelId,
+      authEnvKey: selectedAuthEnvKey
+    });
+  };
+
+  return (
+    <div className="content-card stack-card openclaw-control-section claude-code-config-card">
+      <div className="card-toolbar">
+        <div className="card-title-block">
+          <h3>{title ?? copy.title}</h3>
+        </div>
+        <button type="button" disabled={busy} onClick={submitDraft}>
+          {busy ? <RefreshCw size={14} className="spin" /> : <Save size={14} />}
+          {busy ? copy.saving : copy.save}
+        </button>
+      </div>
+      <div className="form-grid form-grid-wide wizard-field-grid claude-code-config-grid">
+        <div className="wizard-field claude-code-provider-field">
+          <label>
+            <span>{copy.preset}</span>
+            <select value={draft.presetId ?? ""} onChange={(event) => applyPresetToDraft(event.target.value)}>
+              <option value="">-</option>
+              {presets.map((preset) => (
+                <option key={preset.id} value={preset.id}>
+                  {preset.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>{copy.fallbackModel}</span>
+            <select
+              value={String(draft.fallbackModelId ?? "")}
+              onChange={(event) => updateField("fallbackModelId", event.target.value)}
+            >
+              <option value="">{copy.selectModel}</option>
+              {visibleModelOptions.map(([id, label]) => (
+                <option key={id} value={id}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>{copy.authToken}</span>
+            <input
+              type="password"
+              autoComplete="off"
+              value={String(draft.authValue ?? "")}
+              placeholder={copy.authPlaceholder}
+              onChange={(event) => updateField("authValue", event.target.value)}
+            />
+          </label>
+        </div>
+        {localError && <div className="error-banner field-span-full">{localError}</div>}
+      </div>
+    </div>
+  );
+}
+
+type ClaudeCodeModelOptionEntry = readonly [string, string];
+
+function buildClaudeCodeModelOptions(status: HarnessStatus | undefined, presets: ClaudeCodeModelPreset[], presetId?: string): ClaudeCodeModelOptionEntry[] {
+  const selectedPreset = presetId ? presets.find((preset) => preset.id === presetId) : undefined;
+  if (presetId) return selectedPreset ? buildClaudeCodePresetModelOptions(selectedPreset) : [];
+
+  return [
+    ...new Map(
+      [
+        ...(status?.models ?? [])
+          .filter((model) => model.id && model.id !== "inherit")
+          .map((model) => [model.id, model.label === model.id ? model.id : `${model.label} (${model.id})`] as const),
+        ...presets.flatMap((preset) =>
+          [preset.fallbackModelId, preset.haikuModelId, preset.sonnetModelId, preset.opusModelId]
+            .filter((modelId): modelId is string => Boolean(modelId))
+            .map((modelId) => [modelId, `${preset.name} (${modelId})`] as const)
+        )
+      ]
+    ).entries()
+  ];
+}
+
+function buildClaudeCodePresetModelOptions(preset: ClaudeCodeModelPreset): ClaudeCodeModelOptionEntry[] {
+  return [
+    ...new Map(
+      [preset.fallbackModelId, preset.haikuModelId, preset.sonnetModelId, preset.opusModelId]
+        .filter((modelId): modelId is string => Boolean(modelId))
+        .map((modelId) => [modelId, preset.name ? `${preset.name} (${modelId})` : modelId] as const)
+    ).entries()
+  ];
+}
+
+function modelOptionsWithCurrent(options: ClaudeCodeModelOptionEntry[], currentModelId: string | undefined): ClaudeCodeModelOptionEntry[] {
+  const current = String(currentModelId ?? "").trim();
+  if (!current || options.some(([id]) => id === current)) return options;
+  return [[current, current], ...options];
+}
+
+function buildConfiguredClaudeCodeModels(config: ClaudeCodeModelConfig | undefined, presets: ClaudeCodeModelPreset[], language: Language): Array<{
+  id: string;
+  label: string;
+  modelField: ClaudeCodeModelSlotField;
+  providerId: string;
+  providerName: string;
+}> {
+  const preset = presets.find((item) => item.id === config?.providerPresetId);
+  const providerId = config?.providerPresetId ?? preset?.id ?? config?.providerPresetName ?? config?.baseUrl ?? config?.fallbackModelId ?? "anthropic";
+  const providerName = config?.providerPresetName ?? preset?.name ?? "Claude Code";
+  const labels =
+    language === "zh-CN"
+      ? {
+          sonnet: "\u4e3b\u529b\u6a21\u578b",
+          opus: "\u9ad8\u9636\u6a21\u578b",
+          haiku: "\u8f7b\u91cf\u6a21\u578b",
+          fallback: "\u9ed8\u8ba4\u6a21\u578b"
+        }
+      : {
+          sonnet: "Primary model",
+          opus: "Advanced model",
+          haiku: "Light model",
+          fallback: "Default model"
+        };
+  return [
+    { id: config?.fallbackModelId, label: labels.fallback, modelField: "fallbackModelId", providerId, providerName },
+    { id: config?.haikuModelId, label: labels.haiku, modelField: "haikuModelId", providerId, providerName },
+    { id: config?.sonnetModelId, label: labels.sonnet, modelField: "sonnetModelId", providerId, providerName },
+    { id: config?.opusModelId, label: labels.opus, modelField: "opusModelId", providerId, providerName }
+  ].filter((model): model is { id: string; label: string; modelField: ClaudeCodeModelSlotField; providerId: string; providerName: string } => Boolean(model.id));
+}
+
+function countConfiguredClaudeCodeModels(config: ClaudeCodeModelConfig | undefined): number {
+  return [
+    config?.sonnetModelId,
+    config?.opusModelId,
+    config?.haikuModelId,
+    config?.fallbackModelId
+  ].filter(Boolean).length;
 }
 
 type HarnessSkillsCardCopy = Pick<

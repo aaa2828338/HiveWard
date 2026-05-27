@@ -1,9 +1,9 @@
 import { Router, type Response } from "express";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readFile, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
@@ -70,9 +70,15 @@ import type {
   HivewardChatMessage,
   HivewardChatSession,
   StartBlueprintRunRequest,
-  ApplyHivewardUpdateResponse
+  ApplyHivewardUpdateResponse,
+  ClaudeCodeModelConfig,
+  ClaudeCodeModelPreset,
+  ClaudeCodeModelConfigResponse,
+  ClaudeCodeSavedModelProfile,
+  SaveClaudeCodeModelProfileRequest,
+  UpdateClaudeCodeModelConfigRequest
 } from "@hiveward/shared";
-import { createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
+import { claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
@@ -259,6 +265,70 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const [version, config] = await Promise.all([openClawConfigStore.getVersion(), openClawConfigStore.getState()]);
       res.json({ statuses: buildHarnessStatuses(version, config, resolveHarnessModelDefaults()) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/claude-code-config/models", (_req, res, next) => {
+    try {
+      res.json(readClaudeCodeModelConfigResponse());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/api/claude-code-config/models", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as UpdateClaudeCodeModelConfigRequest;
+      await updateClaudeCodeModelConfig(body);
+      res.json(readClaudeCodeModelConfigResponse());
+    } catch (error) {
+      if (error instanceof ClaudeCodeModelConfigInputError) {
+        res.status(400).json({
+          error: {
+            code: error.code,
+            message: error.message
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.post("/api/claude-code-config/model-profiles", async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as SaveClaudeCodeModelProfileRequest;
+      await saveCurrentClaudeCodeModelProfile(body);
+      res.status(201).json(readClaudeCodeModelConfigResponse());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/claude-code-config/model-profiles/:profileId/apply", async (req, res, next) => {
+    try {
+      await applyClaudeCodeSavedModelProfile(req.params.profileId);
+      res.json(readClaudeCodeModelConfigResponse());
+    } catch (error) {
+      if (error instanceof ClaudeCodeModelConfigInputError) {
+        res.status(400).json({
+          error: {
+            code: error.code,
+            message: error.message
+          }
+        });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  router.delete("/api/claude-code-config/model-profiles/:profileId", async (req, res, next) => {
+    try {
+      await deleteClaudeCodeSavedModelProfile(req.params.profileId);
+      res.json(readClaudeCodeModelConfigResponse());
     } catch (error) {
       next(error);
     }
@@ -2327,6 +2397,414 @@ function isFileNotFoundError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "ENOENT";
 }
 
+const claudeCodeModelFields: Array<[keyof UpdateClaudeCodeModelConfigRequest, string]> = [
+  ["fallbackModelId", "ANTHROPIC_MODEL"],
+  ["haikuModelId", "ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+  ["haikuModelName", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"],
+  ["sonnetModelId", "ANTHROPIC_DEFAULT_SONNET_MODEL"],
+  ["sonnetModelName", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"],
+  ["opusModelId", "ANTHROPIC_DEFAULT_OPUS_MODEL"],
+  ["opusModelName", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"]
+];
+
+const claudeCodePresetExtraEnvKeys = [
+  "API_TIMEOUT_MS",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+  "CLAUDE_CODE_MAX_OUTPUT_TOKENS",
+  "CLAUDE_CODE_USE_BEDROCK"
+] as const;
+
+const claudeCodeAuthEnvKeys = ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] as const;
+
+class ClaudeCodeModelConfigInputError extends Error {
+  constructor(
+    readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = "ClaudeCodeModelConfigInputError";
+  }
+}
+
+type StoredClaudeCodeModelProfile = ClaudeCodeSavedModelProfile & {
+  authValue?: string;
+};
+
+type ClaudeCodeModelProfileStore = {
+  profiles: StoredClaudeCodeModelProfile[];
+};
+
+function readClaudeCodeModelConfigResponse(env: NodeJS.ProcessEnv = process.env): ClaudeCodeModelConfigResponse {
+  return {
+    config: readClaudeCodeModelConfig(env),
+    presets: claudeCodeModelPresets,
+    savedProfiles: listClaudeCodeSavedModelProfiles(env)
+  };
+}
+
+function readClaudeCodeModelConfig(env: NodeJS.ProcessEnv = process.env): ClaudeCodeModelConfig {
+  const configPath = resolveClaudeCodeSettingsPath(env);
+  const settings = readJsonObjectFile(configPath);
+  const modelEnv = isPlainRecord(settings.env) ? settings.env : {};
+  const baseUrl = readOptionalString(modelEnv.ANTHROPIC_BASE_URL);
+  const fallbackModelId = readOptionalString(modelEnv.ANTHROPIC_MODEL);
+  const legacySmallModel = readOptionalString(modelEnv.ANTHROPIC_SMALL_FAST_MODEL);
+  const resolvedConfig = {
+    baseUrl,
+    fallbackModelId,
+    haikuModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? legacySmallModel,
+    haikuModelName: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME),
+    sonnetModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL),
+    sonnetModelName: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME),
+    opusModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL),
+    opusModelName: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME)
+  };
+  const matchedPreset = findMatchingClaudeCodePreset(resolvedConfig);
+  const extraEnv = readClaudeCodePresetExtraEnv(modelEnv);
+  const hasAuthConflict = hasConflictingClaudeCodeAuth(modelEnv, matchedPreset);
+
+  return {
+    configPath,
+    providerPresetId: matchedPreset?.id,
+    providerPresetName: matchedPreset?.name,
+    authEnvKey: inferClaudeCodeAuthEnvKey(modelEnv, matchedPreset),
+    authConfigured: hasClaudeCodeAuth(modelEnv, matchedPreset) && !hasAuthConflict,
+    extraEnv: Object.keys(extraEnv).length ? extraEnv : undefined,
+    ...resolvedConfig
+  };
+}
+
+async function updateClaudeCodeModelConfig(
+  input: UpdateClaudeCodeModelConfigRequest,
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClaudeCodeModelConfig> {
+  const previousConfig = readClaudeCodeModelConfig(env);
+  const previousAuthValue = readClaudeCodeModelAuthValue(previousConfig, env);
+  const configPath = resolveClaudeCodeSettingsPath(env);
+  const settings = readJsonObjectFile(configPath);
+  const modelEnv = isPlainRecord(settings.env) ? { ...settings.env } : {};
+  const currentPresetId = findMatchingClaudeCodePreset({
+    baseUrl: readOptionalString(modelEnv.ANTHROPIC_BASE_URL),
+    fallbackModelId: readOptionalString(modelEnv.ANTHROPIC_MODEL),
+    haikuModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? readOptionalString(modelEnv.ANTHROPIC_SMALL_FAST_MODEL),
+    sonnetModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL) ?? readOptionalString(modelEnv.ANTHROPIC_MODEL),
+    opusModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL) ?? readOptionalString(modelEnv.ANTHROPIC_MODEL)
+  })?.id;
+  const preset = input.presetId ? findClaudeCodeModelPreset(input.presetId) : undefined;
+  if (input.presetId && !preset) {
+    throw new ClaudeCodeModelConfigInputError("claude_code_unknown_preset", `Unknown Claude Code model preset: ${input.presetId}`);
+  }
+
+  if (preset) {
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_BASE_URL", preset.baseUrl);
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_MODEL", preset.fallbackModelId);
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_DEFAULT_HAIKU_MODEL", preset.haikuModelId);
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_DEFAULT_SONNET_MODEL", preset.sonnetModelId);
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_DEFAULT_OPUS_MODEL", preset.opusModelId);
+    for (const key of claudeCodePresetExtraEnvKeys) delete modelEnv[key];
+    for (const [key, value] of Object.entries(preset.extraEnv ?? {})) writeOptionalEnvValue(modelEnv, key, value);
+  }
+
+  const requestedAuthEnvKey = preset?.authEnvKey ?? input.authEnvKey;
+  const requestedAuthValue = readOptionalString(input.authValue);
+  if (requestedAuthValue) {
+    if (!requestedAuthEnvKey) {
+      throw new ClaudeCodeModelConfigInputError("claude_code_auth_env_required", "Claude Code API key field is required.");
+    }
+    writeOptionalEnvValue(modelEnv, requestedAuthEnvKey, requestedAuthValue);
+    clearOtherClaudeCodeAuthEnvKeys(modelEnv, requestedAuthEnvKey);
+  }
+
+  const hasAuthConflict = hasConflictingClaudeCodeAuth(modelEnv, preset);
+  if (preset && !requestedAuthValue && (!hasClaudeCodeAuth(modelEnv, preset) || currentPresetId !== preset.id || hasAuthConflict)) {
+    throw new ClaudeCodeModelConfigInputError(
+      "claude_code_auth_required",
+      `API key is required before applying the ${preset.name} Claude Code preset.`
+    );
+  }
+  if (preset?.authEnvKey && readOptionalString(modelEnv[preset.authEnvKey])) {
+    clearOtherClaudeCodeAuthEnvKeys(modelEnv, preset.authEnvKey);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "baseUrl")) {
+    writeOptionalEnvValue(modelEnv, "ANTHROPIC_BASE_URL", input.baseUrl);
+  }
+
+  if (input.extraEnv) {
+    for (const key of claudeCodePresetExtraEnvKeys) {
+      if (!Object.prototype.hasOwnProperty.call(input.extraEnv, key)) continue;
+      writeOptionalEnvValue(modelEnv, key, input.extraEnv[key]);
+    }
+  }
+
+  for (const [field, envKey] of claudeCodeModelFields) {
+    if (!Object.prototype.hasOwnProperty.call(input, field)) continue;
+    const value = input[field];
+    if (preset && typeof value === "string" && !value.trim()) continue;
+    writeOptionalEnvValue(modelEnv, envKey, value);
+  }
+
+  delete modelEnv.ANTHROPIC_SMALL_FAST_MODEL;
+  settings.env = modelEnv;
+  await writeJsonObjectFileAtomic(configPath, settings);
+  await saveClaudeCodeModelProfileSnapshot(previousConfig, undefined, env, previousAuthValue);
+  return readClaudeCodeModelConfig(env);
+}
+
+function listClaudeCodeSavedModelProfiles(env: NodeJS.ProcessEnv = process.env): ClaudeCodeSavedModelProfile[] {
+  return readClaudeCodeModelProfileStore(env).profiles
+    .map(({ authValue: _authValue, ...profile }) => ({
+      ...profile,
+      authConfigured: Boolean(profile.authConfigured || _authValue)
+    }))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+async function saveCurrentClaudeCodeModelProfile(
+  input: SaveClaudeCodeModelProfileRequest = {},
+  env: NodeJS.ProcessEnv = process.env
+): Promise<ClaudeCodeSavedModelProfile | undefined> {
+  return saveClaudeCodeModelProfileSnapshot(readClaudeCodeModelConfig(env), input.name, env);
+}
+
+async function saveClaudeCodeModelProfileSnapshot(
+  config: ClaudeCodeModelConfig,
+  name: string | undefined,
+  env: NodeJS.ProcessEnv,
+  authValue = readClaudeCodeModelAuthValue(config, env)
+): Promise<ClaudeCodeSavedModelProfile | undefined> {
+  if (!hasMeaningfulClaudeCodeModelConfig(config)) return undefined;
+  const store = readClaudeCodeModelProfileStore(env);
+  const now = new Date().toISOString();
+  const fingerprint = fingerprintClaudeCodeModelConfig(config);
+  const existing = store.profiles.find((profile) => profile.id === fingerprint);
+  const storedProfile: StoredClaudeCodeModelProfile = {
+    id: fingerprint,
+    name: readOptionalString(name) ?? existing?.name ?? defaultClaudeCodeModelProfileName(config),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    providerPresetId: config.providerPresetId,
+    providerPresetName: config.providerPresetName,
+    baseUrl: config.baseUrl,
+    authEnvKey: config.authEnvKey,
+    authConfigured: config.authConfigured,
+    authValue: authValue ?? existing?.authValue,
+    extraEnv: config.extraEnv,
+    fallbackModelId: config.fallbackModelId,
+    haikuModelId: config.haikuModelId,
+    haikuModelName: config.haikuModelName,
+    sonnetModelId: config.sonnetModelId,
+    sonnetModelName: config.sonnetModelName,
+    opusModelId: config.opusModelId,
+    opusModelName: config.opusModelName
+  };
+  const nextProfiles = [storedProfile, ...store.profiles.filter((profile) => profile.id !== fingerprint)];
+  await writeClaudeCodeModelProfileStore({ profiles: nextProfiles }, env);
+  const { authValue: _authValue, ...publicProfile } = storedProfile;
+  return { ...publicProfile, authConfigured: Boolean(publicProfile.authConfigured || _authValue) };
+}
+
+async function applyClaudeCodeSavedModelProfile(profileId: string, env: NodeJS.ProcessEnv = process.env): Promise<ClaudeCodeModelConfig> {
+  const profile = readClaudeCodeModelProfileStore(env).profiles.find((item) => item.id === profileId);
+  if (!profile) {
+    throw new ClaudeCodeModelConfigInputError("claude_code_saved_profile_not_found", `Unknown Claude Code saved model profile: ${profileId}`);
+  }
+  return updateClaudeCodeModelConfig({
+    presetId: profile.providerPresetId,
+    baseUrl: profile.baseUrl,
+    authEnvKey: profile.authEnvKey,
+    authValue: profile.authValue,
+    extraEnv: profile.extraEnv,
+    fallbackModelId: profile.fallbackModelId,
+    haikuModelId: profile.haikuModelId,
+    haikuModelName: profile.haikuModelName,
+    sonnetModelId: profile.sonnetModelId,
+    sonnetModelName: profile.sonnetModelName,
+    opusModelId: profile.opusModelId,
+    opusModelName: profile.opusModelName
+  }, env);
+}
+
+async function deleteClaudeCodeSavedModelProfile(profileId: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const store = readClaudeCodeModelProfileStore(env);
+  const nextProfiles = store.profiles.filter((profile) => profile.id !== profileId);
+  if (nextProfiles.length === store.profiles.length) return;
+  await writeClaudeCodeModelProfileStore({ profiles: nextProfiles }, env);
+}
+
+function hasMeaningfulClaudeCodeModelConfig(config: ClaudeCodeModelConfig): boolean {
+  return Boolean(config.providerPresetId || config.baseUrl || config.fallbackModelId || config.haikuModelId || config.sonnetModelId || config.opusModelId);
+}
+
+function fingerprintClaudeCodeModelConfig(config: ClaudeCodeModelConfig): string {
+  const fingerprintInput = {
+    providerPresetId: config.providerPresetId,
+    baseUrl: config.baseUrl,
+    fallbackModelId: config.fallbackModelId,
+    haikuModelId: config.haikuModelId,
+    sonnetModelId: config.sonnetModelId,
+    opusModelId: config.opusModelId
+  };
+  return `ccm_${createHash("sha256").update(JSON.stringify(fingerprintInput)).digest("hex").slice(0, 16)}`;
+}
+
+function defaultClaudeCodeModelProfileName(config: ClaudeCodeModelConfig): string {
+  return [config.providerPresetName, config.fallbackModelId].filter(Boolean).join(" / ") || config.baseUrl || config.fallbackModelId || "Claude Code";
+}
+
+function readClaudeCodeModelAuthValue(config: ClaudeCodeModelConfig, env: NodeJS.ProcessEnv): string | undefined {
+  if (!config.authEnvKey || !config.authConfigured) return undefined;
+  const settings = readJsonObjectFile(resolveClaudeCodeSettingsPath(env));
+  const modelEnv = isPlainRecord(settings.env) ? settings.env : {};
+  return readOptionalString(modelEnv[config.authEnvKey]);
+}
+
+function readClaudeCodeModelProfileStore(env: NodeJS.ProcessEnv): ClaudeCodeModelProfileStore {
+  const storePath = resolveClaudeCodeModelProfileStorePath(env);
+  if (!fileExists(storePath)) return { profiles: [] };
+  const value = readJsonFile(storePath);
+  if (!isPlainRecord(value) || !Array.isArray(value.profiles)) return { profiles: [] };
+  return {
+    profiles: value.profiles
+      .filter(isStoredClaudeCodeModelProfile)
+      .map((profile) => ({ ...profile }))
+  };
+}
+
+async function writeClaudeCodeModelProfileStore(store: ClaudeCodeModelProfileStore, env: NodeJS.ProcessEnv): Promise<void> {
+  await writeJsonObjectFileAtomic(resolveClaudeCodeModelProfileStorePath(env), store);
+}
+
+function resolveClaudeCodeModelProfileStorePath(env: NodeJS.ProcessEnv): string {
+  return join(dirname(resolveClaudeCodeSettingsPath(env)), "hiveward-model-profiles.json");
+}
+
+function isStoredClaudeCodeModelProfile(value: unknown): value is StoredClaudeCodeModelProfile {
+  if (!isPlainRecord(value)) return false;
+  return Boolean(readOptionalString(value.id) && readOptionalString(value.name) && readOptionalString(value.createdAt) && readOptionalString(value.updatedAt));
+}
+
+function findClaudeCodeModelPreset(id: string): ClaudeCodeModelPreset | undefined {
+  return claudeCodeModelPresets.find((preset) => preset.id === id);
+}
+
+function findMatchingClaudeCodePreset(config: Pick<ClaudeCodeModelConfig, "baseUrl" | "fallbackModelId" | "haikuModelId" | "sonnetModelId" | "opusModelId">): ClaudeCodeModelPreset | undefined {
+  const exactMatch = claudeCodeModelPresets.find((preset) => {
+    if (preset.baseUrl && preset.baseUrl !== config.baseUrl) return false;
+    if (preset.fallbackModelId && preset.fallbackModelId !== config.fallbackModelId) return false;
+    if (preset.haikuModelId && preset.haikuModelId !== config.haikuModelId) return false;
+    if (preset.sonnetModelId && preset.sonnetModelId !== config.sonnetModelId) return false;
+    if (preset.opusModelId && preset.opusModelId !== config.opusModelId) return false;
+    return Boolean(preset.baseUrl || preset.fallbackModelId || preset.sonnetModelId);
+  });
+  if (exactMatch) return exactMatch;
+
+  if (!config.baseUrl) return undefined;
+  const baseUrlMatches = claudeCodeModelPresets.filter((preset) => preset.baseUrl === config.baseUrl);
+  return baseUrlMatches.length === 1 ? baseUrlMatches[0] : undefined;
+}
+
+function inferClaudeCodeAuthEnvKey(modelEnv: Record<string, unknown>, preset?: ClaudeCodeModelPreset): ClaudeCodeModelConfig["authEnvKey"] {
+  if (preset?.authEnvKey && readOptionalString(modelEnv[preset.authEnvKey])) return preset.authEnvKey;
+  if (readOptionalString(modelEnv.ANTHROPIC_API_KEY)) return "ANTHROPIC_API_KEY";
+  if (readOptionalString(modelEnv.ANTHROPIC_AUTH_TOKEN)) return "ANTHROPIC_AUTH_TOKEN";
+  return preset?.authEnvKey;
+}
+
+function hasClaudeCodeAuth(modelEnv: Record<string, unknown>, preset?: ClaudeCodeModelPreset): boolean {
+  if (preset?.authEnvKey) return Boolean(readOptionalString(modelEnv[preset.authEnvKey]));
+  return Boolean(readOptionalString(modelEnv.ANTHROPIC_API_KEY) || readOptionalString(modelEnv.ANTHROPIC_AUTH_TOKEN));
+}
+
+function hasConflictingClaudeCodeAuth(modelEnv: Record<string, unknown>, preset?: ClaudeCodeModelPreset): boolean {
+  if (!preset?.authEnvKey) return false;
+  const preferred = readOptionalString(modelEnv[preset.authEnvKey]);
+  if (!preferred) return false;
+  return claudeCodeAuthEnvKeys.some((key) => key !== preset.authEnvKey && Boolean(readOptionalString(modelEnv[key])));
+}
+
+function clearOtherClaudeCodeAuthEnvKeys(modelEnv: Record<string, unknown>, activeKey: (typeof claudeCodeAuthEnvKeys)[number]): void {
+  for (const key of claudeCodeAuthEnvKeys) {
+    if (key !== activeKey) delete modelEnv[key];
+  }
+}
+
+function readClaudeCodeSettingsAuthSource(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  try {
+    const configPath = resolveClaudeCodeSettingsPath(env);
+    const settings = readJsonObjectFile(configPath);
+    const modelEnv = isPlainRecord(settings.env) ? settings.env : {};
+    const preset = findMatchingClaudeCodePreset({
+      baseUrl: readOptionalString(modelEnv.ANTHROPIC_BASE_URL),
+      fallbackModelId: readOptionalString(modelEnv.ANTHROPIC_MODEL),
+      haikuModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? readOptionalString(modelEnv.ANTHROPIC_SMALL_FAST_MODEL),
+      sonnetModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL),
+      opusModelId: readOptionalString(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL)
+    });
+    const authEnvKey = inferClaudeCodeAuthEnvKey(modelEnv, preset);
+    return authEnvKey && readOptionalString(modelEnv[authEnvKey]) ? `${basename(configPath)} env.${authEnvKey}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readClaudeCodePresetExtraEnv(modelEnv: Record<string, unknown>): Record<string, string | number | boolean> {
+  const extraEnv: Record<string, string | number | boolean> = {};
+  for (const key of claudeCodePresetExtraEnvKeys) {
+    const value = modelEnv[key];
+    if (typeof value === "string" && value.trim()) extraEnv[key] = value;
+    else if (typeof value === "number" || typeof value === "boolean") extraEnv[key] = value;
+  }
+  return extraEnv;
+}
+
+function writeOptionalEnvValue(modelEnv: Record<string, unknown>, envKey: string, value: unknown): void {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) modelEnv[envKey] = trimmed;
+    else delete modelEnv[envKey];
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    modelEnv[envKey] = value;
+    return;
+  }
+  delete modelEnv[envKey];
+}
+
+function resolveClaudeCodeSettingsPath(env: NodeJS.ProcessEnv): string {
+  const root = readEnvString(env, "CLAUDE_CONFIG_DIR") ?? join(homedir(), ".claude");
+  const settingsPath = join(root, "settings.json");
+  if (fileExists(settingsPath)) return settingsPath;
+
+  const legacyPath = join(root, "claude.json");
+  if (fileExists(legacyPath)) return legacyPath;
+  return settingsPath;
+}
+
+function readJsonObjectFile(path: string): Record<string, unknown> {
+  if (!fileExists(path)) return {};
+
+  const value = readJsonFile(path);
+  if (!isPlainRecord(value)) {
+    throw new Error(`Claude Code settings must be a JSON object: ${path}`);
+  }
+  return { ...value };
+}
+
+async function writeJsonObjectFileAtomic(path: string, value: Record<string, unknown>): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  const fileName = basename(path);
+  const tempPath = join(dirname(path), `.${fileName}.${process.pid}.${Date.now()}.tmp`);
+  try {
+    await writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await rename(tempPath, path);
+  } catch (error) {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
 function buildHarnessStatuses(
   version: OpenClawVersionInfo,
   config: OpenClawConfigState,
@@ -2392,7 +2870,9 @@ function buildClaudeCodeHarnessStatus(
 ): HarnessStatus {
   const installed = canResolvePackage("@anthropic-ai/claude-agent-sdk");
   const apiKeyConfigured = hasEnvValue("ANTHROPIC_API_KEY");
+  const authTokenConfigured = hasEnvValue("ANTHROPIC_AUTH_TOKEN");
   const oauthConfigured = hasEnvValue("CLAUDE_CODE_OAUTH_TOKEN");
+  const settingsAuthSource = readClaudeCodeSettingsAuthSource();
   const credentialsFile = resolveConfigFile({
     envDirName: "CLAUDE_CONFIG_DIR",
     fallbackDir: join(homedir(), ".claude"),
@@ -2400,7 +2880,7 @@ function buildClaudeCodeHarnessStatus(
     fileName: ".credentials.json"
   });
   const credentialsConfigured = fileExists(credentialsFile.path);
-  const configured = apiKeyConfigured || oauthConfigured || credentialsConfigured;
+  const configured = apiKeyConfigured || authTokenConfigured || oauthConfigured || Boolean(settingsAuthSource) || credentialsConfigured;
   return {
     id: "claudeCode",
     label: "Claude code",
@@ -2413,7 +2893,7 @@ function buildClaudeCodeHarnessStatus(
       ? "Claude Code SDK is not installed in this workspace."
       : configured
         ? "Claude Code SDK is installed and a local credential source was detected."
-        : "Claude Code SDK is installed, but no API key, OAuth token, or credentials file was detected.",
+        : "Claude Code SDK is installed, but no API key, auth token, OAuth token, settings credential, or credentials file was detected.",
     checkedAt,
     checks: [
       {
@@ -2429,10 +2909,12 @@ function buildClaudeCodeHarnessStatus(
         detail: configured
           ? credentialSourceLabel([
               apiKeyConfigured ? "ANTHROPIC_API_KEY" : undefined,
+              authTokenConfigured ? "ANTHROPIC_AUTH_TOKEN" : undefined,
               oauthConfigured ? "CLAUDE_CODE_OAUTH_TOKEN" : undefined,
+              settingsAuthSource,
               credentialsConfigured ? credentialsFile.label : undefined
             ])
-          : "No ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or Claude credentials file was detected."
+          : "No ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, Claude settings credential, or Claude credentials file was detected."
       },
       {
         id: "claude-entitlement",
@@ -2440,7 +2922,7 @@ function buildClaudeCodeHarnessStatus(
         status: configured ? "warning" : "fail",
         detail: configured
           ? "Subscription or API entitlement is not verified by this local check."
-          : "A Claude API key, OAuth token, or paid Claude Code entitlement is required before runtime use."
+          : "A Claude API key, auth token, OAuth token, or paid Claude Code entitlement is required before runtime use."
       },
       {
         id: "claude-default-model",

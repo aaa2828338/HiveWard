@@ -219,6 +219,98 @@ export interface HarnessStatusResponse {
   statuses: HarnessStatus[];
 }
 
+export type ClaudeCodeModelPresetCategory =
+  | "official"
+  | "cn_official"
+  | "aggregator"
+  | "third_party"
+  | "cloud_provider";
+
+export type ClaudeCodeAuthEnvKey = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
+
+export type ClaudeCodePresetExtraEnvValue = string | number | boolean;
+
+export type ClaudeCodeModelPresetPlanType = "coding_plan" | "token_plan";
+
+export interface ClaudeCodeModelPreset {
+  id: string;
+  name: string;
+  category: ClaudeCodeModelPresetCategory;
+  websiteUrl?: string;
+  apiKeyUrl?: string;
+  baseUrl?: string;
+  authEnvKey?: ClaudeCodeAuthEnvKey;
+  planType?: ClaudeCodeModelPresetPlanType;
+  planProvider?: string;
+  fallbackModelId?: string;
+  haikuModelId?: string;
+  sonnetModelId?: string;
+  opusModelId?: string;
+  extraEnv?: Record<string, ClaudeCodePresetExtraEnvValue>;
+}
+
+export interface ClaudeCodeModelConfig {
+  configPath: string;
+  providerPresetId?: string;
+  providerPresetName?: string;
+  baseUrl?: string;
+  authEnvKey?: ClaudeCodeAuthEnvKey;
+  authConfigured?: boolean;
+  extraEnv?: Record<string, ClaudeCodePresetExtraEnvValue>;
+  fallbackModelId?: string;
+  haikuModelId?: string;
+  haikuModelName?: string;
+  sonnetModelId?: string;
+  sonnetModelName?: string;
+  opusModelId?: string;
+  opusModelName?: string;
+}
+
+export interface ClaudeCodeSavedModelProfile {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  providerPresetId?: string;
+  providerPresetName?: string;
+  baseUrl?: string;
+  authEnvKey?: ClaudeCodeAuthEnvKey;
+  authConfigured?: boolean;
+  extraEnv?: Record<string, ClaudeCodePresetExtraEnvValue>;
+  fallbackModelId?: string;
+  haikuModelId?: string;
+  haikuModelName?: string;
+  sonnetModelId?: string;
+  sonnetModelName?: string;
+  opusModelId?: string;
+  opusModelName?: string;
+}
+
+export interface UpdateClaudeCodeModelConfigRequest {
+  presetId?: string;
+  baseUrl?: string;
+  authEnvKey?: ClaudeCodeAuthEnvKey;
+  authValue?: string;
+  extraEnv?: Record<string, ClaudeCodePresetExtraEnvValue | undefined>;
+  fallbackModelId?: string;
+  haikuModelId?: string;
+  haikuModelName?: string;
+  sonnetModelId?: string;
+  sonnetModelName?: string;
+  opusModelId?: string;
+  opusModelName?: string;
+}
+
+export interface SaveClaudeCodeModelProfileRequest {
+  name?: string;
+}
+
+export interface ClaudeCodeModelConfigResponse {
+  config: ClaudeCodeModelConfig;
+  presets: ClaudeCodeModelPreset[];
+  savedProfiles: ClaudeCodeSavedModelProfile[];
+}
+
 export type HarnessSkillId = "hiveward-ceo" | "hiveward-leader";
 
 export type HarnessSkillInstallStatus = "installed" | "missing" | "stale" | "unsupported" | "error";

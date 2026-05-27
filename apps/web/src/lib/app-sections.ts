@@ -11,6 +11,7 @@ export type AppNavSectionId =
   | "channels"
   | "openclaw"
   | "claudeCodeConfig"
+  | "claudeCodeModels"
   | "codexConfig";
 
 export type AppSectionId = AppNavSectionId | "companyDirectory" | "hivewardHome";
@@ -33,7 +34,7 @@ export const appSectionGroups = [
   },
   {
     id: "claudeCode",
-    sections: ["claudeCodeConfig"]
+    sections: ["claudeCodeConfig", "claudeCodeModels"]
   },
   {
     id: "codex",
