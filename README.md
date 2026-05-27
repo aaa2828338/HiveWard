@@ -26,12 +26,19 @@
   <a href="#为什么选择-hiveward">为什么选择 HiveWard？</a> ·
   <a href="#它如何工作">它如何工作？</a> ·
   <a href="#快速开始">快速开始</a> ·
+  <a href="#微信群交流群">微信群交流群</a> ·
   <a href="#截图跳转链接">截图跳转链接</a> ·
   <a href="#开源协议">开源协议</a>
 </p>
 
 <p align="center">
   <a href="README.en.md">English</a> | <strong>简体中文</strong>
+</p>
+
+## 微信群交流群
+
+<p align="center">
+  <img src="docs/assets/community/wechat-group.jpg" alt="微信群交流群" width="360">
 </p>
 
 <p align="center">
