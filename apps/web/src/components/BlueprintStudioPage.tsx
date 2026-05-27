@@ -100,6 +100,14 @@ import {
   shouldShowBlueprintWorkspaceRunState,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import {
+  blueprintSelectOpenEventName,
+  buildAgentHarnessOptions,
+  buildBlueprintModelSelectOptions,
+  getBlueprintSelectOutsidePointerListenerOptions,
+  isBlueprintSelectorDisabled,
+  resolveBlueprintModelSelectValue
+} from "../lib/blueprint-studio-state";
 
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard,
@@ -1435,7 +1443,7 @@ export function BlueprintStudioPage({
               className="blueprint-selector-button"
               title={t.fields.blueprint}
               onClick={toggleBlueprintDrawer}
-              disabled={busy || blueprints.length === 0}
+              disabled={isBlueprintSelectorDisabled({ busy, selectedCompanyId })}
             >
               <LayoutTemplate size={16} />
               <span>{blueprint?.name ?? t.empty.selectBlueprint}</span>
@@ -2007,21 +2015,36 @@ function BlueprintSelect({
     if (!open) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target as globalThis.Node | null;
+      const target = event.target as Element | null;
       if (target && rootRef.current?.contains(target)) return;
+      if (target?.closest(".blueprint-select")) return;
+      setOpen(false);
+    };
+    const closeOnPeerOpen = (event: Event) => {
+      const peerRoot = event instanceof CustomEvent ? event.detail : undefined;
+      if (peerRoot && peerRoot === rootRef.current) return;
       setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
+    const pointerListenerOptions = getBlueprintSelectOutsidePointerListenerOptions();
 
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("pointerdown", closeOnOutsidePointer, pointerListenerOptions);
+    window.addEventListener(blueprintSelectOpenEventName, closeOnPeerOpen);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, pointerListenerOptions);
+      window.removeEventListener(blueprintSelectOpenEventName, closeOnPeerOpen);
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open]);
+
+  const toggleOpen = () => {
+    if (isDisabled) return;
+    window.dispatchEvent(new CustomEvent(blueprintSelectOpenEventName, { detail: rootRef.current }));
+    setOpen((current) => !current);
+  };
 
   return (
     <div ref={rootRef} className={`blueprint-select ${className ?? ""}`}>
@@ -2032,7 +2055,7 @@ function BlueprintSelect({
         aria-expanded={open}
         aria-label={ariaLabel}
         disabled={isDisabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleOpen}
       >
         <span>{displayLabel}</span>
         <ChevronDown size={16} />
@@ -2090,15 +2113,15 @@ function BatchAgentSettingsModal({
   const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
   const runtimeOptions: BlueprintSelectOption[] = [
     { value: "", label: "No change" },
-    { value: "codex", label: "Codex" },
-    { value: "openclaw", label: "OpenClaw" },
-    ...(effectiveRuntimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+    ...buildAgentHarnessOptions()
   ];
-  const modelSelectionOptions: BlueprintSelectOption[] = [
-    { value: "", label: "No change" },
-    { value: "__default", label: runtimeDefaultModelLabel(effectiveRuntimeId, t) },
-    ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-  ];
+  const modelSelectionOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+    models: runtimeModelOptions,
+    defaultLabel: t.common.defaultOption,
+    defaultBadgeLabel: t.common.defaultOption,
+    defaultValue: "__default",
+    noChangeLabel: "No change"
+  });
 
   const apply = () => {
     const configPatch: Partial<AgentNodeConfig> = {};
@@ -2190,9 +2213,8 @@ function NodeConfigForm({
     const runtimeId = node.runtimeId ?? "openclaw";
     const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
     const approvalEnabled = config.approval?.enabled === true;
     const sendEnabled = runtimeId === "openclaw" && config.send?.enabled === true;
@@ -2210,16 +2232,13 @@ function NodeConfigForm({
       channels.length === 0
         ? [{ value: sendConfig.channelId || "slack", label: sendConfig.channelId || "slack" }]
         : channels.map((channel) => ({ value: channel.id, label: channel.label }));
-    const runtimeOptions: BlueprintSelectOption[] = [
-      { value: "codex", label: "Codex" },
-      { value: "openclaw", label: "OpenClaw" },
-      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
-    ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2241,13 +2260,13 @@ function NodeConfigForm({
             <span>{t.fields.model}</span>
             {isSdkProvider && runtimeModelOptions.length === 0 ? (
               <input
-                value={selectedModel}
-                placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                value={modelSelectValue}
+                placeholder={t.common.defaultOption}
                 onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
               />
             ) : (
               <BlueprintSelect
-                value={selectedModel}
+                value={modelSelectValue}
                 options={modelOptions}
                 ariaLabel={t.fields.model}
                 onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2377,20 +2396,16 @@ function NodeConfigForm({
     const runtimeId = node.runtimeId ?? "openclaw";
     const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
-    const runtimeOptions: BlueprintSelectOption[] = [
-      { value: "codex", label: "Codex" },
-      { value: "openclaw", label: "OpenClaw" },
-      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
-    ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
@@ -2410,13 +2425,13 @@ function NodeConfigForm({
           <span>{t.fields.model}</span>
           {isSdkProvider && runtimeModelOptions.length === 0 ? (
             <input
-              value={selectedModel}
-              placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+              value={modelSelectValue}
+              placeholder={t.common.defaultOption}
               onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
             />
           ) : (
             <BlueprintSelect
-              value={selectedModel}
+              value={modelSelectValue}
               options={modelOptions}
               ariaLabel={t.fields.model}
               onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2517,9 +2532,8 @@ function NodeConfigForm({
       ? "harness_summary"
       : "structured_merge";
     const runtimeId = config.runtimeId ?? "openclaw";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const modeOptions: BlueprintSelectOption[] = [
       { value: "structured_merge", label: t.options.structuredMerge },
       { value: "harness_summary", label: t.options.harnessSummary }
@@ -2529,11 +2543,12 @@ function NodeConfigForm({
       { value: "codex", label: "Codex" },
       { value: "claude", label: "Claude Code" }
     ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const switchMode = (mode: SummaryNodeConfig["mode"]) => {
       onPatchConfig(
@@ -2571,13 +2586,13 @@ function NodeConfigForm({
               <span>{t.fields.model}</span>
               {isSdkProvider && runtimeModelOptions.length === 0 ? (
                 <input
-                  value={selectedModel}
-                  placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                  value={modelSelectValue}
+                  placeholder={t.common.defaultOption}
                   onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
                 />
               ) : (
                 <BlueprintSelect
-                  value={selectedModel}
+                  value={modelSelectValue}
                   options={modelOptions}
                   ariaLabel={t.fields.model}
                   onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2753,6 +2768,7 @@ function normalizeColorInput(value: string | undefined): string {
 type BlueprintRuntimeModelOption = {
   id: string;
   label: string;
+  isDefault?: boolean;
 };
 
 type BlueprintSkillOption = {
@@ -2789,19 +2805,25 @@ function buildBlueprintRuntimeModelOptions(
   models: NonNullable<CatalogSnapshot["models"]>,
   harnessStatuses?: HarnessStatus[]
 ): BlueprintRuntimeModelOption[] {
+  const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
+
   if (runtimeId === "openclaw") {
-    return models.map((model) => ({ id: model.id, label: model.label }));
+    return models.map((model) => ({
+      id: model.id,
+      label: model.label,
+      isDefault: harnessStatus?.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined
+    }));
   }
 
-  const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
   if (harnessStatus?.models?.length) {
     return harnessStatus.models.map((model) => ({
       id: model.id,
-      label: model.id === "inherit" ? `${runtimeLabel(runtimeId)} default` : model.label || model.id
+      label: model.label || model.id,
+      isDefault: model.isDefault ?? (harnessStatus.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined)
     }));
   }
-  return harnessStatus?.defaultModelId
-    ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId === "inherit" ? `${runtimeLabel(runtimeId)} default` : harnessStatus.defaultModelId }]
+  return harnessStatus?.defaultModelId && harnessStatus.defaultModelId !== "inherit"
+    ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId, isDefault: true }]
     : [];
 }
 
@@ -2820,10 +2842,6 @@ function buildBlueprintRuntimeSkillOptions(
       label: skill.label,
       category: skill.status === "installed" ? runtimeLabel(runtimeId) : `${runtimeLabel(runtimeId)} ${skill.status}`
     }));
-}
-
-function runtimeDefaultModelLabel(runtimeId: AgentRuntimeId, t: Messages): string {
-  return `${runtimeLabel(runtimeId)} ${t.common.defaultModel}`;
 }
 
 function runtimeLabel(runtimeId: AgentRuntimeId): string {
