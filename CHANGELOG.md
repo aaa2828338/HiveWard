@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.1 - 2026-05-27
+
+Small bugfix release for blueprint run state and Blueprint Studio control usability.
+
+### 中文
+
+- 修复终态蓝图运行的清理逻辑，避免已经成功的 run 被残留清理节点误判成失败。
+- 修复蓝图工作台选择控件：空公司蓝图选择、Claude Code harness 切换、模型默认值显示、自定义模型保留和下拉菜单关闭行为。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.3.1`。
+- 更新 README 和项目简介文案，突出 slogan：让101个Agent合作为你打工。
+
+### English
+
+- Fixed terminal blueprint-run cleanup so successful runs are not misread as failed because of stale cleanup nodes.
+- Fixed Blueprint Studio controls for empty company blueprint selection, Claude Code harness switching, default model display, custom model preservation, and select-menu closing behavior.
+- Bumped repository, workspace package, and internal dependency versions to `0.3.1`.
+- Updated README and project-description copy around the slogan: Put 101 agents to work together for you.
+
 ## v0.1.0-beta.1 - 2026-05-23
 
 First public beta line for Hiveward.

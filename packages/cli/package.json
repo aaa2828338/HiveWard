@@ -1,7 +1,7 @@
 {
   "name": "@hiveward/cli",
   "version": "0.3.1",
-  "description": "Hiveward command-line installer and local runtime helper.",
+  "description": "Put 101 agents to work together with the HiveWard Agent Company CLI.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
