@@ -830,6 +830,29 @@ describe("blueprint contracts", () => {
     expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["brief"]);
   });
 
+  it("does not let cleanup cancellations make a succeeded run look failed", () => {
+    const final = createContractNode("final", "agent", "Final", {
+      resultRole: "final"
+    });
+    const stale = createContractNode("stale", "agent", "Stale child");
+    const blueprint = createResolverBlueprint([final, stale]);
+
+    const result = resolveFinalRunResult(
+      blueprint,
+      [
+        createContractNodeRun(final, "final output"),
+        createContractNodeRun(stale, undefined, "cancelled", {
+          error: "Run already reached a terminal state; closing stale work."
+        })
+      ],
+      "succeeded"
+    );
+
+    expect(result?.state).toBe("available");
+    expect(result?.failedNode).toBeUndefined();
+    expect(result?.candidates.map((candidate) => candidate.nodeId)).toEqual(["final"]);
+  });
+
   it("uses top-level manager output as the automatic manager result", () => {
     const manager = createContractNode("manager", "manager", "Manager");
     const participant = createContractNode("participant", "agent", "Participant");

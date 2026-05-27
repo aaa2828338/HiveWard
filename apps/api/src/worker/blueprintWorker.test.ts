@@ -459,6 +459,60 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.error).toContain("terminal state");
   });
 
+  it("keeps a succeeded terminal blueprint successful when closing stale open node runs", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("final", "Final"), createAgentNode("stale", "Stale child")], []);
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    await store.upsertNodeRun({
+      id: "node-run-final",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "final",
+      nodeLabel: "Final",
+      nodeType: "agent",
+      status: "succeeded",
+      queuedAt: run.startedAt,
+      startedAt: run.startedAt,
+      endedAt: new Date().toISOString(),
+      output: "final ok"
+    });
+    await store.upsertNodeRun({
+      id: "node-run-stale",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "stale",
+      nodeLabel: "Stale child",
+      nodeType: "agent",
+      status: "running",
+      queuedAt: run.startedAt,
+      startedAt: run.startedAt
+    });
+    const succeededRun = {
+      ...run,
+      status: "succeeded" as const,
+      endedAt: new Date().toISOString(),
+      durationMs: 1
+    };
+    await store.updateBlueprintRun(succeededRun);
+    const worker = new BlueprintWorker(store, new ScriptedAdapter([], []));
+
+    const normalized = await worker.cancelRun(succeededRun);
+    const view = await store.getRunView(run.id);
+
+    expect(normalized.status).toBe("succeeded");
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "stale")?.status).toBe("cancelled");
+    expect(view?.finalResult?.state).toBe("available");
+    expect(view?.finalResult?.failedNode).toBeUndefined();
+    expect(view?.finalResult?.candidates[0]).toMatchObject({
+      nodeId: "final",
+      output: "final ok"
+    });
+  });
+
   it("fails an agent node that finishes without visible output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));

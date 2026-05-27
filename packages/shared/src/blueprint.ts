@@ -437,9 +437,10 @@ export function resolveFinalRunResult(
         .map(({ candidate, reason }) => toFinalRunResultCandidate(candidate, reason));
 
   const reversedNodeRuns = [...nodeRuns].reverse();
-  const failedNode =
-    reversedNodeRuns.find((nodeRun) => nodeRun.status === "failed") ??
-    reversedNodeRuns.find((nodeRun) => nodeRun.status === "cancelled");
+  const failedNode = runStatus === "succeeded"
+    ? undefined
+    : reversedNodeRuns.find((nodeRun) => nodeRun.status === "failed") ??
+      reversedNodeRuns.find((nodeRun) => nodeRun.status === "cancelled");
   const waitingApprovalNode = [...nodeRuns]
     .reverse()
     .find((nodeRun) => nodeRun.status === "waiting_approval");
