@@ -2,11 +2,14 @@ node_modules/
 dist/
 .vite/
 coverage/
+.DS_Store
 .codex/
 .omx/
 data/*.json
+data/blueprint-workspaces/
 data/blueprints/*.json
 data/runs/*.json
+docs/superpowers/
 tmp/
 !.gitkeep
 !data/blueprints/.gitkeep
