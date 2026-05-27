@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -828,6 +828,914 @@ describe("apiRouter", () => {
       restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_MODELS", previousHivewardClaudeModels);
       restoreEnv("CLAUDE_CODE_MODELS", previousClaudeModels);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts Claude Code auth from local settings env when reporting harness status", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const previousHivewardClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    const previousClaudeDefault = process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    const previousAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    const previousClaudeOauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+    delete process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-minimax",
+        ANTHROPIC_MODEL: "MiniMax-M2.7"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{
+            id: string;
+            environmentOk?: boolean;
+            connectionState?: string;
+            models?: Array<{ id: string }>;
+            checks?: Array<{ id: string; status: string; detail: string }>;
+          }>;
+        }>(response);
+        const claudeStatus = body.statuses.find((status) => status.id === "claudeCode");
+        const authCheck = claudeStatus?.checks?.find((check) => check.id === "claude-auth");
+
+        expect(claudeStatus?.environmentOk).toBe(true);
+        expect(claudeStatus?.connectionState).toBe("available");
+        expect(claudeStatus?.models?.map((model) => model.id)).toContain("MiniMax-M2.7");
+        expect(authCheck).toMatchObject({ status: "pass" });
+        expect(authCheck?.detail).toContain("settings.json");
+        expect(authCheck?.detail).toContain("ANTHROPIC_AUTH_TOKEN");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousHivewardClaudeDefault);
+      restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      restoreEnv("ANTHROPIC_API_KEY", previousAnthropicApiKey);
+      restoreEnv("ANTHROPIC_AUTH_TOKEN", previousAnthropicAuthToken);
+      restoreEnv("CLAUDE_CODE_OAUTH_TOKEN", previousClaudeOauthToken);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat a Claude Code model preset as configured auth", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    const previousHivewardClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    const previousClaudeDefault = process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    const previousAnthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    const previousAnthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN;
+    const previousClaudeOauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+    delete process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.CLAUDE_CODE_DEFAULT_MODEL;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{
+            id: string;
+            environmentOk?: boolean;
+            connectionState?: string;
+            checks?: Array<{ id: string; status: string; detail: string }>;
+          }>;
+        }>(response);
+        const claudeStatus = body.statuses.find((status) => status.id === "claudeCode");
+        const authCheck = claudeStatus?.checks?.find((check) => check.id === "claude-auth");
+
+        expect(claudeStatus?.environmentOk).toBe(false);
+        expect(claudeStatus?.connectionState).toBe("needs_config");
+        expect(authCheck).toMatchObject({ status: "fail" });
+        expect(authCheck?.detail).not.toContain("settings.json");
+        expect(authCheck?.detail).not.toContain("Detected:");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousHivewardClaudeDefault);
+      restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      restoreEnv("ANTHROPIC_API_KEY", previousAnthropicApiKey);
+      restoreEnv("ANTHROPIC_AUTH_TOKEN", previousAnthropicAuthToken);
+      restoreEnv("CLAUDE_CODE_OAUTH_TOKEN", previousClaudeOauthToken);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Claude Code model config from local settings", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_MODEL: "fallback-model",
+        ANTHROPIC_SMALL_FAST_MODEL: "legacy-small",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "sonnet-model",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "opus-model",
+        ANTHROPIC_DEFAULT_OPUS_MODEL_NAME: "Opus Model"
+      },
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`);
+        const body = await readOkJson<{
+          config: {
+            configPath: string;
+            fallbackModelId?: string;
+            haikuModelId?: string;
+            sonnetModelId?: string;
+            opusModelId?: string;
+            opusModelName?: string;
+          };
+        }>(response);
+
+        expect(body.config.configPath).toBe(join(claudeHome, "settings.json"));
+        expect(body.config.fallbackModelId).toBe("fallback-model");
+        expect(body.config.haikuModelId).toBe("legacy-small");
+        expect(body.config.sonnetModelId).toBe("sonnet-model");
+        expect(body.config.opusModelId).toBe("opus-model");
+        expect(body.config.opusModelName).toBe("Opus Model");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Claude Code model presets from the CCSwitch-style catalog", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`);
+        const body = await readOkJson<{
+          presets?: Array<{
+            id: string;
+            name: string;
+            category: string;
+            baseUrl?: string;
+            sonnetModelId?: string;
+          }>;
+        }>(response);
+
+        expect(body.presets?.length).toBeGreaterThanOrEqual(12);
+        expect(body.presets).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              id: "deepseek",
+              name: "DeepSeek",
+              category: "cn_official",
+              baseUrl: "https://api.deepseek.com/anthropic",
+              sonnetModelId: "deepseek-v4-pro"
+            }),
+            expect.objectContaining({
+              id: "kimi",
+              name: "Kimi",
+              category: "cn_official",
+              baseUrl: "https://api.moonshot.cn/anthropic",
+              sonnetModelId: "kimi-k2.6"
+            }),
+            expect.objectContaining({
+              id: "minimax-cn",
+              name: "MiniMax",
+              category: "cn_official",
+              baseUrl: "https://api.minimaxi.com/anthropic",
+              sonnetModelId: "MiniMax-M2.7"
+            })
+          ])
+        );
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes Claude Code model config while preserving unrelated settings", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_MODEL: "old-fallback",
+        ANTHROPIC_SMALL_FAST_MODEL: "old-small",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "old-sonnet",
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Old Sonnet",
+        ANTHROPIC_API_KEY: "sk-preserved"
+      },
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            fallbackModelId: "next-fallback",
+            haikuModelId: "next-haiku",
+            sonnetModelId: "next-sonnet",
+            sonnetModelName: "Next Sonnet",
+            opusModelId: "next-opus"
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            fallbackModelId?: string;
+            haikuModelId?: string;
+            sonnetModelId?: string;
+            sonnetModelName?: string;
+            opusModelId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          fallbackModelId: "next-fallback",
+          haikuModelId: "next-haiku",
+          sonnetModelId: "next-sonnet",
+          sonnetModelName: "Next Sonnet",
+          opusModelId: "next-opus"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_MODEL: "next-fallback",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "next-haiku",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "next-sonnet",
+          ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: "Next Sonnet",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "next-opus",
+          ANTHROPIC_API_KEY: "sk-preserved"
+        });
+        expect(settings.env).not.toHaveProperty("ANTHROPIC_SMALL_FAST_MODEL");
+        expect(settings.permissions).toEqual({ allow: ["Bash(ls)"] });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a Claude Code model preset without creating a token", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-preserved",
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+      },
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ presetId: "deepseek" })
+        });
+        const body = await readOkJson<{
+          config: {
+            providerPresetId?: string;
+            baseUrl?: string;
+            fallbackModelId?: string;
+            haikuModelId?: string;
+            sonnetModelId?: string;
+            opusModelId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          providerPresetId: "deepseek",
+          baseUrl: "https://api.deepseek.com/anthropic",
+          fallbackModelId: "deepseek-v4-pro",
+          haikuModelId: "deepseek-v4-flash",
+          sonnetModelId: "deepseek-v4-pro",
+          opusModelId: "deepseek-v4-pro"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+          ANTHROPIC_AUTH_TOKEN: "sk-preserved",
+          ANTHROPIC_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+        });
+        expect(settings.env.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(settings.permissions).toEqual({ allow: ["Bash(ls)"] });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects switching Claude Code presets without the new provider token", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-kimi",
+        ANTHROPIC_BASE_URL: "https://api.moonshot.cn/anthropic",
+        ANTHROPIC_MODEL: "kimi-k2.6",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "kimi-k2.6",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "kimi-k2.6",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "kimi-k2.6"
+      },
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ presetId: "minimax-global" })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status).toBe(400);
+        expect(body.error).toMatchObject({
+          code: "claude_code_auth_required"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "sk-kimi",
+          ANTHROPIC_BASE_URL: "https://api.moonshot.cn/anthropic",
+          ANTHROPIC_MODEL: "kimi-k2.6"
+        });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects applying a Claude Code model preset without an auth token", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {},
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ presetId: "deepseek" })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status).toBe(400);
+        expect(body.error).toMatchObject({
+          code: "claude_code_auth_required"
+        });
+        expect(body.error?.message).toContain("API key");
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toEqual({});
+        expect(settings.permissions).toEqual({ allow: ["Bash(ls)"] });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a Claude Code model preset with a provided auth token", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {},
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "deepseek",
+            authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+            authValue: "sk-deepseek"
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            authConfigured?: boolean;
+            authEnvKey?: string;
+            providerPresetId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          authConfigured: true,
+          authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+          providerPresetId: "deepseek"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+          ANTHROPIC_MODEL: "deepseek-v4-pro"
+        });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses CC Switch preset auth fields and plan metadata when writing Claude Code settings", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "stale-bearer-token",
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const listResponse = await fetch(`${baseUrl}/api/claude-code-config/models`);
+        const listBody = await readOkJson<{
+          presets: Array<{
+            id: string;
+            authEnvKey?: string;
+            baseUrl?: string;
+            planType?: string;
+            planProvider?: string;
+          }>;
+        }>(listResponse);
+
+        expect(listBody.presets.find((preset) => preset.id === "pateway-ai")).toMatchObject({
+          authEnvKey: "ANTHROPIC_API_KEY",
+          baseUrl: "https://api.pateway.ai"
+        });
+        expect(listBody.presets.find((preset) => preset.id === "aihubmix")).toMatchObject({
+          authEnvKey: "ANTHROPIC_API_KEY",
+          baseUrl: "https://aihubmix.com"
+        });
+        expect(listBody.presets.find((preset) => preset.id === "minimax-cn")).toMatchObject({
+          planType: "coding_plan",
+          planProvider: "minimax"
+        });
+        expect(listBody.presets.find((preset) => preset.id === "xiaomi-mimo-token-plan-cn")).toMatchObject({
+          planType: "token_plan",
+          planProvider: "xiaomi_mimo"
+        });
+
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "pateway-ai",
+            authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+            authValue: "sk-pateway"
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            authConfigured?: boolean;
+            authEnvKey?: string;
+            providerPresetId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          authConfigured: true,
+          authEnvKey: "ANTHROPIC_API_KEY",
+          providerPresetId: "pateway-ai"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_API_KEY: "sk-pateway",
+          ANTHROPIC_BASE_URL: "https://api.pateway.ai"
+        });
+        expect(settings.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies Claude Code preset defaults while allowing selected model overrides", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {},
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "minimax-global",
+            authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+            authValue: "sk-minimax",
+            fallbackModelId: "MiniMax-M2.7",
+            haikuModelId: "",
+            sonnetModelId: "",
+            opusModelId: ""
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            providerPresetId?: string;
+            baseUrl?: string;
+            fallbackModelId?: string;
+            haikuModelId?: string;
+            sonnetModelId?: string;
+            opusModelId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          providerPresetId: "minimax-global",
+          baseUrl: "https://api.minimax.io/anthropic",
+          fallbackModelId: "MiniMax-M2.7",
+          haikuModelId: "MiniMax-M2.7",
+          sonnetModelId: "MiniMax-M2.7",
+          opusModelId: "MiniMax-M2.7"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "sk-minimax",
+          ANTHROPIC_BASE_URL: "https://api.minimax.io/anthropic",
+          ANTHROPIC_MODEL: "MiniMax-M2.7",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "MiniMax-M2.7",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "MiniMax-M2.7",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "MiniMax-M2.7"
+        });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("forces preset auth env and clears stale alternate Claude Code auth when switching providers", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-minimax-old",
+        ANTHROPIC_API_KEY: "sk-api-old",
+        ANTHROPIC_BASE_URL: "https://api.minimax.io/anthropic",
+        ANTHROPIC_MODEL: "MiniMax-M2.7"
+      },
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "deepseek",
+            authEnvKey: "ANTHROPIC_API_KEY",
+            authValue: "sk-deepseek"
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            authConfigured?: boolean;
+            authEnvKey?: string;
+            providerPresetId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          authConfigured: true,
+          authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+          providerPresetId: "deepseek"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+          ANTHROPIC_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+        });
+        expect(settings.env.ANTHROPIC_API_KEY).toBeUndefined();
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not treat conflicting Claude Code auth envs as reusable preset auth", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-minimax-old",
+        ANTHROPIC_API_KEY: "sk-deepseek-new",
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const readResponse = await fetch(`${baseUrl}/api/claude-code-config/models`);
+        const readBody = await readOkJson<{
+          config: {
+            authConfigured?: boolean;
+            authEnvKey?: string;
+            providerPresetId?: string;
+          };
+        }>(readResponse);
+
+        expect(readBody.config).toMatchObject({
+          authConfigured: false,
+          authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+          providerPresetId: "deepseek"
+        });
+
+        const updateResponse = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ presetId: "deepseek" })
+        });
+        const updateBody = await updateResponse.json() as { error?: { code?: string } };
+
+        expect(updateResponse.status).toBe(400);
+        expect(updateBody.error?.code).toBe("claude_code_auth_required");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps preset model defaults when the Claude Code form submits empty model overrides", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {},
+      permissions: { allow: ["Bash(ls)"] }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "deepseek",
+            authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+            authValue: "sk-deepseek",
+            fallbackModelId: "",
+            haikuModelId: "",
+            sonnetModelId: "",
+            opusModelId: ""
+          })
+        });
+        const body = await readOkJson<{
+          config: {
+            fallbackModelId?: string;
+            haikuModelId?: string;
+            sonnetModelId?: string;
+            opusModelId?: string;
+          };
+        }>(response);
+
+        expect(body.config).toMatchObject({
+          fallbackModelId: "deepseek-v4-pro",
+          haikuModelId: "deepseek-v4-flash",
+          sonnetModelId: "deepseek-v4-pro",
+          opusModelId: "deepseek-v4-pro"
+        });
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+          ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+        });
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("saves the current Claude Code model profile without exposing the API key", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/claude-code-config/model-profiles`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "DeepSeek saved" })
+        });
+        const body = await readOkJson<{
+          savedProfiles: Array<{
+            id: string;
+            name: string;
+            authConfigured?: boolean;
+            providerPresetId?: string;
+            authValue?: string;
+          }>;
+        }>(response);
+
+        expect(body.savedProfiles).toHaveLength(1);
+        expect(body.savedProfiles[0]).toMatchObject({
+          name: "DeepSeek saved",
+          authConfigured: true,
+          providerPresetId: "deepseek"
+        });
+        expect(body.savedProfiles[0]).not.toHaveProperty("authValue");
+
+        const profileStore = JSON.parse(readFileSync(join(claudeHome, "hiveward-model-profiles.json"), "utf8")) as {
+          profiles: Array<{ authValue?: string }>;
+        };
+        expect(profileStore.profiles[0]?.authValue).toBe("sk-deepseek");
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies a saved Claude Code model profile for quick switching", async () => {
+    const fixture = await createStoreFixture();
+    const claudeHome = join(fixture.dir, "claude-home");
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(join(claudeHome, "settings.json"), JSON.stringify({
+      env: {
+        ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+        ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+        ANTHROPIC_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro"
+      }
+    }));
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const saveResponse = await fetch(`${baseUrl}/api/claude-code-config/model-profiles`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "DeepSeek saved" })
+        });
+        const saved = await readOkJson<{ savedProfiles: Array<{ id: string; providerPresetId?: string }> }>(saveResponse);
+        const deepseekProfileId = saved.savedProfiles.find((profile) => profile.providerPresetId === "deepseek")?.id;
+        expect(deepseekProfileId).toBeTruthy();
+
+        await readOkJson(await fetch(`${baseUrl}/api/claude-code-config/models`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            presetId: "minimax-global",
+            authEnvKey: "ANTHROPIC_AUTH_TOKEN",
+            authValue: "sk-minimax"
+          })
+        }));
+
+        const applyResponse = await fetch(`${baseUrl}/api/claude-code-config/model-profiles/${deepseekProfileId}/apply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({})
+        });
+        const applied = await readOkJson<{
+          config: { providerPresetId?: string; authConfigured?: boolean; fallbackModelId?: string };
+          savedProfiles: Array<{ providerPresetId?: string }>;
+        }>(applyResponse);
+
+        expect(applied.config).toMatchObject({
+          providerPresetId: "deepseek",
+          authConfigured: true,
+          fallbackModelId: "deepseek-v4-pro"
+        });
+        expect(applied.savedProfiles).toEqual(expect.arrayContaining([
+          expect.objectContaining({ providerPresetId: "minimax-global" })
+        ]));
+
+        const settings = JSON.parse(readFileSync(join(claudeHome, "settings.json"), "utf8"));
+        expect(settings.env).toMatchObject({
+          ANTHROPIC_AUTH_TOKEN: "sk-deepseek",
+          ANTHROPIC_BASE_URL: "https://api.deepseek.com/anthropic",
+          ANTHROPIC_MODEL: "deepseek-v4-pro"
+        });
+        expect(settings.env.ANTHROPIC_API_KEY).toBeUndefined();
+      });
+    } finally {
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });

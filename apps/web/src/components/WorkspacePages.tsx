@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import {
   Activity,
@@ -2016,6 +2016,7 @@ export function ModelsPage({
           recent7d: "Last 7 days",
           setDefault: "Set default"
         };
+  const modelCardCopy = { ...modelCopy, defaultOption: t.common.defaultOption };
 
   const configuredModels = openClawConfig?.configuredModels ?? [];
   const usageByModel = useMemo(
@@ -2105,51 +2106,22 @@ export function ModelsPage({
             orderedConfiguredModels.map((model) => {
               const isDefault = model.id === openClawConfig?.defaultModelId;
               const usage = modelUsageFor(model.id, usageByModel);
-              const recentDays = recentModelUsageDays(usage, language);
-              const recentTotal = summarizeRecentModelUsage(recentDays);
-              const maxDailyTokens = Math.max(1, ...recentDays.map((day) => day.totalTokens));
 
               return (
-                <article key={model.id} className="model-card">
-                  <div className="model-card-head">
-                    <IdentityTitle kind="model" id={model.provider} label={model.label} />
-                    {isDefault && <span className="status-pill status-default">{t.common.defaultOption}</span>}
-                  </div>
-                  <div className="model-card-usage" aria-label={modelCopy.usage}>
-                    <div className="model-usage-head">
-                      <span>{modelCopy.recent7d}</span>
-                      <strong>{`${formatCompactTokenValue(recentTotal.totalTokens)} ${modelCopy.tokens}`}</strong>
-                    </div>
-                    <div className="model-usage-chart">
-                      {recentDays.map((day) => (
-                        <div
-                          key={day.dateKey}
-                          className="model-usage-day"
-                          title={`${day.fullLabel}: ${day.totalTokens.toLocaleString(language)} ${modelCopy.tokens}, $${day.costUsd.toFixed(4)}`}
-                        >
-                          <div className="model-usage-bar-track">
-                            <span
-                              className={`model-usage-bar ${day.totalTokens === 0 ? "empty" : ""}`}
-                              style={{ height: `${modelUsageBarHeight(day.totalTokens, maxDailyTokens)}%` }}
-                            />
-                          </div>
-                          <span className="model-usage-value">{formatCompactTokenValue(day.totalTokens)}</span>
-                          <span className="model-usage-label">{day.label}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="model-usage-foot">
-                      <span>{`${modelCopy.calls}: ${recentTotal.calls.toLocaleString(language)}`}</span>
-                      <span>{`${modelCopy.cost}: $${recentTotal.costUsd.toFixed(4)}`}</span>
-                    </div>
-                  </div>
-                  <div className="model-card-actions">
+                <ConfiguredModelCard
+                  key={model.id}
+                  model={{ id: model.id, provider: model.provider, label: model.label }}
+                  usage={usage}
+                  isDefault={isDefault}
+                  copy={modelCardCopy}
+                  language={language}
+                  actions={
                     <button type="button" className={isDefault ? "default-action" : undefined} disabled={busy || isDefault} onClick={() => onSetDefaultModel(model.id)}>
                       {busyAction === `setOpenClawDefaultModel:${model.id}` && !isDefault ? <Loader2 className="spin" size={16} /> : <BadgeCheck size={16} />}
                       {isDefault ? t.common.defaultOption : modelCopy.setDefault}
                     </button>
-                  </div>
-                </article>
+                  }
+                />
               );
             })
           ) : (
@@ -2256,6 +2228,88 @@ export function ModelsPage({
       </div>
 
     </section>
+  );
+}
+
+export type ConfiguredModelCardModel = {
+  id: string;
+  provider: string;
+  label: string;
+};
+
+export type ConfiguredModelCardCopy = {
+  usage: string;
+  calls: string;
+  tokens: string;
+  cost: string;
+  recent7d: string;
+  defaultOption: string;
+};
+
+export function ConfiguredModelCard({
+  model,
+  usage,
+  isDefault = false,
+  badgeLabel,
+  copy,
+  language,
+  actions,
+  children,
+  className
+}: {
+  model: ConfiguredModelCardModel;
+  usage?: ModelUsageSummary;
+  isDefault?: boolean;
+  badgeLabel?: string;
+  copy: ConfiguredModelCardCopy;
+  language: Language;
+  actions?: ReactNode;
+  children?: ReactNode;
+  className?: string;
+}) {
+  const usageSummary = usage ?? createEmptyModelUsageSummary();
+  const recentDays = recentModelUsageDays(usageSummary, language);
+  const recentTotal = summarizeRecentModelUsage(recentDays);
+  const maxDailyTokens = Math.max(1, ...recentDays.map((day) => day.totalTokens));
+  const visibleBadge = badgeLabel ?? (isDefault ? copy.defaultOption : undefined);
+
+  return (
+    <article className={`model-card${className ? ` ${className}` : ""}`}>
+      <div className="model-card-head">
+        <IdentityTitle kind="model" id={model.provider} label={model.label} />
+        {visibleBadge && <span className="status-pill status-default">{visibleBadge}</span>}
+      </div>
+      <div className="model-card-usage" aria-label={copy.usage}>
+        <div className="model-usage-head">
+          <span>{copy.recent7d}</span>
+          <strong>{`${formatCompactTokenValue(recentTotal.totalTokens)} ${copy.tokens}`}</strong>
+        </div>
+        <div className="model-usage-chart">
+          {recentDays.map((day) => (
+            <div
+              key={day.dateKey}
+              className="model-usage-day"
+              title={`${day.fullLabel}: ${day.totalTokens.toLocaleString(language)} ${copy.tokens}, $${day.costUsd.toFixed(4)}`}
+            >
+              <div className="model-usage-bar-track">
+                <span
+                  className={`model-usage-bar ${day.totalTokens === 0 ? "empty" : ""}`}
+                  style={{ height: `${modelUsageBarHeight(day.totalTokens, maxDailyTokens)}%` }}
+                />
+              </div>
+              <span className="model-usage-value">{formatCompactTokenValue(day.totalTokens)}</span>
+              <span className="model-usage-label">{day.label}</span>
+            </div>
+          ))}
+        </div>
+        <div className="model-usage-foot">
+          <span>{`${copy.calls}: ${recentTotal.calls.toLocaleString(language)}`}</span>
+          <span>{`${copy.cost}: $${recentTotal.costUsd.toFixed(4)}`}</span>
+        </div>
+      </div>
+      {children}
+      {actions && <div className="model-card-actions">{actions}</div>}
+    </article>
   );
 }
 
@@ -3046,6 +3100,8 @@ function normalizeIdentityKey(value: string): string {
   if (compact.includes("codex")) return "openai";
   if (compact.includes("deepseek")) return "deepseek";
   if (compact.includes("minimax")) return "minimax";
+  if (compact.includes("zhipu")) return "zai";
+  if (compact.includes("kimi")) return "moonshot";
   if (compact.includes("claude") || compact.includes("anthropic")) return "anthropic";
   if (compact.includes("feishu") || compact.includes("lark")) return "feishu";
   if (compact.includes("google-chat") || compact.includes("googlechat")) return "google-chat";
@@ -3508,7 +3564,7 @@ function blueprintNameFor(blueprints: BlueprintDefinition[], blueprintId: string
   return blueprints.find((blueprint) => blueprint.id === blueprintId)?.name ?? blueprintId;
 }
 
-type ModelUsageSummary = {
+export type ModelUsageSummary = {
   calls: number;
   inputTokens: number;
   outputTokens: number;
@@ -3516,7 +3572,7 @@ type ModelUsageSummary = {
   days: Map<string, ModelUsageDay>;
 };
 
-type ModelUsageDay = {
+export type ModelUsageDay = {
   dateKey: string;
   calls: number;
   inputTokens: number;
@@ -3833,4 +3889,3 @@ function normalizeAgentId(value: string): string {
   const trimmed = value.trim().toLowerCase();
   return trimmed.replace(/[^a-z0-9_-]+/g, "-").replace(/^-+/g, "").replace(/-+$/g, "").slice(0, 64) || "main";
 }
-

@@ -6323,11 +6323,35 @@ html[data-theme="light"] .node-menu-item:hover:not(:disabled) {
   gap: 10px;
 }
 
+.identity-title > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
 .identity-title strong {
   min-width: 0;
   color: var(--text);
   font-size: 15px;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.identity-title div > span {
+  min-width: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.identity-title code {
+  min-width: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -6480,10 +6504,103 @@ html[data-theme="light"] .node-menu-item:hover:not(:disabled) {
 .model-card-actions {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
+}
+
+.model-card-actions a {
+  min-width: 34px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted-strong);
+  background: var(--paper-strong);
 }
 
 .model-card-actions button {
   min-height: 34px;
+}
+
+.openclaw-control-section.claude-code-config-card {
+  gap: 14px;
+}
+
+.claude-code-config-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.claude-code-provider-field {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.claude-code-config-card .wizard-field {
+  min-width: 0;
+}
+
+.claude-code-config-card label {
+  min-width: 0;
+}
+
+.claude-code-config-card select,
+.claude-code-config-card input {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+.claude-code-config-card select {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 680;
+}
+
+.claude-code-model-switch-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.claude-code-model-switch-panel > select {
+  min-width: 0;
+  min-height: 36px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.claude-code-model-switch-panel .claude-code-model-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.claude-code-model-switch-panel .claude-code-model-actions button {
+  min-height: 36px;
+  gap: 6px;
+}
+
+.claude-code-profile-meta {
+  display: grid;
+  gap: 4px;
+}
+
+@media (max-width: 760px) {
+  .claude-code-config-grid,
+  .claude-code-provider-field {
+    grid-template-columns: 1fr;
+  }
+
+  .claude-code-model-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .claude-code-model-actions button {
+    justify-content: center;
+  }
 }
 
 html[data-theme="light"] .model-card {
@@ -9156,6 +9273,7 @@ html[data-theme="light"] .model-card.default {
 }
 
 .card-list-row.selected,
+.model-card.selected,
 .wizard-option.selected,
 .trace-issue-card.selected,
 .company-list-card.selected,
@@ -9167,6 +9285,7 @@ html[data-theme="light"] .model-card.default {
 }
 
 html[data-theme="light"] .card-list-row.selected,
+html[data-theme="light"] .model-card.selected,
 html[data-theme="light"] .wizard-option.selected,
 html[data-theme="light"] .trace-issue-card.selected,
 html[data-theme="light"] .company-list-card.selected,
@@ -9213,6 +9332,7 @@ html[data-theme="light"] .content-card .model-card.default:focus-within {
 }
 
 .content-card .card-list-row.selected,
+.content-card .model-card.selected,
 .content-card .wizard-option.selected,
 .content-card .trace-issue-card.selected,
 .content-card .company-list-card.selected,
@@ -9221,6 +9341,8 @@ html[data-theme="light"] .content-card .model-card.default:focus-within {
 .run-selection-panel .blueprint-card-button.selected,
 .blueprint-side-panel .blueprint-card-button.selected,
 .content-card .card-list-row.selected:hover:not(:disabled),
+.content-card .model-card.selected:hover,
+.content-card .model-card.selected:focus-within,
 .content-card .wizard-option.selected:hover:not(:disabled),
 .content-card .trace-issue-card.selected:hover:not(:disabled),
 .content-card .company-list-card.selected:hover:not(:disabled),
@@ -9229,6 +9351,7 @@ html[data-theme="light"] .content-card .model-card.default:focus-within {
 .run-selection-panel .blueprint-card-button.selected:hover:not(:disabled),
 .blueprint-side-panel .blueprint-card-button.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .card-list-row.selected,
+html[data-theme="light"] .content-card .model-card.selected,
 html[data-theme="light"] .content-card .wizard-option.selected,
 html[data-theme="light"] .content-card .trace-issue-card.selected,
 html[data-theme="light"] .content-card .company-list-card.selected,
@@ -9237,6 +9360,8 @@ html[data-theme="light"] .content-card .blueprint-card-button.selected,
 html[data-theme="light"] .run-selection-panel .blueprint-card-button.selected,
 html[data-theme="light"] .blueprint-side-panel .blueprint-card-button.selected,
 html[data-theme="light"] .content-card .card-list-row.selected:hover:not(:disabled),
+html[data-theme="light"] .content-card .model-card.selected:hover,
+html[data-theme="light"] .content-card .model-card.selected:focus-within,
 html[data-theme="light"] .content-card .wizard-option.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .trace-issue-card.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .company-list-card.selected:hover:not(:disabled),
@@ -9340,6 +9465,7 @@ button.default-action:disabled {
 }
 
 .content-card .card-list-row.selected,
+.content-card .model-card.selected,
 .content-card .wizard-option.selected,
 .content-card .trace-issue-card.selected,
 .content-card .company-list-card.selected,
@@ -9348,6 +9474,8 @@ button.default-action:disabled {
 .run-selection-panel .blueprint-card-button.selected,
 .blueprint-side-panel .blueprint-card-button.selected,
 .content-card .card-list-row.selected:hover:not(:disabled),
+.content-card .model-card.selected:hover,
+.content-card .model-card.selected:focus-within,
 .content-card .wizard-option.selected:hover:not(:disabled),
 .content-card .trace-issue-card.selected:hover:not(:disabled),
 .content-card .company-list-card.selected:hover:not(:disabled),
@@ -9356,6 +9484,7 @@ button.default-action:disabled {
 .run-selection-panel .blueprint-card-button.selected:hover:not(:disabled),
 .blueprint-side-panel .blueprint-card-button.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .card-list-row.selected,
+html[data-theme="light"] .content-card .model-card.selected,
 html[data-theme="light"] .content-card .wizard-option.selected,
 html[data-theme="light"] .content-card .trace-issue-card.selected,
 html[data-theme="light"] .content-card .company-list-card.selected,
@@ -9364,6 +9493,8 @@ html[data-theme="light"] .content-card .blueprint-card-button.selected,
 html[data-theme="light"] .run-selection-panel .blueprint-card-button.selected,
 html[data-theme="light"] .blueprint-side-panel .blueprint-card-button.selected,
 html[data-theme="light"] .content-card .card-list-row.selected:hover:not(:disabled),
+html[data-theme="light"] .content-card .model-card.selected:hover,
+html[data-theme="light"] .content-card .model-card.selected:focus-within,
 html[data-theme="light"] .content-card .wizard-option.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .trace-issue-card.selected:hover:not(:disabled),
 html[data-theme="light"] .content-card .company-list-card.selected:hover:not(:disabled),

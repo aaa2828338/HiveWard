@@ -1,6 +1,8 @@
 import type {
   CatalogSnapshot,
   CatalogSnapshotResponse,
+  ClaudeCodeModelConfig,
+  ClaudeCodeModelConfigResponse,
   CompanyDirectoryResponse,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
@@ -52,6 +54,8 @@ import type {
   UpdateChatSessionTitleRequest,
   UpdateChatSessionTitleResponse,
   UpdateHivewardChatSessionRequest,
+  SaveClaudeCodeModelProfileRequest,
+  UpdateClaudeCodeModelConfigRequest,
   SendChatSessionMessageRequest,
   ChatStreamEvent,
   HivewardChatSession,
@@ -249,6 +253,37 @@ export const api = {
   async getHarnessStatus(): Promise<HarnessStatus[]> {
     const response = await request<HarnessStatusResponse>("/api/harness-status");
     return response.statuses;
+  },
+
+  async getClaudeCodeModelConfig(): Promise<ClaudeCodeModelConfigResponse> {
+    return request<ClaudeCodeModelConfigResponse>("/api/claude-code-config/models");
+  },
+
+  async updateClaudeCodeModelConfig(input: UpdateClaudeCodeModelConfigRequest): Promise<ClaudeCodeModelConfigResponse> {
+    return request<ClaudeCodeModelConfigResponse>("/api/claude-code-config/models", {
+      method: "PUT",
+      body: JSON.stringify(input satisfies UpdateClaudeCodeModelConfigRequest)
+    });
+  },
+
+  async saveClaudeCodeModelProfile(input: SaveClaudeCodeModelProfileRequest = {}): Promise<ClaudeCodeModelConfigResponse> {
+    return request<ClaudeCodeModelConfigResponse>("/api/claude-code-config/model-profiles", {
+      method: "POST",
+      body: JSON.stringify(input satisfies SaveClaudeCodeModelProfileRequest)
+    });
+  },
+
+  async applyClaudeCodeModelProfile(profileId: string): Promise<ClaudeCodeModelConfigResponse> {
+    return request<ClaudeCodeModelConfigResponse>(`/api/claude-code-config/model-profiles/${encodeURIComponent(profileId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({})
+    });
+  },
+
+  async deleteClaudeCodeModelProfile(profileId: string): Promise<ClaudeCodeModelConfigResponse> {
+    return request<ClaudeCodeModelConfigResponse>(`/api/claude-code-config/model-profiles/${encodeURIComponent(profileId)}`, {
+      method: "DELETE"
+    });
   },
 
   async getHarnessSkillStatus(harnessId: HarnessId): Promise<HarnessSkillStatusResponse> {

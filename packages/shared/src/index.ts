@@ -2,6 +2,7 @@ export * from "./openclaw";
 export * from "./blueprint";
 export * from "./catalog";
 export * from "./api";
+export * from "./claudeCodeModelPresets";
 export * from "./workspace";
 export * from "./company";
 export * from "./roles";
