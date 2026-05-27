@@ -1,5 +1,6 @@
-import { mkdir, readFile, rm } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
@@ -87,10 +88,29 @@ type LegacyHivewardStoreState = Partial<RawHivewardStoreIndex> & {
 
 type ArchitectureNodePosition = ArchitectureBlueprintView["nodes"][number]["position"];
 
+type SkillSourceCompleteness = "full_package" | "markdown_only" | "partial_package" | "unknown";
+
+interface BlueprintSkillSourceSnapshot {
+  skillSourceId: string;
+  blueprintId: string;
+  workingDirectory: string;
+  sourceCompleteness: SkillSourceCompleteness;
+  capturedFiles: string[];
+  fileHashes: Record<string, string>;
+  scriptInventory: Array<{
+    path: string;
+    runtime: "node" | "python" | "bash" | "unknown";
+    sizeBytes: number;
+    sha256: string;
+    shouldExecuteByDefault: false;
+  }>;
+}
+
 export class FileHivewardStore {
   private readonly filePath: string;
   private readonly dataDir: string;
   private readonly blueprintsDir: string;
+  private readonly blueprintWorkspacesDir: string;
   private readonly runsDir: string;
   private readonly chatStore: FileHivewardChatStore;
   private operationQueue: Promise<void> = Promise.resolve();
@@ -99,6 +119,7 @@ export class FileHivewardStore {
     this.filePath = filePath;
     this.dataDir = dirname(filePath);
     this.blueprintsDir = join(this.dataDir, "blueprints");
+    this.blueprintWorkspacesDir = join(this.dataDir, "blueprint-workspaces");
     this.runsDir = join(this.dataDir, "runs");
     this.chatStore = new FileHivewardChatStore(join(this.dataDir, "hiveward-chat-store.json"));
   }
@@ -107,10 +128,12 @@ export class FileHivewardStore {
     await this.enqueue(async () => {
       await mkdir(this.dataDir, { recursive: true });
       await mkdir(this.blueprintsDir, { recursive: true });
+      await mkdir(this.blueprintWorkspacesDir, { recursive: true });
       await mkdir(this.runsDir, { recursive: true });
       try {
         const { index, legacyChat } = await this.readIndexWithLegacyChatUnlocked();
         await this.chatStore.init(index.companies, legacyChat);
+        await this.ensureBlueprintWorkspacesUnlocked(index);
         await this.writeIndexUnlocked(index);
       } catch (error) {
         if (!isFileNotFoundError(error)) {
@@ -309,6 +332,10 @@ export class FileHivewardStore {
     });
   }
 
+  getBlueprintWorkspacePath(id: string): string {
+    return this.blueprintWorkspacePath(id);
+  }
+
   async saveBlueprint(blueprint: BlueprintDefinition): Promise<BlueprintDefinition> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -372,6 +399,7 @@ export class FileHivewardStore {
       index.roleDirectories[companyId] = buildRoleDirectory(index, companyId, new Date().toISOString());
       await this.writeIndexUnlocked(index);
       await rm(this.blueprintPath(id), { force: true });
+      await rm(this.blueprintWorkspacePath(id), { recursive: true, force: true });
       return true;
     });
   }
@@ -386,6 +414,27 @@ export class FileHivewardStore {
       const imported = await this.importBlueprintPackageUnlocked(index, companyId, blueprintPackage, defaults);
       await this.writeIndexUnlocked(index);
       return imported;
+    });
+  }
+
+  async storeBlueprintSkillSource(input: {
+    blueprintId: string;
+    sourcePath: string;
+    sourceLabel?: string;
+    skillSourceId?: string;
+    skillIr?: unknown;
+  }): Promise<BlueprintSkillSourceSnapshot> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const blueprintEntry = index.blueprintIndex.find((entry) => entry.companyId === companyId && entry.id === input.blueprintId);
+      if (!blueprintEntry) {
+        throw new Error(`Blueprint not found: ${input.blueprintId}`);
+      }
+      const blueprint = await this.readBlueprintUnlocked(input.blueprintId);
+      const snapshot = await this.writeBlueprintSkillSourceSnapshotUnlocked(blueprint, input);
+      await this.addSkillSourceToBlueprintManifestUnlocked(blueprint, snapshot);
+      return snapshot;
     });
   }
 
@@ -1042,6 +1091,7 @@ export class FileHivewardStore {
   private async writeBlueprintUnlocked(blueprint: BlueprintDefinition): Promise<void> {
     const sanitizedBlueprint = stripRemovedBlueprintNodes(blueprint);
     await safeWriteJson(this.blueprintPath(sanitizedBlueprint.id), sanitizedBlueprint);
+    await this.writeBlueprintWorkspaceUnlocked(sanitizedBlueprint);
   }
 
   private async readRunArchiveUnlocked(id: string): Promise<BlueprintRunArchive> {
@@ -1115,6 +1165,141 @@ export class FileHivewardStore {
 
   private blueprintPath(id: string): string {
     return join(this.blueprintsDir, `${id}.json`);
+  }
+
+  private blueprintWorkspacePath(id: string): string {
+    return join(this.blueprintWorkspacesDir, id);
+  }
+
+  private async ensureBlueprintWorkspacesUnlocked(index: HivewardStoreIndex): Promise<void> {
+    await Promise.all(index.blueprintIndex.map(async (entry) => {
+      try {
+        await this.writeBlueprintWorkspaceUnlocked(await this.readBlueprintUnlocked(entry.id));
+      } catch (error) {
+        if (!isFileNotFoundError(error)) throw error;
+      }
+    }));
+  }
+
+  private async writeBlueprintWorkspaceUnlocked(blueprint: BlueprintDefinition): Promise<void> {
+    const workspacePath = this.blueprintWorkspacePath(blueprint.id);
+    await Promise.all([
+      mkdir(join(workspacePath, "blueprints"), { recursive: true }),
+      mkdir(join(workspacePath, "skills"), { recursive: true }),
+      mkdir(join(workspacePath, "mcp"), { recursive: true }),
+      mkdir(join(workspacePath, "scripts"), { recursive: true }),
+      mkdir(join(workspacePath, "artifacts"), { recursive: true }),
+      mkdir(join(workspacePath, "tmp"), { recursive: true })
+    ]);
+    const manifestPath = join(workspacePath, "manifest.json");
+    const existingManifest = await readJsonIfExists(manifestPath);
+    await Promise.all([
+      writeFile(join(workspacePath, "BLUEPRINT.md"), buildBlueprintEntryMarkdown(blueprint), "utf8"),
+      safeWriteJson(manifestPath, mergeBlueprintWorkspaceManifest(buildBlueprintWorkspaceManifest(blueprint), existingManifest)),
+      safeWriteJson(join(workspacePath, "blueprints", `${blueprint.id}.json`), blueprint)
+    ]);
+  }
+
+  private async writeBlueprintSkillSourceSnapshotUnlocked(
+    blueprint: BlueprintDefinition,
+    input: {
+      sourcePath: string;
+      sourceLabel?: string;
+      skillSourceId?: string;
+      skillIr?: unknown;
+    }
+  ): Promise<BlueprintSkillSourceSnapshot> {
+    await this.writeBlueprintWorkspaceUnlocked(blueprint);
+    const sourcePath = resolve(input.sourcePath);
+    const sourceStat = await lstat(sourcePath);
+    if (sourceStat.isSymbolicLink()) {
+      throw new Error(`Skill source snapshots do not support symbolic links: ${sourcePath}`);
+    }
+    const sourceIsDirectory = sourceStat.isDirectory();
+    const sourceName = basename(sourcePath);
+    const sourceCompleteness = await classifySkillSource(sourcePath, sourceIsDirectory);
+    const skillSourceId = input.skillSourceId ?? `skill-src-${nanoid(8)}`;
+    const skillSourcePath = join(this.blueprintWorkspacePath(blueprint.id), "skills", skillSourceId);
+
+    validateSkillIrScriptPaths(skillSourcePath, input.skillIr);
+    await rm(skillSourcePath, { recursive: true, force: true });
+    await mkdir(skillSourcePath, { recursive: true });
+
+    if (sourceIsDirectory) {
+      await assertSkillPackagePartsContainNoSymlinks(sourcePath);
+      await copySkillPackageParts(sourcePath, skillSourcePath);
+    } else {
+      await cp(sourcePath, join(skillSourcePath, sourceName));
+    }
+
+    const capturedFiles = await listRelativeFiles(skillSourcePath);
+    const fileHashes = await hashRelativeFiles(skillSourcePath, capturedFiles);
+    const scriptInventory = await buildScriptInventory(skillSourcePath, capturedFiles);
+    const snapshot: BlueprintSkillSourceSnapshot = {
+      skillSourceId,
+      blueprintId: blueprint.id,
+      workingDirectory: skillSourcePath,
+      sourceCompleteness,
+      capturedFiles,
+      fileHashes,
+      scriptInventory
+    };
+
+    await safeWriteJson(join(skillSourcePath, "hiveward-skill-source.json"), {
+      schema: "hiveward.skill-source/v1",
+      skillSourceId,
+      blueprintId: blueprint.id,
+      sourceKind: sourceIsDirectory ? "local_path" : "markdown_file",
+      sourceLabel: input.sourceLabel ?? sourceName,
+      originalPath: sourcePath,
+      sourceCompleteness,
+      capturedFiles,
+      fileHashes,
+      scriptInventory,
+      createdAt: new Date().toISOString()
+    });
+    if (input.skillIr !== undefined) {
+      await safeWriteJson(join(skillSourcePath, "skill-ir.json"), input.skillIr);
+    }
+
+    return snapshot;
+  }
+
+  private async addSkillSourceToBlueprintManifestUnlocked(
+    blueprint: BlueprintDefinition,
+    snapshot: BlueprintSkillSourceSnapshot
+  ): Promise<void> {
+    const manifestPath = join(this.blueprintWorkspacePath(blueprint.id), "manifest.json");
+    const currentManifest = await readJsonIfExists(manifestPath) ?? buildBlueprintWorkspaceManifest(blueprint);
+    const requiredResources = isPlainObject(currentManifest.requiredResources)
+      ? currentManifest.requiredResources
+      : {};
+    const skills = new Set(readStringArray(requiredResources.skills));
+    const scripts = new Set(readStringArray(requiredResources.scripts));
+    skills.add(snapshot.skillSourceId);
+    for (const script of snapshot.scriptInventory) {
+      scripts.add(`${snapshot.skillSourceId}/${script.path}`);
+    }
+
+    await safeWriteJson(manifestPath, {
+      ...currentManifest,
+      requiredResources: {
+        ...requiredResources,
+        skills: [...skills].sort(),
+        scripts: [...scripts].sort(),
+        mcp: readStringArray(requiredResources.mcp)
+      },
+      skillSources: [
+        ...readRecordArray(currentManifest.skillSources).filter((item) => item.skillSourceId !== snapshot.skillSourceId),
+        {
+          skillSourceId: snapshot.skillSourceId,
+          sourceCompleteness: snapshot.sourceCompleteness,
+          workingDirectory: snapshot.workingDirectory,
+          capturedFiles: snapshot.capturedFiles,
+          scripts: snapshot.scriptInventory.map((script) => script.path)
+        }
+      ]
+    });
   }
 
   private runArchivePath(id: string): string {
@@ -1795,6 +1980,273 @@ function readOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function buildBlueprintEntryMarkdown(blueprint: BlueprintDefinition): string {
+  const name = slugifyBlueprintName(blueprint.name || blueprint.id);
+  const description = blueprint.description?.trim() || `Use when running the ${blueprint.name || blueprint.id} blueprint.`;
+  return [
+    "---",
+    `name: ${name}`,
+    `description: ${description}`,
+    `version: ${blueprint.version}`,
+    `primaryBlueprintId: ${blueprint.id}`,
+    "---",
+    "",
+    `# ${blueprint.name || blueprint.id}`,
+    "",
+    description,
+    ""
+  ].join("\n");
+}
+
+function buildBlueprintWorkspaceManifest(blueprint: BlueprintDefinition): Record<string, unknown> {
+  const description = blueprint.description?.trim() || `Use when running the ${blueprint.name || blueprint.id} blueprint.`;
+  return {
+    schema: "hiveward.blueprint-bundle/v1",
+    kind: "blueprint_exposure",
+    id: blueprint.id,
+    name: slugifyBlueprintName(blueprint.name || blueprint.id),
+    label: blueprint.name,
+    description,
+    aliases: [],
+    intentTags: [],
+    triggerPhrases: [],
+    notFor: [],
+    inputs: [],
+    outputs: [],
+    runModes: ["draft", "approval_required"],
+    permissions: ["read_only"],
+    sideEffects: [],
+    requiredResources: {
+      skills: [],
+      scripts: [],
+      mcp: []
+    },
+    ownerRole: "leader",
+    primaryBlueprintId: blueprint.id,
+    blueprints: [blueprint.id],
+    createdAt: blueprint.createdAt,
+    updatedAt: blueprint.updatedAt
+  };
+}
+
+function mergeBlueprintWorkspaceManifest(
+  baseManifest: Record<string, unknown>,
+  existingManifest: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!existingManifest) return baseManifest;
+  const baseResources = isPlainObject(baseManifest.requiredResources) ? baseManifest.requiredResources : {};
+  const existingResources = isPlainObject(existingManifest.requiredResources) ? existingManifest.requiredResources : {};
+  const mergedManifest: Record<string, unknown> = {
+    ...existingManifest,
+    ...baseManifest
+  };
+  for (const field of blueprintExposureMetadataFields) {
+    if (existingManifest[field] !== undefined) {
+      mergedManifest[field] = existingManifest[field];
+    }
+  }
+  return {
+    ...mergedManifest,
+    requiredResources: {
+      ...baseResources,
+      skills: mergeStringArrays(baseResources.skills, existingResources.skills),
+      scripts: mergeStringArrays(baseResources.scripts, existingResources.scripts),
+      mcp: mergeStringArrays(baseResources.mcp, existingResources.mcp)
+    },
+    skillSources: readRecordArray(existingManifest.skillSources)
+  };
+}
+
+const blueprintExposureMetadataFields = [
+  "aliases",
+  "intentTags",
+  "triggerPhrases",
+  "notFor",
+  "inputs",
+  "outputs",
+  "runModes",
+  "permissions",
+  "sideEffects"
+];
+
+function mergeStringArrays(left: unknown, right: unknown): string[] {
+  return [...new Set([...readStringArray(left), ...readStringArray(right)])].sort();
+}
+
+function slugifyBlueprintName(value: string): string {
+  const slug = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "blueprint";
+}
+
+async function readJsonIfExists(path: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as unknown;
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch (error) {
+    if (isFileNotFoundError(error)) return undefined;
+    throw error;
+  }
+}
+
+async function classifySkillSource(sourcePath: string, sourceIsDirectory: boolean): Promise<SkillSourceCompleteness> {
+  const name = basename(sourcePath).toLowerCase();
+  if (sourceIsDirectory) return await isReadableFile(join(sourcePath, "SKILL.md")) ? "full_package" : "unknown";
+  if (name === "skill.md") return "partial_package";
+  return extname(name) === ".md" ? "markdown_only" : "unknown";
+}
+
+async function copySkillPackageParts(sourcePath: string, targetPath: string): Promise<void> {
+  if (await isReadableFile(join(sourcePath, "SKILL.md"))) {
+    await cp(join(sourcePath, "SKILL.md"), join(targetPath, "SKILL.md"));
+  }
+  for (const folder of ["references", "scripts", "assets", "agents"]) {
+    const sourceFolder = join(sourcePath, folder);
+    if (await isReadableDirectory(sourceFolder)) {
+      await cp(sourceFolder, join(targetPath, folder), { recursive: true });
+    }
+  }
+}
+
+async function assertSkillPackagePartsContainNoSymlinks(sourcePath: string): Promise<void> {
+  await assertPathContainsNoSymlinks(join(sourcePath, "SKILL.md"), sourcePath);
+  for (const folder of ["references", "scripts", "assets", "agents"]) {
+    await assertPathContainsNoSymlinks(join(sourcePath, folder), sourcePath);
+  }
+}
+
+async function assertPathContainsNoSymlinks(path: string, rootPath: string): Promise<void> {
+  let pathStat;
+  try {
+    pathStat = await lstat(path);
+  } catch (error) {
+    if (isFileNotFoundError(error)) return;
+    throw error;
+  }
+  if (pathStat.isSymbolicLink()) {
+    const relativePath = toPosixPath(relative(rootPath, path)) || basename(path);
+    throw new Error(`Skill source snapshots do not support symbolic links: ${relativePath}`);
+  }
+  if (!pathStat.isDirectory()) return;
+
+  const entries = await readdir(path, { withFileTypes: true });
+  for (const entry of entries) {
+    await assertPathContainsNoSymlinks(join(path, entry.name), rootPath);
+  }
+}
+
+async function listRelativeFiles(root: string): Promise<string[]> {
+  const files = await walkFiles(root);
+  return files
+    .map((file) => toPosixPath(relative(root, file)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+async function walkFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const childPath = join(root, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Skill source snapshots do not support symbolic links: ${childPath}`);
+    } else if (entry.isDirectory()) {
+      files.push(...await walkFiles(childPath));
+    } else if (entry.isFile()) {
+      files.push(childPath);
+    }
+  }
+  return files;
+}
+
+async function hashRelativeFiles(root: string, files: string[]): Promise<Record<string, string>> {
+  const fileHashes: Record<string, string> = {};
+  for (const file of files) {
+    fileHashes[file] = await hashFile(join(root, file));
+  }
+  return fileHashes;
+}
+
+async function buildScriptInventory(root: string, files: string[]): Promise<BlueprintSkillSourceSnapshot["scriptInventory"]> {
+  const scripts = files.filter((file) => file.startsWith("scripts/"));
+  return Promise.all(scripts.map(async (path) => {
+    const absolutePath = join(root, path);
+    const scriptStat = await stat(absolutePath);
+    return {
+      path,
+      runtime: inferScriptRuntime(path),
+      sizeBytes: scriptStat.size,
+      sha256: await hashFile(absolutePath),
+      shouldExecuteByDefault: false
+    };
+  }));
+}
+
+async function hashFile(path: string): Promise<string> {
+  return createHash("sha256").update(await readFile(path)).digest("hex");
+}
+
+function validateSkillIrScriptPaths(skillSourcePath: string, skillIr: unknown): void {
+  if (!isPlainObject(skillIr) || !Array.isArray(skillIr.scripts)) return;
+  for (const script of skillIr.scripts) {
+    if (!isPlainObject(script) || typeof script.path !== "string") continue;
+    assertBlueprintRelativePath(skillSourcePath, script.path, `Skill IR script path ${script.path}`);
+  }
+}
+
+function assertBlueprintRelativePath(root: string, path: string, label: string): void {
+  if (isAbsolute(path)) {
+    throw new Error(`${label} must be relative to the blueprint skill source workspace.`);
+  }
+  const resolved = resolve(root, path);
+  const relativePath = relative(root, resolved);
+  if (!relativePath || relativePath.split(/[\\/]/)[0] === ".." || isAbsolute(relativePath)) {
+    throw new Error(`${label} resolves outside the blueprint skill source workspace.`);
+  }
+}
+
+async function isReadableFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function isReadableDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function inferScriptRuntime(path: string): "node" | "python" | "bash" | "unknown" {
+  const extension = extname(path).toLowerCase();
+  if (extension === ".mjs" || extension === ".js" || extension === ".cjs" || extension === ".ts") return "node";
+  if (extension === ".py") return "python";
+  if (extension === ".sh" || extension === ".bash" || extension === ".zsh") return "bash";
+  return "unknown";
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function readRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.filter(isPlainObject) : [];
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function toPosixPath(path: string): string {
+  return path.split("\\").join("/");
 }
 
 function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {

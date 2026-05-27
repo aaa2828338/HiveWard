@@ -609,9 +609,10 @@ export function ChatPage({
   const modeOptions = useMemo<SelectOption[]>(
     () => [
       { value: "chat", label: copy.modeChat },
-      { value: "blueprint", label: copy.modeBlueprint }
+      { value: "blueprint", label: copy.modeBlueprint },
+      { value: "skill_split", label: copy.modeSkillSplit }
     ],
-    [copy, onInboxItemCreated]
+    [copy]
   );
   const thinkingOptionLevels = useMemo(
     () => thinkingOptions.map((option) => option.value as ChatThinkingEffort),
@@ -1909,6 +1910,7 @@ function chatCopy(language: Language) {
       mode: "\u6a21\u5f0f",
       modeChat: "\u804a\u5929",
       modeBlueprint: "\u6784\u5efa\u84dd\u56fe",
+      modeSkillSplit: "\u62c6\u5206 Skill",
       emptyTitle: "\u7b49\u5f85\u6d88\u606f",
       emptyBody: "\u5f53\u524d\u89c6\u56fe\u8fd8\u6ca1\u6709\u6d88\u606f\u3002",
       you: "\u4f60",
@@ -2010,6 +2012,7 @@ function chatCopy(language: Language) {
     mode: "Mode",
     modeChat: "Chat",
     modeBlueprint: "Build blueprint",
+    modeSkillSplit: "Split skill",
     emptyTitle: "Waiting for messages",
     emptyBody: "This session has no messages yet.",
     you: "You",
