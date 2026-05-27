@@ -436,9 +436,10 @@ export function resolveFinalRunResult(
     : resolveAutomaticFinalCandidates(blueprint, indexedCandidates)
         .map(({ candidate, reason }) => toFinalRunResultCandidate(candidate, reason));
 
-  const failedNode = [...nodeRuns]
-    .reverse()
-    .find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
+  const reversedNodeRuns = [...nodeRuns].reverse();
+  const failedNode =
+    reversedNodeRuns.find((nodeRun) => nodeRun.status === "failed") ??
+    reversedNodeRuns.find((nodeRun) => nodeRun.status === "cancelled");
   const waitingApprovalNode = [...nodeRuns]
     .reverse()
     .find((nodeRun) => nodeRun.status === "waiting_approval");

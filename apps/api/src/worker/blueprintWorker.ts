@@ -377,7 +377,16 @@ export class BlueprintWorker {
 
   async cancelRun(run: BlueprintRun): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
-      return run;
+      if (!(await this.hasOpenNodeRuns(run.id))) {
+        return run;
+      }
+
+      await this.cancelOpenNodeRuns(run.id, "Run already reached a terminal state; closing stale work.");
+      const latestRun = await this.store.getBlueprintRun(run.id);
+      const startedAt = new Date((latestRun ?? run).startedAt).getTime();
+      const normalized = await this.applyRunTotals(latestRun ?? run, startedAt, run.status);
+      await this.store.updateBlueprintRun(normalized);
+      return normalized;
     }
 
     this.cancelledRunIds.add(run.id);
@@ -406,8 +415,10 @@ export class BlueprintWorker {
         if (!currentRun) return;
         if (currentRun.status === "cancelled" || this.cancelledRunIds.has(run.id)) return;
 
-        const failed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "failed");
         const message = error instanceof Error ? error.message : "Blueprint worker crashed unexpectedly.";
+        await this.cancelOpenNodeRuns(run.id, `Blueprint crashed: ${message}`);
+        const latestRun = await this.store.getBlueprintRun(run.id);
+        const failed = await this.applyRunTotals(latestRun ?? currentRun, new Date(currentRun.startedAt).getTime(), "failed");
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} crashed: ${message}`);
         await this.store.updateBlueprintRun(failed);
       })
@@ -434,16 +445,18 @@ export class BlueprintWorker {
         continue;
       }
 
-      if (await this.reconcileOpenNodeRuns(blueprint, run, nodeRuns)) {
-        continue;
-      }
-
       const failedNodeRun = nodeRuns.find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
       if (failedNodeRun) {
-        const failed = await this.applyRunTotals(run, startedAt, "failed");
+        await this.cancelOpenNodeRuns(run.id, `Run stopped after ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
+        const latestRun = await this.store.getBlueprintRun(run.id);
+        const failed = await this.applyRunTotals(latestRun ?? run, startedAt, "failed");
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} failed at node ${failedNodeRun.nodeLabel}.`);
         await this.store.updateBlueprintRun(failed);
         return;
+      }
+
+      if (await this.reconcileOpenNodeRuns(blueprint, run, nodeRuns)) {
+        continue;
       }
       if (nodeRuns.some((nodeRun) => nodeRun.status === "waiting_approval")) {
         await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" });
@@ -2152,6 +2165,11 @@ export class BlueprintWorker {
     );
   }
 
+  private async hasOpenNodeRuns(blueprintRunId: string): Promise<boolean> {
+    const nodeRuns = await this.store.listNodeRuns(blueprintRunId);
+    return nodeRuns.some((nodeRun) => this.isOpenNodeRunStatus(nodeRun.status));
+  }
+
   private async cancelNodeRun(nodeRun: BlueprintNodeRun, reason: string, openclawRef?: OpenClawObjectRef): Promise<void> {
     const currentNodeRun = (await this.store.listNodeRuns(nodeRun.blueprintRunId)).find((candidate) => candidate.id === nodeRun.id);
     if (currentNodeRun?.status === "cancelled") return;
@@ -2208,7 +2226,7 @@ export class BlueprintWorker {
     return true;
   }
 
-  private isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
+  private isTerminalRunStatus(status: BlueprintRun["status"]): status is "succeeded" | "failed" | "cancelled" {
     return status === "succeeded" || status === "failed" || status === "cancelled";
   }
 
