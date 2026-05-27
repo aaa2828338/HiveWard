@@ -4,9 +4,11 @@ import {
   buildBlueprintModelSelectOptions,
   buildSummaryHarnessOptions,
   blueprintSelectOpenEventName,
+  createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
   isBlueprintSelectorDisabled,
-  resolveBlueprintModelSelectValue
+  resolveBlueprintModelSelectValue,
+  shouldExpandBlueprintCanvasWorld
 } from "./blueprint-studio-state";
 
 describe("blueprint studio state", () => {
@@ -109,5 +111,109 @@ describe("blueprint studio state", () => {
       { value: "custom-model", label: "custom-model" },
       { value: "gpt-5.5", label: "gpt-5.5" }
     ]);
+  });
+
+  it("creates the initial blueprint canvas world at the existing fixed size", () => {
+    expect(createBlueprintCanvasWorld({ width: 1200, height: 900 })).toMatchObject({
+      minX: -1200,
+      minY: -900,
+      maxX: 9600,
+      maxY: 7200,
+      width: 10800,
+      height: 8100,
+      viewportWidth: 1200,
+      viewportHeight: 900
+    });
+  });
+
+  it("expands the blueprint canvas by one fixed ring on every side", () => {
+    expect(createBlueprintCanvasWorld({ width: 1200, height: 900 }, 1)).toMatchObject({
+      minX: -2400,
+      minY: -1800,
+      maxX: 10800,
+      maxY: 8100,
+      width: 13200,
+      height: 9900
+    });
+  });
+
+  it("expands the initial blueprint canvas around far-away content with two outer rings", () => {
+    expect(
+      createBlueprintCanvasWorld({ width: 1200, height: 900 }, 0, {
+        minX: 9800,
+        minY: 1200,
+        maxX: 10000,
+        maxY: 1400
+      })
+    ).toMatchObject({
+      minX: -4800,
+      maxX: 13200
+    });
+  });
+
+  it("uses the same content expansion rings for negative-side content", () => {
+    expect(
+      createBlueprintCanvasWorld({ width: 1200, height: 900 }, 0, {
+        minX: -2600,
+        minY: 1200,
+        maxX: -2400,
+        maxY: 1400
+      })
+    ).toMatchObject({
+      minX: -6000,
+      maxX: 14400
+    });
+  });
+
+  it("does not expand for content that already has two rings of default margin", () => {
+    expect(
+      createBlueprintCanvasWorld({ width: 1200, height: 900 }, 0, {
+        minX: 1300,
+        minY: 1000,
+        maxX: 7000,
+        maxY: 3000
+      })
+    ).toMatchObject({
+      minX: -1200,
+      minY: -900,
+      maxX: 9600,
+      maxY: 7200
+    });
+  });
+
+  it("does not expand the blueprint canvas near the starting viewport", () => {
+    const viewportSize = { width: 1200, height: 900 };
+    const canvasWorld = createBlueprintCanvasWorld(viewportSize);
+    expect(
+      shouldExpandBlueprintCanvasWorld({
+        viewport: { x: 0, y: 0, zoom: 1 },
+        viewportSize,
+        canvasWorld
+      })
+    ).toBe(false);
+  });
+
+  it("expands the blueprint canvas when the viewport touches an edge", () => {
+    const viewportSize = { width: 1200, height: 900 };
+    const canvasWorld = createBlueprintCanvasWorld(viewportSize);
+    expect(
+      shouldExpandBlueprintCanvasWorld({
+        viewport: { x: -(canvasWorld.maxX - viewportSize.width), y: 0, zoom: 1 },
+        viewportSize,
+        canvasWorld
+      })
+    ).toBe(true);
+  });
+
+  it("expands the blueprint canvas when the viewport touches a corner", () => {
+    const viewportSize = { width: 1200, height: 900 };
+    const canvasWorld = createBlueprintCanvasWorld(viewportSize);
+    expect(
+      shouldExpandBlueprintCanvasWorld({
+        viewport: { x: -canvasWorld.minX, y: -canvasWorld.minY, zoom: 1 },
+        viewportSize,
+        canvasWorld
+      })
+    ).toBe(true);
   });
 });

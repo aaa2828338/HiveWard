@@ -18,6 +18,24 @@ Multi-CLI harness beta release.
 - The new harnesses are available through configuration pages, chat and blueprint run entry points, model default/status detection, permission modes, and skill installation entry points.
 - Bumped repository, workspace package, and internal dependency versions to `0.4.0`.
 
+## v0.3.4 - 2026-05-28
+
+Small Blueprint Studio canvas usability release.
+
+### 中文
+
+- 新增蓝图画布边缘/角落自动扩展，拖动画布到边界时可以继续扩大工作区。
+- 根据远处已有节点初始化画布范围，并保留两圈外部留白。
+- 保持缩放限制和小地图尺寸逻辑，同时把小地图视口标记从白色描边改为半透明高亮区域。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.3.4`。
+
+### English
+
+- Added automatic Blueprint Studio canvas expansion when users pan to canvas edges or corners.
+- Sized the initial canvas around existing far-away nodes with two outer rings of padding.
+- Kept zoom limits and minimap sizing logic intact, while changing the minimap viewport marker from a white outline to a translucent highlight region.
+- Bumped repository, workspace package, and internal dependency versions to `0.3.4`.
+
 ## v0.3.3 - 2026-05-27
 
 Small homepage polish release for the community QR card.

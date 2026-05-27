@@ -1,4 +1,4 @@
-import type { AgentRuntimeId } from "@hiveward/shared";
+import type { AgentRuntimeId, CanvasSize } from "@hiveward/shared";
 import { runtimeDisplayParts } from "./harness-labels";
 
 export type BlueprintRuntimeOption = {
@@ -18,7 +18,36 @@ export type BlueprintModelSelectOption = {
   label: string;
 };
 
+export type BlueprintCanvasViewport = {
+  x: number;
+  y: number;
+  zoom: number;
+};
+
+export type BlueprintCanvasWorld = {
+  extent: [[number, number], [number, number]];
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  width: number;
+  height: number;
+  viewportWidth: number;
+  viewportHeight: number;
+};
+
+export type BlueprintCanvasContentBounds = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
+
 export const blueprintSelectOpenEventName = "hiveward:blueprint-select-open";
+const canvasWorldScreenScale = 9;
+const canvasWorldExpansionRingScale = 1;
+const canvasWorldExpansionEdgeMargin = 24;
+const canvasWorldContentOuterRings = 2;
 
 export function isBlueprintSelectorDisabled(input: {
   busy: boolean;
@@ -41,6 +70,116 @@ export function buildAgentHarnessOptions(): BlueprintRuntimeOption[] {
 
 export function buildSummaryHarnessOptions(): BlueprintRuntimeOption[] {
   return buildAgentHarnessOptions();
+}
+
+export function createBlueprintCanvasWorld(
+  viewportSize: CanvasSize,
+  expansionRings = 0,
+  contentBounds?: BlueprintCanvasContentBounds
+): BlueprintCanvasWorld {
+  const viewportWidth = Math.max(960, Math.round(viewportSize.width));
+  const viewportHeight = Math.max(720, Math.round(viewportSize.height));
+  const ringWidth = viewportWidth * canvasWorldExpansionRingScale;
+  const ringHeight = viewportHeight * canvasWorldExpansionRingScale;
+  const baseMinX = -viewportWidth;
+  const baseMinY = -viewportHeight;
+  const baseMaxX = baseMinX + viewportWidth * canvasWorldScreenScale;
+  const baseMaxY = baseMinY + viewportHeight * canvasWorldScreenScale;
+  const rings = Math.max(
+    normalizeCanvasWorldExpansionRings(expansionRings),
+    resolveContentExpansionRings({
+      contentBounds,
+      baseMinX,
+      baseMinY,
+      baseMaxX,
+      baseMaxY,
+      ringWidth,
+      ringHeight
+    })
+  );
+  const minX = -viewportWidth - ringWidth * rings;
+  const minY = -viewportHeight - ringHeight * rings;
+  const width = viewportWidth * canvasWorldScreenScale + ringWidth * rings * 2;
+  const height = viewportHeight * canvasWorldScreenScale + ringHeight * rings * 2;
+  const maxX = minX + width;
+  const maxY = minY + height;
+  return {
+    extent: [
+      [minX, minY],
+      [maxX, maxY]
+    ],
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width,
+    height,
+    viewportWidth,
+    viewportHeight
+  };
+}
+
+export function shouldExpandBlueprintCanvasWorld(input: {
+  viewport: BlueprintCanvasViewport;
+  viewportSize: CanvasSize;
+  canvasWorld: BlueprintCanvasWorld;
+}): boolean {
+  const viewportRect = resolveBlueprintViewportRect(input.viewport, input.viewportSize);
+  const edgeMarginX = Math.max(canvasWorldExpansionEdgeMargin, input.canvasWorld.viewportWidth * 0.02);
+  const edgeMarginY = Math.max(canvasWorldExpansionEdgeMargin, input.canvasWorld.viewportHeight * 0.02);
+  return (
+    viewportRect.x <= input.canvasWorld.minX + edgeMarginX ||
+    viewportRect.y <= input.canvasWorld.minY + edgeMarginY ||
+    viewportRect.x + viewportRect.width >= input.canvasWorld.maxX - edgeMarginX ||
+    viewportRect.y + viewportRect.height >= input.canvasWorld.maxY - edgeMarginY
+  );
+}
+
+function resolveBlueprintViewportRect(
+  viewport: BlueprintCanvasViewport,
+  viewportSize: CanvasSize
+): { x: number; y: number; width: number; height: number } {
+  const zoom = Number.isFinite(viewport.zoom) && viewport.zoom > 0 ? viewport.zoom : 1;
+  return {
+    x: -viewport.x / zoom,
+    y: -viewport.y / zoom,
+    width: Math.max(1, viewportSize.width) / zoom,
+    height: Math.max(1, viewportSize.height) / zoom
+  };
+}
+
+function normalizeCanvasWorldExpansionRings(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function resolveContentExpansionRings(input: {
+  contentBounds?: BlueprintCanvasContentBounds;
+  baseMinX: number;
+  baseMinY: number;
+  baseMaxX: number;
+  baseMaxY: number;
+  ringWidth: number;
+  ringHeight: number;
+}): number {
+  const { contentBounds } = input;
+  if (!contentBounds) return 0;
+
+  const paddedMinX = contentBounds.minX - input.ringWidth * canvasWorldContentOuterRings;
+  const paddedMaxX = contentBounds.maxX + input.ringWidth * canvasWorldContentOuterRings;
+  const paddedMinY = contentBounds.minY - input.ringHeight * canvasWorldContentOuterRings;
+  const paddedMaxY = contentBounds.maxY + input.ringHeight * canvasWorldContentOuterRings;
+
+  return Math.max(
+    requiredExpansionRings(input.baseMinX - paddedMinX, input.ringWidth),
+    requiredExpansionRings(paddedMaxX - input.baseMaxX, input.ringWidth),
+    requiredExpansionRings(input.baseMinY - paddedMinY, input.ringHeight),
+    requiredExpansionRings(paddedMaxY - input.baseMaxY, input.ringHeight)
+  );
+}
+
+function requiredExpansionRings(overage: number, ringSize: number): number {
+  if (!Number.isFinite(overage) || overage <= 0 || !Number.isFinite(ringSize) || ringSize <= 0) return 0;
+  return Math.ceil(overage / ringSize);
 }
 
 export function getBlueprintSelectOutsidePointerListenerOptions(): AddEventListenerOptions {

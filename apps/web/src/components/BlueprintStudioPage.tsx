@@ -105,9 +105,14 @@ import {
   buildAgentHarnessOptions,
   buildBlueprintModelSelectOptions,
   buildSummaryHarnessOptions,
+  createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
   isBlueprintSelectorDisabled,
-  resolveBlueprintModelSelectValue
+  resolveBlueprintModelSelectValue,
+  shouldExpandBlueprintCanvasWorld,
+  type BlueprintCanvasContentBounds,
+  type BlueprintCanvasViewport,
+  type BlueprintCanvasWorld
 } from "../lib/blueprint-studio-state";
 import { runtimeDisplayLabel } from "../lib/harness-labels";
 import { HarnessLabel } from "./HarnessLabel";
@@ -121,20 +126,7 @@ const edgeTypes: EdgeTypes = {
   architectureDistributor: ArchitectureDistributorEdge
 };
 
-type BlueprintCanvasWorld = {
-  extent: CoordinateExtent;
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  width: number;
-  height: number;
-  viewportWidth: number;
-  viewportHeight: number;
-};
-
 const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
-const canvasWorldScreenScale = 9;
 const nodeMenuPopoverWidth = 146;
 const nodeMenuViewportMargin = 12;
 
@@ -164,8 +156,8 @@ const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 const architectureCeoNodeSize: CanvasSize = { width: 420, height: 86 };
 const architectureLeaderNodeSize: CanvasSize = { width: 340, height: 220 };
-const defaultBlueprintViewport = { x: 0, y: 0, zoom: 1 };
-type BlueprintViewport = typeof defaultBlueprintViewport;
+const defaultBlueprintViewport: BlueprintCanvasViewport = { x: 0, y: 0, zoom: 1 };
+type BlueprintViewport = BlueprintCanvasViewport;
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
 type BlueprintConnectionCandidate = {
   source?: string | null;
@@ -288,6 +280,8 @@ export function BlueprintStudioPage({
     nodeId: undefined
   });
   const [canvasViewportSize, setCanvasViewportSize] = useState(fallbackCanvasViewportSize);
+  const [canvasExpansionRings, setCanvasExpansionRings] = useState(0);
+  const canvasExpansionRingsRef = useRef(0);
   const canvasPanelRef = useRef<HTMLElement | null>(null);
   const nodeMenuRef = useRef<HTMLDivElement | null>(null);
   const nodeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -335,6 +329,15 @@ export function BlueprintStudioPage({
   useEffect(() => {
     setBusinessViewport(blueprint?.display.viewport ?? defaultBlueprintViewport);
   }, [blueprint?.display.viewport?.x, blueprint?.display.viewport?.y, blueprint?.display.viewport?.zoom, blueprint?.id]);
+
+  useEffect(() => {
+    canvasExpansionRingsRef.current = canvasExpansionRings;
+  }, [canvasExpansionRings]);
+
+  useEffect(() => {
+    canvasExpansionRingsRef.current = 0;
+    setCanvasExpansionRings(0);
+  }, [blueprint?.id]);
 
   useEffect(() => {
     setDrawerSelectedBlueprintId(blueprint?.id);
@@ -489,7 +492,24 @@ export function BlueprintStudioPage({
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
-  const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const blueprintCanvasContentBounds = useMemo(
+    () => buildBlueprintCanvasContentBounds(blueprintBoard === "architecture" ? architectureFlowNodes : localNodes),
+    [architectureFlowNodes, blueprintBoard, localNodes]
+  );
+  const blueprintCanvasWorld = useMemo(
+    () => createBlueprintCanvasWorld(canvasViewportSize, canvasExpansionRings, blueprintCanvasContentBounds),
+    [blueprintCanvasContentBounds, canvasExpansionRings, canvasViewportSize.height, canvasViewportSize.width]
+  );
+  const expandBlueprintCanvasIfNeeded = useCallback(
+    (viewport: BlueprintViewport) => {
+      const currentWorld = createBlueprintCanvasWorld(canvasViewportSize, canvasExpansionRingsRef.current, blueprintCanvasContentBounds);
+      if (!shouldExpandBlueprintCanvasWorld({ viewport, viewportSize: canvasViewportSize, canvasWorld: currentWorld })) return;
+      const nextExpansionRings = canvasExpansionRingsRef.current + 1;
+      canvasExpansionRingsRef.current = nextExpansionRings;
+      setCanvasExpansionRings(nextExpansionRings);
+    },
+    [blueprintCanvasContentBounds, canvasViewportSize.height, canvasViewportSize.width]
+  );
   const isCompactBlueprintCanvas = canvasViewportSize.width <= 760;
   const blueprintCornerStyle = useMemo<CSSProperties>(() => {
     const buttonSize = isCompactBlueprintCanvas ? 14 : 20;
@@ -1243,6 +1263,7 @@ export function BlueprintStudioPage({
               edgeTypes={edgeTypes}
               translateExtent={blueprintCanvasWorld.extent}
               nodeExtent={blueprintCanvasWorld.extent}
+              onMove={(_event, viewport) => expandBlueprintCanvasIfNeeded(viewport)}
               onNodeClick={(_event, node) => setSelectedArchitectureNodeId(node.id)}
               onPaneClick={clearArchitectureSelection}
               onSelectionChange={({ nodes }) => setSelectedArchitectureNodeId(nodes.length === 1 ? nodes[0]?.id : undefined)}
@@ -1345,7 +1366,10 @@ export function BlueprintStudioPage({
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
             onConnectEnd={onConnectEnd}
-            onMoveEnd={(_event, viewport) => setBusinessViewport(viewport)}
+            onMove={(_event, viewport) => expandBlueprintCanvasIfNeeded(viewport)}
+            onMoveEnd={(_event, viewport) => {
+              setBusinessViewport(viewport);
+            }}
             onPaneClick={() => {
               if (suppressNextPaneClickRef.current) {
                 suppressNextPaneClickRef.current = false;
@@ -3702,31 +3726,6 @@ function BlueprintCanvasMiniMap({
   );
 }
 
-function createBlueprintCanvasWorld(viewportSize: CanvasSize): BlueprintCanvasWorld {
-  const viewportWidth = Math.max(960, Math.round(viewportSize.width));
-  const viewportHeight = Math.max(720, Math.round(viewportSize.height));
-  const minX = -viewportWidth;
-  const minY = -viewportHeight;
-  const width = viewportWidth * canvasWorldScreenScale;
-  const height = viewportHeight * canvasWorldScreenScale;
-  const maxX = minX + width;
-  const maxY = minY + height;
-  return {
-    extent: [
-      [minX, minY],
-      [maxX, maxY]
-    ],
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width,
-    height,
-    viewportWidth,
-    viewportHeight
-  };
-}
-
 type MiniMapNodeBox = {
   id: string;
   x: number;
@@ -3735,6 +3734,36 @@ type MiniMapNodeBox = {
   height: number;
   selected: boolean;
 };
+
+function buildBlueprintCanvasContentBounds(nodes: Node[]): BlueprintCanvasContentBounds | undefined {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const absolutePositions = new Map<string, CanvasPosition>();
+  let bounds: BlueprintCanvasContentBounds | undefined;
+
+  for (const node of nodes) {
+    if (node.hidden) continue;
+    const position = resolveFlowNodeAbsolutePosition(node, nodesById, absolutePositions);
+    const size = resolveFlowNodeSize(node);
+    const maxX = position.x + size.width;
+    const maxY = position.y + size.height;
+    if (![position.x, position.y, maxX, maxY].every(Number.isFinite)) continue;
+    bounds = bounds
+      ? {
+          minX: Math.min(bounds.minX, position.x),
+          minY: Math.min(bounds.minY, position.y),
+          maxX: Math.max(bounds.maxX, maxX),
+          maxY: Math.max(bounds.maxY, maxY)
+        }
+      : {
+          minX: position.x,
+          minY: position.y,
+          maxX,
+          maxY
+        };
+  }
+
+  return bounds;
+}
 
 function buildMiniMapNodeBoxes(nodes: Node[]): MiniMapNodeBox[] {
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
