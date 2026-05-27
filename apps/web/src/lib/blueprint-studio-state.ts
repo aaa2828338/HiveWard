@@ -1,8 +1,10 @@
 import type { AgentRuntimeId } from "@hiveward/shared";
+import { runtimeDisplayParts } from "./harness-labels";
 
 export type BlueprintRuntimeOption = {
   value: AgentRuntimeId;
   label: string;
+  badgeLabel?: string;
 };
 
 export type BlueprintModelOption = {
@@ -26,11 +28,15 @@ export function isBlueprintSelectorDisabled(input: {
 }
 
 export function buildAgentHarnessOptions(): BlueprintRuntimeOption[] {
-  return [
-    { value: "codex", label: "Codex" },
-    { value: "openclaw", label: "OpenClaw" },
-    { value: "claude", label: "Claude Code" }
-  ];
+  return ([
+    "codex",
+    "google",
+    "cursor",
+    "opencode",
+    "hermes",
+    "openclaw",
+    "claude"
+  ] as const).map((value) => ({ value, ...runtimeDisplayParts(value) }));
 }
 
 export function getBlueprintSelectOutsidePointerListenerOptions(): AddEventListenerOptions {

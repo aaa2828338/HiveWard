@@ -24,8 +24,21 @@ describe("blueprint studio state", () => {
   it("allows agent and manager nodes to switch to Claude Code from OpenClaw", () => {
     expect(buildAgentHarnessOptions().map((option) => option.value)).toEqual([
       "codex",
+      "google",
+      "cursor",
+      "opencode",
+      "hermes",
       "openclaw",
       "claude"
+    ]);
+  });
+
+  it("marks newly added CLI harness options as beta", () => {
+    expect(buildAgentHarnessOptions().filter((option) => ["google", "cursor", "opencode", "hermes"].includes(option.value))).toEqual([
+      { value: "google", label: "Google CLI", badgeLabel: "Beta" },
+      { value: "cursor", label: "Cursor CLI", badgeLabel: "Beta" },
+      { value: "opencode", label: "OpenCode", badgeLabel: "Beta" },
+      { value: "hermes", label: "Hermes", badgeLabel: "Beta" }
     ]);
   });
 

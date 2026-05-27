@@ -6733,13 +6733,28 @@ button.sidebar-system-version.active {
   outline: 0;
 }
 
-.sidebar-nav .nav-system-toggle:hover:not(:disabled),
-.sidebar-nav .nav-system-toggle:focus-visible,
+.sidebar-nav .nav-system-toggle:hover:not(:disabled) {
+  color: #7e8999;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+  transform: none;
+}
+
 .sidebar-nav .nav-system-toggle.active {
   color: var(--text);
   border: 0;
   background: transparent;
   box-shadow: none;
+  outline: 0;
+  transform: none;
+}
+
+.sidebar-nav .nav-system-toggle:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgb(245 154 11 / 0.28);
   outline: 0;
   transform: none;
 }
@@ -6812,13 +6827,26 @@ html[data-theme="light"] .sidebar-nav .nav-system-toggle {
   box-shadow: none;
 }
 
-html[data-theme="light"] .sidebar-nav .nav-system-toggle:hover:not(:disabled),
-html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible,
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:hover:not(:disabled) {
+  color: #667085;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
 html[data-theme="light"] .sidebar-nav .nav-system-toggle.active {
   color: var(--text);
   border: 0;
   background: transparent;
   box-shadow: none;
+  outline: 0;
+}
+
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgb(245 154 11 / 0.24);
   outline: 0;
 }
 
@@ -11239,6 +11267,88 @@ html[data-theme="light"] select {
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.62;
+}
+
+.harness-label {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.harness-label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.harness-label-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid rgb(245 154 11 / 0.46);
+  border-radius: var(--radius-xs);
+  background: rgb(245 154 11 / 0.13);
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: 0;
+  line-height: 1;
+  overflow: visible;
+  text-overflow: clip;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav-system-label.harness-label {
+  width: 100%;
+}
+
+.nav-system-label .harness-label-name {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.openclaw-panel-state .harness-label,
+.openclaw-panel-metric strong .harness-label,
+.chat-select-value strong .harness-label,
+.chat-select-option-main .harness-label,
+.blueprint-select-button .harness-label,
+.blueprint-select-option .harness-label {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.chat-select-value strong .harness-label,
+.chat-select-value strong .harness-label-name,
+.chat-select-option-main .harness-label-name {
+  font: inherit;
+}
+
+.chat-select-option-main .harness-label-name,
+.blueprint-select-button .harness-label-name,
+.blueprint-select-option .harness-label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-select-option-main .harness-label-badge,
+.blueprint-select-button .harness-label-badge,
+.blueprint-select-option .harness-label-badge {
+  overflow: visible;
+  font-size: 9px;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .chat-select-button {

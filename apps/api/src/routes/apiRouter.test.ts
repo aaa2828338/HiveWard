@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -828,6 +828,115 @@ describe("apiRouter", () => {
       restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_MODELS", previousHivewardClaudeModels);
       restoreEnv("CLAUDE_CODE_MODELS", previousClaudeModels);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Google, Cursor, OpenCode, and Hermes CLI harness status and model defaults", async () => {
+    const fixture = await createStoreFixture();
+    const binDir = join(fixture.dir, "bin");
+    const previousPath = process.env.PATH;
+    const previousGoogleDefault = process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL;
+    const previousGoogleModels = process.env.HIVEWARD_GOOGLE_CLI_MODELS;
+    const previousCursorDefault = process.env.HIVEWARD_CURSOR_DEFAULT_MODEL;
+    const previousCursorModels = process.env.HIVEWARD_CURSOR_MODELS;
+    const previousOpenCodeDefault = process.env.HIVEWARD_OPENCODE_DEFAULT_MODEL;
+    const previousOpenCodeModels = process.env.HIVEWARD_OPENCODE_MODELS;
+    const previousHermesDefault = process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
+    const previousHermesModels = process.env.HIVEWARD_HERMES_MODELS;
+    mkdirSync(binDir, { recursive: true });
+    writeFakeExecutable(join(binDir, "gemini"), "gemini 0.38.1");
+    writeFakeExecutable(join(binDir, "cursor-agent"), "cursor-agent 2026.1.0");
+    writeFakeExecutable(join(binDir, "opencode"), "opencode 1.2.3");
+    writeFakeExecutable(join(binDir, "hermes"), "hermes 0.9.0");
+    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL = "gemini-2.5-pro";
+    process.env.HIVEWARD_GOOGLE_CLI_MODELS = "gemini-2.5-pro,gemini-2.5-flash";
+    process.env.HIVEWARD_CURSOR_DEFAULT_MODEL = "gpt-5";
+    process.env.HIVEWARD_CURSOR_MODELS = "gpt-5,claude-4-sonnet";
+    process.env.HIVEWARD_OPENCODE_DEFAULT_MODEL = "anthropic/claude-sonnet-4";
+    process.env.HIVEWARD_OPENCODE_MODELS = "anthropic/claude-sonnet-4,openai/gpt-5.4";
+    process.env.HIVEWARD_HERMES_DEFAULT_MODEL = "nous/hermes-4";
+    process.env.HIVEWARD_HERMES_MODELS = "nous/hermes-4,openrouter/qwen3-coder";
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{
+            id: string;
+            label?: string;
+            summary?: string;
+            installed?: boolean;
+            connectionState?: string;
+            defaultModelId?: string;
+            models?: Array<{ id: string; isDefault?: boolean }>;
+            checks?: Array<{ label: string }>;
+          }>;
+        }>(response);
+        const googleStatus = body.statuses.find((status) => status.id === "google");
+        const cursorStatus = body.statuses.find((status) => status.id === "cursor");
+        const opencodeStatus = body.statuses.find((status) => status.id === "opencode");
+        const hermesStatus = body.statuses.find((status) => status.id === "hermes");
+
+        expect(googleStatus).toMatchObject({
+          label: "Google CLI Beta",
+          installed: true,
+          connectionState: "available",
+          defaultModelId: "gemini-2.5-pro"
+        });
+        expect(googleStatus?.summary).not.toContain("CLI CLI");
+        expect(googleStatus?.checks?.[0]?.label).toBe("Gemini CLI");
+        expect(googleStatus?.models?.map((model) => model.id)).toEqual([
+          "gemini-2.5-pro",
+          "gemini-2.5-flash"
+        ]);
+        expect(cursorStatus).toMatchObject({
+          label: "Cursor CLI Beta",
+          installed: true,
+          connectionState: "available",
+          defaultModelId: "gpt-5"
+        });
+        expect(cursorStatus?.summary).not.toContain("CLI CLI");
+        expect(cursorStatus?.checks?.[0]?.label).toBe("Cursor CLI");
+        expect(cursorStatus?.models?.map((model) => model.id)).toEqual([
+          "gpt-5",
+          "claude-4-sonnet"
+        ]);
+        expect(opencodeStatus).toMatchObject({
+          label: "OpenCode Beta",
+          installed: true,
+          connectionState: "available",
+          defaultModelId: "anthropic/claude-sonnet-4"
+        });
+        expect(opencodeStatus?.checks?.[0]?.label).toBe("OpenCode CLI");
+        expect(opencodeStatus?.models?.map((model) => model.id)).toEqual([
+          "anthropic/claude-sonnet-4",
+          "openai/gpt-5.4"
+        ]);
+        expect(opencodeStatus?.models?.[0]?.isDefault).toBe(true);
+        expect(hermesStatus).toMatchObject({
+          label: "Hermes Beta",
+          installed: true,
+          connectionState: "available",
+          defaultModelId: "nous/hermes-4"
+        });
+        expect(hermesStatus?.checks?.[0]?.label).toBe("Hermes CLI");
+        expect(hermesStatus?.models?.map((model) => model.id)).toEqual([
+          "nous/hermes-4",
+          "openrouter/qwen3-coder"
+        ]);
+      });
+    } finally {
+      restoreEnv("PATH", previousPath);
+      restoreEnv("HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL", previousGoogleDefault);
+      restoreEnv("HIVEWARD_GOOGLE_CLI_MODELS", previousGoogleModels);
+      restoreEnv("HIVEWARD_CURSOR_DEFAULT_MODEL", previousCursorDefault);
+      restoreEnv("HIVEWARD_CURSOR_MODELS", previousCursorModels);
+      restoreEnv("HIVEWARD_OPENCODE_DEFAULT_MODEL", previousOpenCodeDefault);
+      restoreEnv("HIVEWARD_OPENCODE_MODELS", previousOpenCodeModels);
+      restoreEnv("HIVEWARD_HERMES_DEFAULT_MODEL", previousHermesDefault);
+      restoreEnv("HIVEWARD_HERMES_MODELS", previousHermesModels);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -3037,4 +3146,9 @@ function restoreEnv(name: string, value: string | undefined): void {
   } else {
     process.env[name] = value;
   }
+}
+
+function writeFakeExecutable(path: string, output: string): void {
+  writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, "utf8");
+  chmodSync(path, 0o755);
 }

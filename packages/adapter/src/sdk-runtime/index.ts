@@ -1,4 +1,5 @@
 export { ClaudeAgentSdkRuntime, type ClaudeQueryFn } from "./claude-runtime";
+export { CliAgentSdkRuntime, type CliCommandInput, type CliCommandResult, type RunCliCommand } from "./cli-runtime";
 export { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike, type CreateCodexClient } from "./codex-runtime";
 export { AgentSdkRuntimeRouter, createAgentSdkRuntime } from "./factory";
 export { mapClaudePermission, mapClaudeTools, mapCodexSandbox, normalizePermissionProfile } from "./permissions";

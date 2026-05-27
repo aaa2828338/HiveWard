@@ -349,7 +349,7 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
   }
 
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
-    return input.source === "claude" || input.source === "codex"
+    return isAgentSdkProvider(input.source)
       ? this.sdkRuntime.waitForTask(input)
       : this.baseAdapter.waitForAgentTask(input);
   }
@@ -388,5 +388,9 @@ export { createAgentSdkRuntime, isAgentSdkProvider } from "./sdk-runtime";
 function formatSourceLabel(source: HarnessId | OpenClawObjectSource): string {
   if (source === "codex") return "Codex";
   if (source === "claude" || source === "claudeCode") return "Claude Code";
+  if (source === "google") return "Google CLI Beta";
+  if (source === "cursor") return "Cursor CLI Beta";
+  if (source === "opencode") return "OpenCode Beta";
+  if (source === "hermes") return "Hermes Beta";
   return "OpenClaw";
 }

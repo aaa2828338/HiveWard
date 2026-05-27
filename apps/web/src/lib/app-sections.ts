@@ -1,3 +1,5 @@
+import { harnessDisplayLabels } from "./harness-labels";
+
 export type AppNavSectionId =
   | "company"
   | "chat"
@@ -12,16 +14,25 @@ export type AppNavSectionId =
   | "openclaw"
   | "claudeCodeConfig"
   | "claudeCodeModels"
-  | "codexConfig";
+  | "codexConfig"
+  | "googleConfig"
+  | "cursorConfig"
+  | "opencodeConfig"
+  | "hermesConfig";
 
 export type AppSectionId = AppNavSectionId | "companyDirectory" | "hivewardHome";
 
-export type AppSystemId = "hiveward" | "openclaw" | "claudeCode" | "codex";
+export type AppSystemId = "hiveward" | "openclaw" | "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes";
 
 export type AppSectionGroup = {
   id: AppSystemId;
   sections: AppNavSectionId[];
 };
+
+export const appSystemLabels = {
+  hiveward: "Hiveward",
+  ...harnessDisplayLabels
+} satisfies Record<AppSystemId, string>;
 
 export const appSectionGroups = [
   {
@@ -33,11 +44,27 @@ export const appSectionGroups = [
     sections: ["openclaw", "models", "agents", "skills", "channels"]
   },
   {
+    id: "hermes",
+    sections: ["hermesConfig"]
+  },
+  {
     id: "claudeCode",
     sections: ["claudeCodeConfig", "claudeCodeModels"]
   },
   {
     id: "codex",
     sections: ["codexConfig"]
+  },
+  {
+    id: "google",
+    sections: ["googleConfig"]
+  },
+  {
+    id: "cursor",
+    sections: ["cursorConfig"]
+  },
+  {
+    id: "opencode",
+    sections: ["opencodeConfig"]
   }
 ] satisfies AppSectionGroup[];

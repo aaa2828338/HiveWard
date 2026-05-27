@@ -421,7 +421,7 @@ function normalizeChatRoleScopeForCompany(value: unknown, companyId: string): Ch
 }
 
 function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): HarnessId {
-  if (value === "codex" || value === "claudeCode" || value === "openclaw") return value;
+  if (value === "codex" || value === "claudeCode" || value === "openclaw" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes") return value;
   return fallback;
 }
 
@@ -489,7 +489,16 @@ function normalizeChatRuntimeRef(value: unknown): ChatRuntimeRef | undefined {
   const taskId = readString(value.taskId);
   const runId = readString(value.runId);
   const sessionKey = readString(value.sessionKey);
-  const source = value.source === "openclaw" || value.source === "codex" || value.source === "claude" ? value.source : undefined;
+  const source =
+    value.source === "openclaw" ||
+    value.source === "codex" ||
+    value.source === "claude" ||
+    value.source === "google" ||
+    value.source === "cursor" ||
+    value.source === "opencode" ||
+    value.source === "hermes"
+      ? value.source
+      : undefined;
   const status = readString(value.status);
   const updatedAt = readString(value.updatedAt);
   if (!taskId || !runId || !sessionKey || !source || !status || !updatedAt) return undefined;

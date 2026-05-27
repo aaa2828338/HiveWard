@@ -893,13 +893,27 @@ export class BlueprintWorker {
   }
 
   private resolveManagerRuntimeId(node: BlueprintNode): AgentRuntimeId {
-    return node.runtimeId === "codex" || node.runtimeId === "claude" || node.runtimeId === "openclaw"
+    return node.runtimeId === "codex" ||
+      node.runtimeId === "claude" ||
+      node.runtimeId === "google" ||
+      node.runtimeId === "cursor" ||
+      node.runtimeId === "opencode" ||
+      node.runtimeId === "hermes" ||
+      node.runtimeId === "openclaw"
       ? node.runtimeId
       : "openclaw";
   }
 
   private isAgentDrivenManager(node: BlueprintNode): boolean {
-    return node.type === "manager" && (node.runtimeId === "openclaw" || node.runtimeId === "codex" || node.runtimeId === "claude");
+    return node.type === "manager" && (
+      node.runtimeId === "openclaw" ||
+      node.runtimeId === "codex" ||
+      node.runtimeId === "claude" ||
+      node.runtimeId === "google" ||
+      node.runtimeId === "cursor" ||
+      node.runtimeId === "opencode" ||
+      node.runtimeId === "hermes"
+    );
   }
 
   private resolveManagerPrompt(config: ManagerNodeConfig): string {
@@ -2212,7 +2226,14 @@ export class BlueprintWorker {
   }
 
   private isRecoverableSdkTaskLookupMiss(error: unknown, openclawRef: OpenClawObjectRef): boolean {
-    if (openclawRef.source !== "codex" && openclawRef.source !== "claude") return false;
+    if (
+      openclawRef.source !== "codex" &&
+      openclawRef.source !== "claude" &&
+      openclawRef.source !== "google" &&
+      openclawRef.source !== "cursor" &&
+      openclawRef.source !== "opencode" &&
+      openclawRef.source !== "hermes"
+    ) return false;
     return error instanceof Error && error.message.startsWith("SDK task not found:");
   }
 
@@ -2648,7 +2669,13 @@ function isHarnessSummaryMode(config: SummaryNodeConfig): boolean {
 }
 
 function resolveSummaryRuntimeId(config: SummaryNodeConfig): AgentRuntimeId {
-  return config.runtimeId === "codex" || config.runtimeId === "claude" || config.runtimeId === "openclaw"
+  return config.runtimeId === "codex" ||
+    config.runtimeId === "claude" ||
+    config.runtimeId === "google" ||
+    config.runtimeId === "cursor" ||
+    config.runtimeId === "opencode" ||
+    config.runtimeId === "hermes" ||
+    config.runtimeId === "openclaw"
     ? config.runtimeId
     : "openclaw";
 }

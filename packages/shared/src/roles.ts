@@ -2,7 +2,7 @@ import type { BlueprintRunStatus } from "./blueprint";
 
 export type CompanyRoleKind = "ceo" | "leader";
 
-export type RoleDriverHarnessId = "openclaw" | "codex" | "claude";
+export type RoleDriverHarnessId = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 
 export type RoleCapability =
   | "read_company"

@@ -58,6 +58,7 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
@@ -1680,9 +1681,7 @@ function hasAssistantReplyAfter(approval: PendingApprovalItem, createdAt: string
 }
 
 function formatInboxHarnessLabel(harnessId: string | undefined): string {
-  if (harnessId === "codex") return "Codex";
-  if (harnessId === "claude" || harnessId === "claudeCode") return "Claude Code";
-  return "OpenClaw";
+  return harnessLikeDisplayLabel(harnessId);
 }
 
 function makeLocalInboxReplyId(): string {
