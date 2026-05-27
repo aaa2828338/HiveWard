@@ -10,11 +10,11 @@
 <h2 align="center">让101个Agent合作为你打工</h2>
 
 <p align="center">
-  HiveWard 是一个同时支持 Claude Code、Codex、OpenClaw 作为员工的一人公司总控调度平台。
+  把 Claude Code、Codex、OpenClaw 组织成一家可调度、可审批、可复盘的 Agent Company。
 </p>
 
 <p align="center">
-  <img alt="Beta" src="https://img.shields.io/badge/beta-v0.1.0--beta.1-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.3.2-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
   <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
@@ -42,6 +42,10 @@
 </p>
 
 ## HiveWard 是什么？
+
+HiveWard 的 slogan 是：让101个Agent合作为你打工。
+
+它不是一个新的聊天框，而是一人公司的 Agent Company 工作台：把 Claude Code、Codex、OpenClaw 这样的 harness 当成可组织的员工，让它们在公司、CEO、Leader、蓝图、审批和历史记录里协同起来。
 
 ## 为什么选择 HiveWard？
 

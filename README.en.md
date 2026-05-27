@@ -10,14 +10,15 @@
 <h2 align="center">Put 101 agents to work together for you.</h2>
 
 <p align="center">
-  An open-source Agent Company workspace that organizes models, agents, blueprints, approvals, runs, and history into one managed operating system.
+  Organize Claude Code, Codex, and OpenClaw into one schedulable, reviewable, auditable Agent Company.
 </p>
 
 <p align="center">
-  <img alt="Beta" src="https://img.shields.io/badge/beta-v0.1.0--beta.1-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.3.2-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
-  <img alt="Multi-agent" src="https://img.shields.io/badge/multi--agent-blueprints-0ea5e9">
-  <img alt="Runtime" src="https://img.shields.io/badge/runtime-OpenClaw-111827">
+  <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
+  <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
+  <img alt="OpenClaw" src="https://img.shields.io/badge/employee-OpenClaw-f59e0b">
 </p>
 
 <p align="center">
@@ -39,6 +40,8 @@
 </p>
 
 ## What is Hiveward?
+
+Hiveward's slogan is: Put 101 agents to work together for you.
 
 Hiveward is an open-source workspace for Agent Companies. It does not try to become another model, and it does not hide all work inside a chat box. It gives agent teams a visible, governable, reviewable operating structure.
 
@@ -119,7 +122,7 @@ The main README keeps one trusted run-state screenshot so new users see the core
 
 ## Current status
 
-Current beta: `v0.1.0-beta.1`. The project is roughly 80% of the way to the intended formal release. Core product surfaces are ready for local demos and early use, while APIs and interaction details may still evolve.
+Current version: `v0.3.2`. Core product surfaces are ready for local demos and early use, while APIs and interaction details may still evolve.
 
 ## Quick start
 
