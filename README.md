@@ -27,6 +27,7 @@
   <a href="#它如何工作">它如何工作？</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#截图跳转链接">截图跳转链接</a> ·
+  <a href="#微信群交流群">微信群交流群</a> ·
   <a href="#开源协议">开源协议</a>
 </p>
 
@@ -140,6 +141,12 @@ npm run dev
 - 运行监控
 - 审批入口
 - 历史复盘
+
+## 微信群交流群
+
+<p align="center">
+  <img src="docs/assets/community/wechat-group.jpg" alt="微信群交流群" width="360">
+</p>
 
 ## 开源协议
 
