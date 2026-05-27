@@ -266,6 +266,21 @@ describe("run state sync", () => {
     expect(resolveRunViewDisplayStatus(failedNodeInOpenRun)).toBe("failed");
   });
 
+  it("does not let cleanup cancellations make a succeeded run display as failed", () => {
+    const succeededRun = createRunView("succeeded", { runStatus: "succeeded" });
+    succeededRun.nodeRuns.push({
+      ...succeededRun.nodeRuns[0]!,
+      id: "node-run-stale",
+      nodeId: "stale",
+      nodeLabel: "Stale child",
+      status: "cancelled",
+      error: "Run already reached a terminal state; closing stale work."
+    });
+
+    expect(resolveRunViewStatus(succeededRun)).toBe("succeeded");
+    expect(resolveRunViewDisplayStatus(succeededRun)).toBe("succeeded");
+  });
+
   it("does not poll runs from another blueprint", () => {
     expect(
       selectRunPollingTarget({
