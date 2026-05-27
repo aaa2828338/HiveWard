@@ -1,6 +1,6 @@
 {
   "name": "@hiveward/api",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,8 +8,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@hiveward/adapter": "0.3.1",
-    "@hiveward/shared": "0.3.1"
+    "@hiveward/adapter": "0.3.2",
+    "@hiveward/shared": "0.3.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",

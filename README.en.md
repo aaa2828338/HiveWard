@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.3.1-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.3.2-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
   <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
@@ -122,7 +122,7 @@ The main README keeps one trusted run-state screenshot so new users see the core
 
 ## Current status
 
-Current version: `v0.3.1`. Core product surfaces are ready for local demos and early use, while APIs and interaction details may still evolve.
+Current version: `v0.3.2`. Core product surfaces are ready for local demos and early use, while APIs and interaction details may still evolve.
 
 ## Quick start
 
