@@ -4269,11 +4269,9 @@ textarea {
 }
 
 .blueprint-corner-stack .blueprint-world-minimap-viewport {
-  fill: transparent;
-  stroke: rgb(255 255 255 / 0.92);
-  stroke-width: 3;
-  vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.42));
+  fill: rgb(245 154 11 / 0.24);
+  stroke: none;
+  filter: none;
 }
 
 .blueprint-corner-stack .react-flow__controls {
@@ -5552,8 +5550,9 @@ html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-node.s
 }
 
 html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-viewport {
-  stroke: rgb(255 255 255 / 0.95);
-  filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.32));
+  fill: rgb(245 154 11 / 0.26);
+  stroke: none;
+  filter: none;
 }
 
 html[data-theme="light"] .floating-run-pill,
