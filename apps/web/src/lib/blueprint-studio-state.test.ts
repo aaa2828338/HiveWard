@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildAgentHarnessOptions,
   buildBlueprintModelSelectOptions,
+  buildSummaryHarnessOptions,
   blueprintSelectOpenEventName,
   getBlueprintSelectOutsidePointerListenerOptions,
   isBlueprintSelectorDisabled,
@@ -44,6 +45,15 @@ describe("blueprint studio state", () => {
 
   it("allows agent and manager nodes to switch to Claude Code from Codex", () => {
     expect(buildAgentHarnessOptions().map((option) => option.value)).toContain("claude");
+  });
+
+  it("gives summary nodes the same beta CLI harness choices as agent nodes", () => {
+    expect(buildSummaryHarnessOptions().filter((option) => ["google", "cursor", "opencode", "hermes"].includes(option.value))).toEqual([
+      { value: "google", label: "Google CLI", badgeLabel: "Beta" },
+      { value: "cursor", label: "Cursor CLI", badgeLabel: "Beta" },
+      { value: "opencode", label: "OpenCode", badgeLabel: "Beta" },
+      { value: "hermes", label: "Hermes", badgeLabel: "Beta" }
+    ]);
   });
 
   it("listens for outside pointer events during capture so modal propagation stops do not trap open selects", () => {

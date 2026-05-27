@@ -39,6 +39,10 @@ export function buildAgentHarnessOptions(): BlueprintRuntimeOption[] {
   ] as const).map((value) => ({ value, ...runtimeDisplayParts(value) }));
 }
 
+export function buildSummaryHarnessOptions(): BlueprintRuntimeOption[] {
+  return buildAgentHarnessOptions();
+}
+
 export function getBlueprintSelectOutsidePointerListenerOptions(): AddEventListenerOptions {
   return { capture: true };
 }

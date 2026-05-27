@@ -104,6 +104,7 @@ import {
   blueprintSelectOpenEventName,
   buildAgentHarnessOptions,
   buildBlueprintModelSelectOptions,
+  buildSummaryHarnessOptions,
   getBlueprintSelectOutsidePointerListenerOptions,
   isBlueprintSelectorDisabled,
   resolveBlueprintModelSelectValue
@@ -2541,11 +2542,7 @@ function NodeConfigForm({
       { value: "structured_merge", label: t.options.structuredMerge },
       { value: "harness_summary", label: t.options.harnessSummary }
     ];
-    const harnessOptions: BlueprintSelectOption[] = [
-      { value: "openclaw", label: "OpenClaw" },
-      { value: "codex", label: "Codex" },
-      { value: "claude", label: "Claude Code" }
-    ];
+    const harnessOptions: BlueprintSelectOption[] = buildSummaryHarnessOptions();
     const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
       selectedModel: config.modelId,
       models: runtimeModelOptions,
