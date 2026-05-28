@@ -88,9 +88,11 @@ function strictJsonObjectSchema(schema: Record<string, unknown>): Record<string,
   const normalized = Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, strictJsonSchemaValue(value)]));
   const type = normalized.type;
   const properties = isRecord(normalized.properties) ? normalized.properties : undefined;
-  if (type === "object" || properties) {
+  if (readSchemaTypes(type).includes("object") || properties) {
+    const schemaProperties = properties ?? {};
     normalized.additionalProperties = false;
-    normalized.required = properties ? Object.keys(properties) : [];
+    normalized.properties = schemaProperties;
+    normalized.required = Object.keys(schemaProperties);
     const originalRequired = new Set(readRequiredKeys(schema.required));
     if (properties) {
       normalized.properties = Object.fromEntries(

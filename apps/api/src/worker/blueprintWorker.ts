@@ -64,7 +64,29 @@ const defaultSummaryHarnessPrompt = [
   "Preserve each upstream node label and output, deduplicate overlapping facts, and return the merged result in a clear structured form."
 ].join("\n");
 const flexibleJsonObjectSchema: Record<string, unknown> = {
-  type: ["object", "null"]
+  type: ["object", "null"],
+  properties: {
+    summary: { type: "string" },
+    facts: { type: "array", items: { type: "string" } },
+    decisions: { type: "array", items: { type: "string" } },
+    artifacts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          kind: { type: "string" },
+          location: { type: "string" },
+          description: { type: "string" }
+        }
+      }
+    },
+    assumptions: { type: "array", items: { type: "string" } },
+    risks: { type: "array", items: { type: "string" } },
+    nextSteps: { type: "array", items: { type: "string" } },
+    dataJson: { type: "string" },
+    notes: { type: "string" }
+  }
 };
 const managerDecisionResultSchema: Record<string, unknown> = {
   type: "object",
@@ -113,7 +135,9 @@ const agentOutputContractLines = [
   "Output contract:",
   "- Return an AgentOutputEnvelope JSON object when you produce a result. This platform contract overrides earlier task wording such as \"return only JSON\" or \"do not return markdown\".",
   "- Include humanReportMd: a Markdown report written for a human reader. This field is required.",
-  "- humanReportMd must include a visible \"## Delivery location\" section near the top. List preview URLs, localhost ports, file paths, artifact links, or commands needed to open the deliverable. If this step created no new deliverable, write \"No new deliverable produced in this step.\"",
+  "- Write humanReportMd in the user's working language. If the user request, blueprint title, agent label, or runContext is Chinese, write Simplified Chinese. Do not default to English for human-facing reports.",
+  "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
+  "- humanReportMd must include a visible delivery-location section near the top. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\" and write \"\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002\" if this step created no new deliverable. For English reports, use \"## Delivery location\" and \"No new deliverable produced in this step.\"",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
@@ -237,6 +261,7 @@ interface BlueprintWorkerOptions {
 
 export class BlueprintWorker {
   private readonly activeRuns = new Map<string, Promise<void>>();
+  private readonly pendingRunSchedules = new Map<string, { blueprint: BlueprintDefinition; run: BlueprintRun }>();
   private readonly cancelledRunIds = new Set<string>();
   private readonly approvalService: ApprovalService;
   private readonly iterationService: IterationService;
@@ -274,6 +299,9 @@ export class BlueprintWorker {
         continue;
       }
       if (archive.run.status === "running") {
+        if (await this.resumeSelfIterationPreparationIfNeeded(archive.blueprintSnapshot, archive.run)) {
+          continue;
+        }
         this.scheduleRun(archive.blueprintSnapshot, archive.run);
       }
     }
@@ -294,15 +322,8 @@ export class BlueprintWorker {
         run: runningRun,
         topManagerNode: topManager
       });
-      await this.prepareRoundPlan(blueprint, runningRun, session, round, topManager);
-      const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, runningRun);
-      if (autoAdvanced) {
-        return autoAdvanced.run;
-      }
-      const waitingRun = { ...runningRun, status: "waiting_approval" as const };
-      await this.store.updateBlueprintRun(waitingRun);
-      await this.managerMailProjector.refresh(waitingRun.id);
-      return waitingRun;
+      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager);
+      return runningRun;
     }
     this.scheduleRun(blueprint, runningRun);
     return runningRun;
@@ -383,6 +404,92 @@ export class BlueprintWorker {
     const waiting = { ...currentRun, status: "waiting_approval" as const };
     await this.store.updateBlueprintRun(waiting);
     return waiting;
+  }
+
+  private async resumeSelfIterationPreparationIfNeeded(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<boolean> {
+    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+    if (!topManager) return false;
+
+    const rounds = await this.store.listIterationRounds({ runId: run.id });
+    const pendingRound = rounds
+      .filter((round) => round.status === "requirement_pending")
+      .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
+    if (!pendingRound) {
+      if (rounds.length > 0) return false;
+      const started = await this.iterationService.startSession({
+        blueprint,
+        run,
+        topManagerNode: topManager
+      });
+      this.scheduleSelfIterationPreparation(blueprint, run, started.session, started.round, topManager);
+      return true;
+    }
+
+    if (pendingRound.requirementRequestId) {
+      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+      await this.managerMailProjector.refresh(run.id);
+      return true;
+    }
+
+    const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === pendingRound.sessionId);
+    if (!session) return false;
+    this.scheduleSelfIterationPreparation(blueprint, run, session, pendingRound, topManager);
+    return true;
+  }
+
+  private scheduleSelfIterationPreparation(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    session: IterationSession,
+    round: IterationRound,
+    topManager: BlueprintNode
+  ): void {
+    if (this.activeRuns.has(run.id)) {
+      return;
+    }
+
+    const execution = this.prepareInitialSelfIterationRound(blueprint, run, session, round, topManager)
+      .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
+      .finally(async () => {
+        this.activeRuns.delete(run.id);
+        if (await this.flushPendingRunSchedule(run.id)) {
+          return;
+        }
+        this.cancelledRunIds.delete(run.id);
+      });
+
+    this.activeRuns.set(run.id, execution);
+  }
+
+  private async prepareInitialSelfIterationRound(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    session: IterationSession,
+    round: IterationRound,
+    topManager: BlueprintNode
+  ): Promise<void> {
+    if (await this.isRunCancelled(run.id)) return;
+
+    await this.prepareRoundPlan(blueprint, run, session, round, topManager);
+    if (await this.isRunCancelled(run.id)) return;
+
+    const latestRun = await this.store.getBlueprintRun(run.id);
+    const currentRun = latestRun ?? run;
+    if (this.isTerminalRunStatus(currentRun.status)) return;
+
+    const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun, { scheduleOnResume: false });
+    if (autoAdvanced?.completeRun) return;
+    if (autoAdvanced?.resumeExecution) {
+      await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run);
+      return;
+    }
+    if (await this.isRunCancelled(run.id)) return;
+
+    const waitingBase = (await this.store.getBlueprintRun(run.id)) ?? currentRun;
+    if (this.isTerminalRunStatus(waitingBase.status)) return;
+    const waitingRun = { ...waitingBase, status: "waiting_approval" as const };
+    await this.store.updateBlueprintRun(waitingRun);
+    await this.managerMailProjector.refresh(waitingRun.id);
   }
 
   private async prepareNextRoundFromIntent(
@@ -474,26 +581,36 @@ export class BlueprintWorker {
     const config = node.config;
     const runtimeId = node.runtimeId ?? "openclaw";
     const nodeRunId = `preflight-${mode}-${round.id}-${node.id}-${nanoid(6)}`;
-    const { result } = await this.runAgentTask({
-      blueprintRunId: run.id,
-      nodeRunId,
-      source: resolveAgentRuntimeSource(runtimeId),
-      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-      agentName: config.agentName,
-      prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
-      modelId: config.modelId,
-      permissionProfile: config.permissionProfile,
-      runtimeAccessPolicy: config.runtimeAccessPolicy,
-      workingDirectory: config.workingDirectory,
-      timeoutMs: config.timeoutMs,
-      outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
-      input: {
-        ...taskInput,
-        runContext
-      },
-      skillIds: config.skillIds,
-      tools: config.tools
-    });
+    await this.appendPreflightTaskStarted(run, round, node, mode, nodeRunId);
+    let result: AgentTaskResult;
+    try {
+      ({ result } = await this.runAgentTask({
+        blueprintRunId: run.id,
+        nodeRunId,
+        source: resolveAgentRuntimeSource(runtimeId),
+        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        agentName: config.agentName,
+        prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
+        input: {
+          ...taskInput,
+          runContext
+        },
+        skillIds: config.skillIds,
+        tools: config.tools
+      }));
+    } catch (error) {
+      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (result.status !== "succeeded") {
+      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, result.error ?? `Agent task ended with status ${result.status}.`);
+    }
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightArtifacts(blueprint, run, round, node, nodeRunId, result)
       : [];
@@ -522,26 +639,36 @@ export class BlueprintWorker {
     const config = topManager.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(topManager);
     const nodeRunId = `preflight-${mode}-${round.id}-${topManager.id}-${nanoid(6)}`;
-    const { result } = await this.runAgentTask({
-      blueprintRunId: run.id,
-      nodeRunId,
-      source: resolveAgentRuntimeSource(runtimeId),
-      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-      agentName: config.agentName?.trim() || defaultManagerAgentName,
-      prompt: this.resolveManagerPreflightPrompt(config, mode),
-      modelId: config.modelId,
-      permissionProfile: config.permissionProfile,
-      runtimeAccessPolicy: config.runtimeAccessPolicy,
-      workingDirectory: config.workingDirectory,
-      timeoutMs: config.timeoutMs,
-      outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
-      input: {
-        ...taskInput,
-        runContext
-      },
-      skillIds: config.skillIds,
-      tools: config.tools ?? []
-    });
+    await this.appendPreflightTaskStarted(run, round, topManager, mode, nodeRunId);
+    let result: AgentTaskResult;
+    try {
+      ({ result } = await this.runAgentTask({
+        blueprintRunId: run.id,
+        nodeRunId,
+        source: resolveAgentRuntimeSource(runtimeId),
+        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        agentName: config.agentName?.trim() || defaultManagerAgentName,
+        prompt: this.resolveManagerPreflightPrompt(config, mode),
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
+        input: {
+          ...taskInput,
+          runContext
+        },
+        skillIds: config.skillIds,
+        tools: config.tools ?? []
+      }));
+    } catch (error) {
+      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (result.status !== "succeeded") {
+      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, result.error ?? `Agent task ended with status ${result.status}.`);
+    }
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightArtifacts(blueprint, run, round, topManager, nodeRunId, result)
       : [];
@@ -556,6 +683,55 @@ export class BlueprintWorker {
       });
     }
     return { result, artifactIds };
+  }
+
+  private async appendPreflightTaskStarted(
+    run: BlueprintRun,
+    round: IterationRound,
+    node: BlueprintNode,
+    mode: RoundPreflightMode,
+    nodeRunId: string
+  ): Promise<void> {
+    await this.store.appendRunTimelineItem({
+      id: `timeline-${nodeRunId}-started`,
+      runId: run.id,
+      createdAt: new Date().toISOString(),
+      actorNodeId: node.id,
+      actorLabel: node.config.label,
+      kind: "node_started",
+      title: `${node.config.label}: ${this.preflightModeLabel(mode)} started`,
+      body: `Round ${round.roundNumber} preflight is running ${this.preflightModeLabel(mode)}.`,
+      payloadRef: nodeRunId
+    });
+  }
+
+  private async appendPreflightTaskFailed(
+    run: BlueprintRun,
+    node: BlueprintNode,
+    mode: RoundPreflightMode,
+    nodeRunId: string,
+    error: string
+  ): Promise<void> {
+    await this.store.appendRunTimelineItem({
+      id: `timeline-${nodeRunId}-failed`,
+      runId: run.id,
+      createdAt: new Date().toISOString(),
+      actorNodeId: node.id,
+      actorLabel: node.config.label,
+      kind: "node_output",
+      title: `${node.config.label}: ${this.preflightModeLabel(mode)} failed`,
+      body: error,
+      payloadRef: nodeRunId
+    });
+  }
+
+  private preflightModeLabel(mode: RoundPreflightMode): string {
+    if (mode === "research_resolution") return "research";
+    if (mode === "requirement_resolution") return "requirement planning";
+    if (mode === "revise_plan") return "plan revision";
+    if (mode === "preflight_judgment") return "plan review";
+    if (mode === "context_snapshot") return "context snapshot";
+    return "preflight";
   }
 
   private async publishPreflightArtifacts(
@@ -883,28 +1059,53 @@ export class BlueprintWorker {
 
   private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun): void {
     if (this.activeRuns.has(run.id)) {
+      this.pendingRunSchedules.set(run.id, { blueprint, run });
       return;
     }
 
     const execution = this.runUntilBlockedOrDone(blueprint, run)
-      .catch(async (error) => {
-        const currentRun = await this.store.getBlueprintRun(run.id);
-        if (!currentRun) return;
-        if (currentRun.status === "cancelled" || this.cancelledRunIds.has(run.id)) return;
-
-        const message = error instanceof Error ? error.message : "Blueprint worker crashed unexpectedly.";
-        await this.cancelOpenNodeRuns(run.id, `Blueprint crashed: ${message}`);
-        const latestRun = await this.store.getBlueprintRun(run.id);
-        const failed = await this.applyRunTotals(latestRun ?? currentRun, new Date(currentRun.startedAt).getTime(), "failed");
-        await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} crashed: ${message}`);
-        await this.store.updateBlueprintRun(failed);
-      })
-      .finally(() => {
+      .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
+      .finally(async () => {
         this.activeRuns.delete(run.id);
+        if (await this.flushPendingRunSchedule(run.id)) {
+          return;
+        }
         this.cancelledRunIds.delete(run.id);
       });
 
     this.activeRuns.set(run.id, execution);
+  }
+
+  private async flushPendingRunSchedule(runId: string): Promise<boolean> {
+    const pending = this.pendingRunSchedules.get(runId);
+    this.pendingRunSchedules.delete(runId);
+    if (!pending || await this.isRunCancelled(runId)) {
+      return false;
+    }
+
+    const latestRun = await this.store.getBlueprintRun(runId);
+    const nextRun = latestRun ?? pending.run;
+    if (this.isTerminalRunStatus(nextRun.status)) {
+      return false;
+    }
+
+    const running = { ...nextRun, status: "running" as const };
+    await this.store.updateBlueprintRun(running);
+    this.scheduleRun(pending.blueprint, running);
+    return true;
+  }
+
+  private async handleBackgroundRunError(blueprint: BlueprintDefinition, run: BlueprintRun, error: unknown): Promise<void> {
+    const currentRun = await this.store.getBlueprintRun(run.id);
+    if (!currentRun) return;
+    if (currentRun.status === "cancelled" || this.cancelledRunIds.has(run.id)) return;
+
+    const message = error instanceof Error ? error.message : "Blueprint worker crashed unexpectedly.";
+    await this.cancelOpenNodeRuns(run.id, `Blueprint crashed: ${message}`);
+    const latestRun = await this.store.getBlueprintRun(run.id);
+    const failed = await this.applyRunTotals(latestRun ?? currentRun, new Date(currentRun.startedAt).getTime(), "failed");
+    await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} crashed: ${message}`);
+    await this.store.updateBlueprintRun(failed);
   }
 
   private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<void> {
@@ -1668,7 +1869,9 @@ export class BlueprintWorker {
     const output = input.result.output ?? input.result.error;
     if (output === undefined) return;
 
-    const nodeLabel = `${input.node.config.label} dispatch ${input.handoff}`;
+    const nodeLabel = usesChineseText(input.node.config.label)
+      ? `${input.node.config.label} \u00b7 \u8c03\u5ea6 ${input.handoff}`
+      : `${input.node.config.label} dispatch ${input.handoff}`;
     const published = await this.agentReportService.publishFromOutput({
       runId: input.run.id,
       roundId: input.roundId,
@@ -2626,9 +2829,14 @@ export class BlueprintWorker {
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? "main" : undefined,
         agentName: "summary-agent",
-        prompt: config.prompt?.trim() || defaultSummaryHarnessPrompt,
+        prompt: [
+          config.prompt?.trim() || defaultSummaryHarnessPrompt,
+          "",
+          ...agentOutputContractLines
+        ].join("\n"),
         modelId: config.modelId,
         runtimeAccessPolicy: config.runtimeAccessPolicy,
+        outputSchema: humanReportEnvelopeSchemaBase,
         input,
         tools: []
       }, async (startedRef) => {
@@ -3595,6 +3803,10 @@ function buildAgentOutputEnvelopeSchema(resultSchema: Record<string, unknown> | 
 
 function readRecommendedNextStep(value: unknown): ManagerSnapshotDraft["recommendedNextStep"] | undefined {
   return value === "research" || value === "plan" || value === "execute" || value === "complete" ? value : undefined;
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }
 
 function isManagerCompletionEnvelope(output: unknown): boolean {

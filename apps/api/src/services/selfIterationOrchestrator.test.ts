@@ -71,4 +71,51 @@ describe("SelfIterationOrchestrator", () => {
     expect(summary).toContain("Risk from manager context.");
     expect(summary).not.toContain("Raw output summary");
   });
+
+  it("uses Chinese release report chrome and local artifact paths for Chinese runs", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-zh",
+      companyId: "company-1",
+      name: "政治新闻 HTML 自迭代",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const report: AgentHumanReport = {
+      id: "report-zh",
+      runId: "run-zh",
+      roundId: "round-zh",
+      nodeRunId: "node-run-zh",
+      nodeId: "agent-zh",
+      nodeLabel: "最终 HTML 产物 Agent",
+      title: "最终 HTML 产物 Agent report",
+      bodyMd: "## 摘要\n\n已生成最终 HTML。",
+      source: "agent",
+      createdAt: now
+    };
+
+    const summary = new SelfIterationOrchestrator().buildReleaseSummary({
+      blueprint,
+      artifacts: [
+        {
+          title: "最终 HTML",
+          downloadUrl: "/artifacts/runs/run-zh/artifact.html",
+          storagePath: "D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact.html"
+        }
+      ],
+      agentReports: [report],
+      agentHandoffs: []
+    });
+
+    expect(summary).toContain("本轮执行已完成");
+    expect(summary).toContain("Agent Markdown 报告");
+    expect(summary).toContain("产物：");
+    expect(summary).toContain("D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact.html");
+    expect(summary).not.toContain("round execution completed");
+  });
 });

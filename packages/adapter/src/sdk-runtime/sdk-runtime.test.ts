@@ -46,6 +46,7 @@ describe("agent SDK runtime", () => {
       required: ["status"],
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"] },
         nextSlot: { type: "integer" },
         reason: { type: "string" }
       }
@@ -53,15 +54,16 @@ describe("agent SDK runtime", () => {
 
     expect(toCodexOutputSchema(schema)).toEqual({
       type: "object",
-      required: ["status", "nextSlot", "reason"],
+      required: ["status", "handoffJson", "nextSlot", "reason"],
       additionalProperties: false,
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"], additionalProperties: false, properties: {}, required: [] },
         nextSlot: { type: ["integer", "null"] },
         reason: { type: ["string", "null"] }
       }
     });
-    expect(validateOutputSchema('{"status":"complete","nextSlot":null,"reason":null}', schema)).toBe(true);
+    expect(validateOutputSchema('{"status":"complete","handoffJson":{},"nextSlot":null,"reason":null}', schema)).toBe(true);
   });
 
   it("maps permission profiles to provider SDK settings", () => {

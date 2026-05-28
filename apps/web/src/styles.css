@@ -7605,6 +7605,9 @@ html[data-theme="light"] .inbox-row.processed:hover {
 
 .inbox-conversation-thread {
   min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .inbox-conversation-composer textarea {
@@ -8006,6 +8009,25 @@ html[data-theme="light"] .inbox-row.processed:hover {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+.inbox-page-grid {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.inbox-layout {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.inbox-column-shell,
+.inbox-list-column,
+.inbox-workspace-column,
+.inbox-conversation-card {
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
 }
 
 .run-report-layer {

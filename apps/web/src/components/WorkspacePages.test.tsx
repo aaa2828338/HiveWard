@@ -205,6 +205,141 @@ describe("RunsPage", () => {
     expect(html.indexOf("machine-only")).toBeGreaterThan(html.indexOf("Advanced details"));
   });
 
+  it("localizes common agent report chrome and shows Windows artifact paths in Chinese runs", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-zh",
+      companyId: "company-1",
+      name: "政治新闻 HTML 自迭代",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-zh",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "succeeded",
+        startedBy: "user-1",
+        startedAt: now,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [
+        {
+          id: "node-run-final",
+          blueprintRunId: "run-zh",
+          blueprintId: blueprint.id,
+          nodeId: "final-html",
+          nodeLabel: "最终 HTML 产物 Agent",
+          nodeType: "agent",
+          iterationRoundId: "round-zh",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: { humanReportMd: "## Summary\n\nNo filesystem file was created in this read-only node.\n\n## Validation\n\nChecked." }
+        }
+      ],
+      events: [],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [
+        {
+          id: "artifact-final",
+          runId: "run-zh",
+          roundId: "round-zh",
+          nodeRunId: "node-run-final",
+          title: "最终 HTML",
+          kind: "html",
+          storagePath: "D:/HiveWard/artifacts/runs/run-zh/artifact-final.html",
+          relativePath: "runs/run-zh/artifact-final.html",
+          downloadUrl: "/artifacts/runs/run-zh/artifact-final.html",
+          previewPolicy: "sandboxed_iframe",
+          trusted: false,
+          createdAt: now
+        }
+      ],
+      releaseReports: [],
+      agentHumanReports: [
+        {
+          id: "human-report-final",
+          runId: "run-zh",
+          roundId: "round-zh",
+          nodeRunId: "node-run-final",
+          nodeId: "final-html",
+          nodeLabel: "最终 HTML 产物 Agent",
+          title: "最终 HTML 产物 Agent report",
+          bodyMd: "## Decision\n\nRoute to Slot 3.\n\n## Summary\n\nNo filesystem file was created in this read-only node.\n\n## Validation\n\nChecked.",
+          source: "agent",
+          createdAt: now
+        },
+        {
+          id: "human-report-manager",
+          runId: "run-zh",
+          roundId: "round-zh",
+          nodeRunId: "manager-node-run-manager-decision-3",
+          nodeId: "manager",
+          nodeLabel: "政治新闻 HTML 自迭代 Manager dispatch 3",
+          title: "Manager report",
+          bodyMd: "## Manager Routing Decision\n\nRoute to Slot 3.",
+          source: "agent",
+          createdAt: now
+        }
+      ],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [
+        {
+          id: "timeline-artifact",
+          runId: "run-zh",
+          sequence: 1,
+          createdAt: now,
+          actorNodeId: "node-run-final",
+          actorLabel: "最终 HTML 产物 Agent",
+          kind: "artifact_published",
+          title: "最终 HTML",
+          body: "/artifacts/runs/run-zh/artifact-final.html"
+        }
+      ],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="zh-CN"
+        t={messages["zh-CN"]}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toContain("决策");
+    expect(html).toContain("摘要");
+    expect(html).toContain("验证");
+    expect(html).toContain("路由到 Slot 3");
+    expect(html).toContain("本节点以只读方式运行");
+    expect(html).toContain("政治新闻 HTML 自迭代 Manager · 调度 3");
+    expect(html).toContain("D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact-final.html");
+    expect(html).toContain("/artifacts/runs/run-zh/artifact-final.html");
+  });
+
   it("renders run steps from actual chronological node runs without slot boundary cards", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
@@ -307,11 +442,93 @@ describe("RunsPage", () => {
     );
 
     expect(html).toMatch(/trace-issue-index">1<\/div><div class="trace-issue-main"><div class="trace-issue-topline"><strong>QA Agent<\/strong>/);
-    expect(html).toMatch(/trace-issue-index">2<\/div><div class="trace-issue-main"><div class="trace-issue-topline"><strong>Slot 1 - QA<\/strong>/);
     expect(html).toContain("QA passed the delivery.");
-    expect(html).toContain("Slot completed.");
-    expect(html).not.toContain("Slot 1 - QA input");
-    expect(html).not.toContain("Slot 1 - QA output");
+    expect(html).not.toMatch(/trace-issue-topline"><strong>Slot 1 - QA<\/strong>/);
     expect(html).not.toContain("Manager input entered this slot.");
+  });
+
+  it("renders self-iteration preflight lifecycle as run steps before node runs exist", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-preflight",
+      companyId: "company-1",
+      name: "Preflight blueprint",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-preflight",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "running",
+        startedBy: "user-1",
+        startedAt: now,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [],
+      events: [],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [
+        {
+          id: "round-preflight-1",
+          sessionId: "session-preflight-1",
+          runId: "run-preflight",
+          roundNumber: 1,
+          status: "requirement_pending",
+          artifactIds: [],
+          startedAt: now
+        }
+      ],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [
+        {
+          id: "timeline-round-started",
+          runId: "run-preflight",
+          sequence: 1,
+          createdAt: now,
+          actorNodeId: "manager-1",
+          actorLabel: "Top Manager",
+          kind: "round_started",
+          title: "Round 1 started"
+        }
+      ],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="zh-CN"
+        t={messages["zh-CN"]}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toContain("第 1 轮启动");
+    expect(html).toContain("Manager 正在准备第 1 轮计划");
+    expect(html).toContain("调研、提需和计划整理都属于运行步骤。");
+    expect(html).not.toContain(messages["zh-CN"].empty.noRunHistory);
   });
 });

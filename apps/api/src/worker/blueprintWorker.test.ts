@@ -616,8 +616,9 @@ describe("BlueprintWorker", () => {
       agentId: undefined,
       agentName: "summary-agent",
       modelId: "inherit",
-      prompt: "Return an executive summary."
+      prompt: expect.stringContaining("Return an executive summary.")
     });
+    expect(adapter.calls[0]?.prompt).toContain("humanReportMd");
   });
 
   it("lets Agent approval replies revise output before approval sends the final answer", async () => {
@@ -2154,10 +2155,11 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(started.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager"]);
     expect(requirement1).toMatchObject({
       status: "pending",
@@ -2303,6 +2305,38 @@ describe("BlueprintWorker", () => {
     });
   });
 
+  it("starts self-iteration runs before preflight preparation completes", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, researchAgent: true });
+    const adapter = new BlockingAdapter(createStartedAgentTask("task-preflight-research"));
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    await waitForCondition(() => adapter.calls.length === 1, "preflight research to start");
+    const view = await store.getRunView(run.id);
+
+    expect(run.status).toBe("running");
+    expect(view?.run.status).toBe("running");
+    expect(view?.approvalRequests).toEqual([]);
+    expect(view?.runTimeline).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "round_started", title: "Round 1 started" }),
+        expect.objectContaining({
+          kind: "node_started",
+          actorLabel: "Research",
+          title: "Research: research started"
+        })
+      ])
+    );
+    expect(adapter.calls[0]).toMatchObject({
+      agentName: "research",
+      input: expect.objectContaining({ runId: run.id })
+    });
+  });
+
   it("uses configured research and round-plan agents before publishing the plan approval", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -2319,11 +2353,12 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const view = await store.getRunView(run.id);
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
     const round = view?.iterationRounds?.[0];
     const request = view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(view.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["research", "requirements"]);
     expect(adapter.calls[0]?.input).toMatchObject({
       runContext: expect.objectContaining({ mode: "research_resolution" })
@@ -2365,10 +2400,11 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const view = await store.getRunView(run.id);
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
     const request = view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(view.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["research"]);
     expect(view?.iterationRounds?.[0]).toMatchObject({
       researchStatus: "blocked",
@@ -2428,10 +2464,11 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const view = await store.getRunView(run.id);
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
     const request = view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(view.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => isRecord(call.input) ? call.input.runContext : undefined)).toEqual([
       expect.objectContaining({ mode: "research_resolution" }),
       expect.objectContaining({ mode: "requirement_resolution" }),
@@ -2462,7 +2499,7 @@ describe("BlueprintWorker", () => {
     ]);
     const noResearchWorker = new BlueprintWorker(store, noResearchAdapter);
     const noResearchRun = await noResearchWorker.startRun(noResearchBlueprint, "test-user");
-    const noResearchView = await store.getRunView(noResearchRun.id);
+    const noResearchView = await waitForRunStatus(store, noResearchRun.id, "waiting_approval");
 
     expect(noResearchAdapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements"]);
     expect(noResearchView?.iterationRounds?.[0]).toMatchObject({
@@ -2482,7 +2519,7 @@ describe("BlueprintWorker", () => {
     ]);
     const noRequirementWorker = new BlueprintWorker(secondStore, noRequirementAdapter);
     const noRequirementRun = await noRequirementWorker.startRun(noRequirementBlueprint, "test-user");
-    const noRequirementView = await secondStore.getRunView(noRequirementRun.id);
+    const noRequirementView = await waitForRunStatus(secondStore, noRequirementRun.id, "waiting_approval");
 
     expect(noRequirementAdapter.calls.map((call) => call.agentName)).toEqual(["research", "manager"]);
     expect(noRequirementView?.iterationRounds?.[0]).toMatchObject({
@@ -2519,7 +2556,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun || !requirement) throw new Error("Expected requirement approval.");
@@ -2536,6 +2573,9 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls).toHaveLength(2);
     expect(managerDecisionCalls[0]?.prompt).toContain("humanReportMd");
     expect(managerDecisionCalls[0]?.prompt).toContain("handoffJson");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Write humanReportMd in the user's working language");
+    expect(managerDecisionCalls[0]?.prompt).toContain("All visible headings, labels, and prose inside humanReportMd");
+    expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(managerDecisionCalls[0]?.prompt).not.toContain("Do not include markdown");
     expect(managerDecisionCalls[0]?.outputSchema).toMatchObject({
       required: ["humanReportMd", "result"],
@@ -2616,7 +2656,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement1) throw new Error("Expected initial requirement approval.");
 
@@ -2694,7 +2734,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     const currentRun1 = await store.getBlueprintRun(run.id);
     if (!currentRun1 || !requirement) throw new Error("Expected requirement approval.");
@@ -2753,7 +2793,7 @@ describe("BlueprintWorker", () => {
       "reject",
       "complete"
     ]);
-  });
+  }, 20_000);
 
   it("freezes pending lifecycle approvals when a self-iteration run is cancelled", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
@@ -2765,7 +2805,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement) throw new Error("Expected requirement approval.");
 
@@ -2802,7 +2842,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     const currentRun1 = await store.getBlueprintRun(run.id);
     if (!currentRun1 || !requirement) throw new Error("Expected requirement approval.");
@@ -2875,7 +2915,7 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const started = await store.getRunView(run.id);
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement1) throw new Error("Expected initial requirement approval.");
 
@@ -2989,10 +3029,11 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const view = await store.getRunView(run.id);
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
     const request = view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(view.run.status).toBe("waiting_approval");
     expect(request).toMatchObject({
       status: "pending",
       capabilities: expect.objectContaining({ approve: false, reply: true })
@@ -3019,10 +3060,11 @@ describe("BlueprintWorker", () => {
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
-    const view = await store.getRunView(run.id);
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
     const request = view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
 
-    expect(run.status).toBe("waiting_approval");
+    expect(run.status).toBe("running");
+    expect(view.run.status).toBe("waiting_approval");
     expect(request).toMatchObject({
       status: "pending",
       capabilities: expect.objectContaining({ approve: true })
@@ -3191,6 +3233,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(`Timed out waiting for ${label}.`);
+}
+
 async function waitForRunTerminal(store: FileHivewardStore, runId: string): Promise<Awaited<ReturnType<FileHivewardStore["getRunView"]>>> {
   const deadline = Date.now() + 2_000;
 
@@ -3228,7 +3281,7 @@ async function waitForRunView(
   runId: string,
   predicate: (view: NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>) => boolean
 ): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
     const view = await store.getRunView(runId);
