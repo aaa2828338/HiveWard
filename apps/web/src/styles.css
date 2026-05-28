@@ -9949,6 +9949,95 @@ html[data-theme="light"] .blueprint-node-manager_slot.selected .manager-slot-box
   outline: 0;
 }
 
+:root {
+  --blueprint-canvas-bg: #1d2128;
+  --blueprint-canvas-border: #444a54;
+  --blueprint-grid-color: rgb(226 232 240 / 0.30);
+  --blueprint-node-bg: #171b22;
+  --blueprint-node-hover-bg: #1d222b;
+  --blueprint-node-border: #666d77;
+  --blueprint-node-hover-border: #7e8792;
+  --blueprint-manager-slot-bg: #161a21;
+  --blueprint-manager-slot-inner-bg: #1a1f27;
+  --blueprint-manager-slot-inner-border: #59616b;
+}
+
+html[data-theme="light"] {
+  --blueprint-canvas-bg: #e3ebf4;
+  --blueprint-canvas-border: #b8c6d6;
+  --blueprint-grid-color: rgb(71 85 105 / 0.24);
+  --blueprint-node-bg: #ffffff;
+  --blueprint-node-hover-bg: #fbfdff;
+  --blueprint-node-border: #a7b6c8;
+  --blueprint-node-hover-border: #8496aa;
+  --blueprint-manager-slot-bg: #ffffff;
+  --blueprint-manager-slot-inner-bg: #f1f5fa;
+  --blueprint-manager-slot-inner-border: #aab8c9;
+}
+
+.blueprint-canvas-panel {
+  border-color: var(--blueprint-canvas-border);
+  background: var(--blueprint-canvas-bg);
+}
+
+.blueprint-canvas-panel .react-flow__background {
+  opacity: 1;
+}
+
+.blueprint-node {
+  border-color: var(--blueprint-node-border);
+  background: var(--blueprint-node-bg);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.08),
+    0 14px 32px rgb(0 0 0 / 0.38);
+}
+
+.blueprint-node:hover {
+  border-color: var(--blueprint-node-hover-border);
+  background: var(--blueprint-node-hover-bg);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.10),
+    0 16px 36px rgb(0 0 0 / 0.42);
+}
+
+.blueprint-node-manager_slot {
+  border-color: var(--blueprint-node-border);
+  background: var(--blueprint-manager-slot-bg);
+}
+
+.manager-slot-box-body {
+  border-color: var(--blueprint-manager-slot-inner-border);
+  background: var(--blueprint-manager-slot-inner-bg);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.07);
+}
+
+html[data-theme="light"] .blueprint-node {
+  border-color: var(--blueprint-node-border);
+  background: var(--blueprint-node-bg);
+  box-shadow: 0 8px 18px rgb(15 23 42 / 0.10);
+}
+
+html[data-theme="light"] .blueprint-node:hover {
+  border-color: var(--blueprint-node-hover-border);
+  background: var(--blueprint-node-hover-bg);
+  box-shadow: 0 10px 22px rgb(15 23 42 / 0.12);
+}
+
+html[data-theme="light"] .blueprint-canvas-panel {
+  border-color: var(--blueprint-canvas-border);
+  background: var(--blueprint-canvas-bg);
+}
+
+html[data-theme="light"] .blueprint-node-manager_slot {
+  border-color: var(--blueprint-node-border);
+  background: var(--blueprint-manager-slot-bg);
+}
+
+html[data-theme="light"] .manager-slot-box-body {
+  border-color: var(--blueprint-manager-slot-inner-border);
+  background: var(--blueprint-manager-slot-inner-bg);
+}
+
 .trace-issue-column.trace-run-frame-running,
 html[data-theme="light"] .trace-issue-column.trace-run-frame-running {
   border: var(--state-ring-width) solid var(--semantic-blue);
