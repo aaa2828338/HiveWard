@@ -79,6 +79,8 @@ import type {
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
+  ChatPermissionMode,
+  HarnessId,
   HarnessStatus,
   HarnessSkillStatusResponse,
   NoteNodeConfig,
@@ -127,6 +129,7 @@ import {
   type BlueprintCanvasViewport,
   type BlueprintCanvasWorld
 } from "../lib/blueprint-studio-state";
+import { resolveRuntimePermissionProfile } from "../lib/harness-permissions";
 import { runtimeDisplayLabel } from "../lib/harness-labels";
 import { HarnessLabel } from "./HarnessLabel";
 
@@ -210,6 +213,7 @@ export function BlueprintStudioPage({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   runSummaries,
   runView,
@@ -237,6 +241,7 @@ export function BlueprintStudioPage({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   runSummaries: BlueprintRunSummary[];
   runView?: BlueprintRunView;
@@ -793,7 +798,7 @@ export function BlueprintStudioPage({
         nodes: current.nodes.map((node) => {
           if (!selectedIds.has(node.id) || node.type !== "agent") return node;
           const runtimeConfigPatch = runtimeId
-            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions)
+            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions, harnessPermissionModes)
             : {};
           return {
             ...node,
@@ -807,7 +812,7 @@ export function BlueprintStudioPage({
         })
       }));
     },
-    [configuredAgents, isBlueprintInteractionLocked, onUpdateBlueprint]
+    [configuredAgents, harnessPermissionModes, isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const patchNode = useCallback(
@@ -1709,6 +1714,7 @@ export function BlueprintStudioPage({
             catalog={catalog}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
+            harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
             node={inspectedNode}
             t={t}
@@ -1961,6 +1967,7 @@ function NodeDetailSidebar({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   node,
   t,
@@ -1971,6 +1978,7 @@ function NodeDetailSidebar({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   node: BlueprintNode;
   t: Messages;
@@ -1999,6 +2007,7 @@ function NodeDetailSidebar({
             node={node}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
+            harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
             models={models}
             channels={channels}
@@ -2272,6 +2281,7 @@ function NodeConfigForm({
   node,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   models,
   channels,
@@ -2282,6 +2292,7 @@ function NodeConfigForm({
   node: BlueprintNode;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
@@ -2322,7 +2333,7 @@ function NodeConfigForm({
     });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
-      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
     };
 
     return (
@@ -2489,7 +2500,7 @@ function NodeConfigForm({
     });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
-      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
     };
     return (
       <div className="config-form node-modal-form">
@@ -2857,7 +2868,8 @@ type BlueprintSkillOption = {
 function buildRuntimeConfigPatch(
   config: AgentNodeConfig | ManagerNodeConfig,
   runtimeId: AgentRuntimeId,
-  agentOptions: OpenClawConfiguredAgent[]
+  agentOptions: OpenClawConfiguredAgent[],
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>
 ): Partial<AgentNodeConfig & ManagerNodeConfig> {
   const patch: Partial<AgentNodeConfig & ManagerNodeConfig> = {
     modelId: undefined
@@ -2872,7 +2884,7 @@ function buildRuntimeConfigPatch(
     ...patch,
     openclawAgentId: undefined,
     send: undefined,
-    permissionProfile: config.permissionProfile ?? "read_only",
+    permissionProfile: resolveRuntimePermissionProfile(runtimeId, harnessPermissionModes, config.permissionProfile ?? "read_only"),
     timeoutMs: config.timeoutMs ?? 600000
   };
 }

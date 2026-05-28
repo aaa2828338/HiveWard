@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  CircleAlert,
   Cloud,
   Database,
   Download,
@@ -65,6 +66,7 @@ import { api } from "./lib/api";
 import { appSectionGroups, appSystemLabels, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { harnessDisplayLabel, harnessDisplayParts, isHarnessId } from "./lib/harness-labels";
+import { applyHarnessPermissionModesToBlueprint } from "./lib/harness-permissions";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
@@ -978,10 +980,10 @@ export function App() {
   const saveBlueprint = useCallback(() => {
     if (!blueprint) return;
     void withBusy("saveBlueprint", async () => {
-      const saved = await api.saveBlueprint(blueprint);
+      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
       await hydrateWorkspace({ blueprintId: saved.id });
     });
-  }, [hydrateWorkspace, withBusy, blueprint]);
+  }, [hydrateWorkspace, withBusy, blueprint, chatPermissionModes]);
 
   const exportBlueprint = useCallback((blueprintId?: string) => {
     const targetBlueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : blueprint;
@@ -1031,7 +1033,7 @@ export function App() {
   const runBlueprint = useCallback(() => {
     if (!blueprint) return;
     void withBusy("runBlueprint", async () => {
-      const saved = await api.saveBlueprint(blueprint);
+      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
       setBlueprint(saved);
       setBlueprints((current) => replaceBlueprint(current, saved));
       const runView = await api.startBlueprintRun(saved.id);
@@ -1039,7 +1041,7 @@ export function App() {
       setRunPageBlueprintId(saved.id);
       setSelectedRunId(runView.run.id);
     });
-  }, [applyRunView, withBusy, blueprint]);
+  }, [applyRunView, withBusy, blueprint, chatPermissionModes]);
 
   const cancelBlueprintRun = useCallback(() => {
     const targetRunId = latestRunForBlueprint?.run.id;
@@ -1366,6 +1368,7 @@ export function App() {
           catalog={catalog}
           configuredAgents={openClawConfig?.configuredAgents}
           harnessStatuses={harnessStatuses}
+          harnessPermissionModes={chatPermissionModes}
           harnessSkillStatuses={harnessSkillStatuses}
           runSummaries={runSummaries}
           runView={latestRunForBlueprint}
@@ -2065,9 +2068,16 @@ function HarnessConfigPage({
 
       {permissionMode && onPermissionModeChange ? (
         <div className="content-card stack-card harness-permission-card">
-          <div className="card-title-block">
+          <div className="card-title-block harness-permission-title">
             <h3>{permissionCopy.title}</h3>
-            <p>{permissionCopy.description}</p>
+            <span className="harness-permission-help" tabIndex={0} aria-label={permissionCopy.helpAria}>
+              <CircleAlert size={14} />
+              <span className="harness-permission-tooltip" role="tooltip">
+                <strong>{permissionMode === "full_access" ? permissionCopy.fullLabel : permissionCopy.safeLabel}</strong>
+                <span>{permissionMode === "full_access" ? permissionCopy.fullBody : permissionCopy.safeBody}</span>
+                <span>{permissionMode === "full_access" ? permissionCopy.fullWarning : permissionCopy.safeWarning}</span>
+              </span>
+            </span>
           </div>
           <label className={`harness-permission-toggle ${permissionMode === "full_access" ? "enabled" : ""}`}>
             <input
@@ -2078,12 +2088,8 @@ function HarnessConfigPage({
             <span className="harness-permission-switch" aria-hidden="true" />
             <span className="harness-permission-copy">
               <strong>{permissionMode === "full_access" ? permissionCopy.fullLabel : permissionCopy.safeLabel}</strong>
-              <small>{permissionMode === "full_access" ? permissionCopy.fullBody : permissionCopy.safeBody}</small>
             </span>
           </label>
-          <p className="harness-permission-warning">
-            {permissionMode === "full_access" ? permissionCopy.fullWarning : permissionCopy.safeWarning}
-          </p>
         </div>
       ) : null}
 
@@ -2926,23 +2932,23 @@ function openClawPanelSkillCopy(language: Language): HarnessSkillsCardCopy {
 function harnessPermissionCopy(language: Language) {
   return language === "zh-CN"
     ? {
-        title: "聊天权限",
-        description: "默认使用安全模式。需要更高效率时，可以手动给当前 Harness 开启完整本地权限。",
+        title: "全部权限",
+        helpAria: "查看全部权限说明",
         safeLabel: "安全模式",
-        safeBody: "默认。限制为只读/受限工具，不主动开启联网和实时搜索。",
-        safeWarning: "当前不会默认给聊天 Harness 读写文件、执行命令、联网和网页搜索的完整权限。",
-        fullLabel: "全权限模式",
-        fullBody: "允许读写工作区、执行命令、联网和实时网页搜索。",
+        safeBody: "当前 Harness 的聊天会话和蓝图 Agent / Manager 节点会使用只读或受限权限。",
+        safeWarning: "不会默认授予文件写入、命令执行、联网或实时网页搜索等完整本地能力。",
+        fullLabel: "完全访问模式",
+        fullBody: "聊天会话会开启完整本地权限；蓝图中引用该 Harness 的 Agent / Manager 节点会使用工作区写权限。",
         fullWarning: "只在你信任的本地仓库里开启。模型可能修改文件、运行脚本或访问网络。"
       }
     : {
-        title: "Chat permissions",
-        description: "Safe mode is the default. Enable full local access only when you need the native harness speed.",
+        title: "All permissions",
+        helpAria: "View all-permissions details",
         safeLabel: "Safe mode",
-        safeBody: "Default. Uses read-only/limited tools and does not enable network or live web search by default.",
-        safeWarning: "Chat harnesses are not granted full file write, command, network, or web-search access by default.",
-        fullLabel: "Full-access mode",
-        fullBody: "Allows workspace writes, command execution, network access, and live web search.",
+        safeBody: "Chat sessions and blueprint Agent / Manager nodes for this harness use read-only or limited permissions.",
+        safeWarning: "File writes, command execution, network access, and live web search are not granted by default.",
+        fullLabel: "Full access mode",
+        fullBody: "Chat sessions get full local access. Blueprint Agent / Manager nodes that reference this harness use workspace-write permissions.",
         fullWarning: "Enable only in local repositories you trust. The model may modify files, run scripts, or access the network."
       };
 }
