@@ -43,6 +43,13 @@ export type BlueprintCanvasContentBounds = {
   maxY: number;
 };
 
+export type ArchitectureRoleDetailRow = {
+  id: "pending" | "leaderCount" | "latestRun" | "blueprint";
+  label: string;
+  value: string;
+  actionBlueprintId?: string;
+};
+
 export const blueprintSelectOpenEventName = "hiveward:blueprint-select-open";
 const canvasWorldScreenScale = 9;
 const canvasWorldExpansionRingScale = 1;
@@ -184,6 +191,66 @@ function requiredExpansionRings(overage: number, ringSize: number): number {
 
 export function getBlueprintSelectOutsidePointerListenerOptions(): AddEventListenerOptions {
   return { capture: true };
+}
+
+export function shouldActivateBlueprintCardPointer(input: {
+  button: number;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+  defaultPrevented?: boolean;
+}): boolean {
+  if (input.defaultPrevented) return false;
+  if (input.button !== 0) return false;
+  return !input.ctrlKey && !input.metaKey && !input.altKey && !input.shiftKey;
+}
+
+export function isBlueprintCardKeyboardActivationKey(key: string): boolean {
+  return key === "Enter" || key === " " || key === "Spacebar";
+}
+
+export function buildArchitectureRoleDetailRows(input: {
+  roleKind: "ceo" | "leader";
+  pendingLabel: string;
+  pendingApprovalCount: number;
+  leaderLabel: string;
+  leaderCount?: number;
+  latestRunLabel: string;
+  latestRunStatus?: string;
+  noRunLabel: string;
+  businessLabel: string;
+  blueprintId?: string;
+  blueprintLabel?: string;
+}): ArchitectureRoleDetailRow[] {
+  const rows: ArchitectureRoleDetailRow[] = [
+    { id: "pending", label: input.pendingLabel, value: String(input.pendingApprovalCount) }
+  ];
+
+  if (input.roleKind === "ceo") {
+    return rows.concat({
+      id: "leaderCount",
+      label: input.leaderLabel,
+      value: String(input.leaderCount ?? 0)
+    });
+  }
+
+  rows.push({
+    id: "latestRun",
+    label: input.latestRunLabel,
+    value: input.latestRunStatus ?? input.noRunLabel
+  });
+
+  if (input.blueprintLabel) {
+    rows.push({
+      id: "blueprint",
+      label: input.businessLabel,
+      value: input.blueprintLabel,
+      actionBlueprintId: input.blueprintId
+    });
+  }
+
+  return rows;
 }
 
 export function buildBlueprintModelSelectOptions(input: {
