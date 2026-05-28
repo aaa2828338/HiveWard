@@ -1,4 +1,5 @@
-import type { AgentPermissionProfile } from "@hiveward/shared";
+import type { AgentPermissionProfile, RuntimeAccessPolicy, RuntimeAccessPolicyRuntime } from "@hiveward/shared";
+import { normalizeRuntimeAccessPolicy, unsupportedRuntimeAccessPolicyChanges } from "@hiveward/shared";
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import type { SandboxMode } from "@openai/codex-sdk";
 
@@ -8,6 +9,18 @@ const claudeCommandTools = ["Bash(npm test:*)", "Bash(npm run:*)"];
 
 export function normalizePermissionProfile(value: unknown): AgentPermissionProfile {
   return value === "workspace_write" ? "workspace_write" : "read_only";
+}
+
+export function normalizeTaskRuntimeAccessPolicy(input: {
+  runtimeAccessPolicy?: Partial<RuntimeAccessPolicy>;
+  permissionProfile?: AgentPermissionProfile;
+}, runtime?: RuntimeAccessPolicyRuntime): RuntimeAccessPolicy {
+  const policy = normalizeRuntimeAccessPolicy(input.runtimeAccessPolicy, input.permissionProfile);
+  const unsupported = runtime ? unsupportedRuntimeAccessPolicyChanges(runtime, policy) : [];
+  if (runtime && unsupported.length > 0) {
+    throw new Error(`Runtime ${runtime} does not support requested access policy axes: ${unsupported.join(", ")}.`);
+  }
+  return policy;
 }
 
 export function mapClaudePermission(profile: AgentPermissionProfile): PermissionMode {

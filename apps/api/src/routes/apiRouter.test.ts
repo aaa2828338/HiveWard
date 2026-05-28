@@ -13,6 +13,7 @@ import {
 import type {
   AgentNodeConfig,
   BlueprintDefinition,
+  BlueprintNodeRun,
   BlueprintRun,
   ChatHistoryMessage,
   ChatStreamEvent,
@@ -22,10 +23,12 @@ import type {
   OpenClawVersionInfo,
   RuntimeOverview,
   StartAgentTaskInput,
-  WorkspaceDashboard
+  WorkspaceDashboard,
+  ApprovalRequest
 } from "@hiveward/shared";
-import { hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { hivewardInboxSubmissionSchema, resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
+import { ArtifactService } from "../services/lifecycleServices";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
@@ -541,30 +544,22 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes blueprint approval approve, reject, and reply actions to the worker", async () => {
+  it("routes legacy blueprint approval actions through pending approval requests", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
+    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
     const worker = {
-      async approveRun(
+      async applyApprovalRequest(
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
-        nodeRunId?: string,
-        comment?: string,
-        selectedReplyId?: string
+        approvalRequestId: string,
+        action: "approve" | "reject" | "reply",
+        input?: { comment?: string; message?: string; selectedReplyId?: string }
       ) {
-        calls.push({ action: "approve", nodeRunId, comment, selectedReplyId });
-        return { ...run, status: "running" as const };
-      },
-      async rejectRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
-        calls.push({ action: "reject", nodeRunId, comment });
-        return { ...run, status: "running" as const };
-      },
-      async replyToApproval(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, message: string) {
-        calls.push({ action: "reply", nodeRunId, message });
+        calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message, selectedReplyId: input?.selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       },
       async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, selectedReplyId: string) {
-        calls.push({ action: "select", nodeRunId, selectedReplyId });
+        calls.push({ action: "select", approvalRequestId: nodeRunId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -572,6 +567,9 @@ describe("apiRouter", () => {
     try {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      const approval1 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+      const approval2 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-2");
+      const approval3 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-3");
 
       await withApiServer(fixture.store, async (baseUrl) => {
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
@@ -597,11 +595,118 @@ describe("apiRouter", () => {
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" },
-        { action: "reject", nodeRunId: "node-run-2", comment: "Needs work." },
-        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." },
-        { action: "select", nodeRunId: "node-run-4", selectedReplyId: "reply-4" }
+        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: "reply-1" },
+        { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
+        { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
+        { action: "select", approvalRequestId: "node-run-4", selectedReplyId: "reply-4" }
       ]);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published HTML artifact download URLs from the configured store data directory", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const [artifact] = await service.publishFromNodeRun({
+        runId: "run-artifact-route",
+        roundId: "round-artifact-route",
+        nodeRun: {
+          id: "node-run-artifact-route",
+          blueprintRunId: "run-artifact-route",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "html-builder",
+          nodeLabel: "HTML Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: "<!doctype html><html><body>artifact route ok</body></html>"
+        } satisfies BlueprintNodeRun
+      });
+      if (!artifact?.downloadUrl) throw new Error("Expected published HTML artifact with a downloadUrl.");
+
+      expect(artifact).toMatchObject({
+        kind: "html",
+        trusted: false,
+        previewPolicy: "sandboxed_iframe"
+      });
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}${artifact.downloadUrl}`);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("artifact route ok");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published markdown and JSON artifact download URLs", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const markdownArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-md",
+        roundId: "round-artifact-route-md",
+        nodeRun: {
+          id: "node-run-artifact-route-md",
+          blueprintRunId: "run-artifact-route-md",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "markdown-builder",
+          nodeLabel: "Markdown Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: "# Artifact route markdown"
+        } satisfies BlueprintNodeRun
+      });
+      const jsonArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-json",
+        roundId: "round-artifact-route-json",
+        nodeRun: {
+          id: "node-run-artifact-route-json",
+          blueprintRunId: "run-artifact-route-json",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "json-builder",
+          nodeLabel: "JSON Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: { ok: true, message: "artifact route json" }
+        } satisfies BlueprintNodeRun
+      });
+      const markdown = markdownArtifacts[0];
+      const json = jsonArtifacts[0];
+      if (!markdown?.downloadUrl || !json?.downloadUrl) throw new Error("Expected markdown and JSON artifacts with download URLs.");
+
+      expect(markdown).toMatchObject({
+        kind: "markdown",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".md")
+      });
+      expect(json).toMatchObject({
+        kind: "json",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".json")
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const markdownResponse = await fetch(`${baseUrl}${markdown.downloadUrl}`);
+        expect(markdownResponse.status).toBe(200);
+        expect(await markdownResponse.text()).toContain("Artifact route markdown");
+
+        const jsonResponse = await fetch(`${baseUrl}${json.downloadUrl}`);
+        expect(jsonResponse.status).toBe(200);
+        expect(await jsonResponse.json()).toMatchObject({ ok: true, message: "artifact route json" });
+      });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -2905,6 +3010,31 @@ async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardS
   const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
   await store.init();
   return { dir, store };
+}
+
+async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, nodeRunId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${nodeRunId}`,
+    runId,
+    nodeRunId,
+    kind: "agent_proposal",
+    status: "pending",
+    title: `${nodeRunId} approval`,
+    body: "Review output",
+    sourceRef: { type: "node_run", id: nodeRunId },
+    threadId: `thread-${nodeRunId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("agent_proposal", "pending"),
+    requestedBy: {
+      type: "node",
+      label: nodeRunId,
+      nodeId: nodeRunId
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
 }
 
 async function withApiServer(

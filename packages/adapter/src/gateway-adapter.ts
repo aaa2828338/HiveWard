@@ -18,6 +18,7 @@ import type {
   StartedAgentTaskResult,
   WaitForAgentTaskInput,
 } from "@hiveward/shared";
+import { normalizeRuntimeAccessPolicy, runtimeAccessPolicySupportForRuntime } from "@hiveward/shared";
 import type {
   RuntimeAdapter,
   RuntimeChatSessionInput,
@@ -590,8 +591,11 @@ export function formatAgentMessage(input: StartAgentTaskInput): string {
   const skillSection = input.skillIds?.length
     ? ["Selected skills:", ...input.skillIds.map((skillId) => `- ${skillId}`)].join("\n")
     : undefined;
+  const runtimeAccessSection = formatRuntimeAccessPolicySection(input);
   if (input.input === undefined) {
-    return [input.prompt, skillSection ? "" : undefined, skillSection].filter((section) => section !== undefined).join("\n");
+    return [input.prompt, skillSection ? "" : undefined, skillSection, runtimeAccessSection ? "" : undefined, runtimeAccessSection]
+      .filter((section) => section !== undefined)
+      .join("\n");
   }
 
   const formattedInput = formatAgentInput(input.input);
@@ -602,9 +606,23 @@ export function formatAgentMessage(input: StartAgentTaskInput): string {
     input.prompt,
     skillSection ? "" : undefined,
     skillSection,
+    runtimeAccessSection ? "" : undefined,
+    runtimeAccessSection,
     formattedInput ? "" : undefined,
     formattedInput,
   ].filter((section) => section !== undefined).join("\n");
+}
+
+function formatRuntimeAccessPolicySection(input: StartAgentTaskInput): string | undefined {
+  if (!input.runtimeAccessPolicy && !input.permissionProfile) return undefined;
+  const policy = normalizeRuntimeAccessPolicy(input.runtimeAccessPolicy, input.permissionProfile);
+  const support = runtimeAccessPolicySupportForRuntime("openclaw");
+  return [
+    "Runtime access policy:",
+    `- filesystem: ${policy.filesystem} (${support.filesystem})`,
+    `- network: ${policy.network} (${support.network})`,
+    `- webSearch: ${policy.webSearch} (${support.webSearch})`
+  ].join("\n");
 }
 
 function formatAgentInput(input: unknown): string {

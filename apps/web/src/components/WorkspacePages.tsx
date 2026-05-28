@@ -753,8 +753,12 @@ export function ApprovalsPage({
   language,
   t,
   onApprove,
+  onApproveApprovalRequest,
+  onComplete,
   onReject,
+  onRejectApprovalRequest,
   onReply,
+  onReplyApprovalRequest,
   onSelectApprovalReply,
   onReplyInboxItem,
   onApproveInboxItem,
@@ -765,8 +769,12 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string, selectedReplyId?: string) => void;
+  onApproveApprovalRequest: (approvalRequestId: string, comment?: string, selectedReplyId?: string) => void;
+  onComplete: (approvalRequestId: string, comment?: string) => void;
   onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
+  onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
+  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSelectApprovalReply: (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
@@ -806,7 +814,7 @@ export function ApprovalsPage({
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
   const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
   const canApproveSelection = Boolean(
-    selectedApproval ? selectedApproval.canApprove !== false : selectedInboxOperable
+    selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable
   );
   const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
@@ -878,11 +886,14 @@ export function ApprovalsPage({
       createdAt: new Date().toISOString()
     };
     if (selectedApproval?.canReply) {
-      const pendingHarnessReply = {
-        id: `${reply.id}:pending`,
-        harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
-        createdAt: reply.createdAt
-      };
+      const shouldWaitForHarnessReply = !selectedApproval.approvalRequestId || selectedApproval.kind === "agent_proposal";
+      const pendingHarnessReply = shouldWaitForHarnessReply
+        ? {
+            id: `${reply.id}:pending`,
+            harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
+            createdAt: reply.createdAt
+          }
+        : undefined;
       flushSync(() => {
         setLocalReplies((current) => ({
           ...current,
@@ -891,10 +902,23 @@ export function ApprovalsPage({
             reply
           ]
         }));
-        setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+        if (pendingHarnessReply) {
+          setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+        } else {
+          setPendingHarnessReplies((current) => {
+            if (!current[selectedThreadKey]) return current;
+            const next = { ...current };
+            delete next[selectedThreadKey];
+            return next;
+          });
+        }
         setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
       });
       window.setTimeout(() => {
+        if (selectedApproval.approvalRequestId) {
+          onReplyApprovalRequest(selectedApproval.approvalRequestId, body);
+          return;
+        }
         onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
       }, 0);
       return;
@@ -924,7 +948,16 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval && selectedApproval.canApprove !== false) {
-      onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
+      if (selectedApproval.approvalRequestId) {
+        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId);
+      } else {
+        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
+      }
+      clearReplyDraft();
+      return;
+    }
+    if (selectedApproval?.canComplete && selectedApproval.approvalRequestId) {
+      onComplete(selectedApproval.approvalRequestId, comment);
       clearReplyDraft();
     }
   };
@@ -942,7 +975,11 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval?.canReject) {
-      onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
+      if (selectedApproval.approvalRequestId) {
+        onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
+      } else {
+        onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
+      }
     }
     clearReplyDraft();
   };
@@ -1051,6 +1088,8 @@ export function ApprovalsPage({
                   const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
                   const processed = approval.status === "approved" || approval.status === "rejected";
+                  const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
+                  const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
                     <article
                       key={approval.nodeRunId}
@@ -1082,12 +1121,20 @@ export function ApprovalsPage({
                         <button
                           type="button"
                           className="inbox-row-action primary-action"
-                          title={approval.canApprove === false ? inboxCopy.processedAction : t.actions.approve}
-                          aria-label={t.actions.approve}
-                          disabled={approval.canApprove === false}
-                          onClick={() =>
-                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId)
-                          }
+                          title={canApproveOrComplete ? approveOrCompleteLabel : inboxCopy.processedAction}
+                          aria-label={approveOrCompleteLabel}
+                          disabled={!canApproveOrComplete}
+                          onClick={() => {
+                            if (approval.canApprove === false && approval.canComplete && approval.approvalRequestId) {
+                              onComplete(approval.approvalRequestId);
+                              return;
+                            }
+                            if (approval.approvalRequestId) {
+                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId);
+                              return;
+                            }
+                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId);
+                          }}
                         >
                           <BadgeCheck size={16} />
                         </button>
@@ -1097,7 +1144,13 @@ export function ApprovalsPage({
                           title={inboxCopy.reject}
                           aria-label={inboxCopy.reject}
                           disabled={!approval.canReject}
-                          onClick={() => onReject(approval.blueprintRunId, approval.nodeRunId)}
+                          onClick={() => {
+                            if (approval.approvalRequestId) {
+                              onRejectApprovalRequest(approval.approvalRequestId);
+                              return;
+                            }
+                            onReject(approval.blueprintRunId, approval.nodeRunId);
+                          }}
                         >
                           <Trash2 size={15} />
                         </button>
@@ -1122,6 +1175,7 @@ export function ApprovalsPage({
             language={language}
             messages={selectedMessages}
             onApprove={approveSelectedThread}
+            approveLabel={selectedApproval?.canApprove === false && selectedApproval.canComplete ? inboxCopy.complete : inboxCopy.approve}
             canApprove={canApproveSelection}
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
@@ -1202,6 +1256,7 @@ type InboxConversationMessage = {
 
 function InboxConversationPanel({
   approval,
+  approveLabel,
   copy,
   inboxItem,
   language,
@@ -1217,6 +1272,7 @@ function InboxConversationPanel({
   onSendReply
 }: {
   approval?: PendingApprovalItem;
+  approveLabel: string;
   copy: InboxCopy;
   inboxItem?: InboxItem;
   language: Language;
@@ -1327,7 +1383,7 @@ function InboxConversationPanel({
           </button>
           <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
-            {copy.approve}
+            {approveLabel}
           </button>
           <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
             <Trash2 size={15} />
@@ -1343,6 +1399,7 @@ type InboxCopy = {
   allBlueprints: string;
   approvalRequest: string;
   approve: string;
+  complete: string;
   blueprintFilter: string;
   conversation: string;
   decidedAt: string;
@@ -1388,6 +1445,7 @@ function getInboxCopy(language: Language): InboxCopy {
       allBlueprints: "全部蓝图",
       approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
       approve: "\u6279\u51c6",
+      complete: "\u5b8c\u6210",
       blueprintFilter: "蓝图",
       conversation: "\u5bf9\u8bdd",
       decidedAt: "处理时间",
@@ -1427,6 +1485,7 @@ function getInboxCopy(language: Language): InboxCopy {
     allBlueprints: "All blueprints",
     approvalRequest: "Approval request",
     approve: "Approve",
+    complete: "Complete",
     blueprintFilter: "Blueprint",
     conversation: "Conversation",
     decidedAt: "Decided",
@@ -1614,6 +1673,7 @@ function formalInboxTypeLabel(type: InboxItem["type"], language: Language): stri
 }
 
 function approvalSubject(approval: PendingApprovalItem): string {
+  if (approval.kind === "iteration_requirement_plan") return "Round Execution Plan";
   return approval.nodeLabel || approval.blueprintName;
 }
 

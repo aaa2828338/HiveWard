@@ -15,7 +15,7 @@ import type {
   WaitForAgentTaskInput
 } from "@hiveward/shared";
 import { AgentSdkError, formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
-import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizePermissionProfile } from "./permissions";
+import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalizeTaskRuntimeAccessPolicy } from "./permissions";
 import { buildSdkChatPrompt, mapClaudeEffort, mapClaudeThinking } from "./chat-envelope";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
 import { isRecord, readString, runtimeLabelFromRecord } from "./runtime-state";
@@ -235,22 +235,24 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
   }): Promise<AgentTaskResult> {
     let sessionKey = initialSessionKey;
     let finalMessage: SDKResultMessage | undefined;
-    const permissionProfile = normalizePermissionProfile(input.permissionProfile);
-    const sdkOptions: Options = {
-      abortController,
-      cwd: workingDirectory,
-      model: normalizeClaudeModel(input.modelId),
-      permissionMode: mapClaudePermission(permissionProfile),
-      tools: mapClaudeAvailableTools(permissionProfile, input.tools),
-      allowedTools: mapClaudeTools(permissionProfile, input.tools),
-      skills: input.skillIds?.length ? input.skillIds : undefined,
-      outputFormat: input.outputSchema ? { type: "json_schema", schema: input.outputSchema } : undefined
-    };
 
     try {
       if (abortController.signal.aborted) {
         return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
       }
+
+      const runtimeAccessPolicy = normalizeTaskRuntimeAccessPolicy(input, "claude");
+      const permissionProfile = runtimeAccessPolicy.filesystem;
+      const sdkOptions: Options = {
+        abortController,
+        cwd: workingDirectory,
+        model: normalizeClaudeModel(input.modelId),
+        permissionMode: mapClaudePermission(permissionProfile),
+        tools: mapClaudeAvailableTools(permissionProfile, input.tools),
+        allowedTools: mapClaudeTools(permissionProfile, input.tools),
+        skills: input.skillIds?.length ? input.skillIds : undefined,
+        outputFormat: input.outputSchema ? { type: "json_schema", schema: input.outputSchema } : undefined
+      };
 
       for await (const message of this.queryFn({ prompt: buildPromptEnvelope(input), options: sdkOptions })) {
         if (hasSessionId(message)) {

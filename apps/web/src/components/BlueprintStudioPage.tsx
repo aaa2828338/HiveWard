@@ -52,6 +52,8 @@ import {
   isManagerSlotForwardOutHandle,
   isManagerSlotInnerInHandle,
   isManagerSlotInnerOutHandle,
+  normalizeRuntimeAccessPolicy,
+  runtimeAccessPolicySupportByRuntime,
   resolveManagerSlotExecutionMode,
   resolveManagerSlotParallelLaneCount,
   type AgentRuntimeId
@@ -80,7 +82,9 @@ import type {
   BlueprintNodeRun,
   BlueprintNodeType,
   BlueprintRunSummary,
-  BlueprintRunView
+  BlueprintRunView,
+  RuntimeAccessPolicy,
+  RuntimeAccessPolicyAxisSupport
 } from "@hiveward/shared";
 import {
   MANAGER_SLOT_DEFAULT_SIZE,
@@ -1629,6 +1633,7 @@ export function BlueprintStudioPage({
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
             harnessSkillStatuses={harnessSkillStatuses}
+            allNodes={blueprint.nodes}
             node={inspectedNode}
             t={t}
             onClose={() => {
@@ -1874,6 +1879,7 @@ function NodeDetailSidebar({
   configuredAgents,
   harnessStatuses,
   harnessSkillStatuses,
+  allNodes,
   node,
   t,
   onClose,
@@ -1884,6 +1890,7 @@ function NodeDetailSidebar({
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  allNodes: BlueprintNode[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -1912,6 +1919,7 @@ function NodeDetailSidebar({
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
             harnessSkillStatuses={harnessSkillStatuses}
+            allNodes={allNodes}
             models={models}
             channels={channels}
             onPatchNode={onPatchNode}
@@ -2066,6 +2074,92 @@ function BlueprintSelect({
   );
 }
 
+function RuntimeAccessPolicyFields({
+  runtimeId,
+  config,
+  onPatchConfig
+}: {
+  runtimeId: AgentRuntimeId;
+  config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">;
+  onPatchConfig: (patch: Partial<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig>) => void;
+}) {
+  const policy = normalizePolicyForRuntime(config, runtimeId);
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  const patchPolicy = (patch: Partial<RuntimeAccessPolicy>) => {
+    const nextPolicy = normalizePolicyForRuntime({ ...config, runtimeAccessPolicy: { ...policy, ...patch } }, runtimeId);
+    onPatchConfig({
+      runtimeAccessPolicy: nextPolicy,
+      permissionProfile: nextPolicy.filesystem
+    });
+  };
+
+  return (
+    <>
+      <label>
+        <span>{policyAxisLabel("Filesystem", support.filesystem)}</span>
+        <BlueprintSelect
+          value={policy.filesystem}
+          options={[
+            { value: "read_only", label: "Read only" },
+            { value: "workspace_write", label: "Workspace write" }
+          ]}
+          ariaLabel="Filesystem access"
+          onChange={(value) => patchPolicy({ filesystem: value as RuntimeAccessPolicy["filesystem"] })}
+        />
+      </label>
+      <label>
+        <span>{policyAxisLabel("Network", support.network)}</span>
+        <BlueprintSelect
+          value={policy.network}
+          options={[
+            { value: "enabled", label: "Enabled" },
+            { value: "disabled", label: "Disabled", disabled: support.network === "unsupported" }
+          ]}
+          ariaLabel="Network access"
+          disabled={support.network === "unsupported"}
+          onChange={(value) => patchPolicy({ network: value as RuntimeAccessPolicy["network"] })}
+        />
+      </label>
+      <label>
+        <span>{policyAxisLabel("Web search", support.webSearch)}</span>
+        <BlueprintSelect
+          value={policy.webSearch}
+          options={[
+            { value: "disabled", label: "Disabled" },
+            { value: "live", label: "Live", disabled: support.webSearch === "unsupported" }
+          ]}
+          ariaLabel="Web search access"
+          disabled={support.webSearch === "unsupported"}
+          onChange={(value) => patchPolicy({ webSearch: value as RuntimeAccessPolicy["webSearch"] })}
+        />
+      </label>
+    </>
+  );
+}
+
+function normalizePolicyForRuntime(
+  config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">,
+  runtimeId: AgentRuntimeId
+): RuntimeAccessPolicy {
+  const defaults: RuntimeAccessPolicy = {
+    filesystem: "read_only",
+    network: "enabled",
+    webSearch: "disabled"
+  };
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  const policy = normalizeRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile);
+  return {
+    filesystem: policy.filesystem,
+    network: support.network === "unsupported" ? defaults.network : policy.network,
+    webSearch: support.webSearch === "unsupported" ? defaults.webSearch : policy.webSearch
+  };
+}
+
+function policyAxisLabel(label: string, support: RuntimeAccessPolicyAxisSupport): string {
+  if (support === "enforced") return label;
+  return `${label} (${support})`;
+}
+
 function BatchAgentSettingsModal({
   nodes,
   models,
@@ -2169,6 +2263,7 @@ function NodeConfigForm({
   configuredAgents,
   harnessStatuses,
   harnessSkillStatuses,
+  allNodes,
   models,
   channels,
   onPatchNode,
@@ -2179,6 +2274,7 @@ function NodeConfigForm({
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  allNodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
@@ -2254,6 +2350,11 @@ function NodeConfigForm({
               />
             )}
           </label>
+          <RuntimeAccessPolicyFields
+            runtimeId={runtimeId}
+            config={config}
+            onPatchConfig={onPatchConfig}
+          />
           <label className="field-span-full">
             <span>{t.fields.systemPrompt}</span>
             <textarea
@@ -2386,6 +2487,12 @@ function NodeConfigForm({
       { value: "openclaw", label: "OpenClaw" },
       ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
     ];
+    const preflightAgentOptions: BlueprintSelectOption[] = [
+      { value: "", label: "Manager fallback" },
+      ...allNodes
+        .filter((candidate) => candidate.type === "agent")
+        .map((candidate) => ({ value: candidate.id, label: candidate.config.label }))
+    ];
     const modelOptions: BlueprintSelectOption[] = [
       { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
       ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
@@ -2423,6 +2530,34 @@ function NodeConfigForm({
             />
           )}
         </label>
+        <RuntimeAccessPolicyFields
+          runtimeId={runtimeId}
+          config={config}
+          onPatchConfig={onPatchConfig}
+        />
+        <label>
+          <span>{t.fields.researchAgent}</span>
+          <BlueprintSelect
+            value={config.researchAgentNodeId ?? ""}
+            options={preflightAgentOptions}
+            ariaLabel={t.fields.researchAgent}
+            onChange={(value) => onPatchConfig({ researchAgentNodeId: value || undefined })}
+          />
+        </label>
+        <label>
+          <span>{t.fields.requirementAgent}</span>
+          <BlueprintSelect
+            value={config.requirementAgentNodeId ?? ""}
+            options={preflightAgentOptions}
+            ariaLabel={t.fields.requirementAgent}
+            onChange={(value) => onPatchConfig({ requirementAgentNodeId: value || undefined })}
+          />
+        </label>
+        {(!config.researchAgentNodeId || !config.requirementAgentNodeId) && (
+          <div className="empty-state compact-empty-state field-span-full">
+            Specialized research and round-plan agents are optional. When either is empty, the manager handles preflight fallback and automatic runs continue.
+          </div>
+        )}
         <AgentSkillField
           className="field-span-full"
           selectedSkills={config.skillIds ?? []}
@@ -2448,6 +2583,16 @@ function NodeConfigForm({
             max={50}
             fallback={12}
             onValueChange={(maxHandoffs) => onPatchConfig({ maxHandoffs })}
+          />
+        </label>
+        <label>
+          <span>{t.fields.maxPreparationAttempts}</span>
+          <BoundedNumberInput
+            value={config.maxPreparationAttempts ?? 3}
+            min={1}
+            max={10}
+            fallback={3}
+            onValueChange={(maxPreparationAttempts) => onPatchConfig({ maxPreparationAttempts })}
           />
         </label>
         <label className="field-span-full">
@@ -2772,14 +2917,18 @@ function buildRuntimeConfigPatch(
   if (runtimeId === "openclaw") {
     return {
       ...patch,
-      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main"
+      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main",
+      runtimeAccessPolicy: normalizePolicyForRuntime(config, runtimeId),
+      permissionProfile: normalizePolicyForRuntime(config, runtimeId).filesystem
     };
   }
+  const runtimeAccessPolicy = normalizePolicyForRuntime(config, runtimeId);
   return {
     ...patch,
     openclawAgentId: undefined,
     send: undefined,
-    permissionProfile: config.permissionProfile ?? "read_only",
+    permissionProfile: runtimeAccessPolicy.filesystem,
+    runtimeAccessPolicy,
     timeoutMs: config.timeoutMs ?? 600000
   };
 }
@@ -3889,6 +4038,7 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       label: t.defaults.managerLabel,
       portCount: 3,
       maxHandoffs: 12,
+      maxPreparationAttempts: 3,
       instructions: t.defaults.managerInstructions,
       openclawAgentId: "main",
       agentName: "manager",

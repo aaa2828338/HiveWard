@@ -1069,6 +1069,55 @@ export function App() {
     [applyRunView, withBusy]
   );
 
+  const applyApprovalRequestResponse = useCallback(
+    async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
+      if (response.run) {
+        applyRunView(response.run);
+        setSelectedRunId(response.run.run.id);
+        return;
+      }
+      await hydrateWorkspace({ blueprintId: blueprint?.id });
+    },
+    [applyRunView, blueprint?.id, hydrateWorkspace]
+  );
+
+  const approveApprovalRequest = useCallback(
+    (approvalRequestId: string, comment?: string, selectedReplyId?: string) => {
+      void withBusy("approveApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment, selectedReplyId));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const rejectApprovalRequest = useCallback(
+    (approvalRequestId: string, comment?: string) => {
+      void withBusy("rejectApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.rejectApprovalRequest(approvalRequestId, comment));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const replyToApprovalRequest = useCallback(
+    (approvalRequestId: string, message: string) => {
+      void withBusy("replyApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const completeRunApproval = useCallback(
+    (approvalRequestId: string, comment?: string) => {
+      void withBusy("completeRunApproval", async () => {
+        const response = await api.completeApprovalRequest(approvalRequestId, comment);
+        await applyApprovalRequestResponse(response);
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
   const selectRunApprovalReply = useCallback(
     (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => {
       void withBusy("selectRunApprovalReply", async () => {
@@ -1394,8 +1443,12 @@ export function App() {
           language={language}
           t={t}
           onApprove={approveRun}
+          onApproveApprovalRequest={approveApprovalRequest}
+          onComplete={completeRunApproval}
           onReject={rejectRunApproval}
+          onRejectApprovalRequest={rejectApprovalRequest}
           onReply={replyToRunApproval}
+          onReplyApprovalRequest={replyToApprovalRequest}
           onSelectApprovalReply={selectRunApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
@@ -3171,6 +3224,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
+  if (action === "completeRunApproval") return t.errors.approve;
   if (action === "selectRunApprovalReply") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

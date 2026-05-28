@@ -116,6 +116,7 @@ export interface Messages {
     manager: string;
     maxHandoffs: string;
     maxIterations: string;
+    maxPreparationAttempts: string;
     model: string;
     mode: string;
     nodeId: string;
@@ -128,7 +129,9 @@ export interface Messages {
     prompt: string;
     provider: string;
     relatedRun: string;
+    requirementAgent: string;
     relatedBlueprint: string;
+    researchAgent: string;
     runLabel: string;
     section: string;
     settings: string;
@@ -344,6 +347,7 @@ export const messages: Record<Language, Messages> = {
       manager: "Manager",
       maxHandoffs: "Max handoffs",
       maxIterations: "Max iterations",
+      maxPreparationAttempts: "Preparation attempts",
       model: "Model",
       mode: "Mode",
       nodeId: "Node ID",
@@ -356,7 +360,9 @@ export const messages: Record<Language, Messages> = {
       prompt: "Prompt",
       provider: "Provider",
       relatedRun: "Related run",
+      requirementAgent: "Round plan agent",
       relatedBlueprint: "Related blueprint",
+      researchAgent: "Research agent",
       runLabel: "Run label",
       section: "Section",
       settings: "Settings",
@@ -671,6 +677,7 @@ export const messages: Record<Language, Messages> = {
       manager: "管理器",
       maxHandoffs: "最大交接次数",
       maxIterations: "最大迭代次数",
+      maxPreparationAttempts: "准备尝试次数",
       model: "模型",
       mode: "模式",
       nodeId: "节点 ID",
@@ -683,7 +690,9 @@ export const messages: Record<Language, Messages> = {
       prompt: "提示词",
       provider: "提供方",
       relatedRun: "关联运行",
+      requirementAgent: "提需 / Round plan agent",
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
+      researchAgent: "调研 agent",
       runLabel: "运行标签",
       section: "页面",
       settings: "设置",

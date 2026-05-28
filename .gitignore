@@ -5,8 +5,11 @@ coverage/
 .codex/
 .omx/
 data/*.json
+data/*.tmp
 data/blueprints/*.json
 data/runs/*.json
+data/artifacts/
+data/blueprint-workspaces/
 tmp/
 !.gitkeep
 !data/blueprints/.gitkeep

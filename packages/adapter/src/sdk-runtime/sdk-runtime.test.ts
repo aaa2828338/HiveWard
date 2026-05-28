@@ -71,6 +71,85 @@ describe("agent SDK runtime", () => {
     expect(mapCodexSandbox("workspace_write")).toBe("workspace-write");
   });
 
+  it("fails Claude tasks that request unsupported network or web search policy changes", async () => {
+    const workspace = createWorkspace();
+    let claudeCalled = false;
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => {
+        claudeCalled = true;
+        return fakeClaudeQuery([])({ prompt: "" });
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "claude",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "read_only",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "claude"
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("does not support requested access policy axes: network, webSearch");
+    expect(claudeCalled).toBe(false);
+  });
+
+  it("maps Codex runtime access policy axes into native thread options", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-policy-thread",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        finalResponse: "policy ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "workspace_write",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(threadOptions).toMatchObject({
+      sandboxMode: "workspace-write",
+      networkAccessEnabled: false,
+      webSearchMode: "live"
+    });
+  });
+
   it("starts Claude through the SDK without a platform auth precheck", async () => {
     const workspace = createWorkspace();
     let options: Parameters<ClaudeQueryFn>[0]["options"];

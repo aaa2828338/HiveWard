@@ -29,6 +29,15 @@ import type {
   HarnessId,
   HivewardChatMessage,
   HivewardChatSession,
+  ApprovalDecision,
+  ApprovalRequest,
+  Artifact,
+  IterationRound,
+  IterationSession,
+  ManagerContextSnapshot,
+  ManagerMail,
+  ReleaseReport,
+  RunTimelineItem,
   UpdateHivewardChatSessionRequest,
   RoleDriverBinding
 } from "@hiveward/shared";
@@ -69,6 +78,15 @@ interface HivewardStoreIndex {
   companyDashboards: Record<string, WorkspaceDashboard>;
   roleDirectories: Record<string, CompanyRoleDirectory>;
   inboxItems: Record<string, InboxItem[]>;
+  iterationSessions: IterationSession[];
+  iterationRounds: IterationRound[];
+  approvalRequests: ApprovalRequest[];
+  approvalDecisions: ApprovalDecision[];
+  artifacts: Artifact[];
+  releaseReports: ReleaseReport[];
+  managerContextSnapshots: ManagerContextSnapshot[];
+  runTimeline: RunTimelineItem[];
+  managerMail: ManagerMail[];
 }
 
 type RawHivewardStoreIndex = Partial<HivewardStoreIndex> & {
@@ -124,6 +142,10 @@ export class FileHivewardStore {
     this.chatStore = new FileHivewardChatStore(join(this.dataDir, "hiveward-chat-store.json"));
   }
 
+  getDataDir(): string {
+    return this.dataDir;
+  }
+
   async init(): Promise<void> {
     await this.enqueue(async () => {
       await mkdir(this.dataDir, { recursive: true });
@@ -155,7 +177,16 @@ export class FileHivewardStore {
           roleDirectories: {},
           inboxItems: {
             [seededCompanyId]: []
-          }
+          },
+          iterationSessions: [],
+          iterationRounds: [],
+          approvalRequests: [],
+          approvalDecisions: [],
+          artifacts: [],
+          releaseReports: [],
+          managerContextSnapshots: [],
+          runTimeline: [],
+          managerMail: []
         };
         index.roleDirectories[seededCompanyId] = buildRoleDirectory(index, seededCompanyId, now);
         await Promise.all(blueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
@@ -807,7 +838,7 @@ export class FileHivewardStore {
       const companyId = this.getCurrentCompanyId(index);
       const run = index.runIndex.find((item) => item.id === blueprintRunId);
       if (!run || !companyId || run.companyId !== companyId) return undefined;
-      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(blueprintRunId));
+      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(blueprintRunId), index);
     });
   }
 
@@ -820,7 +851,7 @@ export class FileHivewardStore {
         .filter((item) => item.companyId === companyId && item.blueprintId === blueprintId)
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
       if (!run) return undefined;
-      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(run.id));
+      return this.getRunViewFromArchive(await this.readRunArchiveUnlocked(run.id), index);
     });
   }
 
@@ -848,7 +879,7 @@ export class FileHivewardStore {
         .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())
           .map((run) => this.readRunArchiveUnlocked(run.id))
       );
-      return archives.map((archive) => this.getRunViewFromArchive(archive));
+      return archives.map((archive) => this.getRunViewFromArchive(archive, index));
     });
   }
 
@@ -870,47 +901,221 @@ export class FileHivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      const archives = await Promise.all(
-        index.runIndex
-          .filter((run) => run.companyId === companyId)
-          .map((run) => this.readRunArchiveUnlocked(run.id))
+      const runsById = new Map(index.runIndex.filter((run) => run.companyId === companyId).map((run) => [run.id, run]));
+      const archivesByRunId = new Map(
+        await Promise.all([...runsById.keys()].map(async (runId) => [runId, await this.readRunArchiveUnlocked(runId)] as const))
       );
-      return archives
-        .flatMap((archive) => archive.nodeRuns
-          .filter((nodeRun) => nodeRun.status === "waiting_approval")
-          .map((nodeRun) => ({ archive, nodeRun })))
-        .flatMap(({ archive, nodeRun }) => {
-          if (archive.run.companyId !== companyId || archive.blueprintSnapshot.companyId !== companyId) return [];
-
-          const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
+      return index.approvalRequests
+        .filter((request) => request.status === "pending" && runsById.has(request.runId))
+        .map((request) => {
+          const run = runsById.get(request.runId)!;
+          const nodeRun = request.nodeRunId
+            ? archivesByRunId.get(request.runId)?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
+            : undefined;
+          const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
           const selectedReplyId = readString(output?.selectedReplyId);
           const replies = readPendingApprovalReplies(output?.replies, selectedReplyId);
-          const blueprintNode = archive.blueprintSnapshot.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
-          const harnessId = blueprintNode?.type === "agent" ? readString(blueprintNode.runtimeId) ?? "openclaw" : undefined;
-          const upstream = readPendingApprovalUpstream(nodeRun.input);
-          const item: PendingApprovalItem = {
-            blueprintId: archive.blueprintSnapshot.id,
-            blueprintName: archive.blueprintSnapshot.name,
-            blueprintRunId: archive.run.id,
-            nodeRunId: nodeRun.id,
-            nodeId: nodeRun.nodeId,
-            nodeLabel: nodeRun.nodeLabel,
-            ...(harnessId ? { harnessId } : {}),
-            startedBy: archive.run.startedBy,
-            startedAt: archive.run.startedAt,
-            requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
-            status: "pending",
-            ...(output && "reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
+          const upstream = readPendingApprovalUpstream(nodeRun?.input);
+          return {
+            approvalRequestId: request.id,
+            kind: request.kind,
+            blueprintId: run.blueprintId,
+            blueprintName: run.blueprintName,
+            blueprintRunId: run.id,
+            nodeRunId: request.nodeRunId ?? request.id,
+            nodeId: request.requestedBy.nodeId ?? request.id,
+            nodeLabel: request.requestedBy.label,
+            startedBy: run.startedBy,
+            startedAt: run.startedAt,
+            requestedAt: request.requestedAt,
+            status: nodeRun?.status === "running" ? "replying" as const : "pending" as const,
+            reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
             ...(replies ? { replies } : {}),
             ...(selectedReplyId ? { selectedReplyId } : {}),
-            canApprove: true,
-            canReject: true,
-            ...(output?.approvalType === "agent" ? { canReply: true } : {}),
-            ...(upstream ? { upstream } : {})
+            ...(upstream ? { upstream } : {}),
+            canApprove: request.capabilities.approve,
+            canReject: request.capabilities.reject,
+            canReply: request.capabilities.reply,
+            canComplete: request.capabilities.complete,
+            canTerminate: request.capabilities.terminate
           };
-          return [item];
         })
         .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
+    });
+  }
+
+  async listApprovalRequests(filter: { runId?: string; status?: ApprovalRequest["status"] } = {}): Promise<ApprovalRequest[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.approvalRequests
+        .filter((request) => !filter.runId || request.runId === filter.runId)
+        .filter((request) => !filter.status || request.status === filter.status)
+        .slice()
+        .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
+    });
+  }
+
+  async getApprovalRequest(id: string): Promise<ApprovalRequest | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.approvalRequests.find((request) => request.id === id);
+    });
+  }
+
+  async upsertApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.approvalRequests, request);
+      await this.writeIndexUnlocked(index);
+      return request;
+    });
+  }
+
+  async appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.approvalDecisions, decision);
+      await this.writeIndexUnlocked(index);
+      return decision;
+    });
+  }
+
+  async listApprovalDecisions(approvalRequestId?: string): Promise<ApprovalDecision[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.approvalDecisions
+        .filter((decision) => !approvalRequestId || decision.approvalRequestId === approvalRequestId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    });
+  }
+
+  async listIterationSessions(runId?: string): Promise<IterationSession[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.iterationSessions.filter((session) => !runId || session.runId === runId);
+    });
+  }
+
+  async upsertIterationSession(session: IterationSession): Promise<IterationSession> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.iterationSessions, session);
+      await this.writeIndexUnlocked(index);
+      return session;
+    });
+  }
+
+  async listIterationRounds(filter: { runId?: string; sessionId?: string; status?: IterationRound["status"] } = {}): Promise<IterationRound[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.iterationRounds
+        .filter((round) => !filter.runId || round.runId === filter.runId)
+        .filter((round) => !filter.sessionId || round.sessionId === filter.sessionId)
+        .filter((round) => !filter.status || round.status === filter.status)
+        .slice()
+        .sort((left, right) => left.roundNumber - right.roundNumber);
+    });
+  }
+
+  async upsertIterationRound(round: IterationRound): Promise<IterationRound> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.iterationRounds, round);
+      await this.writeIndexUnlocked(index);
+      return round;
+    });
+  }
+
+  async listArtifacts(runId?: string): Promise<Artifact[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.artifacts.filter((artifact) => !runId || artifact.runId === runId);
+    });
+  }
+
+  async upsertArtifact(artifact: Artifact): Promise<Artifact> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.artifacts, artifact);
+      await this.writeIndexUnlocked(index);
+      return artifact;
+    });
+  }
+
+  async listReleaseReports(runId?: string): Promise<ReleaseReport[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.releaseReports
+        .filter((report) => !runId || report.runId === runId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    });
+  }
+
+  async upsertReleaseReport(report: ReleaseReport): Promise<ReleaseReport> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.releaseReports, report);
+      await this.writeIndexUnlocked(index);
+      return report;
+    });
+  }
+
+  async listManagerContextSnapshots(runId?: string): Promise<ManagerContextSnapshot[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.managerContextSnapshots
+        .filter((snapshot) => !runId || snapshot.runId === runId)
+        .slice()
+        .sort((left, right) => left.version - right.version);
+    });
+  }
+
+  async upsertManagerContextSnapshot(snapshot: ManagerContextSnapshot): Promise<ManagerContextSnapshot> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.managerContextSnapshots, snapshot);
+      await this.writeIndexUnlocked(index);
+      return snapshot;
+    });
+  }
+
+  async appendRunTimelineItem(item: Omit<RunTimelineItem, "sequence"> & { sequence?: number }): Promise<RunTimelineItem> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const sequence = item.sequence ?? nextTimelineSequence(index.runTimeline, item.runId);
+      const timelineItem: RunTimelineItem = { ...item, sequence };
+      upsertById(index.runTimeline, timelineItem);
+      await this.writeIndexUnlocked(index);
+      return timelineItem;
+    });
+  }
+
+  async listRunTimeline(runId: string): Promise<RunTimelineItem[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runTimeline.filter((item) => item.runId === runId).sort((left, right) => left.sequence - right.sequence);
+    });
+  }
+
+  async listManagerMail(runId?: string): Promise<ManagerMail[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.managerMail
+        .filter((mail) => !runId || mail.relatedRunId === runId)
+        .slice()
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+    });
+  }
+
+  async replaceManagerMail(mail: ManagerMail[]): Promise<ManagerMail[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const mailIds = new Set(mail.map((item) => item.id));
+      index.managerMail = [...index.managerMail.filter((item) => !mailIds.has(item.id)), ...mail];
+      await this.writeIndexUnlocked(index);
+      return mail;
     });
   }
 
@@ -1327,7 +1532,16 @@ export class FileHivewardStore {
       catalogSnapshot: rawIndex.catalogSnapshot,
       companyDashboards,
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now)
+      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now),
+      iterationSessions: normalizeArray<IterationSession>(rawIndex.iterationSessions),
+      iterationRounds: normalizeArray<IterationRound>(rawIndex.iterationRounds),
+      approvalRequests: normalizeArray<ApprovalRequest>(rawIndex.approvalRequests),
+      approvalDecisions: normalizeArray<ApprovalDecision>(rawIndex.approvalDecisions),
+      artifacts: normalizeArray<Artifact>(rawIndex.artifacts),
+      releaseReports: normalizeArray<ReleaseReport>(rawIndex.releaseReports),
+      managerContextSnapshots: normalizeArray<ManagerContextSnapshot>(rawIndex.managerContextSnapshots),
+      runTimeline: normalizeArray<RunTimelineItem>(rawIndex.runTimeline),
+      managerMail: normalizeArray<ManagerMail>(rawIndex.managerMail)
     };
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, rawIndex.roleDirectories?.[company.id]);
@@ -1368,7 +1582,16 @@ export class FileHivewardStore {
       catalogSnapshot: state.catalogSnapshot,
       companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now),
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(state.inboxItems, companies, now)
+      inboxItems: normalizeInboxItems(state.inboxItems, companies, now),
+      iterationSessions: normalizeArray<IterationSession>(state.iterationSessions),
+      iterationRounds: normalizeArray<IterationRound>(state.iterationRounds),
+      approvalRequests: normalizeArray<ApprovalRequest>(state.approvalRequests),
+      approvalDecisions: normalizeArray<ApprovalDecision>(state.approvalDecisions),
+      artifacts: normalizeArray<Artifact>(state.artifacts),
+      releaseReports: normalizeArray<ReleaseReport>(state.releaseReports),
+      managerContextSnapshots: normalizeArray<ManagerContextSnapshot>(state.managerContextSnapshots),
+      runTimeline: normalizeArray<RunTimelineItem>(state.runTimeline),
+      managerMail: normalizeArray<ManagerMail>(state.managerMail)
     };
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, state.roleDirectories?.[company.id]);
@@ -1391,12 +1614,26 @@ export class FileHivewardStore {
     return index;
   }
 
-  private getRunViewFromArchive(archive: BlueprintRunArchive): BlueprintRunView {
+  private getRunViewFromArchive(archive: BlueprintRunArchive, index: HivewardStoreIndex): BlueprintRunView {
+    const runId = archive.run.id;
     return {
       run: archive.run,
       nodeRuns: archive.nodeRuns,
       events: archive.events,
-      finalResult: archive.finalResult
+      finalResult: archive.finalResult,
+      iterationSessions: index.iterationSessions.filter((item) => item.runId === runId),
+      iterationRounds: index.iterationRounds.filter((item) => item.runId === runId),
+      approvalRequests: index.approvalRequests.filter((item) => item.runId === runId),
+      approvalDecisions: index.approvalDecisions.filter((item) =>
+        index.approvalRequests.some((request) => request.runId === runId && request.id === item.approvalRequestId)
+      ),
+      artifacts: index.artifacts.filter((item) => item.runId === runId),
+      releaseReports: index.releaseReports.filter((item) => item.runId === runId),
+      managerContextSnapshots: index.managerContextSnapshots.filter((item) => item.runId === runId),
+      runTimeline: index.runTimeline
+        .filter((item) => item.runId === runId)
+        .sort((left, right) => left.sequence - right.sequence),
+      managerMail: index.managerMail.filter((item) => item.relatedRunId === runId)
     };
   }
 
@@ -1558,6 +1795,24 @@ function normalizeInboxItemType(value: unknown): InboxItemType {
   return "report";
 }
 
+function normalizeArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value as T[] : [];
+}
+
+function upsertById<T extends { id: string }>(items: T[], item: T): void {
+  const index = items.findIndex((candidate) => candidate.id === item.id);
+  if (index >= 0) {
+    items[index] = item;
+  } else {
+    items.push(item);
+  }
+}
+
+function nextTimelineSequence(items: RunTimelineItem[], runId: string): number {
+  return items
+    .filter((item) => item.runId === runId)
+    .reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+}
 function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
   if (!isRecord(value)) return undefined;
   const role = value.role === "leader" ? "leader" : value.role === "ceo" ? "ceo" : undefined;

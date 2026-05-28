@@ -4,6 +4,7 @@ import type {
   BlueprintRunStatus,
   BlueprintRunSummary,
   BlueprintRunView,
+  ApprovalRequest,
   PendingApprovalItem
 } from "@hiveward/shared";
 
@@ -130,13 +131,23 @@ export function syncApprovalsForRun(
   current: PendingApprovalItem[],
   runView: BlueprintRunView
 ): PendingApprovalItem[] {
+  const approvalRequests = runView.approvalRequests ?? [];
+  const approvalsForRun = approvalRequests.length > 0
+    ? approvalRequests.map((request) => buildApprovalItemFromRequest(runView, request))
+    : buildLegacyApprovalItems(current, runView);
+
+  return [...approvalsForRun, ...current.filter((approval) => approval.blueprintRunId !== runView.run.id)]
+    .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
+}
+
+function buildLegacyApprovalItems(current: PendingApprovalItem[], runView: BlueprintRunView): PendingApprovalItem[] {
   const previousForRun = new Map(
     current
       .filter((approval) => approval.blueprintRunId === runView.run.id)
       .map((approval) => [approval.nodeRunId, approval])
   );
-  const approvalsForRun = runView.nodeRuns.flatMap((nodeRun) => {
-    const approval = buildApprovalItemFromNodeRun(runView, nodeRun);
+  return runView.nodeRuns.flatMap((nodeRun) => {
+    const approval = buildLegacyApprovalItemFromNodeRun(runView, nodeRun);
     if (approval) return [approval];
 
     const previous = previousForRun.get(nodeRun.id);
@@ -168,12 +179,47 @@ export function syncApprovalsForRun(
     }
     return [];
   });
-
-  return [...approvalsForRun, ...current.filter((approval) => approval.blueprintRunId !== runView.run.id)]
-    .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
 }
 
-function buildApprovalItemFromNodeRun(
+function buildApprovalItemFromRequest(
+  runView: BlueprintRunView,
+  request: ApprovalRequest
+): PendingApprovalItem {
+  const nodeRun = request.nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === request.nodeRunId) : undefined;
+  const upstream = readPendingApprovalUpstream(nodeRun?.input);
+  const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
+  const replies = readPendingApprovalReplies(output?.replies);
+  const selectedReplyId = readOptionalString(output?.selectedReplyId);
+  const isPending = request.status === "pending";
+  return {
+    approvalRequestId: request.id,
+    kind: request.kind,
+    blueprintId: runView.run.blueprintId,
+    blueprintName: runView.run.blueprintName,
+    blueprintRunId: runView.run.id,
+    nodeRunId: request.nodeRunId ?? request.id,
+    nodeId: request.requestedBy.nodeId ?? request.id,
+    nodeLabel: request.requestedBy.label,
+    startedBy: runView.run.startedBy,
+    startedAt: runView.run.startedAt,
+    requestedAt: request.requestedAt,
+    status: isPending
+      ? nodeRun?.status === "running" ? "replying" : "pending"
+      : request.status === "approved" || request.status === "completed" ? "approved" : "rejected",
+    reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+    ...(replies ? { replies } : {}),
+    ...(selectedReplyId ? { selectedReplyId } : {}),
+    canApprove: request.capabilities.approve,
+    canReject: request.capabilities.reject,
+    canReply: request.capabilities.reply,
+    canComplete: request.capabilities.complete,
+    canTerminate: request.capabilities.terminate,
+    decidedAt: isPending ? undefined : request.updatedAt,
+    ...(upstream ? { upstream } : {})
+  };
+}
+
+function buildLegacyApprovalItemFromNodeRun(
   runView: BlueprintRunView,
   nodeRun: BlueprintNodeRun
 ): PendingApprovalItem | undefined {

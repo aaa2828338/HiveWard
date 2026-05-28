@@ -13,6 +13,7 @@ import type {
 } from "./openclaw";
 import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
+import type { ApprovalDecision, ApprovalRequest, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 
 export interface ListBlueprintsResponse {
@@ -70,6 +71,33 @@ export interface ListBlueprintRunSummariesResponse {
 
 export interface ListPendingApprovalsResponse {
   approvals: PendingApprovalItem[];
+}
+
+export interface ListApprovalRequestsResponse {
+  approvalRequests: ApprovalRequest[];
+}
+
+export interface ApprovalRequestResponse {
+  approvalRequest: ApprovalRequest;
+  decision?: ApprovalDecision;
+  nextApprovalRequest?: ApprovalRequest;
+  run?: BlueprintRunView;
+}
+
+export interface ReplyApprovalRequestRequest {
+  message: string;
+}
+
+export interface CompleteApprovalRequestRequest {
+  comment?: string;
+}
+
+export interface TerminateApprovalRequestRequest {
+  comment?: string;
+}
+
+export interface ListApprovalMessagesResponse {
+  messages: ManagerMail[];
 }
 
 export interface RoleDirectoryResponse {
