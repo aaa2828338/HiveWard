@@ -10782,6 +10782,51 @@ html[data-theme="light"] .chat-avatar-assistant {
   min-height: 34px;
 }
 
+.architecture-detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.architecture-detail-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.055);
+}
+
+.architecture-detail-row > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.architecture-detail-row > strong,
+.architecture-detail-row > button strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.architecture-detail-row > button {
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  color: var(--accent-strong);
+  background: transparent;
+  box-shadow: none;
+}
+
+.architecture-detail-row > button:hover {
+  color: var(--accent);
+  background: transparent;
+}
+
 .architecture-empty {
   width: min(520px, 100%);
   padding: 28px;

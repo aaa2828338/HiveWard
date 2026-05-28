@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import {
   applyNodeChanges,
   Background,
@@ -103,12 +113,15 @@ import {
 import {
   blueprintSelectOpenEventName,
   buildAgentHarnessOptions,
+  buildArchitectureRoleDetailRows,
   buildBlueprintModelSelectOptions,
   buildSummaryHarnessOptions,
   createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
+  isBlueprintCardKeyboardActivationKey,
   isBlueprintSelectorDisabled,
   resolveBlueprintModelSelectValue,
+  shouldActivateBlueprintCardPointer,
   shouldExpandBlueprintCanvasWorld,
   type BlueprintCanvasContentBounds,
   type BlueprintCanvasViewport,
@@ -1063,6 +1076,34 @@ export function BlueprintStudioPage({
     [closeNodeContextMenu, closeNodeMenu, onSelectBlueprint]
   );
 
+  const activateBlueprintCardFromPointer = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>, blueprintId: string) => {
+      if (
+        !shouldActivateBlueprintCardPointer({
+          button: event.button,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          defaultPrevented: event.defaultPrevented
+        })
+      ) {
+        return;
+      }
+      selectBlueprintCard(blueprintId);
+    },
+    [selectBlueprintCard]
+  );
+
+  const activateBlueprintCardFromKeyboard = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>, blueprintId: string) => {
+      if (!isBlueprintCardKeyboardActivationKey(event.key)) return;
+      event.preventDefault();
+      selectBlueprintCard(blueprintId);
+    },
+    [selectBlueprintCard]
+  );
+
   const openBlueprintCardContextMenu = useCallback(
     (event: MouseEvent<HTMLButtonElement>, blueprintId: string) => {
       event.preventDefault();
@@ -1291,7 +1332,11 @@ export function BlueprintStudioPage({
               />
             </ReactFlow>
             {selectedArchitectureNode && (
-              <ArchitectureRoleDetailSidebar node={selectedArchitectureNode} onClose={clearArchitectureSelection} />
+              <ArchitectureRoleDetailSidebar
+                node={selectedArchitectureNode}
+                onClose={clearArchitectureSelection}
+                onOpenBlueprint={openArchitectureBlueprint}
+              />
             )}
           </section>
         </section>
@@ -1538,7 +1583,8 @@ export function BlueprintStudioPage({
                         key={item.id}
                         type="button"
                         className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
-                        onClick={() => selectBlueprintCard(item.id)}
+                        onPointerUp={(event) => activateBlueprintCardFromPointer(event, item.id)}
+                        onKeyDown={(event) => activateBlueprintCardFromKeyboard(event, item.id)}
                         onContextMenu={(event) => openBlueprintCardContextMenu(event, item.id)}
                       >
                         <span className="blueprint-card-icon">
@@ -1806,14 +1852,29 @@ function ArchitectureRoleNodeCard({ data, selected }: NodeProps) {
 
 function ArchitectureRoleDetailSidebar({
   node,
-  onClose
+  onClose,
+  onOpenBlueprint
 }: {
   node: Node<ArchitectureRoleNodeData>;
   onClose: () => void;
+  onOpenBlueprint: (blueprintId: string) => void;
 }) {
   const nodeData = node.data;
   const isCeo = nodeData.roleKind === "ceo";
   const blueprintLabel = nodeData.blueprintName ?? nodeData.blueprintId;
+  const detailRows = buildArchitectureRoleDetailRows({
+    roleKind: nodeData.roleKind,
+    pendingLabel: nodeData.copy.pending,
+    pendingApprovalCount: nodeData.pendingApprovalCount,
+    leaderLabel: nodeData.copy.leader,
+    leaderCount: nodeData.leaderCount,
+    latestRunLabel: nodeData.copy.latestRun,
+    latestRunStatus: nodeData.latestRunStatus,
+    noRunLabel: nodeData.copy.noRun,
+    businessLabel: nodeData.copy.business,
+    blueprintId: nodeData.blueprintId,
+    blueprintLabel
+  });
 
   return (
     <aside className="node-modal node-detail-sidebar" aria-label={nodeData.label} onPointerDown={(event) => event.stopPropagation()}>
@@ -1829,28 +1890,20 @@ function ArchitectureRoleDetailSidebar({
 
       <div className="node-modal-grid">
         <div className="node-modal-main">
-          <div className="config-form node-modal-form">
-            <label>
-              <span>{nodeData.copy.pending}</span>
-              <input value={String(nodeData.pendingApprovalCount)} readOnly />
-            </label>
-            {isCeo ? (
-              <label>
-                <span>{nodeData.copy.leader}</span>
-                <input value={String(nodeData.leaderCount ?? 0)} readOnly />
-              </label>
-            ) : (
-              <label>
-                <span>{nodeData.copy.latestRun}</span>
-                <input value={nodeData.latestRunStatus ?? nodeData.copy.noRun} readOnly />
-              </label>
-            )}
-            {!isCeo && blueprintLabel && (
-              <label>
-                <span>{nodeData.copy.business}</span>
-                <input value={blueprintLabel} readOnly />
-              </label>
-            )}
+          <div className="architecture-detail-list">
+            {detailRows.map((row) => (
+              <div key={row.id} className="architecture-detail-row">
+                <span>{row.label}</span>
+                {row.actionBlueprintId ? (
+                  <button type="button" onClick={() => onOpenBlueprint(row.actionBlueprintId!)}>
+                    <LayoutTemplate size={14} />
+                    <strong>{row.value}</strong>
+                  </button>
+                ) : (
+                  <strong>{row.value}</strong>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </div>

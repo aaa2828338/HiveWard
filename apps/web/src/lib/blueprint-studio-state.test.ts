@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAgentHarnessOptions,
+  buildArchitectureRoleDetailRows,
   buildBlueprintModelSelectOptions,
   buildSummaryHarnessOptions,
   blueprintSelectOpenEventName,
   createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
+  isBlueprintCardKeyboardActivationKey,
   isBlueprintSelectorDisabled,
   resolveBlueprintModelSelectValue,
+  shouldActivateBlueprintCardPointer,
   shouldExpandBlueprintCanvasWorld
 } from "./blueprint-studio-state";
 
@@ -64,6 +67,91 @@ describe("blueprint studio state", () => {
 
   it("uses a shared event name for closing peer selects when another select opens", () => {
     expect(blueprintSelectOpenEventName).toBe("hiveward:blueprint-select-open");
+  });
+
+  it("activates a blueprint card from an ordinary primary pointer gesture", () => {
+    expect(
+      shouldActivateBlueprintCardPointer({
+        button: 0,
+        ctrlKey: false,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(true);
+  });
+
+  it("does not activate a blueprint card from a secondary pointer gesture", () => {
+    expect(
+      shouldActivateBlueprintCardPointer({
+        button: 2,
+        ctrlKey: false,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(false);
+  });
+
+  it("does not activate a blueprint card from a macOS control-click context menu gesture", () => {
+    expect(
+      shouldActivateBlueprintCardPointer({
+        button: 0,
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false
+      })
+    ).toBe(false);
+  });
+
+  it("keeps keyboard activation explicit for blueprint cards", () => {
+    expect(isBlueprintCardKeyboardActivationKey("Enter")).toBe(true);
+    expect(isBlueprintCardKeyboardActivationKey(" ")).toBe(true);
+    expect(isBlueprintCardKeyboardActivationKey("Escape")).toBe(false);
+  });
+
+  it("builds architecture leader detail as static rows with a blueprint action", () => {
+    expect(
+      buildArchitectureRoleDetailRows({
+        roleKind: "leader",
+        pendingLabel: "待处理",
+        pendingApprovalCount: 0,
+        leaderLabel: "Leader",
+        latestRunLabel: "最近运行",
+        noRunLabel: "暂无运行",
+        businessLabel: "业务蓝图",
+        blueprintId: "blueprint-a",
+        blueprintLabel: "主动分发 Manager 测试机"
+      })
+    ).toEqual([
+      { id: "pending", label: "待处理", value: "0" },
+      { id: "latestRun", label: "最近运行", value: "暂无运行" },
+      {
+        id: "blueprint",
+        label: "业务蓝图",
+        value: "主动分发 Manager 测试机",
+        actionBlueprintId: "blueprint-a"
+      }
+    ]);
+  });
+
+  it("builds architecture CEO detail as static rows without a blueprint action", () => {
+    expect(
+      buildArchitectureRoleDetailRows({
+        roleKind: "ceo",
+        pendingLabel: "待处理",
+        pendingApprovalCount: 2,
+        leaderLabel: "Leader",
+        leaderCount: 3,
+        latestRunLabel: "最近运行",
+        noRunLabel: "暂无运行",
+        businessLabel: "业务蓝图"
+      })
+    ).toEqual([
+      { id: "pending", label: "待处理", value: "2" },
+      { id: "leaderCount", label: "Leader", value: "3" }
+    ]);
   });
 
   it("labels the implicit model choice as plain default without a runtime prefix", () => {
