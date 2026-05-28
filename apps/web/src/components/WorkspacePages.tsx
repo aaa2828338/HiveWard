@@ -64,6 +64,7 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
+type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
 
 type IdentitySpec = {
   key: string;
@@ -170,10 +171,11 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
-  kind: "node" | "slot_input" | "slot_output";
+  kind: "node" | "report";
   depth: number;
   node?: BlueprintNode;
   nodeRun?: BlueprintNodeRun;
+  humanReport?: RunAgentHumanReport;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   outputPreview: string;
@@ -495,7 +497,6 @@ export function RunsPage({
   const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() =>
     readAcknowledgedTerminalRunIds(getBrowserStorage())
   );
-  const orderedNodes = useMemo(() => getBlueprintNodeOrder(blueprint), [blueprint]);
   const blueprintRunStats = useMemo(() => {
     const stats = new Map<string, { latestRunId?: string; latestStatus?: BlueprintRunStatus; latestRawStatus?: BlueprintRunStatus; lastUsedAt: number }>();
     for (const runView of runs) {
@@ -515,17 +516,15 @@ export function RunsPage({
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, blueprint, orderedNodes, t);
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, blueprint?.nodes]);
+    return buildTraceIssues(activeRun, blueprint, t);
+  }, [activeRun?.events, activeRun?.nodeRuns, activeRun?.agentHumanReports, t, blueprint?.nodes]);
 
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : undefined;
   const activeIssueOutput =
     activeIssue?.outputBody !== undefined
       ? activeIssue.outputBody
-      : activeIssue?.nodeRun?.output !== undefined
-        ? formatOutput(activeIssue.nodeRun.output)
-        : activeIssue?.nodeRun?.error;
-  const isActiveIssueError = activeIssue?.outputBody === undefined && activeIssue?.nodeRun?.output === undefined && Boolean(activeIssue?.nodeRun?.error);
+      : activeIssue?.nodeRun?.error;
+  const isActiveIssueError = activeIssue?.outputBody === undefined && Boolean(activeIssue?.nodeRun?.error);
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
   const reportLayerCopy = getRunReportLayerCopy(language);
@@ -3547,118 +3546,35 @@ function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string,
 function buildTraceIssues(
   activeRun: BlueprintRunView | undefined,
   blueprint: BlueprintDefinition | undefined,
-  orderedNodes: BlueprintNode[],
   t: Messages
 ): TraceIssue[] {
-  if (!activeRun?.nodeRuns.length) {
-    return buildPendingTraceIssues(blueprint, orderedNodes, t);
-  }
-
+  if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
-  const childrenBySlotId = new Map<string, Set<string>>();
-  for (const node of blueprint?.nodes ?? []) {
-    if (!node.parentId) continue;
-    const parent = nodesById.get(node.parentId);
-    if (parent?.type !== "manager_slot") continue;
-    childrenBySlotId.set(node.parentId, new Set([...(childrenBySlotId.get(node.parentId) ?? []), node.id]));
-  }
+  const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
+  const nodeItems = activeRun.nodeRuns.map((nodeRun, order) => ({
+    kind: "node" as const,
+    nodeRun,
+    order,
+    createdAt: traceTimestampForNodeRun(nodeRun)
+  }));
+  const reportItems = (activeRun.agentHumanReports ?? [])
+    .filter((report) => !nodeRunIds.has(report.nodeRunId))
+    .map((humanReport, order) => ({
+      kind: "report" as const,
+      humanReport,
+      order: activeRun.nodeRuns.length + order,
+      createdAt: humanReport.createdAt
+    }));
 
-  const issues: TraceIssue[] = [];
-  let issueIndex = 1;
-  for (let runIndex = 0; runIndex < activeRun.nodeRuns.length; runIndex += 1) {
-    const nodeRun = activeRun.nodeRuns[runIndex]!;
-    const node = nodesById.get(nodeRun.nodeId);
-    if (node?.type !== "manager_slot") {
-      issues.push(createNodeTraceIssue(activeRun, nodeRun, node, issueIndex, node?.parentId ? 1 : 0, t));
-      issueIndex += 1;
-      continue;
-    }
-
-    const slotLabel = nodeRun.nodeLabel || node.config.label || nodeRun.nodeId;
-    const slotEvents = activeRun.events.filter((event) => event.nodeRunId === nodeRun.id);
-    const slotInputStatus = nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status);
-    issues.push({
-      key: `${nodeRun.id}:input`,
-      index: issueIndex,
-      label: `${slotLabel} ${t.trace.slotInputSuffix}`,
-      kind: "slot_input",
-      depth: 0,
-      node,
-      nodeRun,
-      issueStatus: slotInputStatus,
-      statusLabel: nodeRun.startedAt ? t.trace.completed : statusLabelForNodeRun(nodeRun.status, t),
-      outputPreview: t.trace.managerInputPreview,
-      outputBody: t.trace.managerInputBody,
-      events: slotEvents.filter((event) => event.type !== "node.run.completed")
+  return [...nodeItems, ...reportItems]
+    .sort(compareTraceChronologyItems)
+    .map((item, index) => {
+      if (item.kind === "node") {
+        const node = nodesById.get(item.nodeRun.nodeId);
+        return createNodeTraceIssue(activeRun, item.nodeRun, node, index + 1, node?.parentId ? 1 : 0, t);
+      }
+      return createReportTraceIssue(item.humanReport, index + 1, t);
     });
-    issueIndex += 1;
-
-    const childIds = childrenBySlotId.get(node.id) ?? new Set<string>();
-    let childRunIndex = runIndex + 1;
-    while (childRunIndex < activeRun.nodeRuns.length) {
-      const childRun = activeRun.nodeRuns[childRunIndex]!;
-      if (!childIds.has(childRun.nodeId)) break;
-      const childNode = nodesById.get(childRun.nodeId);
-      issues.push(createNodeTraceIssue(activeRun, childRun, childNode, issueIndex, 1, t));
-      issueIndex += 1;
-      childRunIndex += 1;
-    }
-
-    const slotOutputStatus = toSlotOutputIssueStatus(nodeRun);
-    issues.push({
-      key: `${nodeRun.id}:output`,
-      index: issueIndex,
-      label: `${slotLabel} ${t.trace.slotOutputSuffix}`,
-      kind: "slot_output",
-      depth: 0,
-      node,
-      nodeRun,
-      issueStatus: slotOutputStatus,
-      statusLabel: labelForIssueStatus(slotOutputStatus, t),
-      outputPreview: nodeRun.output === undefined ? t.trace.waitingNestedNodes : summarizeOutput(nodeRun.output, t),
-      events: slotEvents
-    });
-    issueIndex += 1;
-    runIndex = childRunIndex - 1;
-  }
-
-  return issues;
-}
-
-function buildPendingTraceIssues(blueprint: BlueprintDefinition | undefined, orderedNodes: BlueprintNode[], t: Messages): TraceIssue[] {
-  if (!blueprint) return [];
-
-  const childrenBySlotId = new Map<string, BlueprintNode[]>();
-  for (const node of blueprint.nodes) {
-    if (!node.parentId) continue;
-    const parent = blueprint.nodes.find((candidate) => candidate.id === node.parentId);
-    if (parent?.type !== "manager_slot") continue;
-    childrenBySlotId.set(node.parentId, [...(childrenBySlotId.get(node.parentId) ?? []), node]);
-  }
-
-  const visited = new Set<string>();
-  const issues: TraceIssue[] = [];
-  let issueIndex = 1;
-  for (const node of orderedNodes) {
-    if (visited.has(node.id) || node.parentId) continue;
-    visited.add(node.id);
-    if (node.type !== "manager_slot") {
-      issues.push(createPendingTraceIssue(node, issueIndex, 0, t));
-      issueIndex += 1;
-      continue;
-    }
-
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_input", t));
-    issueIndex += 1;
-    for (const child of childrenBySlotId.get(node.id) ?? []) {
-      visited.add(child.id);
-      issues.push(createPendingTraceIssue(child, issueIndex, 1, t));
-      issueIndex += 1;
-    }
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_output", t));
-    issueIndex += 1;
-  }
-  return issues;
 }
 
 function createNodeTraceIssue(
@@ -3671,6 +3587,7 @@ function createNodeTraceIssue(
 ): TraceIssue {
   const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
   const humanReport = activeRun.agentHumanReports?.find((report) => report.nodeRunId === nodeRun.id);
+  const readableBody = humanReport?.bodyMd ?? buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t);
   return {
     key: nodeRun.id,
     index,
@@ -3679,43 +3596,41 @@ function createNodeTraceIssue(
     depth,
     node,
     nodeRun,
+    humanReport,
     issueStatus: toIssueStatus(nodeRun.status),
     statusLabel: statusLabelForNodeRun(nodeRun.status, t),
-    outputPreview: summarizeOutput(humanReport?.bodyMd ?? nodeRun.output, t),
-    outputBody: humanReport ? buildReportOutputBody(humanReport.bodyMd, nodeRun.output) : undefined,
+    outputPreview: summarizeOutput(readableBody ?? nodeRun.output, t),
+    outputBody: readableBody,
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
 }
 
-function createPendingTraceIssue(node: BlueprintNode, index: number, depth: number, t: Messages): TraceIssue {
+function createReportTraceIssue(humanReport: RunAgentHumanReport, index: number, t: Messages): TraceIssue {
   return {
-    key: `node:${node.id}`,
+    key: `report:${humanReport.id}`,
     index,
-    label: node.config.label,
-    kind: "node",
-    depth,
-    node,
-    issueStatus: "pending",
-    statusLabel: t.trace.pending,
-    outputPreview: summarizeOutput(undefined, t),
+    label: humanReport.nodeLabel,
+    kind: "report",
+    depth: 0,
+    humanReport,
+    issueStatus: "completed",
+    statusLabel: t.trace.completed,
+    outputPreview: summarizeOutput(humanReport.bodyMd, t),
+    outputBody: humanReport.bodyMd,
     events: []
   };
 }
 
-function createPendingSlotBoundaryIssue(node: BlueprintNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
-  const isInput = kind === "slot_input";
-  return {
-    key: `node:${node.id}:${kind}`,
-    index,
-    label: `${node.config.label} ${isInput ? t.trace.slotInputSuffix : t.trace.slotOutputSuffix}`,
-    kind,
-    depth: 0,
-    node,
-    issueStatus: "pending",
-    statusLabel: t.trace.pending,
-    outputPreview: isInput ? t.trace.managerInputWaiting : t.trace.waitingNestedNodes,
-    events: []
-  };
+type TraceChronologyItem =
+  | { kind: "node"; nodeRun: BlueprintNodeRun; order: number; createdAt: string }
+  | { kind: "report"; humanReport: RunAgentHumanReport; order: number; createdAt: string };
+
+function compareTraceChronologyItems(left: TraceChronologyItem, right: TraceChronologyItem): number {
+  return toSafeTimestamp(left.createdAt) - toSafeTimestamp(right.createdAt) || left.order - right.order;
+}
+
+function traceTimestampForNodeRun(nodeRun: BlueprintNodeRun): string {
+  return nodeRun.queuedAt || nodeRun.startedAt || nodeRun.endedAt || "";
 }
 
 function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
@@ -3723,20 +3638,6 @@ function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
   if (status === "succeeded" || status === "skipped") return "completed";
   if (status === "failed" || status === "cancelled") return "failed";
   return "pending";
-}
-
-function toSlotOutputIssueStatus(nodeRun: BlueprintNodeRun): TraceIssueStatus {
-  if (nodeRun.status === "failed" || nodeRun.status === "cancelled") return "failed";
-  if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
-  if (nodeRun.status === "queued" || nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "in_progress";
-  return "pending";
-}
-
-function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
-  if (status === "completed") return t.trace.completed;
-  if (status === "in_progress") return t.trace.inProgress;
-  if (status === "failed") return t.status.failed;
-  return t.trace.pending;
 }
 
 function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): string {
@@ -3770,21 +3671,63 @@ function summarizeOutput(output: unknown, t: Messages): string {
   return previewLines.map((line) => (line.length > 120 ? `${line.slice(0, 117)}...` : line)).join("\n");
 }
 
-function buildReportOutputBody(reportMd: string, rawOutput: unknown): string {
-  if (rawOutput === undefined) return reportMd;
-  const formattedRaw = formatOutput(rawOutput).trim();
-  if (!formattedRaw) return reportMd;
-  return [
-    reportMd,
-    "",
-    "## Advanced Details",
-    "",
-    "Raw output:",
-    "",
-    "```",
-    formattedRaw,
-    "```"
-  ].join("\n");
+function buildReadableNodeOutputBody(output: unknown, error: string | undefined, t: Messages): string | undefined {
+  if (error?.trim()) return error.trim();
+  if (output === undefined || output === null) return undefined;
+
+  const record = readOutputRecord(output);
+  const explicitReport = readNonEmptyString(record?.humanReportMd);
+  if (explicitReport) return explicitReport;
+
+  const directText =
+    readNonEmptyString(record?.summary) ??
+    readNonEmptyString(record?.body) ??
+    readNonEmptyString(record?.markdown) ??
+    readNonEmptyString(record?.reason) ??
+    readNonEmptyString(record?.message);
+  if (directText) return directText;
+
+  const resultText = readReadableResult(record?.result);
+  if (resultText) return resultText;
+
+  if (typeof output === "string") {
+    const trimmed = output.trim();
+    if (!trimmed) return undefined;
+    return trimmed;
+  }
+
+  const status = readNonEmptyString(record?.status);
+  if (status) return `Status: ${status}`;
+  return t.trace.noOutput;
+}
+
+function readReadableResult(value: unknown): string | undefined {
+  const direct = readNonEmptyString(value);
+  if (direct) return direct;
+  const record = readOutputRecord(value);
+  return readNonEmptyString(record?.summary) ??
+    readNonEmptyString(record?.body) ??
+    readNonEmptyString(record?.markdown) ??
+    readNonEmptyString(record?.reason) ??
+    readNonEmptyString(record?.message);
+}
+
+function readOutputRecord(output: unknown): Record<string, unknown> | undefined {
+  if (isPlainObject(output)) return output;
+  if (typeof output !== "string") return undefined;
+
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function toTracePreviewLine(line: string): string {
@@ -3816,43 +3759,6 @@ function parseTracePreviewTableCells(line: string): string[] {
 function isTracePreviewTableSeparator(line: string): boolean {
   const cells = parseTracePreviewTableCells(line);
   return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function getBlueprintNodeOrder(blueprint?: BlueprintDefinition): BlueprintNode[] {
-  if (!blueprint) return [];
-
-  const nodesById = new Map(blueprint.nodes.map((node) => [node.id, node]));
-  const indegree = new Map<string, number>(blueprint.nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map<string, string[]>();
-
-  for (const edge of blueprint.edges) {
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
-  }
-
-  const queue = blueprint.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
-  const ordered: BlueprintNode[] = [];
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    const currentId = queue.shift();
-    if (!currentId || visited.has(currentId)) continue;
-    visited.add(currentId);
-    const node = nodesById.get(currentId);
-    if (node) ordered.push(node);
-
-    for (const targetId of outgoing.get(currentId) ?? []) {
-      const nextDegree = (indegree.get(targetId) ?? 1) - 1;
-      indegree.set(targetId, nextDegree);
-      if (nextDegree === 0) queue.push(targetId);
-    }
-  }
-
-  for (const node of blueprint.nodes) {
-    if (!visited.has(node.id)) ordered.push(node);
-  }
-
-  return ordered;
 }
 
 function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {

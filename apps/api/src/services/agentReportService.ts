@@ -25,7 +25,10 @@ export class AgentReportService {
       readString(record?.summary) ??
       readString(record?.body) ??
       readString(record?.markdown) ??
+      readString(record?.reason) ??
+      readString(record?.message) ??
       readString(record?.result) ??
+      readStatusFallback(record) ??
       formatFallbackValue(record?.result) ??
       (typeof output === "string" ? output.trim() : undefined) ??
       formatFallbackValue(output);
@@ -141,6 +144,12 @@ function formatFallbackValue(value: unknown): string | undefined {
   } catch {
     return String(value);
   }
+}
+
+function readStatusFallback(record: Record<string, unknown> | undefined): string | undefined {
+  const status = readString(record?.status);
+  if (!status) return undefined;
+  return `Status: ${status}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

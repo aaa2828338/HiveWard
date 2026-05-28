@@ -202,4 +202,114 @@ describe("RunsPage", () => {
     expect(html.indexOf("SECRET_RAW_OUTPUT")).toBeGreaterThan(html.indexOf("Advanced details"));
     expect(html.indexOf("machine-only")).toBeGreaterThan(html.indexOf("Advanced details"));
   });
+
+  it("renders run steps from actual chronological node runs without slot boundary cards", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-chronology",
+      companyId: "company-1",
+      name: "Chronology blueprint",
+      version: 1,
+      nodes: [
+        {
+          id: "slot-1",
+          type: "manager_slot",
+          position: { x: 120, y: 120 },
+          config: { label: "Slot 1 - QA", managerNodeId: "manager-1", slot: 1 }
+        },
+        {
+          id: "qa",
+          type: "agent",
+          runtimeId: "openclaw",
+          position: { x: 320, y: 120 },
+          parentId: "slot-1",
+          config: { label: "QA Agent", agentName: "qa", prompt: "Check the output.", tools: [] }
+        }
+      ],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-chronology",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "succeeded",
+        startedBy: "user-1",
+        startedAt: now,
+        endedAt: "2026-05-28T00:00:05.000Z",
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [
+        {
+          id: "slot-run",
+          blueprintRunId: "run-chronology",
+          blueprintId: blueprint.id,
+          nodeId: "slot-1",
+          nodeLabel: "Slot 1 - QA",
+          nodeType: "manager_slot",
+          status: "succeeded",
+          queuedAt: "2026-05-28T00:00:03.000Z",
+          startedAt: "2026-05-28T00:00:03.000Z",
+          endedAt: "2026-05-28T00:00:04.000Z",
+          output: { status: "complete", reason: "Slot completed." }
+        },
+        {
+          id: "qa-run",
+          blueprintRunId: "run-chronology",
+          blueprintId: blueprint.id,
+          nodeId: "qa",
+          nodeLabel: "QA Agent",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: "2026-05-28T00:00:01.000Z",
+          startedAt: "2026-05-28T00:00:01.000Z",
+          endedAt: "2026-05-28T00:00:02.000Z",
+          output: { status: "complete", reason: "QA passed the delivery." }
+        }
+      ],
+      events: [],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="en"
+        t={messages.en}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toMatch(/trace-issue-index">1<\/div><div class="trace-issue-main"><div class="trace-issue-topline"><strong>QA Agent<\/strong>/);
+    expect(html).toMatch(/trace-issue-index">2<\/div><div class="trace-issue-main"><div class="trace-issue-topline"><strong>Slot 1 - QA<\/strong>/);
+    expect(html).toContain("QA passed the delivery.");
+    expect(html).toContain("Slot completed.");
+    expect(html).not.toContain("Slot 1 - QA input");
+    expect(html).not.toContain("Slot 1 - QA output");
+    expect(html).not.toContain("Manager input entered this slot.");
+  });
 });

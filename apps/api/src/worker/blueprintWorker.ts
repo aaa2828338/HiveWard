@@ -1585,9 +1585,10 @@ export class BlueprintWorker {
   ): Promise<{ result: AgentTaskResult; decision: ManagerDecision; openclawRef: OpenClawObjectRef }> {
     const config = node.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(node);
+    const managerDecisionNodeRunId = `${nodeRun.id}-manager-decision-${context.manager.handoff}`;
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
-      nodeRunId: `${nodeRun.id}-manager-decision-${context.manager.handoff}`,
+      nodeRunId: managerDecisionNodeRunId,
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName?.trim() || defaultManagerAgentName,
@@ -1613,6 +1614,14 @@ export class BlueprintWorker {
       skillIds: config.skillIds,
       tools: config.tools ?? []
     });
+    await this.publishManagerDecisionReport({
+      run,
+      node,
+      nodeRunId: managerDecisionNodeRunId,
+      roundId: nodeRun.iterationRoundId,
+      handoff: context.manager.handoff,
+      result
+    });
 
     return {
       result,
@@ -1621,6 +1630,44 @@ export class BlueprintWorker {
         : { status: "complete", reason: result.error ?? "manager_decision_failed" },
       openclawRef
     };
+  }
+
+  private async publishManagerDecisionReport(input: {
+    run: BlueprintRun;
+    node: BlueprintNode;
+    nodeRunId: string;
+    roundId?: string;
+    handoff: number;
+    result: AgentTaskResult;
+  }): Promise<void> {
+    const output = input.result.output ?? input.result.error;
+    if (output === undefined) return;
+
+    const nodeLabel = `${input.node.config.label} dispatch ${input.handoff}`;
+    const published = await this.agentReportService.publishFromOutput({
+      runId: input.run.id,
+      roundId: input.roundId,
+      nodeRunId: input.nodeRunId,
+      nodeId: input.node.id,
+      nodeLabel,
+      output
+    });
+    if (!published.humanReport) return;
+
+    const existing = (await this.store.listRunTimeline(input.run.id))
+      .find((item) => item.payloadRef === published.humanReport?.id);
+    await this.store.appendRunTimelineItem({
+      id: existing?.id ?? `timeline-${nanoid(10)}`,
+      ...(existing?.sequence ? { sequence: existing.sequence } : {}),
+      runId: input.run.id,
+      createdAt: published.humanReport.createdAt,
+      actorNodeId: input.node.id,
+      actorLabel: nodeLabel,
+      kind: "node_output",
+      title: nodeLabel,
+      body: published.humanReport.bodyMd,
+      payloadRef: published.humanReport.id
+    });
   }
 
   private resolveManagerRuntimeId(node: BlueprintNode): AgentRuntimeId {

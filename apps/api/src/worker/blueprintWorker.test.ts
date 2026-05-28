@@ -2512,6 +2512,8 @@ describe("BlueprintWorker", () => {
     );
     const managerDecisionCalls = adapter.calls.filter((call) => call.nodeRunId.includes("manager-decision"));
     const builderRuns = reportView.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder");
+    const managerDecisionReports = reportView.agentHumanReports?.filter((report) => report.nodeRunId.includes("manager-decision")) ?? [];
+    const managerDecisionTimeline = reportView.runTimeline?.filter((item) => item.payloadRef?.startsWith("agent-human-report-")) ?? [];
 
     expect(managerDecisionCalls).toHaveLength(2);
     expect(managerDecisionCalls[0]?.prompt).toContain("humanReportMd");
@@ -2529,6 +2531,24 @@ describe("BlueprintWorker", () => {
     });
     expect(builderRuns).not.toHaveLength(0);
     expect(builderRuns.every((nodeRun) => !isRecord(nodeRun.input) || !("runContext" in nodeRun.input))).toBe(true);
+    expect(managerDecisionReports).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        nodeId: "top-manager",
+        nodeLabel: "Top Manager dispatch 1",
+        bodyMd: "dispatch",
+        source: "fallback"
+      }),
+      expect.objectContaining({
+        nodeId: "top-manager",
+        nodeLabel: "Top Manager dispatch 2",
+        bodyMd: "done",
+        source: "fallback"
+      })
+    ]));
+    expect(managerDecisionTimeline.map((item) => item.title)).toEqual(expect.arrayContaining([
+      "Top Manager dispatch 1",
+      "Top Manager dispatch 2"
+    ]));
   });
 
   it("uses the revised approved plan as the next manager dispatch contract", async () => {
