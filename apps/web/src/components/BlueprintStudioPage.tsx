@@ -104,6 +104,7 @@ import {
   blueprintSelectOpenEventName,
   buildAgentHarnessOptions,
   buildBlueprintModelSelectOptions,
+  buildSummaryHarnessOptions,
   createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
   isBlueprintSelectorDisabled,
@@ -113,6 +114,8 @@ import {
   type BlueprintCanvasViewport,
   type BlueprintCanvasWorld
 } from "../lib/blueprint-studio-state";
+import { runtimeDisplayLabel } from "../lib/harness-labels";
+import { HarnessLabel } from "./HarnessLabel";
 
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard,
@@ -2011,6 +2014,7 @@ function EditableNodeTitle({ value, onChange }: { value: string; onChange: (valu
 type BlueprintSelectOption = {
   value: string;
   label: string;
+  badgeLabel?: string;
   disabled?: boolean;
 };
 
@@ -2032,7 +2036,7 @@ function BlueprintSelect({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedOption = options.find((option) => option.value === value);
-  const displayLabel = selectedOption?.label ?? value;
+  const displayParts = selectedOption ? { label: selectedOption.label, badgeLabel: selectedOption.badgeLabel } : { label: value };
   const isDisabled = disabled || options.every((option) => option.disabled);
 
   useEffect(() => {
@@ -2081,7 +2085,7 @@ function BlueprintSelect({
         disabled={isDisabled}
         onClick={toggleOpen}
       >
-        <span>{displayLabel}</span>
+        <HarnessLabel {...displayParts} />
         <ChevronDown size={16} />
       </button>
       {open && (
@@ -2102,7 +2106,7 @@ function BlueprintSelect({
                   setOpen(false);
                 }}
               >
-                <span>{option.label}</span>
+                <HarnessLabel label={option.label} badgeLabel={option.badgeLabel} />
                 {selected && <Check size={15} />}
               </button>
             );
@@ -2562,11 +2566,7 @@ function NodeConfigForm({
       { value: "structured_merge", label: t.options.structuredMerge },
       { value: "harness_summary", label: t.options.harnessSummary }
     ];
-    const harnessOptions: BlueprintSelectOption[] = [
-      { value: "openclaw", label: "OpenClaw" },
-      { value: "codex", label: "Codex" },
-      { value: "claude", label: "Claude Code" }
-    ];
+    const harnessOptions: BlueprintSelectOption[] = buildSummaryHarnessOptions();
     const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
       selectedModel: config.modelId,
       models: runtimeModelOptions,
@@ -2869,9 +2869,7 @@ function buildBlueprintRuntimeSkillOptions(
 }
 
 function runtimeLabel(runtimeId: AgentRuntimeId): string {
-  if (runtimeId === "codex") return "Codex";
-  if (runtimeId === "claude") return "Claude Code";
-  return "OpenClaw";
+  return runtimeDisplayLabel(runtimeId);
 }
 
 function commonAgentRuntime(nodes: Array<BlueprintNode & { type: "agent" }>): AgentRuntimeId | undefined {

@@ -1720,7 +1720,9 @@ function buildRoleDriverBinding(input: {
 }
 
 function normalizeRoleDriverHarnessId(value: unknown): RoleDriverBinding["harnessId"] {
-  return value === "codex" || value === "claude" || value === "openclaw" ? value : "openclaw";
+  return value === "codex" || value === "claude" || value === "openclaw" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
+    ? value
+    : "openclaw";
 }
 
 function buildArchitectureBlueprintView(
@@ -2250,7 +2252,9 @@ function toPosixPath(path: string): string {
 }
 
 function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
-  return value === "openclaw" || value === "codex" || value === "claude" ? value : undefined;
+  return value === "openclaw" || value === "codex" || value === "claude" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
+    ? value
+    : undefined;
 }
 
 function readRequiredCompanyName(value: unknown): string {

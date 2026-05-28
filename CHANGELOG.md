@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.0 - 2026-05-28
+
+Multi-CLI harness beta release.
+
+### 中文
+
+- 新增 Google CLI Beta、Cursor CLI Beta、OpenCode Beta、Hermes Beta harness。
+- 这些新增 CLI harness 目前标记为 Beta：代码路径已接入并覆盖本地测试，但真实 CLI 安装、订阅、认证和上游输出格式仍可能因用户环境而变化。
+- 新增 harness 已接入配置页、聊天入口、蓝图运行入口、模型默认值与状态检测、权限模式，以及技能安装入口。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.4.0`。
+
+### English
+
+- Added Google CLI Beta, Cursor CLI Beta, OpenCode Beta, and Hermes Beta harnesses.
+- These new CLI harnesses are currently marked Beta: the local code paths are wired and tested, while real CLI installs, subscriptions, authentication, and upstream output formats may still vary by environment.
+- The new harnesses are available through configuration pages, chat and blueprint run entry points, model default/status detection, permission modes, and skill installation entry points.
+- Bumped repository, workspace package, and internal dependency versions to `0.4.0`.
+
 ## v0.3.4 - 2026-05-28
 
 Small Blueprint Studio canvas usability release.

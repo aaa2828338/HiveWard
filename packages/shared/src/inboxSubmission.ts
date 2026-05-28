@@ -65,7 +65,7 @@ export const hivewardInboxSubmissionContract = [
   "Agent node required shape:",
   "- id: string",
   "- type: \"agent\"",
-  "- runtimeId: \"openclaw\" | \"codex\" | \"claude\"",
+  "- runtimeId: \"openclaw\" | \"codex\" | \"claude\" | \"google\" | \"cursor\" | \"opencode\" | \"hermes\"",
   "- position: { \"x\": number, \"y\": number }",
   "- config.label: string",
   "- config.agentName: string",

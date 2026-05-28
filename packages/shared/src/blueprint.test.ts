@@ -185,6 +185,52 @@ describe("blueprint contracts", () => {
     ]);
   });
 
+  it("accepts OpenCode and Hermes runtime ids in portable blueprints", () => {
+    const imported = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-27T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "cli-harness-blueprint",
+          name: "CLI harness blueprint",
+          version: 1,
+          nodes: [
+            {
+              id: "opencode-agent",
+              type: "agent",
+              runtimeId: "opencode",
+              position: { x: 0, y: 0 },
+              config: {
+                label: "OpenCode Agent",
+                agentName: "opencode-agent",
+                prompt: "Use OpenCode.",
+                tools: []
+              }
+            },
+            {
+              id: "hermes-summary",
+              type: "summary",
+              position: { x: 320, y: 0 },
+              config: {
+                label: "Hermes Summary",
+                mode: "harness_summary",
+                runtimeId: "hermes"
+              }
+            }
+          ],
+          edges: [],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    expect(imported.blueprints[0]?.nodes.map((node) => node.runtimeId ?? (node.config as { runtimeId?: string }).runtimeId)).toEqual([
+      "opencode",
+      "hermes"
+    ]);
+  });
+
   it("creates a blank blueprint for user-authored canvases", () => {
     const blueprint = createBlankBlueprint({
       id: "blueprint-new",
