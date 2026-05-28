@@ -52,7 +52,7 @@ export interface AgentSdkRuntimeOptions {
 }
 
 export function isAgentSdkProvider(value: unknown): value is AgentSdkProvider {
-  return value === "claude" || value === "codex";
+  return value === "claude" || value === "codex" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes";
 }
 
 export function readAgentSdkRuntimeOptions(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): AgentSdkRuntimeOptions {

@@ -14,7 +14,7 @@ export interface RuntimeAccessPolicy {
   webSearch: "disabled" | "live";
 }
 
-export type RuntimeAccessPolicyRuntime = "openclaw" | "codex" | "claude";
+export type RuntimeAccessPolicyRuntime = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 export type RuntimeAccessPolicyAxisSupport = "enforced" | "delegated" | "unsupported";
 
 export interface RuntimeAccessPolicySupport {
@@ -36,6 +36,26 @@ export const runtimeAccessPolicySupportByRuntime = Object.freeze({
   },
   openclaw: {
     filesystem: "delegated",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  google: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  cursor: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  opencode: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  hermes: {
+    filesystem: "enforced",
     network: "delegated",
     webSearch: "delegated"
   }

@@ -17,7 +17,7 @@ import type {
   RuntimeAccessPolicy
 } from "./lifecycle";
 
-export type AgentRuntimeId = "openclaw" | "codex" | "claude";
+export type AgentRuntimeId = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 
 export type AgentBlueprintNodeType = "agent";
 
@@ -242,7 +242,7 @@ const portableBlueprintNodeTypes = new Set<BlueprintNodeType>([
   "group"
 ]);
 
-const agentRuntimeIds = new Set<AgentRuntimeId>(["openclaw", "codex", "claude"]);
+const agentRuntimeIds = new Set<AgentRuntimeId>(["openclaw", "codex", "claude", "google", "cursor", "opencode", "hermes"]);
 
 const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>([
   "true",
@@ -486,9 +486,11 @@ export function resolveFinalRunResult(
     : resolveAutomaticFinalCandidates(blueprint, indexedCandidates)
         .map(({ candidate, reason }) => toFinalRunResultCandidate(candidate, reason));
 
-  const failedNode = [...nodeRuns]
-    .reverse()
-    .find((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
+  const reversedNodeRuns = [...nodeRuns].reverse();
+  const failedNode = runStatus === "succeeded"
+    ? undefined
+    : reversedNodeRuns.find((nodeRun) => nodeRun.status === "failed") ??
+      reversedNodeRuns.find((nodeRun) => nodeRun.status === "cancelled");
   const waitingApprovalNode = [...nodeRuns]
     .reverse()
     .find((nodeRun) => nodeRun.status === "waiting_approval");
@@ -2663,7 +2665,7 @@ function readStringArray(value: unknown, fieldName: string): string[] {
 function readOptionalAgentRuntimeId(value: unknown, fieldName: string): AgentRuntimeId | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "string" && agentRuntimeIds.has(value as AgentRuntimeId)) return value as AgentRuntimeId;
-  throw new Error(`${fieldName} must be openclaw, codex, or claude.`);
+  throw new Error(`${fieldName} must be openclaw, codex, claude, google, cursor, opencode, or hermes.`);
 }
 
 function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNodeResultRole | undefined {

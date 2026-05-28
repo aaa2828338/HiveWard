@@ -210,7 +210,7 @@ export interface DeleteCompanyResponse extends CompanyDirectoryResponse {
   deleted: boolean;
 }
 
-export type HarnessId = "openclaw" | "claudeCode" | "codex";
+export type HarnessId = "openclaw" | "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes";
 
 export type HarnessConnectionState = "connected" | "available" | "needs_config" | "unavailable";
 

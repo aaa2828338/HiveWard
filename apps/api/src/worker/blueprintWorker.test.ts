@@ -423,6 +423,96 @@ describe("BlueprintWorker", () => {
     expect(finalView?.nodeRuns.some((nodeRun) => nodeRun.status === "succeeded")).toBe(false);
   });
 
+  it("closes stale open node runs when cancelling a terminal blueprint", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    await store.upsertNodeRun({
+      id: "node-run-stale",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "brief",
+      nodeLabel: "Brief",
+      nodeType: "agent",
+      status: "running",
+      queuedAt: run.startedAt,
+      startedAt: run.startedAt
+    });
+    const failedRun = {
+      ...run,
+      status: "failed" as const,
+      endedAt: new Date().toISOString(),
+      durationMs: 1
+    };
+    await store.updateBlueprintRun(failedRun);
+    const worker = new BlueprintWorker(store, new ScriptedAdapter([], []));
+
+    const normalized = await worker.cancelRun(failedRun);
+    const view = await store.getRunView(run.id);
+
+    expect(normalized.status).toBe("failed");
+    expect(view?.run.status).toBe("failed");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.error).toContain("terminal state");
+  });
+
+  it("keeps a succeeded terminal blueprint successful when closing stale open node runs", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("final", "Final"), createAgentNode("stale", "Stale child")], []);
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    await store.upsertNodeRun({
+      id: "node-run-final",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "final",
+      nodeLabel: "Final",
+      nodeType: "agent",
+      status: "succeeded",
+      queuedAt: run.startedAt,
+      startedAt: run.startedAt,
+      endedAt: new Date().toISOString(),
+      output: "final ok"
+    });
+    await store.upsertNodeRun({
+      id: "node-run-stale",
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "stale",
+      nodeLabel: "Stale child",
+      nodeType: "agent",
+      status: "running",
+      queuedAt: run.startedAt,
+      startedAt: run.startedAt
+    });
+    const succeededRun = {
+      ...run,
+      status: "succeeded" as const,
+      endedAt: new Date().toISOString(),
+      durationMs: 1
+    };
+    await store.updateBlueprintRun(succeededRun);
+    const worker = new BlueprintWorker(store, new ScriptedAdapter([], []));
+
+    const normalized = await worker.cancelRun(succeededRun);
+    const view = await store.getRunView(run.id);
+
+    expect(normalized.status).toBe("succeeded");
+    expect(view?.run.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "stale")?.status).toBe("cancelled");
+    expect(view?.finalResult?.state).toBe("available");
+    expect(view?.finalResult?.failedNode).toBeUndefined();
+    expect(view?.finalResult?.candidates[0]).toMatchObject({
+      nodeId: "final",
+      output: "final ok"
+    });
+  });
+
   it("fails an agent node that finishes without visible output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -1421,6 +1511,69 @@ describe("BlueprintWorker", () => {
         (adapter.calls[0]?.input as { upstream?: Array<{ output?: { manager?: { slot?: number } } }> }).upstream?.[0]?.output
       )?.manager?.slot
     ).toBe(1);
+  });
+
+  it("fails a manager run without leaving manager slot children running", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Run the slot blueprint."
+          }
+        },
+        {
+          id: "manager-slot-1",
+          type: "manager_slot",
+          position: { x: 420, y: 120 },
+          config: {
+            label: "Slot 1",
+            managerNodeId: "manager",
+            slot: 1
+          }
+        },
+        {
+          ...createAgentNode("slot-agent", "Slot Agent", { x: 120, y: 100 }),
+          parentId: "manager-slot-1"
+        }
+      ],
+      [
+        { id: "manager-slot-out", source: "manager", sourceHandle: "manager-out-1", target: "manager-slot-1", targetHandle: "manager-slot-in", condition: "success" },
+        { id: "slot-manager-in", source: "manager-slot-1", sourceHandle: "manager-slot-out", target: "manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "slot-start", source: "manager-slot-1", sourceHandle: "manager-slot-inner-out", target: "slot-agent", condition: "success" },
+        { id: "slot-finish", source: "slot-agent", target: "manager-slot-1", targetHandle: "manager-slot-inner-in", condition: "success" }
+      ]
+    );
+    const worker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([
+        createStartedAgentTask("task-1")
+      ], [
+        new Error("protocol mismatch")
+      ])
+    );
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("failed");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")).toMatchObject({
+      status: "failed",
+      error: "protocol mismatch"
+    });
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager-slot-1")?.status).toBe("cancelled");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "slot-agent")?.status).toBe("cancelled");
+    expect(view?.nodeRuns.some((nodeRun) => nodeRun.status === "running" || nodeRun.status === "queued")).toBe(false);
+    expect(view?.finalResult?.failedNode?.nodeId).toBe("manager");
   });
 
   it("runs all child nodes in a parallel manager slot from one manager handoff", async () => {

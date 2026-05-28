@@ -1,4 +1,5 @@
 import { Router, type Response } from "express";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -104,11 +105,19 @@ interface RunModelDefaults {
   openclaw?: string;
   codex?: string;
   claude?: string;
+  google?: string;
+  cursor?: string;
+  opencode?: string;
+  hermes?: string;
 }
 
-interface HarnessModelDefaults extends Pick<RunModelDefaults, "codex" | "claude"> {
+interface HarnessModelDefaults extends Pick<RunModelDefaults, "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes"> {
   codexModels: HarnessModelOption[];
   claudeModels: HarnessModelOption[];
+  googleModels: HarnessModelOption[];
+  cursorModels: HarnessModelOption[];
+  opencodeModels: HarnessModelOption[];
+  hermesModels: HarnessModelOption[];
 }
 
 type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
@@ -161,8 +170,10 @@ type HarnessSkillInstallTarget = {
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const fallbackCodexDefaultModel = "gpt-5.4";
 const fallbackClaudeCodeDefaultModel = "inherit";
+const fallbackCliDefaultModel = "inherit";
 const codexDefaultThinkingLevels: ChatThinkingEffort[] = ["low", "medium", "high", "xhigh"];
 const claudeCodeDefaultThinkingLevels: ChatThinkingEffort[] = ["off", "low", "medium", "high", "xhigh", "max", "adaptive"];
+const cliHarnessDefaultThinkingLevels: ChatThinkingEffort[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 const hivewardHarnessSkills: Array<{
   id: HarnessSkillId;
   label: string;
@@ -565,7 +576,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         withRunDefaults(blueprint, {
           openclaw: config.defaultModelId,
           codex: harnessDefaults.codex,
-          claude: harnessDefaults.claude
+          claude: harnessDefaults.claude,
+          google: harnessDefaults.google,
+          cursor: harnessDefaults.cursor,
+          opencode: harnessDefaults.opencode,
+          hermes: harnessDefaults.hermes
         }),
         body.startedBy ?? "local-user"
       );
@@ -1636,7 +1651,11 @@ async function streamHivewardChatSession({
   const defaults = {
     openclaw: config.defaultModelId,
     codex: harnessDefaults.codex,
-    claude: harnessDefaults.claude
+    claude: harnessDefaults.claude,
+    google: harnessDefaults.google,
+    cursor: harnessDefaults.cursor,
+    opencode: harnessDefaults.opencode,
+    hermes: harnessDefaults.hermes
   };
   const messagesBefore = await store.listChatMessages(session.id);
   const shouldRebuildFromHivewardHistory = "rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory === true;
@@ -2356,7 +2375,8 @@ function sourceForChatHarness(harnessId: HarnessId): OpenClawObjectSource {
 }
 
 function runtimeIdForChatHarness(harnessId: HarnessId): AgentRuntimeId {
-  return harnessId === "claudeCode" ? "claude" : harnessId;
+  if (harnessId === "claudeCode") return "claude";
+  return harnessId;
 }
 
 function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
@@ -2387,22 +2407,32 @@ function resolveChatModelId(
   }
 
   const requestedModel = body.modelId === config.defaultModelId ? undefined : body.modelId;
-  const modelId = body.harnessId === "codex"
-    ? requestedModel ?? defaults.codex
-    : requestedModel ?? defaults.claude;
-  if (body.harnessId === "claudeCode" && modelId === "inherit") {
+  const modelId = requestedModel ?? defaultModelForChatHarness(body.harnessId, defaults);
+  if (modelId === "inherit") {
     return undefined;
   }
   return modelId;
 }
 
+function defaultModelForChatHarness(harnessId: HarnessId, defaults: RunModelDefaults): string | undefined {
+  if (harnessId === "codex") return defaults.codex;
+  if (harnessId === "claudeCode") return defaults.claude;
+  if (harnessId === "google") return defaults.google;
+  if (harnessId === "cursor") return defaults.cursor;
+  if (harnessId === "opencode") return defaults.opencode;
+  if (harnessId === "hermes") return defaults.hermes;
+  return defaults.openclaw;
+}
+
 function readHarnessId(value: string | undefined): HarnessId {
-  if (value === "openclaw" || value === "claudeCode" || value === "codex") return value;
+  if (value === "openclaw" || value === "claudeCode" || value === "codex" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes") return value;
   throw new Error(`Unsupported harness id: ${value ?? ""}`);
 }
 
 function readOptionalAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
-  return value === "openclaw" || value === "codex" || value === "claude" ? value : undefined;
+  return value === "openclaw" || value === "codex" || value === "claude" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
+    ? value
+    : undefined;
 }
 
 async function buildHarnessSkillStatusResponse(
@@ -2477,6 +2507,36 @@ function buildHarnessSkillInstallCandidates(
     addEnvHomeSkillCandidate(candidates, "CLAUDE_CONFIG_DIR", "Claude Code CLAUDE_CONFIG_DIR skills");
     addPersonalSkillCandidate(candidates, join(home, ".claude", "skills"), "Claude Code personal skills");
     addProjectSkillCandidate(candidates, join(repositoryRoot, ".claude", "skills"), "Claude Code project skills");
+    return candidates;
+  }
+
+  if (harnessId === "google") {
+    addEnvHomeSkillCandidate(candidates, "GEMINI_HOME", "Google CLI GEMINI_HOME skills");
+    addPersonalSkillCandidate(candidates, join(home, ".gemini", "skills"), "Google CLI personal skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".gemini", "skills"), "Google CLI project skills");
+    return candidates;
+  }
+
+  if (harnessId === "cursor") {
+    addEnvHomeSkillCandidate(candidates, "CURSOR_HOME", "Cursor CURSOR_HOME skills");
+    addPersonalSkillCandidate(candidates, join(home, ".cursor", "skills"), "Cursor personal skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".cursor", "skills"), "Cursor project skills");
+    return candidates;
+  }
+
+  if (harnessId === "opencode") {
+    addEnvHomeSkillCandidate(candidates, "OPENCODE_HOME", "OpenCode OPENCODE_HOME skills");
+    addPersonalSkillCandidate(candidates, join(home, ".opencode", "skills"), "OpenCode personal skills");
+    addPersonalSkillCandidate(candidates, join(home, ".config", "opencode", "skills"), "OpenCode config skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".opencode", "skills"), "OpenCode project skills");
+    return candidates;
+  }
+
+  if (harnessId === "hermes") {
+    addEnvHomeSkillCandidate(candidates, "HERMES_HOME", "Hermes HERMES_HOME skills");
+    addEnvHomeSkillCandidate(candidates, "HERMES_CONFIG_DIR", "Hermes HERMES_CONFIG_DIR skills");
+    addPersonalSkillCandidate(candidates, join(home, ".hermes", "skills"), "Hermes personal skills");
+    addProjectSkillCandidate(candidates, join(repositoryRoot, ".hermes", "skills"), "Hermes project skills");
     return candidates;
   }
 
@@ -3101,7 +3161,43 @@ function buildHarnessStatuses(
   return [
     buildOpenClawHarnessStatus(version, config, checkedAt),
     buildClaudeCodeHarnessStatus(checkedAt, defaults.claude, defaults.claudeModels),
-    buildCodexHarnessStatus(checkedAt, defaults.codex, defaults.codexModels)
+    buildCodexHarnessStatus(checkedAt, defaults.codex, defaults.codexModels),
+    buildCliHarnessStatus({
+      id: "google",
+      label: "Google CLI Beta",
+      cliLabel: "Gemini CLI",
+      command: "gemini",
+      checkedAt,
+      defaultModelId: defaults.google,
+      models: defaults.googleModels
+    }),
+    buildCliHarnessStatus({
+      id: "cursor",
+      label: "Cursor CLI Beta",
+      cliLabel: "Cursor CLI",
+      command: "cursor-agent",
+      checkedAt,
+      defaultModelId: defaults.cursor,
+      models: defaults.cursorModels
+    }),
+    buildCliHarnessStatus({
+      id: "opencode",
+      label: "OpenCode Beta",
+      cliLabel: "OpenCode CLI",
+      command: "opencode",
+      checkedAt,
+      defaultModelId: defaults.opencode,
+      models: defaults.opencodeModels
+    }),
+    buildCliHarnessStatus({
+      id: "hermes",
+      label: "Hermes Beta",
+      cliLabel: "Hermes CLI",
+      command: "hermes",
+      checkedAt,
+      defaultModelId: defaults.hermes,
+      models: defaults.hermesModels
+    })
   ];
 }
 
@@ -3275,6 +3371,91 @@ function buildCodexHarnessStatus(
   };
 }
 
+function buildCliHarnessStatus({
+  id,
+  label,
+  cliLabel,
+  command,
+  checkedAt,
+  defaultModelId,
+  models
+}: {
+  id: Extract<HarnessId, "google" | "cursor" | "opencode" | "hermes">;
+  label: string;
+  cliLabel: string;
+  command: string;
+  checkedAt: string;
+  defaultModelId: string | undefined;
+  models: HarnessModelOption[];
+}): HarnessStatus {
+  const version = detectCliVersion(command);
+  const installed = version.installed;
+  return {
+    id,
+    label,
+    defaultModelId,
+    models,
+    installed,
+    environmentOk: installed && Boolean(defaultModelId),
+    connectionState: installed ? "available" : "unavailable",
+    summary: installed
+      ? `${label} is available. HiveWard will execute ${cliLabel} through its non-interactive command interface.`
+      : `${cliLabel} was not found on PATH.`,
+    checkedAt,
+    checks: [
+      {
+        id: `${id}-cli`,
+        label: cliLabel,
+        status: installed ? "pass" : "fail",
+        detail: installed ? version.version ?? `${command} resolved on PATH.` : version.error ?? `${command} was not found on PATH.`
+      },
+      {
+        id: `${id}-auth`,
+        label: `${cliLabel} credentials`,
+        status: installed ? "warning" : "fail",
+        detail: installed
+          ? "HiveWard does not inspect native CLI credentials; the CLI will use its own configured auth at runtime."
+          : "Install and configure the native CLI before runtime use."
+      },
+      {
+        id: `${id}-default-model`,
+        label: "Default model",
+        status: defaultModelId ? "pass" : "warning",
+        detail: defaultModelId
+          ? `${defaultModelId} (${models.length} model option${models.length === 1 ? "" : "s"} resolved).`
+          : "No default model was resolved; HiveWard will let the CLI use its native default."
+      }
+    ]
+  };
+}
+
+function detectCliVersion(command: string): { installed: boolean; version?: string; error?: string } {
+  try {
+    const result = process.platform === "win32"
+      ? spawnSync(`${command} --version`, {
+          encoding: "utf8",
+          shell: true,
+          timeout: 2_000,
+          windowsHide: true
+        })
+      : spawnSync(command, ["--version"], {
+          encoding: "utf8",
+          timeout: 2_000
+        });
+    if (result.error) {
+      return { installed: false, error: result.error.message };
+    }
+    if (result.status !== 0) {
+      const detail = (result.stderr || result.stdout || "").trim();
+      return { installed: false, error: detail || `${command} --version exited with ${result.status}.` };
+    }
+    const version = (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0];
+    return { installed: true, version };
+  } catch (error) {
+    return { installed: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function resolveConfigFile({
   envDirName,
   fallbackDir,
@@ -3346,7 +3527,7 @@ function readRouteParam(value: string | string[] | undefined, name: string): str
 }
 
 function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefaults): BlueprintDefinition {
-  if (!defaults.openclaw && !defaults.codex && !defaults.claude) return blueprint;
+  if (!defaults.openclaw && !defaults.codex && !defaults.claude && !defaults.google && !defaults.cursor && !defaults.opencode && !defaults.hermes) return blueprint;
 
   return {
     ...blueprint,
@@ -3392,6 +3573,10 @@ function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefau
 function defaultModelForAgentRuntime(runtimeId: AgentRuntimeId | undefined, defaults: RunModelDefaults): string | undefined {
   if (runtimeId === "codex") return defaults.codex;
   if (runtimeId === "claude") return defaults.claude;
+  if (runtimeId === "google") return defaults.google;
+  if (runtimeId === "cursor") return defaults.cursor;
+  if (runtimeId === "opencode") return defaults.opencode;
+  if (runtimeId === "hermes") return defaults.hermes;
   return defaults.openclaw;
 }
 
@@ -3407,7 +3592,11 @@ function buildBlueprintImportDefaults(
     modelIds: {
       openclaw: config.defaultModelId,
       codex: harnessDefaults.codex,
-      claude: harnessDefaults.claude
+      claude: harnessDefaults.claude,
+      google: harnessDefaults.google,
+      cursor: harnessDefaults.cursor,
+      opencode: harnessDefaults.opencode,
+      hermes: harnessDefaults.hermes
     },
     channelId: selectDefaultChannelId(config.configuredChannels)
   };
@@ -3427,16 +3616,63 @@ function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): Harn
     readEnvString(env, "HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL") ??
     readEnvString(env, "CLAUDE_CODE_DEFAULT_MODEL") ??
     fallbackClaudeCodeDefaultModel;
+  const googleConfiguredModel = readGoogleCliConfiguredModel(env);
+  const googleDefaultModelId =
+    readEnvString(env, "HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL") ??
+    readEnvString(env, "GOOGLE_CLI_DEFAULT_MODEL") ??
+    readEnvString(env, "GEMINI_DEFAULT_MODEL") ??
+    googleConfiguredModel ??
+    fallbackCliDefaultModel;
+  const cursorDefaultModelId =
+    readEnvString(env, "HIVEWARD_CURSOR_DEFAULT_MODEL") ??
+    readEnvString(env, "CURSOR_DEFAULT_MODEL") ??
+    fallbackCliDefaultModel;
+  const opencodeDefaultModelId =
+    readEnvString(env, "HIVEWARD_OPENCODE_DEFAULT_MODEL") ??
+    readEnvString(env, "OPENCODE_DEFAULT_MODEL") ??
+    fallbackCliDefaultModel;
+  const hermesDefaultModelId =
+    readEnvString(env, "HIVEWARD_HERMES_DEFAULT_MODEL") ??
+    readEnvString(env, "HERMES_DEFAULT_MODEL") ??
+    fallbackCliDefaultModel;
 
   return {
     codex: codexDefaultModelId,
     claude: claudeDefaultModelId,
+    google: googleDefaultModelId,
+    cursor: cursorDefaultModelId,
+    opencode: opencodeDefaultModelId,
+    hermes: hermesDefaultModelId,
     codexModels: prepareHarnessModelOptions(codexModels, codexDefaultModelId, "codex", codexDefaultThinkingLevels),
     claudeModels: prepareHarnessModelOptions(
       readClaudeCodeModelOptions(env),
       claudeDefaultModelId,
       "claude",
       claudeCodeDefaultThinkingLevels
+    ),
+    googleModels: prepareHarnessModelOptions(
+      readGoogleCliModelOptions(env),
+      googleDefaultModelId,
+      "google",
+      cliHarnessDefaultThinkingLevels
+    ),
+    cursorModels: prepareHarnessModelOptions(
+      readEnvModelOptions(env, ["HIVEWARD_CURSOR_MODELS", "CURSOR_MODELS"], "cursor", cliHarnessDefaultThinkingLevels),
+      cursorDefaultModelId,
+      "cursor",
+      cliHarnessDefaultThinkingLevels
+    ),
+    opencodeModels: prepareHarnessModelOptions(
+      readEnvModelOptions(env, ["HIVEWARD_OPENCODE_MODELS", "OPENCODE_MODELS"], "opencode", cliHarnessDefaultThinkingLevels),
+      opencodeDefaultModelId,
+      "opencode",
+      cliHarnessDefaultThinkingLevels
+    ),
+    hermesModels: prepareHarnessModelOptions(
+      readEnvModelOptions(env, ["HIVEWARD_HERMES_MODELS", "HERMES_MODELS"], "hermes", cliHarnessDefaultThinkingLevels),
+      hermesDefaultModelId,
+      "hermes",
+      cliHarnessDefaultThinkingLevels
     )
   };
 }
@@ -3524,6 +3760,39 @@ function readClaudeCodeModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[
   ]);
 }
 
+function readGoogleCliConfiguredModel(env: NodeJS.ProcessEnv): string | undefined {
+  for (const root of resolveGoogleCliConfigRoots(env)) {
+    const settings = readJsonFile(join(root, "settings.json"));
+    if (!isPlainRecord(settings)) continue;
+    const model = readOptionalString(settings.model);
+    if (model) return model;
+  }
+  return undefined;
+}
+
+function readGoogleCliModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[] {
+  return mergeHarnessModelOptions([
+    ...readEnvModelOptions(env, ["HIVEWARD_GOOGLE_CLI_MODELS", "GOOGLE_CLI_MODELS", "GEMINI_MODELS"], "google", cliHarnessDefaultThinkingLevels),
+    ...readGoogleCliSettingsModelOptions(env)
+  ]);
+}
+
+function readGoogleCliSettingsModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[] {
+  const modelIds = new Set<string>();
+  for (const root of resolveGoogleCliConfigRoots(env)) {
+    const settings = readJsonFile(join(root, "settings.json"));
+    if (!isPlainRecord(settings)) continue;
+    const model = readOptionalString(settings.model);
+    if (model) modelIds.add(model);
+  }
+  return [...modelIds].map((id) => ({
+    id,
+    label: id,
+    provider: "google",
+    thinkingLevels: cliHarnessDefaultThinkingLevels
+  }));
+}
+
 function readClaudeCodeSettingsModelOptions(env: NodeJS.ProcessEnv): HarnessModelOption[] {
   const modelIds = new Set<string>();
   for (const root of resolveClaudeCodeConfigRoots(env)) {
@@ -3601,6 +3870,12 @@ function resolveCodexConfigRoots(env: NodeJS.ProcessEnv): string[] {
 
 function resolveClaudeCodeConfigRoots(env: NodeJS.ProcessEnv): string[] {
   const roots = [readEnvString(env, "CLAUDE_CONFIG_DIR"), join(homedir(), ".claude")].filter((root): root is string => Boolean(root));
+  return [...new Set(roots.map((root) => resolve(root)))];
+}
+
+function resolveGoogleCliConfigRoots(env: NodeJS.ProcessEnv): string[] {
+  const roots = [readEnvString(env, "GEMINI_HOME"), readEnvString(env, "GOOGLE_CLI_HOME"), join(homedir(), ".gemini")]
+    .filter((root): root is string => Boolean(root));
   return [...new Set(roots.map((root) => resolve(root)))];
 }
 

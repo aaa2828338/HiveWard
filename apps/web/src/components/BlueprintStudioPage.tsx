@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent,
+  type PointerEvent as ReactPointerEvent
+} from "react";
 import {
   applyNodeChanges,
   Background,
@@ -71,6 +81,8 @@ import type {
   LoopNodeConfig,
   ManagerNodeConfig,
   ManagerSlotNodeConfig,
+  ChatPermissionMode,
+  HarnessId,
   HarnessStatus,
   HarnessSkillStatusResponse,
   NoteNodeConfig,
@@ -104,6 +116,26 @@ import {
   shouldShowBlueprintWorkspaceRunState,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import {
+  blueprintSelectOpenEventName,
+  buildAgentHarnessOptions,
+  buildArchitectureRoleDetailRows,
+  buildBlueprintModelSelectOptions,
+  buildSummaryHarnessOptions,
+  createBlueprintCanvasWorld,
+  getBlueprintSelectOutsidePointerListenerOptions,
+  isBlueprintCardKeyboardActivationKey,
+  isBlueprintSelectorDisabled,
+  resolveBlueprintModelSelectValue,
+  shouldActivateBlueprintCardPointer,
+  shouldExpandBlueprintCanvasWorld,
+  type BlueprintCanvasContentBounds,
+  type BlueprintCanvasViewport,
+  type BlueprintCanvasWorld
+} from "../lib/blueprint-studio-state";
+import { resolveRuntimePermissionProfile } from "../lib/harness-permissions";
+import { runtimeDisplayLabel } from "../lib/harness-labels";
+import { HarnessLabel } from "./HarnessLabel";
 
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard,
@@ -114,20 +146,7 @@ const edgeTypes: EdgeTypes = {
   architectureDistributor: ArchitectureDistributorEdge
 };
 
-type BlueprintCanvasWorld = {
-  extent: CoordinateExtent;
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  width: number;
-  height: number;
-  viewportWidth: number;
-  viewportHeight: number;
-};
-
 const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
-const canvasWorldScreenScale = 9;
 const nodeMenuPopoverWidth = 146;
 const nodeMenuViewportMargin = 12;
 
@@ -157,8 +176,8 @@ const rightButtonDragThreshold = 4;
 const defaultChildNodeSize: CanvasSize = { width: 232, height: 108 };
 const architectureCeoNodeSize: CanvasSize = { width: 420, height: 86 };
 const architectureLeaderNodeSize: CanvasSize = { width: 340, height: 220 };
-const defaultBlueprintViewport = { x: 0, y: 0, zoom: 1 };
-type BlueprintViewport = typeof defaultBlueprintViewport;
+const defaultBlueprintViewport: BlueprintCanvasViewport = { x: 0, y: 0, zoom: 1 };
+type BlueprintViewport = BlueprintCanvasViewport;
 type BlueprintSortMode = "recent" | "usage" | "created" | "nodes" | "name";
 type BlueprintConnectionCandidate = {
   source?: string | null;
@@ -198,6 +217,7 @@ export function BlueprintStudioPage({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   runSummaries,
   runView,
@@ -225,6 +245,7 @@ export function BlueprintStudioPage({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   runSummaries: BlueprintRunSummary[];
   runView?: BlueprintRunView;
@@ -281,6 +302,8 @@ export function BlueprintStudioPage({
     nodeId: undefined
   });
   const [canvasViewportSize, setCanvasViewportSize] = useState(fallbackCanvasViewportSize);
+  const [canvasExpansionRings, setCanvasExpansionRings] = useState(0);
+  const canvasExpansionRingsRef = useRef(0);
   const canvasPanelRef = useRef<HTMLElement | null>(null);
   const nodeMenuRef = useRef<HTMLDivElement | null>(null);
   const nodeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -328,6 +351,15 @@ export function BlueprintStudioPage({
   useEffect(() => {
     setBusinessViewport(blueprint?.display.viewport ?? defaultBlueprintViewport);
   }, [blueprint?.display.viewport?.x, blueprint?.display.viewport?.y, blueprint?.display.viewport?.zoom, blueprint?.id]);
+
+  useEffect(() => {
+    canvasExpansionRingsRef.current = canvasExpansionRings;
+  }, [canvasExpansionRings]);
+
+  useEffect(() => {
+    canvasExpansionRingsRef.current = 0;
+    setCanvasExpansionRings(0);
+  }, [blueprint?.id]);
 
   useEffect(() => {
     setDrawerSelectedBlueprintId(blueprint?.id);
@@ -482,7 +514,24 @@ export function BlueprintStudioPage({
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
-  const blueprintCanvasWorld = useMemo(() => createBlueprintCanvasWorld(canvasViewportSize), [canvasViewportSize.height, canvasViewportSize.width]);
+  const blueprintCanvasContentBounds = useMemo(
+    () => buildBlueprintCanvasContentBounds(blueprintBoard === "architecture" ? architectureFlowNodes : localNodes),
+    [architectureFlowNodes, blueprintBoard, localNodes]
+  );
+  const blueprintCanvasWorld = useMemo(
+    () => createBlueprintCanvasWorld(canvasViewportSize, canvasExpansionRings, blueprintCanvasContentBounds),
+    [blueprintCanvasContentBounds, canvasExpansionRings, canvasViewportSize.height, canvasViewportSize.width]
+  );
+  const expandBlueprintCanvasIfNeeded = useCallback(
+    (viewport: BlueprintViewport) => {
+      const currentWorld = createBlueprintCanvasWorld(canvasViewportSize, canvasExpansionRingsRef.current, blueprintCanvasContentBounds);
+      if (!shouldExpandBlueprintCanvasWorld({ viewport, viewportSize: canvasViewportSize, canvasWorld: currentWorld })) return;
+      const nextExpansionRings = canvasExpansionRingsRef.current + 1;
+      canvasExpansionRingsRef.current = nextExpansionRings;
+      setCanvasExpansionRings(nextExpansionRings);
+    },
+    [blueprintCanvasContentBounds, canvasViewportSize.height, canvasViewportSize.width]
+  );
   const isCompactBlueprintCanvas = canvasViewportSize.width <= 760;
   const blueprintCornerStyle = useMemo<CSSProperties>(() => {
     const buttonSize = isCompactBlueprintCanvas ? 14 : 20;
@@ -753,7 +802,7 @@ export function BlueprintStudioPage({
         nodes: current.nodes.map((node) => {
           if (!selectedIds.has(node.id) || node.type !== "agent") return node;
           const runtimeConfigPatch = runtimeId
-            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions)
+            ? buildRuntimeConfigPatch(node.config as AgentNodeConfig, runtimeId, agentOptions, harnessPermissionModes)
             : {};
           return {
             ...node,
@@ -767,7 +816,7 @@ export function BlueprintStudioPage({
         })
       }));
     },
-    [configuredAgents, isBlueprintInteractionLocked, onUpdateBlueprint]
+    [configuredAgents, harnessPermissionModes, isBlueprintInteractionLocked, onUpdateBlueprint]
   );
 
   const patchNode = useCallback(
@@ -1036,6 +1085,34 @@ export function BlueprintStudioPage({
     [closeNodeContextMenu, closeNodeMenu, onSelectBlueprint]
   );
 
+  const activateBlueprintCardFromPointer = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>, blueprintId: string) => {
+      if (
+        !shouldActivateBlueprintCardPointer({
+          button: event.button,
+          ctrlKey: event.ctrlKey,
+          metaKey: event.metaKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          defaultPrevented: event.defaultPrevented
+        })
+      ) {
+        return;
+      }
+      selectBlueprintCard(blueprintId);
+    },
+    [selectBlueprintCard]
+  );
+
+  const activateBlueprintCardFromKeyboard = useCallback(
+    (event: ReactKeyboardEvent<HTMLButtonElement>, blueprintId: string) => {
+      if (!isBlueprintCardKeyboardActivationKey(event.key)) return;
+      event.preventDefault();
+      selectBlueprintCard(blueprintId);
+    },
+    [selectBlueprintCard]
+  );
+
   const openBlueprintCardContextMenu = useCallback(
     (event: MouseEvent<HTMLButtonElement>, blueprintId: string) => {
       event.preventDefault();
@@ -1236,6 +1313,7 @@ export function BlueprintStudioPage({
               edgeTypes={edgeTypes}
               translateExtent={blueprintCanvasWorld.extent}
               nodeExtent={blueprintCanvasWorld.extent}
+              onMove={(_event, viewport) => expandBlueprintCanvasIfNeeded(viewport)}
               onNodeClick={(_event, node) => setSelectedArchitectureNodeId(node.id)}
               onPaneClick={clearArchitectureSelection}
               onSelectionChange={({ nodes }) => setSelectedArchitectureNodeId(nodes.length === 1 ? nodes[0]?.id : undefined)}
@@ -1263,7 +1341,11 @@ export function BlueprintStudioPage({
               />
             </ReactFlow>
             {selectedArchitectureNode && (
-              <ArchitectureRoleDetailSidebar node={selectedArchitectureNode} onClose={clearArchitectureSelection} />
+              <ArchitectureRoleDetailSidebar
+                node={selectedArchitectureNode}
+                onClose={clearArchitectureSelection}
+                onOpenBlueprint={openArchitectureBlueprint}
+              />
             )}
           </section>
         </section>
@@ -1338,7 +1420,10 @@ export function BlueprintStudioPage({
             onNodeContextMenu={onNodeContextMenu}
             onEdgeClick={onEdgeClick}
             onConnectEnd={onConnectEnd}
-            onMoveEnd={(_event, viewport) => setBusinessViewport(viewport)}
+            onMove={(_event, viewport) => expandBlueprintCanvasIfNeeded(viewport)}
+            onMoveEnd={(_event, viewport) => {
+              setBusinessViewport(viewport);
+            }}
             onPaneClick={() => {
               if (suppressNextPaneClickRef.current) {
                 suppressNextPaneClickRef.current = false;
@@ -1439,7 +1524,7 @@ export function BlueprintStudioPage({
               className="blueprint-selector-button"
               title={t.fields.blueprint}
               onClick={toggleBlueprintDrawer}
-              disabled={busy || blueprints.length === 0}
+              disabled={isBlueprintSelectorDisabled({ busy, selectedCompanyId })}
             >
               <LayoutTemplate size={16} />
               <span>{blueprint?.name ?? t.empty.selectBlueprint}</span>
@@ -1507,7 +1592,8 @@ export function BlueprintStudioPage({
                         key={item.id}
                         type="button"
                         className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
-                        onClick={() => selectBlueprintCard(item.id)}
+                        onPointerUp={(event) => activateBlueprintCardFromPointer(event, item.id)}
+                        onKeyDown={(event) => activateBlueprintCardFromKeyboard(event, item.id)}
                         onContextMenu={(event) => openBlueprintCardContextMenu(event, item.id)}
                       >
                         <span className="blueprint-card-icon">
@@ -1632,6 +1718,7 @@ export function BlueprintStudioPage({
             catalog={catalog}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
+            harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
             allNodes={blueprint.nodes}
             node={inspectedNode}
@@ -1776,14 +1863,29 @@ function ArchitectureRoleNodeCard({ data, selected }: NodeProps) {
 
 function ArchitectureRoleDetailSidebar({
   node,
-  onClose
+  onClose,
+  onOpenBlueprint
 }: {
   node: Node<ArchitectureRoleNodeData>;
   onClose: () => void;
+  onOpenBlueprint: (blueprintId: string) => void;
 }) {
   const nodeData = node.data;
   const isCeo = nodeData.roleKind === "ceo";
   const blueprintLabel = nodeData.blueprintName ?? nodeData.blueprintId;
+  const detailRows = buildArchitectureRoleDetailRows({
+    roleKind: nodeData.roleKind,
+    pendingLabel: nodeData.copy.pending,
+    pendingApprovalCount: nodeData.pendingApprovalCount,
+    leaderLabel: nodeData.copy.leader,
+    leaderCount: nodeData.leaderCount,
+    latestRunLabel: nodeData.copy.latestRun,
+    latestRunStatus: nodeData.latestRunStatus,
+    noRunLabel: nodeData.copy.noRun,
+    businessLabel: nodeData.copy.business,
+    blueprintId: nodeData.blueprintId,
+    blueprintLabel
+  });
 
   return (
     <aside className="node-modal node-detail-sidebar" aria-label={nodeData.label} onPointerDown={(event) => event.stopPropagation()}>
@@ -1799,28 +1901,20 @@ function ArchitectureRoleDetailSidebar({
 
       <div className="node-modal-grid">
         <div className="node-modal-main">
-          <div className="config-form node-modal-form">
-            <label>
-              <span>{nodeData.copy.pending}</span>
-              <input value={String(nodeData.pendingApprovalCount)} readOnly />
-            </label>
-            {isCeo ? (
-              <label>
-                <span>{nodeData.copy.leader}</span>
-                <input value={String(nodeData.leaderCount ?? 0)} readOnly />
-              </label>
-            ) : (
-              <label>
-                <span>{nodeData.copy.latestRun}</span>
-                <input value={nodeData.latestRunStatus ?? nodeData.copy.noRun} readOnly />
-              </label>
-            )}
-            {!isCeo && blueprintLabel && (
-              <label>
-                <span>{nodeData.copy.business}</span>
-                <input value={blueprintLabel} readOnly />
-              </label>
-            )}
+          <div className="architecture-detail-list">
+            {detailRows.map((row) => (
+              <div key={row.id} className="architecture-detail-row">
+                <span>{row.label}</span>
+                {row.actionBlueprintId ? (
+                  <button type="button" onClick={() => onOpenBlueprint(row.actionBlueprintId!)}>
+                    <LayoutTemplate size={14} />
+                    <strong>{row.value}</strong>
+                  </button>
+                ) : (
+                  <strong>{row.value}</strong>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -1878,6 +1972,7 @@ function NodeDetailSidebar({
   catalog,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   allNodes,
   node,
@@ -1889,6 +1984,7 @@ function NodeDetailSidebar({
   catalog?: CatalogSnapshot;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   allNodes: BlueprintNode[];
   node: BlueprintNode;
@@ -1918,6 +2014,7 @@ function NodeDetailSidebar({
             node={node}
             configuredAgents={configuredAgents}
             harnessStatuses={harnessStatuses}
+            harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
             allNodes={allNodes}
             models={models}
@@ -1987,6 +2084,7 @@ function EditableNodeTitle({ value, onChange }: { value: string; onChange: (valu
 type BlueprintSelectOption = {
   value: string;
   label: string;
+  badgeLabel?: string;
   disabled?: boolean;
 };
 
@@ -2008,28 +2106,43 @@ function BlueprintSelect({
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const selectedOption = options.find((option) => option.value === value);
-  const displayLabel = selectedOption?.label ?? value;
+  const displayParts = selectedOption ? { label: selectedOption.label, badgeLabel: selectedOption.badgeLabel } : { label: value };
   const isDisabled = disabled || options.every((option) => option.disabled);
 
   useEffect(() => {
     if (!open) return;
 
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      const target = event.target as globalThis.Node | null;
+      const target = event.target as Element | null;
       if (target && rootRef.current?.contains(target)) return;
+      if (target?.closest(".blueprint-select")) return;
+      setOpen(false);
+    };
+    const closeOnPeerOpen = (event: Event) => {
+      const peerRoot = event instanceof CustomEvent ? event.detail : undefined;
+      if (peerRoot && peerRoot === rootRef.current) return;
       setOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
     };
+    const pointerListenerOptions = getBlueprintSelectOutsidePointerListenerOptions();
 
-    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("pointerdown", closeOnOutsidePointer, pointerListenerOptions);
+    window.addEventListener(blueprintSelectOpenEventName, closeOnPeerOpen);
     document.addEventListener("keydown", closeOnEscape);
     return () => {
-      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, pointerListenerOptions);
+      window.removeEventListener(blueprintSelectOpenEventName, closeOnPeerOpen);
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [open]);
+
+  const toggleOpen = () => {
+    if (isDisabled) return;
+    window.dispatchEvent(new CustomEvent(blueprintSelectOpenEventName, { detail: rootRef.current }));
+    setOpen((current) => !current);
+  };
 
   return (
     <div ref={rootRef} className={`blueprint-select ${className ?? ""}`}>
@@ -2040,9 +2153,9 @@ function BlueprintSelect({
         aria-expanded={open}
         aria-label={ariaLabel}
         disabled={isDisabled}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleOpen}
       >
-        <span>{displayLabel}</span>
+        <HarnessLabel {...displayParts} />
         <ChevronDown size={16} />
       </button>
       {open && (
@@ -2063,7 +2176,7 @@ function BlueprintSelect({
                   setOpen(false);
                 }}
               >
-                <span>{option.label}</span>
+                <HarnessLabel label={option.label} badgeLabel={option.badgeLabel} />
                 {selected && <Check size={15} />}
               </button>
             );
@@ -2184,15 +2297,15 @@ function BatchAgentSettingsModal({
   const runtimeModelOptions = buildBlueprintRuntimeModelOptions(effectiveRuntimeId, models, harnessStatuses);
   const runtimeOptions: BlueprintSelectOption[] = [
     { value: "", label: "No change" },
-    { value: "codex", label: "Codex" },
-    { value: "openclaw", label: "OpenClaw" },
-    ...(effectiveRuntimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
+    ...buildAgentHarnessOptions()
   ];
-  const modelSelectionOptions: BlueprintSelectOption[] = [
-    { value: "", label: "No change" },
-    { value: "__default", label: runtimeDefaultModelLabel(effectiveRuntimeId, t) },
-    ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-  ];
+  const modelSelectionOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+    models: runtimeModelOptions,
+    defaultLabel: t.common.defaultOption,
+    defaultBadgeLabel: t.common.defaultOption,
+    defaultValue: "__default",
+    noChangeLabel: "No change"
+  });
 
   const apply = () => {
     const configPatch: Partial<AgentNodeConfig> = {};
@@ -2262,6 +2375,7 @@ function NodeConfigForm({
   node,
   configuredAgents,
   harnessStatuses,
+  harnessPermissionModes,
   harnessSkillStatuses,
   allNodes,
   models,
@@ -2273,6 +2387,7 @@ function NodeConfigForm({
   node: BlueprintNode;
   configuredAgents?: OpenClawConfiguredAgent[];
   harnessStatuses?: HarnessStatus[];
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
   allNodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
@@ -2286,9 +2401,8 @@ function NodeConfigForm({
     const runtimeId = node.runtimeId ?? "openclaw";
     const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
     const approvalEnabled = config.approval?.enabled === true;
     const sendEnabled = runtimeId === "openclaw" && config.send?.enabled === true;
@@ -2306,19 +2420,16 @@ function NodeConfigForm({
       channels.length === 0
         ? [{ value: sendConfig.channelId || "slack", label: sendConfig.channelId || "slack" }]
         : channels.map((channel) => ({ value: channel.id, label: channel.label }));
-    const runtimeOptions: BlueprintSelectOption[] = [
-      { value: "codex", label: "Codex" },
-      { value: "openclaw", label: "OpenClaw" },
-      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
-    ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
-      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
     };
 
     return (
@@ -2337,13 +2448,13 @@ function NodeConfigForm({
             <span>{t.fields.model}</span>
             {isSdkProvider && runtimeModelOptions.length === 0 ? (
               <input
-                value={selectedModel}
-                placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                value={modelSelectValue}
+                placeholder={t.common.defaultOption}
                 onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
               />
             ) : (
               <BlueprintSelect
-                value={selectedModel}
+                value={modelSelectValue}
                 options={modelOptions}
                 ariaLabel={t.fields.model}
                 onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2478,29 +2589,25 @@ function NodeConfigForm({
     const runtimeId = node.runtimeId ?? "openclaw";
     const skills = buildBlueprintRuntimeSkillOptions(runtimeId, harnessSkillStatuses);
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const agentOptions = configuredAgents ?? [];
-    const runtimeOptions: BlueprintSelectOption[] = [
-      { value: "codex", label: "Codex" },
-      { value: "openclaw", label: "OpenClaw" },
-      ...(runtimeId === "claude" ? [{ value: "claude", label: "Claude Code" }] : [])
-    ];
     const preflightAgentOptions: BlueprintSelectOption[] = [
       { value: "", label: "Manager fallback" },
       ...allNodes
         .filter((candidate) => candidate.type === "agent")
         .map((candidate) => ({ value: candidate.id, label: candidate.config.label }))
     ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
-      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions));
+      onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
     };
     return (
       <div className="config-form node-modal-form">
@@ -2517,13 +2624,13 @@ function NodeConfigForm({
           <span>{t.fields.model}</span>
           {isSdkProvider && runtimeModelOptions.length === 0 ? (
             <input
-              value={selectedModel}
-              placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+              value={modelSelectValue}
+              placeholder={t.common.defaultOption}
               onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
             />
           ) : (
             <BlueprintSelect
-              value={selectedModel}
+              value={modelSelectValue}
               options={modelOptions}
               ariaLabel={t.fields.model}
               onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2662,23 +2769,19 @@ function NodeConfigForm({
       ? "harness_summary"
       : "structured_merge";
     const runtimeId = config.runtimeId ?? "openclaw";
-    const selectedModel = config.modelId ?? "";
+    const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
-    const hasSelectedModel = selectedModel ? runtimeModelOptions.some((model) => model.id === selectedModel) : true;
     const modeOptions: BlueprintSelectOption[] = [
       { value: "structured_merge", label: t.options.structuredMerge },
       { value: "harness_summary", label: t.options.harnessSummary }
     ];
-    const harnessOptions: BlueprintSelectOption[] = [
-      { value: "openclaw", label: "OpenClaw" },
-      { value: "codex", label: "Codex" },
-      { value: "claude", label: "Claude Code" }
-    ];
-    const modelOptions: BlueprintSelectOption[] = [
-      { value: "", label: runtimeDefaultModelLabel(runtimeId, t) },
-      ...(!hasSelectedModel && selectedModel ? [{ value: selectedModel, label: selectedModel }] : []),
-      ...runtimeModelOptions.map((model) => ({ value: model.id, label: model.label }))
-    ];
+    const harnessOptions: BlueprintSelectOption[] = buildSummaryHarnessOptions();
+    const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
+      selectedModel: config.modelId,
+      models: runtimeModelOptions,
+      defaultLabel: t.common.defaultOption,
+      defaultBadgeLabel: t.common.defaultOption
+    });
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const switchMode = (mode: SummaryNodeConfig["mode"]) => {
       onPatchConfig(
@@ -2716,13 +2819,13 @@ function NodeConfigForm({
               <span>{t.fields.model}</span>
               {isSdkProvider && runtimeModelOptions.length === 0 ? (
                 <input
-                  value={selectedModel}
-                  placeholder={runtimeDefaultModelLabel(runtimeId, t)}
+                  value={modelSelectValue}
+                  placeholder={t.common.defaultOption}
                   onChange={(event) => onPatchConfig({ modelId: event.target.value || undefined })}
                 />
               ) : (
                 <BlueprintSelect
-                  value={selectedModel}
+                  value={modelSelectValue}
                   options={modelOptions}
                   ariaLabel={t.fields.model}
                   onChange={(value) => onPatchConfig({ modelId: value || undefined })}
@@ -2898,6 +3001,7 @@ function normalizeColorInput(value: string | undefined): string {
 type BlueprintRuntimeModelOption = {
   id: string;
   label: string;
+  isDefault?: boolean;
 };
 
 type BlueprintSkillOption = {
@@ -2909,7 +3013,8 @@ type BlueprintSkillOption = {
 function buildRuntimeConfigPatch(
   config: AgentNodeConfig | ManagerNodeConfig,
   runtimeId: AgentRuntimeId,
-  agentOptions: OpenClawConfiguredAgent[]
+  agentOptions: OpenClawConfiguredAgent[],
+  harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>
 ): Partial<AgentNodeConfig & ManagerNodeConfig> {
   const patch: Partial<AgentNodeConfig & ManagerNodeConfig> = {
     modelId: undefined
@@ -2927,8 +3032,8 @@ function buildRuntimeConfigPatch(
     ...patch,
     openclawAgentId: undefined,
     send: undefined,
-    permissionProfile: runtimeAccessPolicy.filesystem,
     runtimeAccessPolicy,
+    permissionProfile: resolveRuntimePermissionProfile(runtimeId, harnessPermissionModes, config.permissionProfile ?? "read_only"),
     timeoutMs: config.timeoutMs ?? 600000
   };
 }
@@ -2938,19 +3043,25 @@ function buildBlueprintRuntimeModelOptions(
   models: NonNullable<CatalogSnapshot["models"]>,
   harnessStatuses?: HarnessStatus[]
 ): BlueprintRuntimeModelOption[] {
+  const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
+
   if (runtimeId === "openclaw") {
-    return models.map((model) => ({ id: model.id, label: model.label }));
+    return models.map((model) => ({
+      id: model.id,
+      label: model.label,
+      isDefault: harnessStatus?.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined
+    }));
   }
 
-  const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
   if (harnessStatus?.models?.length) {
     return harnessStatus.models.map((model) => ({
       id: model.id,
-      label: model.id === "inherit" ? `${runtimeLabel(runtimeId)} default` : model.label || model.id
+      label: model.label || model.id,
+      isDefault: model.isDefault ?? (harnessStatus.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined)
     }));
   }
-  return harnessStatus?.defaultModelId
-    ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId === "inherit" ? `${runtimeLabel(runtimeId)} default` : harnessStatus.defaultModelId }]
+  return harnessStatus?.defaultModelId && harnessStatus.defaultModelId !== "inherit"
+    ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId, isDefault: true }]
     : [];
 }
 
@@ -2971,14 +3082,8 @@ function buildBlueprintRuntimeSkillOptions(
     }));
 }
 
-function runtimeDefaultModelLabel(runtimeId: AgentRuntimeId, t: Messages): string {
-  return `${runtimeLabel(runtimeId)} ${t.common.defaultModel}`;
-}
-
 function runtimeLabel(runtimeId: AgentRuntimeId): string {
-  if (runtimeId === "codex") return "Codex";
-  if (runtimeId === "claude") return "Claude Code";
-  return "OpenClaw";
+  return runtimeDisplayLabel(runtimeId);
 }
 
 function commonAgentRuntime(nodes: Array<BlueprintNode & { type: "agent" }>): AgentRuntimeId | undefined {
@@ -3835,31 +3940,6 @@ function BlueprintCanvasMiniMap({
   );
 }
 
-function createBlueprintCanvasWorld(viewportSize: CanvasSize): BlueprintCanvasWorld {
-  const viewportWidth = Math.max(960, Math.round(viewportSize.width));
-  const viewportHeight = Math.max(720, Math.round(viewportSize.height));
-  const minX = -viewportWidth;
-  const minY = -viewportHeight;
-  const width = viewportWidth * canvasWorldScreenScale;
-  const height = viewportHeight * canvasWorldScreenScale;
-  const maxX = minX + width;
-  const maxY = minY + height;
-  return {
-    extent: [
-      [minX, minY],
-      [maxX, maxY]
-    ],
-    minX,
-    minY,
-    maxX,
-    maxY,
-    width,
-    height,
-    viewportWidth,
-    viewportHeight
-  };
-}
-
 type MiniMapNodeBox = {
   id: string;
   x: number;
@@ -3868,6 +3948,36 @@ type MiniMapNodeBox = {
   height: number;
   selected: boolean;
 };
+
+function buildBlueprintCanvasContentBounds(nodes: Node[]): BlueprintCanvasContentBounds | undefined {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const absolutePositions = new Map<string, CanvasPosition>();
+  let bounds: BlueprintCanvasContentBounds | undefined;
+
+  for (const node of nodes) {
+    if (node.hidden) continue;
+    const position = resolveFlowNodeAbsolutePosition(node, nodesById, absolutePositions);
+    const size = resolveFlowNodeSize(node);
+    const maxX = position.x + size.width;
+    const maxY = position.y + size.height;
+    if (![position.x, position.y, maxX, maxY].every(Number.isFinite)) continue;
+    bounds = bounds
+      ? {
+          minX: Math.min(bounds.minX, position.x),
+          minY: Math.min(bounds.minY, position.y),
+          maxX: Math.max(bounds.maxX, maxX),
+          maxY: Math.max(bounds.maxY, maxY)
+        }
+      : {
+          minX: position.x,
+          minY: position.y,
+          maxX,
+          maxY
+        };
+  }
+
+  return bounds;
+}
 
 function buildMiniMapNodeBoxes(nodes: Node[]): MiniMapNodeBox[] {
   const nodesById = new Map(nodes.map((node) => [node.id, node]));

@@ -411,7 +411,11 @@ export const messages: Record<Language, Messages> = {
       channels: "Channels",
       claudeCodeConfig: "Config",
       claudeCodeModels: "Models",
-      codexConfig: "Config"
+      codexConfig: "Config",
+      googleConfig: "Config",
+      cursorConfig: "Config",
+      opencodeConfig: "Config",
+      hermesConfig: "Config"
     },
     nodeTypes: {
       agent: "Agent",
@@ -479,6 +483,22 @@ export const messages: Record<Language, Messages> = {
       codexConfig: {
         title: "Codex Config",
         description: "Check whether the local Codex harness is installed and ready."
+      },
+      googleConfig: {
+        title: "Google CLI Beta Config",
+        description: "Check whether the local Gemini CLI harness is installed and ready."
+      },
+      cursorConfig: {
+        title: "Cursor CLI Beta Config",
+        description: "Check whether the local Cursor CLI harness is installed and ready."
+      },
+      opencodeConfig: {
+        title: "OpenCode Beta Config",
+        description: "Check whether the local OpenCode CLI harness is installed and ready."
+      },
+      hermesConfig: {
+        title: "Hermes Beta Config",
+        description: "Check whether the local Hermes CLI harness is installed and ready."
       }
     },
     panels: {
@@ -738,7 +758,11 @@ export const messages: Record<Language, Messages> = {
       channels: "\u9891\u9053",
       claudeCodeConfig: "\u914d\u7f6e",
       claudeCodeModels: "\u6a21\u578b",
-      codexConfig: "\u914d\u7f6e"
+      codexConfig: "\u914d\u7f6e",
+      googleConfig: "\u914d\u7f6e",
+      cursorConfig: "\u914d\u7f6e",
+      opencodeConfig: "\u914d\u7f6e",
+      hermesConfig: "\u914d\u7f6e"
     },
     nodeTypes: {
       agent: "Agent",
@@ -806,6 +830,22 @@ export const messages: Record<Language, Messages> = {
       codexConfig: {
         title: "Codex \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Codex harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      googleConfig: {
+        title: "Google CLI Beta \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a Gemini CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      cursorConfig: {
+        title: "Cursor CLI Beta \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a Cursor CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      opencodeConfig: {
+        title: "OpenCode Beta \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a OpenCode CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      hermesConfig: {
+        title: "Hermes Beta \u914d\u7f6e",
+        description: "\u68c0\u67e5\u672c\u673a Hermes CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       }
     },
     panels: {

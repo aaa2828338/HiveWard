@@ -62,6 +62,7 @@ function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
 }
 
 function hasFailedNodeRun(runView: BlueprintRunView): boolean {
+  if (runView.run.status === "succeeded") return false;
   return runView.nodeRuns.some((nodeRun) => nodeRun.status === "failed" || nodeRun.status === "cancelled");
 }
 

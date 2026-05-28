@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { SDKMessage, Query } from "@anthropic-ai/claude-agent-sdk";
 import type { ThreadEvent, ThreadOptions, TurnOptions, Usage } from "@openai/codex-sdk";
 import { ClaudeAgentSdkRuntime, type ClaudeQueryFn } from "./claude-runtime";
+import { CliAgentSdkRuntime, type CliCommandInput, type RunCliCommand } from "./cli-runtime";
 import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from "./codex-runtime";
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
@@ -879,6 +880,261 @@ describe("agent SDK runtime", () => {
     expect(result.status).toBe("failed");
     expect(result.error).toContain("invalid_output");
   });
+
+  it("streams Google CLI chat through Gemini headless mode and resumes native sessions", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "google",
+      fakeCliRunner(calls, { stdout: "hello from gemini" })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "google",
+        sessionKey: "gemini-session-existing",
+        message: "Hello",
+        attachments: [],
+        modelId: "gemini-2.5-pro",
+        permissionMode: "full_access",
+        idempotencyKey: "chat-google-1"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(calls[0]).toMatchObject({
+      command: "gemini",
+      cwd: workspace
+    });
+    expect(calls[0]?.args).toEqual([
+      "--resume",
+      "gemini-session-existing",
+      "--model",
+      "gemini-2.5-pro",
+      "--approval-mode",
+      "yolo",
+      "--prompt",
+      "Hello"
+    ]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "google", status: "running" }),
+      { type: "delta", text: "hello from gemini" },
+      expect.objectContaining({
+        type: "done",
+        source: "google",
+        status: "succeeded",
+        sessionKey: "gemini-session-existing",
+        output: "hello from gemini"
+      })
+    ]);
+  });
+
+  it("does not invent resumable native session ids for CLI chat output without a session id", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "google",
+      fakeCliRunner(calls, { stdout: "hello without native session" })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "google",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "gemini-2.5-pro",
+        permissionMode: "safe",
+        idempotencyKey: "chat-google-new"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(calls[0]?.args).not.toContain("--resume");
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "google", status: "running", sessionKey: "" }),
+      { type: "delta", text: "hello without native session" },
+      expect.objectContaining({
+        type: "done",
+        source: "google",
+        status: "succeeded",
+        sessionKey: "",
+        output: "hello without native session"
+      })
+    ]);
+  });
+
+  it("streams Cursor chat from stream-json output and carries native session ids", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "cursor",
+      fakeCliRunner(calls, {
+        stdout: [
+          JSON.stringify({ type: "system", subtype: "init", session_id: "cursor-session-existing", model: "gpt-5" }),
+          JSON.stringify({
+            type: "assistant",
+            message: { role: "assistant", content: [{ type: "text", text: "Hel" }] },
+            session_id: "cursor-session-existing"
+          }),
+          JSON.stringify({
+            type: "assistant",
+            message: { role: "assistant", content: [{ type: "text", text: "lo" }] },
+            session_id: "cursor-session-existing"
+          }),
+          JSON.stringify({ type: "result", subtype: "success", result: "Hello", session_id: "cursor-session-existing" })
+        ].join("\n")
+      })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "cursor",
+        sessionKey: "cursor-session-existing",
+        message: "Hello",
+        attachments: [],
+        modelId: "gpt-5",
+        permissionMode: "full_access",
+        idempotencyKey: "chat-cursor-1"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(calls[0]).toMatchObject({
+      command: "cursor-agent",
+      cwd: workspace
+    });
+    expect(calls[0]?.args).toEqual([
+      "--print",
+      "--output-format",
+      "stream-json",
+      "--model",
+      "gpt-5",
+      "--resume",
+      "cursor-session-existing",
+      "--force",
+      "Hello"
+    ]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "cursor", status: "running" }),
+      { type: "delta", text: "Hel" },
+      { type: "delta", text: "lo" },
+      expect.objectContaining({
+        type: "done",
+        source: "cursor",
+        status: "succeeded",
+        sessionKey: "cursor-session-existing",
+        output: "Hello"
+      })
+    ]);
+  });
+
+  it("runs OpenCode tasks through the native CLI with workspace and model flags", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "opencode",
+      fakeCliRunner(calls, { stdout: "{\"ok\":true}\n" })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "opencode",
+        workingDirectory: workspace,
+        modelId: "anthropic/claude-sonnet-4",
+        outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "opencode"
+    });
+
+    expect(calls[0]).toMatchObject({
+      command: "opencode",
+      cwd: workspace
+    });
+    expect(calls[0]?.args.slice(0, 6)).toEqual([
+      "run",
+      "--dir",
+      workspace,
+      "--model",
+      "anthropic/claude-sonnet-4",
+      "--title"
+    ]);
+    expect(calls[0]?.args.at(-1)).toContain("You are executing one Hiveward blueprint node.");
+    expect(result.status).toBe("succeeded");
+    expect(result.source).toBe("opencode");
+    expect(result.output).toBe("{\"ok\":true}");
+  });
+
+  it("streams Hermes chat through single query mode and resumes native sessions", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "hermes",
+      fakeCliRunner(calls, { stdout: "hello from hermes" })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "hermes",
+        sessionKey: "hermes-session-existing",
+        message: "Hello",
+        attachments: [],
+        modelId: "nous/hermes-4",
+        permissionMode: "full_access",
+        idempotencyKey: "chat-hermes-1",
+        skillIds: ["hiveward-leader"]
+      },
+      (event) => events.push(event)
+    );
+
+    expect(calls[0]).toMatchObject({
+      command: "hermes",
+      cwd: workspace
+    });
+    expect(calls[0]?.args).toEqual([
+      "--resume",
+      "hermes-session-existing",
+      "chat",
+      "--model",
+      "nous/hermes-4",
+      "--yolo",
+      "-s",
+      "hiveward-leader",
+      "-q",
+      "Hello"
+    ]);
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "hermes", status: "running" }),
+      { type: "delta", text: "hello from hermes" },
+      expect.objectContaining({
+        type: "done",
+        source: "hermes",
+        status: "succeeded",
+        sessionKey: "hermes-session-existing",
+        output: "hello from hermes"
+      })
+    ]);
+  });
 });
 
 function createStartInput(
@@ -963,5 +1219,20 @@ function fakeCodexClient({
       onStartThread?.(options);
       return thread;
     }
+  };
+}
+
+function fakeCliRunner(
+  calls: CliCommandInput[],
+  result: { stdout: string; stderr?: string; exitCode?: number }
+): RunCliCommand {
+  return async (input) => {
+    calls.push(input);
+    input.onStdout?.(result.stdout);
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr ?? "",
+      exitCode: result.exitCode ?? 0
+    };
   };
 }

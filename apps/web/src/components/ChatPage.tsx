@@ -56,6 +56,8 @@ import type {
 import type { Language } from "../lib/i18n";
 import { api } from "../lib/api";
 import { shouldRefreshStreamingChatMessages, shouldShowRuntimeStatus, toChatRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
+import { harnessDisplayParts, harnessLikeDisplayLabel, harnessLikeDisplayParts } from "../lib/harness-labels";
+import { HarnessLabel } from "./HarnessLabel";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type ChatMessage = HivewardChatMessage & {
@@ -70,6 +72,7 @@ type ChatMessage = HivewardChatMessage & {
 type SelectOption = {
   value: string;
   label: string;
+  badgeLabel?: string;
   meta?: string;
   disabled?: boolean;
   variant?: "create";
@@ -581,14 +584,18 @@ export function ChatPage({
   const harnessOptions = useMemo<SelectOption[]>(
     () =>
       ([
-        ["openclaw", "OpenClaw"],
-        ["codex", "Codex"],
-        ["claudeCode", "Claude Code"]
-      ] as const).map(([value, label]) => {
+        "openclaw",
+        "codex",
+        "google",
+        "cursor",
+        "opencode",
+        "hermes",
+        "claudeCode"
+      ] as const).map((value) => {
         const status = harnessStatuses.find((item) => item.id === value);
         return {
           value,
-          label,
+          ...harnessDisplayParts(value),
           meta: formatHarnessStatusMeta(status, copy),
           disabled: status?.connectionState === "needs_config" || status?.connectionState === "unavailable"
         };
@@ -878,7 +885,7 @@ export function ChatPage({
               : "offline"
           }`}
         >
-          {selectedHarnessLabel}
+          <HarnessLabel {...harnessLikeDisplayParts(harnessId)} />
         </span>
       </div>
 
@@ -1300,7 +1307,9 @@ function ChatSelect({
           onClick={() => setOpen((current) => !current)}
         >
           <span className="chat-select-value">
-            <strong>{selectedLabel}</strong>
+            <strong>
+              <HarnessLabel label={selectedLabel} badgeLabel={selectedOption?.badgeLabel} />
+            </strong>
           </span>
           <ChevronDown className="chat-select-arrow" size={15} />
         </button>
@@ -1324,7 +1333,7 @@ function ChatSelect({
                 >
                   <span className="chat-select-option-main">
                     {option.variant === "create" && <Plus size={14} />}
-                    <span>{option.label}</span>
+                    <HarnessLabel label={option.label} badgeLabel={option.badgeLabel} />
                     {option.meta && <small>{option.meta}</small>}
                   </span>
                   {selected && <Check size={14} />}
@@ -1646,6 +1655,7 @@ function buildHarnessModelOptions(
 function getSdkHarnessThinkingLevels(harnessId: HarnessId): ChatThinkingEffort[] {
   if (harnessId === "codex") return ["low", "medium", "high", "xhigh"];
   if (harnessId === "claudeCode") return ["off", "low", "medium", "high", "xhigh", "max", "adaptive"];
+  if (harnessId === "google" || harnessId === "cursor" || harnessId === "opencode" || harnessId === "hermes") return ["off", "minimal", "low", "medium", "high", "xhigh"];
   return fallbackThinkingLevels;
 }
 
@@ -1806,9 +1816,7 @@ function formatHarnessSpeaker(harnessId: string, agentId?: string): string {
 }
 
 function formatHarnessLabel(harnessId: string): string {
-  if (harnessId === "codex") return "Codex";
-  if (harnessId === "claudeCode" || harnessId === "claude") return "Claude Code";
-  return "OpenClaw";
+  return harnessLikeDisplayLabel(harnessId);
 }
 
 function resolveHarnessPermissionMode(
@@ -1821,7 +1829,7 @@ function resolveHarnessPermissionMode(
 }
 
 function supportsChatPermissionMode(harnessId: HarnessId): boolean {
-  return harnessId === "codex" || harnessId === "claudeCode";
+  return harnessId === "codex" || harnessId === "claudeCode" || harnessId === "google" || harnessId === "cursor" || harnessId === "opencode" || harnessId === "hermes";
 }
 
 function formatHarnessStatusMeta(status: HarnessStatus | undefined, copy: ReturnType<typeof chatCopy>): string {

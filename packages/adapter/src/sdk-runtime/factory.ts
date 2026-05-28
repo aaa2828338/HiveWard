@@ -6,13 +6,14 @@ import type {
   WaitForAgentTaskInput
 } from "@hiveward/shared";
 import { ClaudeAgentSdkRuntime } from "./claude-runtime";
+import { CliAgentSdkRuntime } from "./cli-runtime";
 import { CodexAgentSdkRuntime } from "./codex-runtime";
 import { AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime, AgentSdkRuntimeOptions } from "./types";
 import { isAgentSdkProvider } from "./types";
 
 export class AgentSdkRuntimeRouter implements AgentSdkRuntime {
-  constructor(private readonly runtimes: Record<"claude" | "codex", AgentSdkRuntime>) {}
+  constructor(private readonly runtimes: Record<"claude" | "codex" | "google" | "cursor" | "opencode" | "hermes", AgentSdkRuntime>) {}
 
   streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
     return this.runtimes[input.source].streamChatMessage(input, onEvent);
@@ -26,21 +27,15 @@ export class AgentSdkRuntimeRouter implements AgentSdkRuntime {
   }
 
   waitForTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
-    if (input.source === "claude") {
-      return this.runtimes.claude.waitForTask(input);
-    }
-    if (input.source === "codex") {
-      return this.runtimes.codex.waitForTask(input);
+    if (isAgentSdkProvider(input.source)) {
+      return this.runtimes[input.source].waitForTask(input);
     }
     throw new Error(`Unknown SDK task source: ${input.source}`);
   }
 
   cancelTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
-    if (input.source === "claude") {
-      return this.runtimes.claude.cancelTask(input);
-    }
-    if (input.source === "codex") {
-      return this.runtimes.codex.cancelTask(input);
+    if (isAgentSdkProvider(input.source)) {
+      return this.runtimes[input.source].cancelTask(input);
     }
     throw new Error(`Unknown SDK task source: ${input.source}`);
   }
@@ -53,6 +48,10 @@ export function createAgentSdkRuntime(
   const registry = new AgentSdkTaskRegistry(options.maxConcurrency);
   return new AgentSdkRuntimeRouter({
     claude: new ClaudeAgentSdkRuntime(registry, options),
-    codex: new CodexAgentSdkRuntime(registry, options, undefined, env)
+    codex: new CodexAgentSdkRuntime(registry, options, undefined, env),
+    google: new CliAgentSdkRuntime(registry, options, "google", undefined, env),
+    cursor: new CliAgentSdkRuntime(registry, options, "cursor", undefined, env),
+    opencode: new CliAgentSdkRuntime(registry, options, "opencode", undefined, env),
+    hermes: new CliAgentSdkRuntime(registry, options, "hermes", undefined, env)
   });
 }

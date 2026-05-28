@@ -1,4 +1,4 @@
-export type AgentSdkProvider = "claude" | "codex";
+export type AgentSdkProvider = "claude" | "codex" | "google" | "cursor" | "opencode" | "hermes";
 export type AgentPermissionProfile = "read_only" | "workspace_write";
 export type OpenClawObjectSource = "openclaw" | AgentSdkProvider;
 export type RuntimeFilesystemPolicy = "read_only" | "workspace_write";

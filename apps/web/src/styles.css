@@ -842,11 +842,12 @@ pre {
 
 .hiveward-readme-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
   gap: 22px;
   align-items: start;
 }
 
+.hiveward-readme-left,
 .hiveward-readme-main {
   min-width: 0;
   display: grid;
@@ -895,13 +896,15 @@ pre {
 }
 
 .hiveward-community-qr {
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  border: 1px dashed var(--line-strong);
+  overflow: hidden;
+  border: 1px solid var(--line);
   border-radius: var(--radius-sm);
-  color: var(--muted);
-  background: rgb(19 38 47 / 0.03);
+  background: #111;
+}
+
+.hiveward-community-qr img {
+  width: 100%;
+  display: block;
 }
 
 .hiveward-home-notice {
@@ -4266,11 +4269,9 @@ textarea {
 }
 
 .blueprint-corner-stack .blueprint-world-minimap-viewport {
-  fill: transparent;
-  stroke: rgb(255 255 255 / 0.92);
-  stroke-width: 3;
-  vector-effect: non-scaling-stroke;
-  filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.42));
+  fill: rgb(245 154 11 / 0.24);
+  stroke: none;
+  filter: none;
 }
 
 .blueprint-corner-stack .react-flow__controls {
@@ -5549,8 +5550,9 @@ html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-node.s
 }
 
 html[data-theme="light"] .blueprint-corner-stack .blueprint-world-minimap-viewport {
-  stroke: rgb(255 255 255 / 0.95);
-  filter: drop-shadow(0 0 2px rgb(15 23 42 / 0.32));
+  fill: rgb(245 154 11 / 0.26);
+  stroke: none;
+  filter: none;
 }
 
 html[data-theme="light"] .floating-run-pill,
@@ -6730,13 +6732,28 @@ button.sidebar-system-version.active {
   outline: 0;
 }
 
-.sidebar-nav .nav-system-toggle:hover:not(:disabled),
-.sidebar-nav .nav-system-toggle:focus-visible,
+.sidebar-nav .nav-system-toggle:hover:not(:disabled) {
+  color: #7e8999;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+  transform: none;
+}
+
 .sidebar-nav .nav-system-toggle.active {
   color: var(--text);
   border: 0;
   background: transparent;
   box-shadow: none;
+  outline: 0;
+  transform: none;
+}
+
+.sidebar-nav .nav-system-toggle:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgb(245 154 11 / 0.28);
   outline: 0;
   transform: none;
 }
@@ -6809,13 +6826,26 @@ html[data-theme="light"] .sidebar-nav .nav-system-toggle {
   box-shadow: none;
 }
 
-html[data-theme="light"] .sidebar-nav .nav-system-toggle:hover:not(:disabled),
-html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible,
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:hover:not(:disabled) {
+  color: #667085;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  outline: 0;
+}
+
 html[data-theme="light"] .sidebar-nav .nav-system-toggle.active {
   color: var(--text);
   border: 0;
   background: transparent;
   box-shadow: none;
+  outline: 0;
+}
+
+html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible {
+  border: 0;
+  background: transparent;
+  box-shadow: 0 0 0 2px rgb(245 154 11 / 0.24);
   outline: 0;
 }
 
@@ -9267,6 +9297,71 @@ h6,
   align-content: start;
 }
 
+.harness-permission-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.harness-permission-title h3 {
+  margin: 0;
+}
+
+.harness-permission-help {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  background: var(--paper-raised);
+  cursor: help;
+}
+
+.harness-permission-help:hover,
+.harness-permission-help:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
+
+.harness-permission-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -8px;
+  z-index: 30;
+  width: min(340px, calc(100vw - 48px));
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.harness-permission-tooltip strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.harness-permission-help:hover .harness-permission-tooltip,
+.harness-permission-help:focus-visible .harness-permission-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .harness-permission-toggle {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
@@ -9324,15 +9419,10 @@ h6,
   font-size: 13px;
 }
 
-.harness-permission-copy small,
-.harness-permission-warning {
+.harness-permission-copy small {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
-}
-
-.harness-permission-warning {
-  margin: 0;
 }
 
 .openclaw-panel-metrics {
@@ -10865,6 +10955,51 @@ html[data-theme="light"] .chat-avatar-assistant {
   min-height: 34px;
 }
 
+.architecture-detail-list {
+  display: grid;
+  gap: 10px;
+}
+
+.architecture-detail-row {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(255 255 255 / 0.055);
+}
+
+.architecture-detail-row > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.architecture-detail-row > strong,
+.architecture-detail-row > button strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.architecture-detail-row > button {
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  color: var(--accent-strong);
+  background: transparent;
+  box-shadow: none;
+}
+
+.architecture-detail-row > button:hover {
+  color: var(--accent);
+  background: transparent;
+}
+
 .architecture-empty {
   width: min(520px, 100%);
   padding: 28px;
@@ -11349,6 +11484,88 @@ html[data-theme="light"] select {
   color: var(--muted);
   cursor: not-allowed;
   opacity: 0.62;
+}
+
+.harness-label {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+.harness-label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.harness-label-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid rgb(245 154 11 / 0.46);
+  border-radius: var(--radius-xs);
+  background: rgb(245 154 11 / 0.13);
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 820;
+  letter-spacing: 0;
+  line-height: 1;
+  overflow: visible;
+  text-overflow: clip;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.nav-system-label.harness-label {
+  width: 100%;
+}
+
+.nav-system-label .harness-label-name {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.openclaw-panel-state .harness-label,
+.openclaw-panel-metric strong .harness-label,
+.chat-select-value strong .harness-label,
+.chat-select-option-main .harness-label,
+.blueprint-select-button .harness-label,
+.blueprint-select-option .harness-label {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.chat-select-value strong .harness-label,
+.chat-select-value strong .harness-label-name,
+.chat-select-option-main .harness-label-name {
+  font: inherit;
+}
+
+.chat-select-option-main .harness-label-name,
+.blueprint-select-button .harness-label-name,
+.blueprint-select-option .harness-label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-select-option-main .harness-label-badge,
+.blueprint-select-button .harness-label-badge,
+.blueprint-select-option .harness-label-badge {
+  overflow: visible;
+  font-size: 9px;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .chat-select-button {
