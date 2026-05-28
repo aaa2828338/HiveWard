@@ -1,6 +1,7 @@
 import { nanoid } from "nanoid";
 import type {
   Artifact,
+  ApprovalDecision,
   BlueprintNode,
   BlueprintRun,
   IterationRound,
@@ -20,6 +21,7 @@ export interface RoundStartContext {
   managerInstructions?: string;
   previousSnapshot?: ManagerContextSnapshot;
   previousReleaseReport?: ReleaseReport;
+  currentPlan?: ManagerInjectedContext["currentPlan"];
   humanFeedback?: string;
   artifactIndex: Artifact[];
   rejectedArtifactIndex: Artifact[];
@@ -48,6 +50,13 @@ export interface ManagerInjectedContext {
   lastRound: {
     report?: ReleaseReport;
     humanFeedback?: string;
+  };
+  currentPlan?: {
+    requestId: string;
+    title: string;
+    revision: number;
+    body: string;
+    approvedAt?: string;
   };
   research: {
     status?: string;
@@ -83,10 +92,11 @@ export class ManagerContextService {
     managerNode: BlueprintNode;
     humanFeedback?: string;
   }): Promise<RoundStartContext> {
-    const [snapshots, reports, artifacts] = await Promise.all([
+    const [snapshots, reports, artifacts, approvedPlan] = await Promise.all([
       this.store.listManagerContextSnapshots(input.run.id),
       this.store.listReleaseReports(input.run.id),
-      this.store.listArtifacts(input.run.id)
+      this.store.listArtifacts(input.run.id),
+      this.resolveCurrentPlan(input.round)
     ]);
     const previousSnapshot = snapshots.filter((snapshot) => snapshot.roundId !== input.round.id).at(-1);
     const previousReleaseReport = reports.filter((report) => report.roundId !== input.round.id).at(-1);
@@ -104,6 +114,7 @@ export class ManagerContextService {
       managerInstructions: managerConfig.instructions,
       previousSnapshot,
       previousReleaseReport,
+      currentPlan: approvedPlan,
       humanFeedback: input.humanFeedback?.trim() || undefined,
       artifactIndex,
       rejectedArtifactIndex
@@ -138,6 +149,7 @@ export class ManagerContextService {
         report: context.previousReleaseReport,
         humanFeedback: context.humanFeedback
       },
+      currentPlan: context.currentPlan,
       research: input.research ?? {},
       artifactIndex: context.artifactIndex,
       rejectedArtifactIndex: context.rejectedArtifactIndex,
@@ -195,6 +207,25 @@ export class ManagerContextService {
 
   compactSnapshot(snapshot: ManagerContextSnapshot): ManagerContextSnapshot {
     return snapshot;
+  }
+
+  private async resolveCurrentPlan(round: IterationRound): Promise<ManagerInjectedContext["currentPlan"] | undefined> {
+    if (!round.approvedRequirementRequestId) return undefined;
+
+    const request = await this.store.getApprovalRequest(round.approvedRequirementRequestId);
+    if (!request) return undefined;
+
+    const decisions = await this.store.listApprovalDecisions(request.id);
+    const approval = decisions.find((decision): decision is ApprovalDecision =>
+      decision.action === "approve" || decision.action === "auto_approve"
+    );
+    return {
+      requestId: request.id,
+      title: request.title,
+      revision: round.approvedRequirementRevision ?? request.revision,
+      body: request.body,
+      approvedAt: approval?.createdAt ?? request.updatedAt ?? request.requestedAt
+    };
   }
 }
 

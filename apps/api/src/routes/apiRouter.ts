@@ -82,7 +82,9 @@ import type {
 } from "@hiveward/shared";
 import { claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
-import { ApprovalService, isPathInside, ManagerMailProjector } from "../services/lifecycleServices";
+import { ApprovalService } from "../services/lifecycleApprovalService";
+import { isPathInside } from "../services/artifactService";
+import { ManagerMailProjector } from "../services/managerMailProjector";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";

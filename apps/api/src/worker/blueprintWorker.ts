@@ -28,16 +28,15 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { FileHivewardStore } from "../store/fileHivewardStore";
-import {
-  ApprovalService,
-  ArtifactService,
-  type LifecycleApprovalOutcome,
-  IterationService,
-  ManagerMailProjector,
-  MigrationService
-} from "../services/lifecycleServices";
+import { ApprovalService, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import { ArtifactService } from "../services/artifactService";
+import { IterationService } from "../services/iterationLifecycleService";
+import { ManagerMailProjector } from "../services/managerMailProjector";
+import { MigrationService } from "../services/runtimeAccessPolicyService";
+import { AgentReportService } from "../services/agentReportService";
 import { ManagerContextService, type ManagerInjectedContext, type ManagerSnapshotDraft } from "../services/managerContextService";
 import { RoundPreflightService, type RoundPreflightExecutionResult, type RoundPreflightMode } from "../services/roundPreflightService";
+import { SelfIterationOrchestrator } from "../services/selfIterationOrchestrator";
 
 const executableTypes = new Set([
   "agent",
@@ -57,7 +56,7 @@ const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Choose which numbered slot should receive the next handoff by reading the upstream input, previousResults, and delegationRoster.",
   "If there is no better instruction, run connected slots in ascending order.",
-  "Return only JSON with keys: status, nextSlot, reason.",
+  "Return a JSON routing decision with keys: status, nextSlot, reason.",
   "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" when the workflow is done."
 ].join("\n");
 const defaultSummaryHarnessPrompt = [
@@ -73,9 +72,37 @@ const managerDecisionOutputSchema: Record<string, unknown> = {
     routeToSlot: { type: "integer" },
     returnToSlot: { type: "integer" },
     targetSlot: { type: "integer" },
-    reason: { type: "string" }
+    reason: { type: "string" },
+    humanReportMd: { type: "string" },
+    handoffJson: {},
+    result: {}
   }
 };
+const preflightOutputSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
+    humanReportMd: { type: "string" },
+    handoffJson: {},
+    result: {},
+    hardBlocker: { type: "boolean" },
+    reason: { type: "string" },
+    body: { type: "string" },
+    summary: { type: "string" },
+    assumptions: { type: "array", items: { type: "string" } },
+    risks: { type: "array", items: { type: "string" } },
+    needsMoreResearch: { type: "boolean" },
+    researchBrief: { type: "string" }
+  }
+};
+const agentOutputContractLines = [
+  "Output contract:",
+  "- Return an AgentOutputEnvelope JSON object when you produce a result.",
+  "- Include humanReportMd: a Markdown report written for a human reader. It is free-form; do not follow a fixed template.",
+  "- Include result for the task-specific result or artifact-producing content.",
+  "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
+  "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
+  "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
+];
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
 
 interface ManagerTraceItem {
@@ -84,7 +111,7 @@ interface ManagerTraceItem {
   nodeId: string;
   nodeLabel: string;
   status: AgentTaskResult["status"];
-  output?: string;
+  output?: unknown;
   error?: string;
   returnEdgePresent: boolean;
   managerDecision?: ManagerDecision;
@@ -146,7 +173,7 @@ interface ManagerSlotContext {
     nodeId: string;
     nodeLabel: string;
     status: AgentTaskResult["status"];
-    output?: string;
+    output?: unknown;
     error?: string;
     decision?: ManagerDecision;
   }>;
@@ -158,6 +185,9 @@ interface UpstreamOutputItem {
   nodeRunId: string;
   status: BlueprintNodeRun["status"];
   output: unknown;
+  handoffJson?: unknown;
+  humanReportId?: string;
+  humanReportMd?: string;
   openclawRef?: OpenClawObjectRef;
 }
 
@@ -186,10 +216,12 @@ export class BlueprintWorker {
   private readonly approvalService: ApprovalService;
   private readonly iterationService: IterationService;
   private readonly artifactService: ArtifactService;
+  private readonly agentReportService: AgentReportService;
   private readonly managerContextService: ManagerContextService;
   private readonly roundPreflightService: RoundPreflightService;
   private readonly managerMailProjector: ManagerMailProjector;
   private readonly migrationService: MigrationService;
+  private readonly selfIterationOrchestrator: SelfIterationOrchestrator;
 
   constructor(
     private readonly store: FileHivewardStore,
@@ -199,10 +231,12 @@ export class BlueprintWorker {
     this.approvalService = new ApprovalService(store);
     this.iterationService = new IterationService(store, this.approvalService);
     this.artifactService = new ArtifactService(store, { rootDir: options.artifactRoot });
+    this.agentReportService = new AgentReportService(store);
     this.managerContextService = new ManagerContextService(store);
     this.roundPreflightService = new RoundPreflightService(this.managerContextService);
     this.managerMailProjector = new ManagerMailProjector(store);
     this.migrationService = new MigrationService(store, this.approvalService);
+    this.selfIterationOrchestrator = new SelfIterationOrchestrator();
   }
 
   async resumeActiveRuns(): Promise<void> {
@@ -421,13 +455,13 @@ export class BlueprintWorker {
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
-      prompt: this.resolveAgentPrompt(config),
+      prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
       modelId: config.modelId,
       permissionProfile: config.permissionProfile,
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
-      outputSchema: config.outputSchema,
+      outputSchema: config.outputSchema ?? preflightOutputSchema,
       input: {
         ...taskInput,
         runContext
@@ -438,6 +472,16 @@ export class BlueprintWorker {
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightArtifacts(blueprint, run, round, node, nodeRunId, result)
       : [];
+    if (result.status === "succeeded") {
+      await this.agentReportService.publishFromOutput({
+        runId: run.id,
+        roundId: round.id,
+        nodeRunId,
+        nodeId: node.id,
+        nodeLabel: node.config.label,
+        output: result.output
+      });
+    }
     return { result, artifactIds };
   }
 
@@ -465,6 +509,7 @@ export class BlueprintWorker {
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
+      outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
       input: {
         ...taskInput,
         runContext
@@ -475,6 +520,16 @@ export class BlueprintWorker {
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightArtifacts(blueprint, run, round, topManager, nodeRunId, result)
       : [];
+    if (result.status === "succeeded") {
+      await this.agentReportService.publishFromOutput({
+        runId: run.id,
+        roundId: round.id,
+        nodeRunId,
+        nodeId: topManager.id,
+        nodeLabel: topManager.config.label,
+        output: result.output
+      });
+    }
     return { result, artifactIds };
   }
 
@@ -524,6 +579,8 @@ export class BlueprintWorker {
       config.instructions?.trim() || "You are a Hiveward manager preparing a self-iteration round.",
       "",
       modeInstruction,
+      ...agentOutputContractLines,
+      "For hard blockers, set hardBlocker: true and put the user-readable blocker explanation in humanReportMd.",
       "Use the provided runContext as structured input for this call only.",
       "Do not claim the round is complete. Do not dispatch worker slots from this preflight call."
     ].join("\n");
@@ -718,7 +775,7 @@ export class BlueprintWorker {
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
         agentName: config.agentName,
-        prompt: this.resolveAgentPrompt(config),
+        prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
         modelId: config.modelId,
         permissionProfile: config.permissionProfile,
         runtimeAccessPolicy: config.runtimeAccessPolicy,
@@ -740,7 +797,7 @@ export class BlueprintWorker {
         const assistantReply: AgentApprovalReply = {
           id: `approval-reply-${nanoid(10)}`,
           role: "assistant",
-          body: result.output,
+          body: formatNodeOutputSummary(result.output),
           createdAt: new Date().toISOString()
         };
         const nextReplies = [...waiting.output.replies, userReply, assistantReply];
@@ -903,7 +960,33 @@ export class BlueprintWorker {
         })
       ))
     ).flat();
-    const summary = this.buildReleaseSummary(blueprint, artifactRuns, artifacts);
+    const [agentReports, agentHandoffs, approvedPlanRequest] = await Promise.all([
+      this.store.listAgentHumanReports(run.id).then((reports) => reports.filter((report) => report.roundId === executingRound.id)),
+      this.store.listAgentHandoffs(run.id).then((handoffs) => handoffs.filter((handoff) => handoff.roundId === executingRound.id)),
+      executingRound.approvedRequirementRequestId
+        ? this.store.getApprovalRequest(executingRound.approvedRequirementRequestId)
+        : Promise.resolve(undefined)
+    ]);
+    const nodeRunsById = new Map(nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
+    const releaseAgentReports = agentReports.filter((report) => {
+      const nodeRun = nodeRunsById.get(report.nodeRunId);
+      return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
+    });
+    const summary = this.selfIterationOrchestrator.buildReleaseSummary({
+      blueprint,
+      approvedPlan: approvedPlanRequest ? {
+        title: approvedPlanRequest.title,
+        revision: executingRound.approvedRequirementRevision ?? approvedPlanRequest.revision,
+        body: approvedPlanRequest.body
+      } : undefined,
+      research: {
+        status: executingRound.researchStatus,
+        summary: executingRound.researchSummary
+      },
+      artifacts,
+      agentReports: releaseAgentReports,
+      agentHandoffs
+    });
     const published = await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
@@ -937,18 +1020,6 @@ export class BlueprintWorker {
     return "handled";
   }
 
-  private buildReleaseSummary(blueprint: BlueprintDefinition, nodeRuns: BlueprintNodeRun[], artifacts: Array<{ title?: string }>): string {
-    const outputs = nodeRuns
-      .map((nodeRun) => `- ${nodeRun.nodeLabel}: ${formatNodeOutputSummary(nodeRun.output)}`)
-      .join("\n");
-    const artifactSummary = artifacts.length
-      ? `\n\nArtifacts:\n${artifacts.map((artifact) => `- ${artifact.title ?? "Artifact"}`).join("\n")}`
-      : "";
-    return [`${blueprint.name} round execution completed.`, outputs ? `Outputs:\n${outputs}` : undefined, artifactSummary.trim() || undefined]
-      .filter(Boolean)
-      .join("\n\n");
-  }
-
   private async buildManagerSnapshotDraft(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
@@ -972,6 +1043,8 @@ export class BlueprintWorker {
         source: round.researchStatus
       }
     });
+    const agentReports = (await this.store.listAgentHumanReports(run.id))
+      .filter((report) => report.roundId === round.id);
     try {
       const executed = await this.runPreflightManagerFallback(
         blueprint,
@@ -985,6 +1058,12 @@ export class BlueprintWorker {
           blueprintName: blueprint.name,
           roundNumber: round.roundNumber,
           releaseReport,
+          agentReports: agentReports.map((report) => ({
+            nodeId: report.nodeId,
+            nodeLabel: report.nodeLabel,
+            bodyMd: report.bodyMd,
+            source: report.source
+          })),
           requiredFields: [
             "completedItems",
             "rejectedOptions",
@@ -1065,13 +1144,11 @@ export class BlueprintWorker {
     config: ManagerNodeConfig
   ): Promise<ApprovalRequest | undefined> {
     const requests = await this.store.listApprovalRequests({ runId, status: "pending" });
-    return requests
-      .filter((request) => request.requestedBy.nodeId === topManagerNodeId)
-      .filter((request) =>
-        (request.kind === "iteration_requirement_plan" && config.autoApproveRequirements === true) ||
-        (request.kind === "manager_release_report" && config.autoApproveReleaseReports === true)
-      )
-      .sort((left, right) => new Date(left.requestedAt).getTime() - new Date(right.requestedAt).getTime())[0];
+    return this.selfIterationOrchestrator.selectNextAutoResolvableRequest({
+      requests,
+      topManagerNodeId,
+      config
+    });
   }
 
   private async scopeNodeRunsForActiveIterationRound(
@@ -1554,20 +1631,33 @@ export class BlueprintWorker {
       "Delegation rules:",
       "- Treat delegationRoster entries as descriptions of available subordinates, not as instructions for you to execute directly.",
       "- Pick only slots that exist in delegationRoster unless completing the workflow.",
-      "- Return only JSON. Do not include markdown."
+      "- Return JSON for routing decisions.",
+      ...agentOutputContractLines,
+      "- For any manager result that summarizes completed work, include humanReportMd as a free-form Markdown report and handoffJson as structured continuation context.",
+      "- Keep Markdown for humans separate from machine handoff JSON."
     ].join("\n");
   }
 
-  private resolveAgentPrompt(config: AgentNodeConfig): string {
+  private resolveAgentPrompt(config: AgentNodeConfig, options: { requiresHandoff?: boolean } = {}): string {
     const userPrompt = config.userPrompt?.trim();
-    if (!userPrompt) return config.prompt;
-    return [
+    const contract = [
+      ...agentOutputContractLines,
+      options.requiresHandoff
+        ? "- This node has downstream consumers, so handoffJson is required for machine continuation."
+        : "- If you know later work will use this result, include handoffJson even when no direct edge is visible."
+    ].join("\n");
+    const base = userPrompt ? [
       "System prompt:",
       config.prompt,
       "",
       "User prompt:",
       userPrompt
-    ].join("\n");
+    ].join("\n") : config.prompt;
+    return [base, "", contract].join("\n");
+  }
+
+  private hasDownstreamConsumers(blueprint: BlueprintDefinition, node: BlueprintNode): boolean {
+    return blueprint.edges.some((edge) => edge.source === node.id);
   }
 
   private buildManagerDelegationRoster(
@@ -1852,7 +1942,7 @@ export class BlueprintWorker {
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
-      prompt: this.resolveAgentPrompt(config),
+      prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) }),
       modelId: config.modelId,
       permissionProfile: config.permissionProfile,
       runtimeAccessPolicy: config.runtimeAccessPolicy,
@@ -2145,12 +2235,12 @@ export class BlueprintWorker {
       const ready = childNodes.filter((node) => this.isScopedReadyNode(blueprint, slotNode, node, nodeRuns, scopeStartIndex));
       if (ready.length > 0) {
         await Promise.all(
-          ready.map((node) =>
+          ready.map(async (node) =>
             this.executeScopedNode(
               blueprint,
               run,
               node,
-              this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput)
+              await this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput)
             )
           )
         );
@@ -2253,7 +2343,7 @@ export class BlueprintWorker {
     return this.readConditionResult(sourceRun.output) === expected ? "satisfied" : "blocked";
   }
 
-  private collectScopedUpstreamOutputs(
+  private async collectScopedUpstreamOutputs(
     blueprint: BlueprintDefinition,
     slotNode: BlueprintNode,
     slotRun: BlueprintNodeRun,
@@ -2261,23 +2351,31 @@ export class BlueprintWorker {
     nodeRuns: BlueprintNodeRun[],
     scopeStartIndex: number,
     boundaryOutput: unknown
-  ): UpstreamOutput {
+  ): Promise<UpstreamOutput> {
     const incoming = this.getScopedIncomingEdges(blueprint, slotNode, node);
+    const [humanReports, handoffs] = await Promise.all([
+      this.store.listAgentHumanReports(slotRun.blueprintRunId),
+      this.store.listAgentHandoffs(slotRun.blueprintRunId)
+    ]);
+    const reportContext = (nodeRun: BlueprintNodeRun) => ({
+      humanReport: humanReports.find((report) => report.nodeRunId === nodeRun.id),
+      handoff: handoffs.find((handoff) => handoff.nodeRunId === nodeRun.id)
+    });
     if (incoming.length === 0) {
-      return [this.toUpstreamOutputItem(slotRun, boundaryOutput)];
+      return [this.toUpstreamOutputItem(slotRun, boundaryOutput, reportContext(slotRun))];
     }
 
     const outputs: UpstreamOutput = [];
     for (const edge of incoming) {
       if (this.resolveScopedEdgeState(blueprint, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
       if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) {
-        outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput));
+        outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput, reportContext(slotRun)));
         continue;
       }
 
       const sourceRun = this.findLatestNodeRun(nodeRuns, edge.source, "succeeded", scopeStartIndex);
       if (!sourceRun) continue;
-      outputs.push(this.toUpstreamOutputItem(sourceRun));
+      outputs.push(this.toUpstreamOutputItem(sourceRun, sourceRun.output, reportContext(sourceRun)));
     }
     return outputs;
   }
@@ -2355,7 +2453,7 @@ export class BlueprintWorker {
   private syntheticAgentResult(
     nodeRunId: string,
     status: AgentTaskResult["status"],
-    output?: string,
+    output?: unknown,
     error?: string
   ): AgentTaskResult {
     return {
@@ -2698,6 +2796,10 @@ export class BlueprintWorker {
     if (incoming.length === 0) return [];
 
     const nodeRuns = await this.store.listNodeRuns(blueprintRunId);
+    const [humanReports, handoffs] = await Promise.all([
+      this.store.listAgentHumanReports(blueprintRunId),
+      this.store.listAgentHandoffs(blueprintRunId)
+    ]);
     const outputs: UpstreamOutput = [];
     const seen = new Set<string>();
     const requiredAfterIndex = this.getRequiredAfterIndex(blueprint, node, nodeRuns);
@@ -2713,19 +2815,31 @@ export class BlueprintWorker {
       if (!sourceRun || seen.has(sourceRun.nodeId)) continue;
 
       seen.add(sourceRun.nodeId);
-      outputs.push(this.toUpstreamOutputItem(sourceRun));
+      outputs.push(this.toUpstreamOutputItem(sourceRun, sourceRun.output, {
+        humanReport: humanReports.find((report) => report.nodeRunId === sourceRun.id),
+        handoff: handoffs.find((handoff) => handoff.nodeRunId === sourceRun.id)
+      }));
     }
 
     return outputs;
   }
 
-  private toUpstreamOutputItem(nodeRun: BlueprintNodeRun, output = nodeRun.output): UpstreamOutputItem {
+  private toUpstreamOutputItem(
+    nodeRun: BlueprintNodeRun,
+    output = nodeRun.output,
+    context: {
+      humanReport?: Awaited<ReturnType<FileHivewardStore["listAgentHumanReports"]>>[number];
+      handoff?: Awaited<ReturnType<FileHivewardStore["listAgentHandoffs"]>>[number];
+    } = {}
+  ): UpstreamOutputItem {
     return {
       nodeId: nodeRun.nodeId,
       nodeLabel: nodeRun.nodeLabel,
       nodeRunId: nodeRun.id,
       status: nodeRun.status,
       output,
+      ...(context.handoff ? { handoffJson: context.handoff.payload } : {}),
+      ...(context.humanReport ? { humanReportId: context.humanReport.id, humanReportMd: context.humanReport.bodyMd } : {}),
       openclawRef: nodeRun.openclawRef
     };
   }
@@ -2744,6 +2858,13 @@ export class BlueprintWorker {
       openclawRef: openclawRef ?? nodeRun.openclawRef
     };
     await this.store.upsertNodeRun(completed);
+    if (completed.nodeType === "agent" || completed.nodeType === "manager") {
+      await this.agentReportService.publishFromNodeRun({
+        runId: completed.blueprintRunId,
+        roundId: completed.iterationRoundId,
+        nodeRun: completed
+      });
+    }
     await this.event(nodeRun.blueprintRunId, "node.run.completed", `${nodeRun.nodeLabel} completed.`, nodeRun.id, openclawRef);
   }
 
@@ -3386,8 +3507,12 @@ function readStringList(value: unknown): string[] | undefined {
   return normalized.length ? normalized : undefined;
 }
 
-function hasVisibleAgentOutput(output: unknown): output is string {
-  return typeof output === "string" && output.trim().length > 0;
+function hasVisibleAgentOutput(output: unknown): boolean {
+  if (typeof output === "string") return output.trim().length > 0;
+  if (output === undefined || output === null) return false;
+  if (Array.isArray(output)) return output.length > 0;
+  if (typeof output === "object") return Object.keys(output).length > 0;
+  return true;
 }
 
 function stringifyManagerSlotOutput(output: unknown): string {

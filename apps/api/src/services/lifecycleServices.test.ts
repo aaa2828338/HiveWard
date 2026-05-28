@@ -1,11 +1,39 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { FileHivewardStore } from "../store/fileHivewardStore";
-import { ApprovalService } from "./lifecycleServices";
+import {
+  ApprovalService as CompatApprovalService,
+  ArtifactService as CompatArtifactService,
+  IterationService as CompatIterationService,
+  ManagerMailProjector as CompatManagerMailProjector,
+  MigrationService as CompatMigrationService,
+  RuntimeAccessPolicyService as CompatRuntimeAccessPolicyService
+} from "./lifecycleServices";
+import { ApprovalService } from "./lifecycleApprovalService";
+import { ArtifactService } from "./artifactService";
+import { IterationService } from "./iterationLifecycleService";
+import { ManagerMailProjector } from "./managerMailProjector";
+import { MigrationService, RuntimeAccessPolicyService } from "./runtimeAccessPolicyService";
 
 describe("ApprovalService", () => {
+  it("keeps lifecycleServices as a compatibility barrel over split service implementations", () => {
+    const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "lifecycleServices.ts"), "utf8");
+
+    expect(CompatApprovalService).toBe(ApprovalService);
+    expect(CompatIterationService).toBe(IterationService);
+    expect(CompatArtifactService).toBe(ArtifactService);
+    expect(CompatManagerMailProjector).toBe(ManagerMailProjector);
+    expect(CompatRuntimeAccessPolicyService).toBe(RuntimeAccessPolicyService);
+    expect(CompatMigrationService).toBe(MigrationService);
+    expect(source).not.toContain("class ApprovalService");
+    expect(source).not.toContain("class IterationService");
+    expect(source).not.toContain("class ArtifactService");
+    expect(source.split(/\r?\n/).length).toBeLessThan(40);
+  });
+
   it("replies by closing the old request once and creating a revised request", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));

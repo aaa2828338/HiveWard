@@ -145,6 +145,8 @@ export interface IterationRound {
     | "failed"
     | "cancelled";
   requirementRequestId?: string;
+  approvedRequirementRequestId?: string;
+  approvedRequirementRevision?: number;
   releaseReportRequestId?: string;
   artifactIds: string[];
   researchStatus?: "not_required" | "user_provided" | "context_sufficient" | "agent_generated" | "manager_fallback" | "assumption_based" | "blocked";
@@ -229,6 +231,36 @@ export interface ReleaseReport {
   }>;
   supersedesReportId?: string;
   createdAt: string;
+}
+
+export interface AgentHumanReport {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId: string;
+  nodeId: string;
+  nodeLabel: string;
+  title: string;
+  bodyMd: string;
+  source: "agent" | "fallback";
+  fallbackReason?: string;
+  createdAt: string;
+}
+
+export interface AgentHandoff {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId: string;
+  nodeId: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface AgentOutputEnvelope {
+  humanReportMd?: string;
+  handoffJson?: unknown;
+  result?: unknown;
 }
 
 export interface RunTimelineItem {

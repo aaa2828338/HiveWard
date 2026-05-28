@@ -7843,7 +7843,7 @@ html[data-theme="light"] .inbox-row.processed:hover {
 .trace-page-grid {
   height: calc(100vh - 32px);
   max-height: calc(100vh - 32px);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(320px, 1.2fr) minmax(240px, 0.8fr);
   align-content: stretch;
   overflow: hidden;
 }
@@ -7976,6 +7976,119 @@ html[data-theme="light"] .inbox-row.processed:hover {
   height: 100%;
   min-height: 0;
   overflow: hidden;
+}
+
+.run-report-layer {
+  min-height: 0;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  overflow: auto;
+  padding: 0 4px 4px 0;
+  scrollbar-gutter: stable;
+}
+
+.run-report-section {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.run-report-body {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.run-agent-report-list {
+  display: grid;
+  gap: 14px;
+}
+
+.run-agent-report {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.run-agent-report:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.run-agent-report-header,
+.run-artifact-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.run-agent-report-header strong,
+.run-artifact-row strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.run-agent-report-header span:not(.status-pill),
+.run-artifact-row span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.run-artifact-list {
+  display: grid;
+  gap: 10px;
+}
+
+.run-artifact-row {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.run-artifact-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.run-artifact-row a {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 760;
+  text-decoration: none;
+}
+
+.run-report-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.run-report-advanced-section {
+  display: block;
+}
+
+.run-report-advanced summary,
+.run-report-advanced-section summary {
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.run-report-advanced[open] summary,
+.run-report-advanced-section[open] summary {
+  margin-bottom: 10px;
+  color: var(--text);
 }
 
 .trace-column-shell {

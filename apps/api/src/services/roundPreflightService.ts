@@ -65,6 +65,7 @@ interface RequirementResolution {
 interface ParsedPreflightOutput {
   text?: string;
   hardBlocker?: boolean;
+  humanReportMd?: string;
   needsMoreResearch?: boolean;
   reason?: string;
   researchBrief?: string;
@@ -77,7 +78,8 @@ class RoundPreflightBlockedError extends Error {
   constructor(
     message: string,
     readonly source = "manager",
-    readonly artifactIds: string[] = []
+    readonly artifactIds: string[] = [],
+    readonly humanReportMd?: string
   ) {
     super(message);
     this.name = "RoundPreflightBlockedError";
@@ -531,7 +533,7 @@ function formatBlockedRoundPlan(input: {
     input.context.humanFeedback ? `Human feedback: ${input.context.humanFeedback}` : undefined,
     "",
     "## Blocker",
-    input.blocker.message,
+    input.blocker.humanReportMd ?? input.blocker.message,
     "",
     "## Required Action",
     "- Reply with missing credentials, permissions, facts, or revised instructions.",
@@ -557,7 +559,12 @@ async function executeRequired(
 
 function assertNoHardBlocker(parsed: ParsedPreflightOutput, source: string, artifactIds: string[]): void {
   if (parsed.hardBlocker) {
-    throw new RoundPreflightBlockedError(parsed.reason ?? parsed.text ?? "Manager reported a hard blocker.", source, artifactIds);
+    throw new RoundPreflightBlockedError(
+      parsed.reason ?? parsed.humanReportMd ?? parsed.text ?? "Manager reported a hard blocker.",
+      source,
+      artifactIds,
+      parsed.humanReportMd
+    );
   }
 }
 
@@ -584,6 +591,7 @@ function parsePreflightOutput(result: AgentTaskResult): ParsedPreflightOutput {
 
 function parsePreflightObject(value: Record<string, unknown>, fallbackText: string): ParsedPreflightOutput {
   const text = readString(value.body) ??
+    readString(value.humanReportMd) ??
     readString(value.markdown) ??
     readString(value.summary) ??
     readString(value.plan) ??
@@ -594,6 +602,7 @@ function parsePreflightObject(value: Record<string, unknown>, fallbackText: stri
   return {
     text: text.trim() || undefined,
     hardBlocker,
+    humanReportMd: readString(value.humanReportMd),
     needsMoreResearch: readBoolean(value.needsMoreResearch) ?? readBoolean(value.requiresMoreResearch),
     reason: readString(value.reason) ?? readString(value.blockerReason),
     researchBrief: readString(value.researchBrief),

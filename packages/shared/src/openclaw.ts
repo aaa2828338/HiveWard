@@ -204,7 +204,7 @@ export interface WaitForAgentTaskInput {
 }
 
 export interface AgentTaskResult extends StartedAgentTaskResult {
-  output?: string;
+  output?: unknown;
   usage?: OpenClawUsageFact;
 }
 

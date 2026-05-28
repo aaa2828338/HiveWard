@@ -3,6 +3,8 @@ import { normalizeRuntimeAccessPolicy } from "./lifecycle";
 import type {
   ApprovalDecision,
   ApprovalRequest,
+  AgentHandoff,
+  AgentHumanReport,
   Artifact,
   IterationRound,
   IterationSession,
@@ -376,6 +378,8 @@ export interface BlueprintRunView {
   approvalDecisions?: ApprovalDecision[];
   artifacts?: Artifact[];
   releaseReports?: ReleaseReport[];
+  agentHumanReports?: AgentHumanReport[];
+  agentHandoffs?: AgentHandoff[];
   managerContextSnapshots?: ManagerContextSnapshot[];
   runTimeline?: RunTimelineItem[];
   managerMail?: ManagerMail[];
@@ -400,6 +404,8 @@ export interface BlueprintRunArchive {
   approvalDecisions?: ApprovalDecision[];
   artifacts?: Artifact[];
   releaseReports?: ReleaseReport[];
+  agentHumanReports?: AgentHumanReport[];
+  agentHandoffs?: AgentHandoff[];
   managerContextSnapshots?: ManagerContextSnapshot[];
   runTimeline?: RunTimelineItem[];
 }

@@ -29,6 +29,8 @@ import type {
   HarnessId,
   HivewardChatMessage,
   HivewardChatSession,
+  AgentHandoff,
+  AgentHumanReport,
   ApprovalDecision,
   ApprovalRequest,
   Artifact,
@@ -84,6 +86,8 @@ interface HivewardStoreIndex {
   approvalDecisions: ApprovalDecision[];
   artifacts: Artifact[];
   releaseReports: ReleaseReport[];
+  agentHumanReports: AgentHumanReport[];
+  agentHandoffs: AgentHandoff[];
   managerContextSnapshots: ManagerContextSnapshot[];
   runTimeline: RunTimelineItem[];
   managerMail: ManagerMail[];
@@ -184,6 +188,8 @@ export class FileHivewardStore {
           approvalDecisions: [],
           artifacts: [],
           releaseReports: [],
+          agentHumanReports: [],
+          agentHandoffs: [],
           managerContextSnapshots: [],
           runTimeline: [],
           managerMail: []
@@ -1062,6 +1068,44 @@ export class FileHivewardStore {
     });
   }
 
+  async listAgentHumanReports(runId?: string): Promise<AgentHumanReport[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.agentHumanReports
+        .filter((report) => !runId || report.runId === runId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    });
+  }
+
+  async upsertAgentHumanReport(report: AgentHumanReport): Promise<AgentHumanReport> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.agentHumanReports, report);
+      await this.writeIndexUnlocked(index);
+      return report;
+    });
+  }
+
+  async listAgentHandoffs(runId?: string): Promise<AgentHandoff[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.agentHandoffs
+        .filter((handoff) => !runId || handoff.runId === runId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    });
+  }
+
+  async upsertAgentHandoff(handoff: AgentHandoff): Promise<AgentHandoff> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.agentHandoffs, handoff);
+      await this.writeIndexUnlocked(index);
+      return handoff;
+    });
+  }
+
   async listManagerContextSnapshots(runId?: string): Promise<ManagerContextSnapshot[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -1539,6 +1583,8 @@ export class FileHivewardStore {
       approvalDecisions: normalizeArray<ApprovalDecision>(rawIndex.approvalDecisions),
       artifacts: normalizeArray<Artifact>(rawIndex.artifacts),
       releaseReports: normalizeArray<ReleaseReport>(rawIndex.releaseReports),
+      agentHumanReports: normalizeArray<AgentHumanReport>(rawIndex.agentHumanReports),
+      agentHandoffs: normalizeArray<AgentHandoff>(rawIndex.agentHandoffs),
       managerContextSnapshots: normalizeArray<ManagerContextSnapshot>(rawIndex.managerContextSnapshots),
       runTimeline: normalizeArray<RunTimelineItem>(rawIndex.runTimeline),
       managerMail: normalizeArray<ManagerMail>(rawIndex.managerMail)
@@ -1589,6 +1635,8 @@ export class FileHivewardStore {
       approvalDecisions: normalizeArray<ApprovalDecision>(state.approvalDecisions),
       artifacts: normalizeArray<Artifact>(state.artifacts),
       releaseReports: normalizeArray<ReleaseReport>(state.releaseReports),
+      agentHumanReports: normalizeArray<AgentHumanReport>(state.agentHumanReports),
+      agentHandoffs: normalizeArray<AgentHandoff>(state.agentHandoffs),
       managerContextSnapshots: normalizeArray<ManagerContextSnapshot>(state.managerContextSnapshots),
       runTimeline: normalizeArray<RunTimelineItem>(state.runTimeline),
       managerMail: normalizeArray<ManagerMail>(state.managerMail)
@@ -1629,6 +1677,8 @@ export class FileHivewardStore {
       ),
       artifacts: index.artifacts.filter((item) => item.runId === runId),
       releaseReports: index.releaseReports.filter((item) => item.runId === runId),
+      agentHumanReports: index.agentHumanReports.filter((item) => item.runId === runId),
+      agentHandoffs: index.agentHandoffs.filter((item) => item.runId === runId),
       managerContextSnapshots: index.managerContextSnapshots.filter((item) => item.runId === runId),
       runTimeline: index.runTimeline
         .filter((item) => item.runId === runId)

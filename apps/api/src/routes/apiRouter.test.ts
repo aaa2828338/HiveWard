@@ -28,7 +28,7 @@ import type {
 } from "@hiveward/shared";
 import { hivewardInboxSubmissionSchema, resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
-import { ArtifactService } from "../services/lifecycleServices";
+import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
