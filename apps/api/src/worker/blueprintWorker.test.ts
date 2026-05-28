@@ -1282,7 +1282,10 @@ describe("BlueprintWorker", () => {
       }
     ], [
       {
-        ...createCompletedAgentTask("codex-task-1", "succeeded", "{\"ok\":true}"),
+        ...createCompletedAgentTask("codex-task-1", "succeeded", {
+          humanReportMd: "## SDK node report\n\n## Delivery location\n\n- No new deliverable produced in this step.",
+          result: { ok: true }
+        }),
         source: "codex",
         sessionKey: "codex-session-final"
       }
@@ -1299,7 +1302,16 @@ describe("BlueprintWorker", () => {
       modelId: "gpt-5.4",
       permissionProfile: "read_only",
       workingDirectory: tempDir,
-      timeoutMs: 120000
+      timeoutMs: 120000,
+      outputSchema: {
+        type: "object",
+        required: ["humanReportMd", "result"],
+        properties: {
+          humanReportMd: { type: "string" },
+          handoffJson: { type: ["object", "null"] },
+          result: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }
+        }
+      }
     });
     expect(adapter.waitCalls[0]).toMatchObject({
       source: "codex",
@@ -1355,7 +1367,10 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-2", "succeeded", "app draft"),
       createCompletedAgentTask("task-3", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
       createCompletedAgentTask("task-4", "succeeded", "app fixed"),
-      createCompletedAgentTask("task-5", "succeeded", JSON.stringify({ status: "pass" }))
+      createCompletedAgentTask("task-5", "succeeded", {
+        humanReportMd: "## QA report\n\n## Delivery location\n\n- No new deliverable produced in this step.",
+        result: { status: "pass" }
+      })
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2400,9 +2415,12 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-research-1", "succeeded", "initial research"),
       createCompletedAgentTask("task-plan-1", "succeeded", "draft plan before semantic judgment"),
       createCompletedAgentTask("task-judge-1", "succeeded", JSON.stringify({
-        needsMoreResearch: true,
-        reason: "Need clearer market facts.",
-        researchBrief: "Resolve market facts before execution."
+        humanReportMd: "## Preflight judgment\n\n## Delivery location\n\n- No new deliverable produced in this step.",
+        result: {
+          needsMoreResearch: true,
+          reason: "Need clearer market facts.",
+          researchBrief: "Resolve market facts before execution."
+        }
       })),
       createCompletedAgentTask("task-research-2", "succeeded", "updated research after semantic judgment"),
       createCompletedAgentTask("task-plan-2", "succeeded", "final plan after extra research")
@@ -2519,6 +2537,20 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("humanReportMd");
     expect(managerDecisionCalls[0]?.prompt).toContain("handoffJson");
     expect(managerDecisionCalls[0]?.prompt).not.toContain("Do not include markdown");
+    expect(managerDecisionCalls[0]?.outputSchema).toMatchObject({
+      required: ["humanReportMd", "result"],
+      properties: {
+        humanReportMd: { type: "string" },
+        result: {
+          type: "object",
+          required: ["status"],
+          properties: expect.objectContaining({
+            status: { type: "string" },
+            nextSlot: { type: "integer" }
+          })
+        }
+      }
+    });
     expect(managerDecisionCalls[0]?.input).toMatchObject({
       runContext: expect.objectContaining({
         mode: "dispatch",

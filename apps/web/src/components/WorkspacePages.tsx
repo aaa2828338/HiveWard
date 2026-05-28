@@ -516,8 +516,8 @@ export function RunsPage({
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, blueprint, t);
-  }, [activeRun?.events, activeRun?.nodeRuns, activeRun?.agentHumanReports, t, blueprint?.nodes]);
+    return buildTraceIssues(activeRun, blueprint, t, language);
+  }, [activeRun?.events, activeRun?.nodeRuns, activeRun?.agentHumanReports, activeRun?.artifacts, t, language, blueprint?.nodes]);
 
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : undefined;
   const activeIssueOutput =
@@ -734,6 +734,8 @@ export function RunsPage({
                   {agentHumanReports.map((report) => {
                     const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
                     const handoff = agentHandoffs.find((candidate) => candidate.nodeRunId === report.nodeRunId);
+                    const reportArtifacts = artifacts.filter((artifact) => artifact.nodeRunId === report.nodeRunId);
+                    const reportBody = buildHumanReportDisplayBody(report.bodyMd, reportArtifacts, nodeRun, language);
                     const reportAdvancedBody = buildAgentReportAdvancedBody(nodeRun, handoff);
                     return (
                       <section className="run-agent-report" key={report.id}>
@@ -746,7 +748,7 @@ export function RunsPage({
                             {reportLayerCopy.source(report.source)}
                           </span>
                         </div>
-                        <MarkdownRenderer value={report.bodyMd} className="run-report-body" />
+                        <MarkdownRenderer value={reportBody} className="run-report-body" />
                         {reportAdvancedBody && (
                           <details className="run-report-advanced">
                             <summary>{reportLayerCopy.advancedDetails}</summary>
@@ -926,6 +928,133 @@ function resolveRunApprovedPlan(runView?: BlueprintRunView): RunApprovalRequest 
     if (request) return request;
   }
   return runView.approvalRequests?.filter((request) => request.kind === "iteration_requirement_plan").at(-1);
+}
+
+function buildHumanReportDisplayBody(
+  bodyMd: string,
+  artifacts: RunArtifact[],
+  nodeRun: BlueprintNodeRun | undefined,
+  language: Language
+): string {
+  const body = bodyMd.trim();
+  if (hasDeliverySection(body)) return body;
+  return insertDeliverySectionNearTop(body, buildDeliverySection(artifacts, nodeRun?.output, language));
+}
+
+function hasDeliverySection(markdown: string): boolean {
+  return /^#{1,6}\s*(?:交付位置|产物位置|产出位置|Delivery location|Delivery|Deliverables?|Artifact locations?)(?:\s|$)/im.test(markdown);
+}
+
+function insertDeliverySectionNearTop(body: string, deliverySection: string): string {
+  if (!body) return deliverySection;
+  const lines = body.split(/\r?\n/);
+  if (!/^#{1,6}\s+/.test(lines[0] ?? "")) {
+    return [deliverySection, body].join("\n\n");
+  }
+  let insertAt = 1;
+  while (insertAt < lines.length && !lines[insertAt]?.trim()) {
+    insertAt += 1;
+  }
+  return [
+    ...lines.slice(0, insertAt),
+    "",
+    deliverySection,
+    "",
+    ...lines.slice(insertAt)
+  ].join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildDeliverySection(artifacts: RunArtifact[], output: unknown, language: Language): string {
+  const zh = language === "zh-CN";
+  const title = zh ? "## 交付位置" : "## Delivery location";
+  const deliveryItems = collectDeliveryItems(artifacts, output);
+  if (deliveryItems.length === 0) {
+    return `${title}\n\n- ${zh ? "本轮无新增产物。" : "No new deliverable produced in this step."}`;
+  }
+  return [
+    title,
+    "",
+    ...deliveryItems.map((item) => `- ${item.label}: ${item.location}`)
+  ].join("\n");
+}
+
+function collectDeliveryItems(artifacts: RunArtifact[], output: unknown): Array<{ label: string; location: string }> {
+  const items: Array<{ label: string; location: string }> = [];
+  const seen = new Set<string>();
+  const addItem = (label: string, location: unknown) => {
+    if (typeof location !== "string") return;
+    const trimmed = location.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    items.push({ label, location: trimmed });
+  };
+
+  for (const artifact of artifacts) {
+    addItem(artifact.title ?? artifact.kind, formatArtifactLocation(artifact));
+  }
+  collectDeliveryItemsFromOutput(output, addItem);
+  return items;
+}
+
+function collectDeliveryItemsFromOutput(
+  output: unknown,
+  addItem: (label: string, location: unknown) => void,
+  depth = 0
+): void {
+  if (depth > 3 || output === undefined || output === null) return;
+  if (typeof output === "string") {
+    for (const location of extractDeliveryLocationsFromText(output)) {
+      addItem("Location", location);
+    }
+    const record = readOutputRecord(output);
+    if (record) collectDeliveryItemsFromOutput(record, addItem, depth + 1);
+    return;
+  }
+  if (Array.isArray(output)) {
+    output.slice(0, 20).forEach((item) => collectDeliveryItemsFromOutput(item, addItem, depth + 1));
+    return;
+  }
+  if (!isPlainObject(output)) return;
+
+  for (const [key, value] of Object.entries(output)) {
+    if (isDeliveryKey(key)) {
+      if (Array.isArray(value)) {
+        value.forEach((item) => addItem(formatDeliveryKey(key), typeof item === "string" ? item : readDeliveryLocation(item)));
+      } else {
+        addItem(formatDeliveryKey(key), typeof value === "string" ? value : readDeliveryLocation(value));
+      }
+      continue;
+    }
+    if (key === "result" || key === "artifact" || key === "artifacts" || key === "files" || key === "links" || key === "outputs") {
+      collectDeliveryItemsFromOutput(value, addItem, depth + 1);
+    }
+  }
+}
+
+function readDeliveryLocation(value: unknown): string | undefined {
+  if (!isPlainObject(value)) return undefined;
+  return readNonEmptyString(value.url) ??
+    readNonEmptyString(value.href) ??
+    readNonEmptyString(value.downloadUrl) ??
+    readNonEmptyString(value.previewUrl) ??
+    readNonEmptyString(value.filePath) ??
+    readNonEmptyString(value.path) ??
+    readNonEmptyString(value.relativePath) ??
+    readNonEmptyString(value.storagePath) ??
+    readNonEmptyString(value.location);
+}
+
+function extractDeliveryLocationsFromText(value: string): string[] {
+  const matches = value.match(/https?:\/\/[^\s)<>"']+|(?:localhost|127\.0\.0\.1):\d+[^\s)<>"']*|[A-Za-z]:\\[^\r\n<>"]+/g);
+  return matches ?? [];
+}
+
+function isDeliveryKey(key: string): boolean {
+  return /^(url|href|previewUrl|previewURL|localUrl|localhostUrl|deliveryUrl|deliveryLocation|downloadUrl|artifactUrl|filePath|path|relativePath|storagePath|location|command)$/i.test(key);
+}
+
+function formatDeliveryKey(key: string): string {
+  return key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function buildAgentReportAdvancedBody(nodeRun: BlueprintNodeRun | undefined, handoff: RunAgentHandoff | undefined): string {
@@ -3546,7 +3675,8 @@ function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string,
 function buildTraceIssues(
   activeRun: BlueprintRunView | undefined,
   blueprint: BlueprintDefinition | undefined,
-  t: Messages
+  t: Messages,
+  language: Language
 ): TraceIssue[] {
   if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
@@ -3571,9 +3701,9 @@ function buildTraceIssues(
     .map((item, index) => {
       if (item.kind === "node") {
         const node = nodesById.get(item.nodeRun.nodeId);
-        return createNodeTraceIssue(activeRun, item.nodeRun, node, index + 1, node?.parentId ? 1 : 0, t);
+        return createNodeTraceIssue(activeRun, item.nodeRun, node, index + 1, node?.parentId ? 1 : 0, t, language);
       }
-      return createReportTraceIssue(item.humanReport, index + 1, t);
+      return createReportTraceIssue(activeRun, item.humanReport, index + 1, t, language);
     });
 }
 
@@ -3583,11 +3713,15 @@ function createNodeTraceIssue(
   node: BlueprintNode | undefined,
   index: number,
   depth: number,
-  t: Messages
+  t: Messages,
+  language: Language
 ): TraceIssue {
   const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
   const humanReport = activeRun.agentHumanReports?.find((report) => report.nodeRunId === nodeRun.id);
-  const readableBody = humanReport?.bodyMd ?? buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t);
+  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === nodeRun.id) ?? [];
+  const readableBody = humanReport
+    ? buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, nodeRun, language)
+    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t);
   return {
     key: nodeRun.id,
     index,
@@ -3605,7 +3739,16 @@ function createNodeTraceIssue(
   };
 }
 
-function createReportTraceIssue(humanReport: RunAgentHumanReport, index: number, t: Messages): TraceIssue {
+function createReportTraceIssue(
+  activeRun: BlueprintRunView,
+  humanReport: RunAgentHumanReport,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === humanReport.nodeRunId) ?? [];
+  const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === humanReport.nodeRunId);
+  const body = buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, nodeRun, language);
   return {
     key: `report:${humanReport.id}`,
     index,
@@ -3615,8 +3758,8 @@ function createReportTraceIssue(humanReport: RunAgentHumanReport, index: number,
     humanReport,
     issueStatus: "completed",
     statusLabel: t.trace.completed,
-    outputPreview: summarizeOutput(humanReport.bodyMd, t),
-    outputBody: humanReport.bodyMd,
+    outputPreview: summarizeOutput(body, t),
+    outputBody: body,
     events: []
   };
 }

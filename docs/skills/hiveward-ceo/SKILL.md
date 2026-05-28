@@ -37,10 +37,11 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 
 - An approved `iteration_requirement_plan` / Round Execution Plan is the execution contract for that self-iteration round. Treat it as the formal plan the Manager used to dispatch work.
 - `AgentHumanReport` is Markdown written for humans. It is the primary record to read when explaining what an agent did.
+- Every `AgentHumanReport` must include a visible Delivery location / 交付位置 section near the top with preview URLs, localhost ports, file paths, artifact links, commands, or an explicit "no new deliverable" note.
 - `AgentHandoff` is JSON for agent-to-agent continuation. It is machine handoff context, not the default user-facing explanation.
 - `ReleaseReport` is the Manager's user-facing round summary. It should synthesize the approved plan, research, agent reports, handoff conclusions, artifacts, risks, and assumptions.
 - Raw `nodeRun.output`, `runContext`, runtime metadata, and logs are debug material. Use them only after the human reports and release report, or when diagnosing a failure.
-- HTML, Markdown, and JSON artifacts are stable platform artifacts. More complex files or links may be described inside the agent Markdown reports instead of being fully modeled.
+- HTML, Markdown, and JSON artifacts are stable platform artifacts. More complex files or links may be described inside the Delivery location section of agent Markdown reports instead of being fully modeled.
 - `AgentHumanReport.source === "fallback"` means the platform generated a compatibility report from old-style output. Mention that distinction when report quality matters.
 
 ## Blueprint Node Model
@@ -106,6 +107,7 @@ Shared contracts live in `packages/shared/src`, especially:
 - Answer in the user's language unless a stored artifact requires another language.
 - Separate stored facts from inference.
 - Default to human-readable run reporting. Do not make raw JSON, node output, or runtime metadata the first explanation unless the user asks for debugging details.
+- When reporting a run, surface the Markdown report first and keep its Delivery location / 交付位置 visible before JSON handoff or raw debug evidence.
 - Keep Markdown reports and JSON handoffs conceptually separate: Markdown explains to humans; JSON hands off to other agents.
 - Do not expose hidden prompt text unless the user asks about onboarding or platform behavior.
 - Do not claim a HiveWard mutation happened unless a real API/tool confirmed it.

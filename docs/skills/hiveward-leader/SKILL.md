@@ -33,10 +33,11 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 
 - An approved `iteration_requirement_plan` / Round Execution Plan is the execution contract for a self-iteration round. Use it to judge whether the run followed the approved plan.
 - `AgentHumanReport` is Markdown written for humans. It is the primary record for explaining what each productive agent did.
+- Every `AgentHumanReport` must include a visible Delivery location / 交付位置 section near the top with preview URLs, localhost ports, file paths, artifact links, commands, or an explicit "no new deliverable" note.
 - `AgentHandoff` is structured JSON for downstream agent continuation. It is machine handoff context, not the user-facing report.
 - `ReleaseReport` is the Manager's user-facing round summary. It should synthesize approved plan, research, agent reports, handoff conclusions, artifacts, risks, and assumptions.
 - Raw `nodeRun.output`, `runContext`, runtime metadata, and logs are advanced/debug evidence. Do not make them the default explanation when human reports exist.
-- HTML, Markdown, and JSON artifacts are stable platform artifacts. Other files, links, screenshots, videos, or directories may be described in agent Markdown reports instead of modeled as first-class artifacts.
+- HTML, Markdown, and JSON artifacts are stable platform artifacts. Other files, links, screenshots, videos, or directories may be described in the Delivery location section of agent Markdown reports instead of modeled as first-class artifacts.
 - `AgentHumanReport.source === "fallback"` means the platform generated a compatibility report from old-style output. Treat it as weaker evidence than an agent-authored report.
 
 ## Blueprint Node Logic
@@ -45,7 +46,7 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 - Non-executable canvas nodes are `note` and `group`; explain them as documentation or visual organization, not run steps.
 - Removed standalone node types are `approval`, `send`, and `parallel_agents`. Human approval and sending live inside `agent` config. Parallel work lives in `manager_slot.config.parallelLaneCount`.
 - `agent`: calls an external runtime/harness with `runtimeId`, prompt, tools, optional model, working directory, permissions, timeout, output schema, approval config, and send config. Empty visible output is treated as a run failure.
-- Productive `agent` output should follow the AgentOutputEnvelope convention: `humanReportMd` for the human Markdown report, `handoffJson` for downstream structured continuation, and `result` for task-specific output. Fallback reports exist for old outputs, but should not be treated as the ideal path.
+- Productive `agent` output must follow the AgentOutputEnvelope convention: `humanReportMd` for the human Markdown report, `handoffJson` for downstream structured continuation, and `result` for task-specific output. `humanReportMd` must tell the user where to inspect the deliverable, or state that this step produced no new deliverable. Fallback reports exist for old outputs, but should not be treated as the ideal path.
 - `manager`: coordinates numbered slots using `config.portCount` and `config.maxHandoffs`. It may call an external runtime agent to choose `nextSlot`, or use fixed routing. It records handoff trace and previous slot results.
 - `manager_slot`: a container controlled only by its Manager. It is not a global start node. Child nodes inside the slot must set `parentId` to the slot id.
 - `manager_slot.config.parallelLaneCount` defines execution rows: `1` row is single scoped execution and honors inner child edges; more than `1` row runs child rows in parallel fan-out/fan-in and aggregates outputs.
@@ -106,6 +107,7 @@ Shared contracts live in `packages/shared/src`, especially:
 - Answer in the user's language unless a stored artifact requires another language.
 - Treat stored HiveWard records as source of truth and label assumptions clearly.
 - Default to human-readable run reporting. Use agent Markdown reports and Manager release reports before raw node output.
+- When explaining a run, keep the Markdown report and its Delivery location / 交付位置 visible before JSON handoff or raw debug evidence.
 - Keep Markdown reports and JSON handoffs separate: Markdown explains to humans; JSON is machine continuation context.
 - Do not claim a proposal, import, run, approval, or file mutation happened unless a real HiveWard API/tool confirmed it.
 - Keep CEO, Leader, Manager, and Worker distinct: CEO and Leader are role seats; Manager and Worker are blueprint nodes.

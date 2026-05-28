@@ -56,14 +56,17 @@ const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Choose which numbered slot should receive the next handoff by reading the upstream input, previousResults, and delegationRoster.",
   "If there is no better instruction, run connected slots in ascending order.",
-  "Return a JSON routing decision with keys: status, nextSlot, reason.",
+  "Return an AgentOutputEnvelope JSON object. Put the routing decision keys status, nextSlot, and reason inside result.",
   "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" when the workflow is done."
 ].join("\n");
 const defaultSummaryHarnessPrompt = [
   "Perform a structured merge of the upstream node outputs.",
   "Preserve each upstream node label and output, deduplicate overlapping facts, and return the merged result in a clear structured form."
 ].join("\n");
-const managerDecisionOutputSchema: Record<string, unknown> = {
+const flexibleJsonObjectSchema: Record<string, unknown> = {
+  type: ["object", "null"]
+};
+const managerDecisionResultSchema: Record<string, unknown> = {
   type: "object",
   required: ["status"],
   properties: {
@@ -72,18 +75,21 @@ const managerDecisionOutputSchema: Record<string, unknown> = {
     routeToSlot: { type: "integer" },
     returnToSlot: { type: "integer" },
     targetSlot: { type: "integer" },
-    reason: { type: "string" },
-    humanReportMd: { type: "string" },
-    handoffJson: {},
-    result: {}
+    reason: { type: "string" }
   }
 };
-const preflightOutputSchema: Record<string, unknown> = {
+const managerDecisionOutputSchema: Record<string, unknown> = {
   type: "object",
+  required: ["humanReportMd", "result"],
   properties: {
     humanReportMd: { type: "string" },
-    handoffJson: {},
-    result: {},
+    handoffJson: flexibleJsonObjectSchema,
+    result: managerDecisionResultSchema
+  }
+};
+const preflightResultSchema: Record<string, unknown> = {
+  type: "object",
+  properties: {
     hardBlocker: { type: "boolean" },
     reason: { type: "string" },
     body: { type: "string" },
@@ -94,15 +100,34 @@ const preflightOutputSchema: Record<string, unknown> = {
     researchBrief: { type: "string" }
   }
 };
+const preflightOutputSchema: Record<string, unknown> = {
+  type: "object",
+  required: ["humanReportMd", "result"],
+  properties: {
+    humanReportMd: { type: "string" },
+    handoffJson: flexibleJsonObjectSchema,
+    result: preflightResultSchema
+  }
+};
 const agentOutputContractLines = [
   "Output contract:",
-  "- Return an AgentOutputEnvelope JSON object when you produce a result.",
-  "- Include humanReportMd: a Markdown report written for a human reader. It is free-form; do not follow a fixed template.",
-  "- Include result for the task-specific result or artifact-producing content.",
+  "- Return an AgentOutputEnvelope JSON object when you produce a result. This platform contract overrides earlier task wording such as \"return only JSON\" or \"do not return markdown\".",
+  "- Include humanReportMd: a Markdown report written for a human reader. This field is required.",
+  "- humanReportMd must include a visible \"## Delivery location\" section near the top. List preview URLs, localhost ports, file paths, artifact links, or commands needed to open the deliverable. If this step created no new deliverable, write \"No new deliverable produced in this step.\"",
+  "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
+const humanReportEnvelopeSchemaBase: Record<string, unknown> = {
+  type: "object",
+  required: ["humanReportMd"],
+  properties: {
+    humanReportMd: { type: "string" },
+    handoffJson: flexibleJsonObjectSchema,
+    result: flexibleJsonObjectSchema
+  }
+};
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
 
 interface ManagerTraceItem {
@@ -461,7 +486,7 @@ export class BlueprintWorker {
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
-      outputSchema: config.outputSchema ?? preflightOutputSchema,
+      outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
       input: {
         ...taskInput,
         runContext
@@ -569,18 +594,18 @@ export class BlueprintWorker {
     mode: RoundPreflightMode
   ): string {
     const modeInstruction = mode === "research_resolution"
-      ? "Resolve whether this round has enough information. Return concise markdown or JSON with facts, assumptions, risks, and hardBlocker when execution must stop."
+      ? "Resolve whether this round has enough information. Put facts, assumptions, risks, and hardBlocker in result when execution must stop."
       : mode === "preflight_judgment"
-        ? "Semantically judge whether the draft round execution plan can proceed or needs another research pass. Return JSON with needsMoreResearch, reason, optional researchBrief, optional hardBlocker."
+        ? "Semantically judge whether the draft round execution plan can proceed or needs another research pass. Put needsMoreResearch, reason, optional researchBrief, and optional hardBlocker inside result."
         : mode === "context_snapshot"
           ? "Summarize this completed round for future manager memory. Return JSON with completedItems, rejectedOptions, keyDecisions, validatedFacts, openQuestions, activeRisks, assumptions, recommendedNextStep, summary, and optional freeform."
-          : "Generate a round execution plan. Return concise markdown or JSON with objective, scope, exclusions, basis, assumptions, risks, acceptance criteria, expected artifacts, and hardBlocker when execution must stop.";
+          : "Generate a round execution plan. Put objective, scope, exclusions, basis, assumptions, risks, acceptance criteria, expected artifacts, and hardBlocker inside result when execution must stop.";
     return [
       config.instructions?.trim() || "You are a Hiveward manager preparing a self-iteration round.",
       "",
       modeInstruction,
       ...agentOutputContractLines,
-      "For hard blockers, set hardBlocker: true and put the user-readable blocker explanation in humanReportMd.",
+      "For hard blockers, set result.hardBlocker: true and put the user-readable blocker explanation in humanReportMd.",
       "Use the provided runContext as structured input for this call only.",
       "Do not claim the round is complete. Do not dispatch worker slots from this preflight call."
     ].join("\n");
@@ -781,7 +806,7 @@ export class BlueprintWorker {
         runtimeAccessPolicy: config.runtimeAccessPolicy,
         workingDirectory: config.workingDirectory,
         timeoutMs: config.timeoutMs,
-        outputSchema: config.outputSchema,
+        outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
         input: buildAgentApprovalReplyInput(waiting.input, waiting.output.reviewOutput, waiting.output.replies, userReply),
         skillIds: config.skillIds,
         tools: config.tools
@@ -2020,7 +2045,7 @@ export class BlueprintWorker {
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
-      outputSchema: config.outputSchema,
+      outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
       input,
       skillIds: config.skillIds,
       tools: config.tools
@@ -2811,7 +2836,7 @@ export class BlueprintWorker {
     portCount: number,
     options: { ignoreCompletionStatus?: boolean } = {}
   ): ManagerDecision {
-    const record = readOutputRecord(output);
+    const record = readDecisionRecord(output);
     const explicitSlot =
       readInteger(record?.nextSlot) ??
       readInteger(record?.routeToSlot) ??
@@ -3528,6 +3553,16 @@ function readOutputRecord(output: unknown): Record<string, unknown> | undefined 
   return undefined;
 }
 
+function readDecisionRecord(output: unknown): Record<string, unknown> | undefined {
+  const record = readOutputRecord(output);
+  if (!record) return undefined;
+  if (!isRecord(record.result)) return record;
+  return {
+    ...record,
+    ...record.result
+  };
+}
+
 function readManagerSnapshotDraft(output: unknown): ManagerSnapshotDraft | undefined {
   const record = readOutputRecord(output);
   if (!record) return undefined;
@@ -3545,6 +3580,17 @@ function readManagerSnapshotDraft(output: unknown): ManagerSnapshotDraft | undef
     freeform: readString(record.freeform)
   };
   return Object.values(draft).some((value) => value !== undefined) ? draft : undefined;
+}
+
+function buildAgentOutputEnvelopeSchema(resultSchema: Record<string, unknown> | undefined): Record<string, unknown> {
+  return {
+    ...humanReportEnvelopeSchemaBase,
+    required: resultSchema ? ["humanReportMd", "result"] : ["humanReportMd"],
+    properties: {
+      ...(humanReportEnvelopeSchemaBase.properties as Record<string, unknown>),
+      result: resultSchema ?? flexibleJsonObjectSchema
+    }
+  };
 }
 
 function readRecommendedNextStep(value: unknown): ManagerSnapshotDraft["recommendedNextStep"] | undefined {

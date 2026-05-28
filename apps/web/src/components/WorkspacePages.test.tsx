@@ -196,9 +196,11 @@ describe("RunsPage", () => {
     expect(html.indexOf("Artifacts")).toBeLessThan(html.indexOf("Run Advanced Details"));
     expect(html).toContain("Approved plan body.");
     expect(html).toContain("Human Report");
+    expect(html).toContain("Delivery location");
     expect(html).toContain("fallback");
     expect(html).toContain("Manager summary from reports.");
     expect(html).toContain("Readable artifact");
+    expect(html.indexOf("/artifacts/artifact-1")).toBeLessThan(html.indexOf("Advanced details"));
     expect(html.indexOf("SECRET_RAW_OUTPUT")).toBeGreaterThan(html.indexOf("Advanced details"));
     expect(html.indexOf("machine-only")).toBeGreaterThan(html.indexOf("Advanced details"));
   });

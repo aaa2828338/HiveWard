@@ -424,7 +424,7 @@ export class RoundPreflightService {
           humanFeedback: input.humanFeedback,
           researchSummary: input.research.summary,
           draftPlan: input.plan.body,
-          instruction: "Judge semantically whether this draft plan can proceed or needs another research pass. Return JSON with needsMoreResearch, reason, optional researchBrief, optional hardBlocker.",
+          instruction: "Judge semantically whether this draft plan can proceed or needs another research pass. Put needsMoreResearch, reason, optional researchBrief, and optional hardBlocker inside result.",
           runContext
         }
       }),
@@ -590,25 +590,29 @@ function parsePreflightOutput(result: AgentTaskResult): ParsedPreflightOutput {
 }
 
 function parsePreflightObject(value: Record<string, unknown>, fallbackText: string): ParsedPreflightOutput {
-  const text = readString(value.body) ??
-    readString(value.humanReportMd) ??
-    readString(value.markdown) ??
-    readString(value.summary) ??
-    readString(value.plan) ??
-    readString(value.text) ??
-    readString(value.content) ??
+  const result = isRecord(value.result) ? value.result : undefined;
+  const record = result ? { ...value, ...result } : value;
+  const humanReportMd = readString(value.humanReportMd) ?? readString(record.humanReportMd);
+  const text = readString(record.body) ??
+    humanReportMd ??
+    readString(record.markdown) ??
+    readString(record.summary) ??
+    readString(record.plan) ??
+    readString(record.text) ??
+    readString(record.content) ??
+    readString(value.result) ??
     fallbackText;
-  const hardBlocker = readBoolean(value.hardBlocker) ?? readBoolean(value.blocked);
+  const hardBlocker = readBoolean(record.hardBlocker) ?? readBoolean(record.blocked);
   return {
     text: text.trim() || undefined,
     hardBlocker,
-    humanReportMd: readString(value.humanReportMd),
-    needsMoreResearch: readBoolean(value.needsMoreResearch) ?? readBoolean(value.requiresMoreResearch),
-    reason: readString(value.reason) ?? readString(value.blockerReason),
-    researchBrief: readString(value.researchBrief),
-    assumptions: readStringList(value.assumptions),
-    risks: readStringList(value.risks),
-    assumptionBased: readBoolean(value.assumptionBased) ?? value.status === "assumption_based"
+    humanReportMd,
+    needsMoreResearch: readBoolean(record.needsMoreResearch) ?? readBoolean(record.requiresMoreResearch),
+    reason: readString(record.reason) ?? readString(record.blockerReason),
+    researchBrief: readString(record.researchBrief),
+    assumptions: readStringList(record.assumptions),
+    risks: readStringList(record.risks),
+    assumptionBased: readBoolean(record.assumptionBased) ?? record.status === "assumption_based"
   };
 }
 

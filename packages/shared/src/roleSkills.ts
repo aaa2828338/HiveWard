@@ -26,6 +26,7 @@ export function buildHivewardRoleSkillPrompt(identity: HivewardRoleSkillIdentity
     "- Business blueprints are executable workflow DAGs. Architecture blueprint is the company management view.",
     "- Approved Round Execution Plans are the execution contract for self-iteration rounds.",
     "- AgentHumanReport is the human-readable Markdown record; AgentHandoff is structured JSON for downstream agent continuation.",
+    "- AgentHumanReport must be the primary run explanation and must include a visible Delivery location / 交付位置 section with preview URLs, file paths, artifact links, commands, or an explicit no-new-deliverable note.",
     "- ReleaseReport is the Manager's user-facing round summary. Explain runs from approved plan, agent reports, release report, artifacts, and blockers before raw debug output.",
     "- Runs, node runs, events, final results, usage, errors, agent reports, handoffs, release reports, artifacts, and manager context snapshots are stored in HiveWard run records.",
     "- Chat has no implicit side effects. Formal changes go through HiveWard inbox approval and backend validation."
