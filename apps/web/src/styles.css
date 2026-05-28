@@ -9184,6 +9184,71 @@ h6,
   align-content: start;
 }
 
+.harness-permission-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.harness-permission-title h3 {
+  margin: 0;
+}
+
+.harness-permission-help {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-strong);
+  background: var(--paper-raised);
+  cursor: help;
+}
+
+.harness-permission-help:hover,
+.harness-permission-help:focus-visible {
+  border-color: var(--accent);
+  color: var(--text);
+  outline: none;
+}
+
+.harness-permission-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: -8px;
+  z-index: 30;
+  width: min(340px, calc(100vw - 48px));
+  display: grid;
+  gap: 7px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.harness-permission-tooltip strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.harness-permission-help:hover .harness-permission-tooltip,
+.harness-permission-help:focus-visible .harness-permission-tooltip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .harness-permission-toggle {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
@@ -9241,15 +9306,10 @@ h6,
   font-size: 13px;
 }
 
-.harness-permission-copy small,
-.harness-permission-warning {
+.harness-permission-copy small {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
-}
-
-.harness-permission-warning {
-  margin: 0;
 }
 
 .openclaw-panel-metrics {

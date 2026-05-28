@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.4.2 - 2026-05-28
+
+Small Harness permission clarity release.
+
+### 中文
+
+- 将各个 CLI Harness 配置页的权限入口整理为“全部权限”，并把安全模式 / 完全访问模式说明收进标题旁的悬浮提示。
+- “全部权限”现在覆盖聊天默认权限，以及蓝图里引用该 Harness 的 Agent / Manager 节点权限同步。
+- 保存或运行蓝图前，会根据当前 Harness 权限设置同步对应节点的 `permissionProfile`。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.4.2`。
+
+### English
+
+- Reworked each CLI Harness configuration page around an “All permissions” control, moving Safe mode / Full access explanations into the title tooltip.
+- “All permissions” now covers chat defaults and blueprint Agent / Manager nodes that reference the same harness.
+- Before saving or running a blueprint, HiveWard syncs matching node `permissionProfile` values from the current harness permission settings.
+- Bumped repository, workspace package, and internal dependency versions to `0.4.2`.
+
 ## v0.4.0 - 2026-05-28
 
 Multi-CLI harness beta release.
