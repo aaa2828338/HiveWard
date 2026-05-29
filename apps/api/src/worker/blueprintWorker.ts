@@ -5,6 +5,7 @@ import {
   resolveAgentRuntimeSource,
   isManagerSlotInnerInHandle,
   isManagerSlotInnerOutHandle,
+  resolveCrossRoundContextMode,
   resolveManagerSlotExecutionMode,
   type AgentNodeConfig,
   type AgentRuntimeId,
@@ -2420,27 +2421,66 @@ export class BlueprintWorker {
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
     const runtimeId = node.runtimeId ?? "openclaw";
-    let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
+    const crossRoundInput = await this.withNodeCrossRoundContext({
+      run,
+      node,
+      nodeRun,
+      input,
+      prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) })
+    });
+    let nodeRunWithInput = await this.recordNodeInput(nodeRun, crossRoundInput.input);
     const { result, openclawRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
       agentName: config.agentName,
-      prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) }),
+      prompt: crossRoundInput.prompt,
       modelId: config.modelId,
       permissionProfile: config.permissionProfile,
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
       outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
-      input,
+      input: crossRoundInput.input,
       skillIds: config.skillIds,
       tools: config.tools
     }, async (startedRef) => {
       nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
     });
     return this.applyAgentTaskResult(blueprint, run, node, nodeRunWithInput, result, openclawRef);
+  }
+
+  private async withNodeCrossRoundContext(input: {
+    run: BlueprintRun;
+    node: BlueprintNode;
+    nodeRun: BlueprintNodeRun;
+    input: unknown;
+    prompt: string;
+  }): Promise<{ input: unknown; prompt: string }> {
+    const mode = resolveCrossRoundContextMode(input.node.config);
+    if (mode === "off") return { input: input.input, prompt: input.prompt };
+
+    const nodeCrossRoundContext = await this.managerContextService.buildNodeCrossRoundContext({
+      mode,
+      run: input.run,
+      node: input.node,
+      currentNodeRun: input.nodeRun,
+      upstream: this.readUpstreamInput(input.input)
+    });
+    if (!nodeCrossRoundContext) return { input: input.input, prompt: input.prompt };
+
+    return {
+      input: {
+        ...(isRecord(input.input) ? input.input : { value: input.input }),
+        nodeCrossRoundContext
+      },
+      prompt: [
+        this.managerContextService.formatNodeCrossRoundContextPrompt(nodeCrossRoundContext),
+        "",
+        input.prompt
+      ].join("\n")
+    };
   }
 
   private async applyAgentTaskResult(
@@ -3005,8 +3045,15 @@ export class BlueprintWorker {
     upstream: UpstreamOutput
   ): Promise<void> {
     const config = node.config as SummaryNodeConfig;
-    const input = { upstream };
-    let nodeRunWithInput = await this.recordNodeInput(nodeRun, input);
+    const input = await this.withNodeCrossRoundContext({
+      run,
+      node,
+      nodeRun,
+      input: { upstream },
+      prompt: config.prompt?.trim() || defaultSummaryHarnessPrompt
+    });
+    const summaryInput = input.input;
+    let nodeRunWithInput = await this.recordNodeInput(nodeRun, summaryInput);
     if (isHarnessSummaryMode(config)) {
       const runtimeId = resolveSummaryRuntimeId(config);
       const { result, openclawRef } = await this.runAgentTask({
@@ -3016,14 +3063,14 @@ export class BlueprintWorker {
         agentId: runtimeId === "openclaw" ? "main" : undefined,
         agentName: "summary-agent",
         prompt: [
-          config.prompt?.trim() || defaultSummaryHarnessPrompt,
+          input.prompt,
           "",
           ...agentOutputContractLines
         ].join("\n"),
         modelId: config.modelId,
         runtimeAccessPolicy: config.runtimeAccessPolicy,
         outputSchema: humanReportEnvelopeSchemaBase,
-        input,
+        input: summaryInput,
         tools: []
       }, async (startedRef) => {
         nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);

@@ -3,7 +3,9 @@ import type {
   Artifact,
   ApprovalDecision,
   BlueprintNode,
+  BlueprintNodeRun,
   BlueprintRun,
+  CrossRoundContextMode,
   IterationRound,
   IterationSession,
   ManagerContextSnapshot,
@@ -80,6 +82,39 @@ export interface ManagerSnapshotDraft {
   recommendedNextStep?: ManagerContextSnapshot["recommendedNextStep"];
   summary?: string;
   freeform?: string;
+}
+
+export interface NodeCrossRoundContext {
+  mode: CrossRoundContextMode;
+  runId: string;
+  nodeId: string;
+  currentRoundId?: string;
+  previousNodeOutputs: Array<{
+    roundNumber: number;
+    status: string;
+    summary: string;
+    unresolvedItems: string[];
+  }>;
+  upstreamArtifacts: Array<{
+    artifactId: string;
+    title: string;
+    kind: string;
+    url?: string;
+  }>;
+  managerMemorySummary?: string;
+}
+
+export interface BuildNodeCrossRoundContextInput {
+  mode: CrossRoundContextMode;
+  run: BlueprintRun;
+  node: BlueprintNode;
+  currentNodeRun: BlueprintNodeRun;
+  upstream?: Array<{
+    nodeRunId?: string;
+    nodeId: string;
+    nodeLabel: string;
+    output?: unknown;
+  }>;
 }
 
 export class ManagerContextService {
@@ -209,6 +244,94 @@ export class ManagerContextService {
     return snapshot;
   }
 
+  async buildNodeCrossRoundContext(input: BuildNodeCrossRoundContextInput): Promise<NodeCrossRoundContext | undefined> {
+    if (input.mode === "off") return undefined;
+
+    const [nodeRuns, rounds, artifacts, snapshots] = await Promise.all([
+      this.store.listNodeRuns(input.run.id),
+      this.store.listIterationRounds({ runId: input.run.id }),
+      this.store.listArtifacts(input.run.id),
+      this.store.listManagerContextSnapshots(input.run.id)
+    ]);
+    const roundById = new Map(rounds.map((round) => [round.id, round]));
+    const currentRoundId = input.currentNodeRun.iterationRoundId;
+    const previousNodeOutputs = nodeRuns
+      .filter((nodeRun) => nodeRun.id !== input.currentNodeRun.id)
+      .filter((nodeRun) => nodeRun.nodeId === input.node.id)
+      .filter((nodeRun) => !currentRoundId || nodeRun.iterationRoundId !== currentRoundId)
+      .filter((nodeRun) => nodeRun.status !== "queued" && nodeRun.status !== "running" && nodeRun.status !== "waiting_approval")
+      .map((nodeRun) => {
+        const round = nodeRun.iterationRoundId ? roundById.get(nodeRun.iterationRoundId) : undefined;
+        return {
+          roundNumber: round?.roundNumber ?? 0,
+          status: nodeRun.status,
+          summary: summarizeNodeRunOutput(nodeRun),
+          unresolvedItems: extractUnresolvedItems(nodeRun.output, nodeRun.error)
+        };
+      })
+      .filter((item) => item.summary || item.unresolvedItems.length > 0)
+      .slice(-6);
+
+    const upstreamArtifacts = input.mode === "node_history"
+      ? []
+      : collectUpstreamArtifacts(artifacts, input.upstream ?? []);
+
+    const managerMemorySummary = input.mode === "node_history_with_upstream_and_manager_memory"
+      ? summarizeManagerMemory(snapshots.filter((snapshot) => snapshot.roundId !== currentRoundId).at(-1))
+      : undefined;
+
+    if (previousNodeOutputs.length === 0 && upstreamArtifacts.length === 0 && !managerMemorySummary) {
+      return undefined;
+    }
+
+    return {
+      mode: input.mode,
+      runId: input.run.id,
+      nodeId: input.node.id,
+      currentRoundId,
+      previousNodeOutputs,
+      upstreamArtifacts,
+      managerMemorySummary
+    };
+  }
+
+  formatNodeCrossRoundContextPrompt(context: NodeCrossRoundContext): string {
+    const lines = [
+      "Worker cross-round context for this blueprint run only.",
+      "This is platform-injected prompt context, not long-term harness memory. Do not assume it exists outside this run.",
+      `Mode: ${context.mode}`,
+      `Run: ${context.runId}`,
+      `Node: ${context.nodeId}`,
+      context.currentRoundId ? `Current round: ${context.currentRoundId}` : undefined
+    ].filter(Boolean) as string[];
+
+    if (context.previousNodeOutputs.length > 0) {
+      lines.push("", "Previous executions of this node:");
+      for (const previous of context.previousNodeOutputs) {
+        lines.push(`- Round ${previous.roundNumber || "unknown"} (${previous.status}): ${previous.summary}`);
+        if (previous.unresolvedItems.length > 0) {
+          lines.push("  Unresolved items:");
+          previous.unresolvedItems.forEach((item, index) => {
+            lines.push(`  ${index + 1}. ${item}`);
+          });
+        }
+      }
+    }
+
+    if (context.upstreamArtifacts.length > 0) {
+      lines.push("", "Relevant upstream artifacts:");
+      for (const artifact of context.upstreamArtifacts) {
+        lines.push(`- ${artifact.title} (${artifact.kind})${artifact.url ? `: ${artifact.url}` : ""}`);
+      }
+    }
+
+    if (context.managerMemorySummary) {
+      lines.push("", "Manager memory summary:", context.managerMemorySummary);
+    }
+
+    return lines.join("\n");
+  }
+
   private async resolveCurrentPlan(round: IterationRound): Promise<ManagerInjectedContext["currentPlan"] | undefined> {
     if (!round.approvedRequirementRequestId) return undefined;
 
@@ -238,4 +361,99 @@ function normalizeList(value: string[] | undefined, fallback: string[] = []): st
     ? value.map((item) => item.trim()).filter(Boolean)
     : [];
   return normalized.length ? normalized : fallback;
+}
+
+function summarizeNodeRunOutput(nodeRun: BlueprintNodeRun): string {
+  if (nodeRun.error && nodeRun.output === undefined) return `Error: ${nodeRun.error}`;
+  return truncateText(stringifySummaryValue(nodeRun.output), 1400);
+}
+
+function stringifySummaryValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function extractUnresolvedItems(output: unknown, error?: string): string[] {
+  const values = new Set<string>();
+  if (error?.trim()) values.add(error.trim());
+  collectUnresolvedItems(parseJsonIfString(output), values);
+  return [...values].slice(0, 30);
+}
+
+function collectUnresolvedItems(value: unknown, values: Set<string>): void {
+  if (typeof value === "string") {
+    for (const item of extractListItems(value)) {
+      values.add(item);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => {
+      if (typeof item === "string") values.add(item.trim());
+      else collectUnresolvedItems(item, values);
+    });
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["unresolvedItems", "issues", "problems", "findings", "fixes", "todos", "openQuestions", "activeRisks"]) {
+    collectUnresolvedItems(record[key], values);
+  }
+}
+
+function extractListItems(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$/)?.[1]?.trim())
+    .filter((item): item is string => Boolean(item));
+}
+
+function parseJsonIfString(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) return value;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function collectUpstreamArtifacts(
+  artifacts: Artifact[],
+  upstream: NonNullable<BuildNodeCrossRoundContextInput["upstream"]>
+): NodeCrossRoundContext["upstreamArtifacts"] {
+  const upstreamNodeRunIds = new Set(upstream.flatMap((item) => item.nodeRunId ? [item.nodeRunId] : []));
+  return artifacts
+    .filter((artifact) => artifact.nodeRunId && upstreamNodeRunIds.has(artifact.nodeRunId))
+    .map((artifact) => ({
+      artifactId: artifact.id,
+      title: artifact.title ?? artifact.id,
+      kind: artifact.kind,
+      url: artifact.downloadUrl
+    }))
+    .slice(-20);
+}
+
+function summarizeManagerMemory(snapshot: ManagerContextSnapshot | undefined): string | undefined {
+  if (!snapshot) return undefined;
+  const sections = [
+    snapshot.summary,
+    snapshot.openQuestions.length > 0 ? `Open questions: ${snapshot.openQuestions.join("; ")}` : undefined,
+    snapshot.activeRisks.length > 0 ? `Active risks: ${snapshot.activeRisks.join("; ")}` : undefined,
+    snapshot.recommendedNextStep ? `Recommended next step: ${snapshot.recommendedNextStep}` : undefined
+  ].filter(Boolean);
+  return truncateText(sections.join("\n"), 1800);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength - 3)}...`;
 }

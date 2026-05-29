@@ -11727,3 +11727,191 @@ html[data-theme="light"] select {
 .chat-select-button.open .chat-select-arrow {
   transform: rotate(180deg);
 }
+
+.node-detail-sidebar-manager {
+  width: min(294px, 100%);
+}
+
+.node-detail-sidebar-manager .node-modal-header h3 {
+  font-size: var(--title-page-size);
+  line-height: var(--title-line-height);
+}
+
+.manager-config-form {
+  gap: 12px;
+}
+
+.manager-config-form > label,
+.manager-config-form > .config-field {
+  min-width: 0;
+}
+
+.manager-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper-raised, var(--paper-strong));
+}
+
+.manager-mode-switch button {
+  min-width: 0;
+  min-height: 38px;
+  justify-content: center;
+  padding: 6px 4px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  transform: none;
+  white-space: nowrap;
+}
+
+.manager-mode-switch button:hover:not(:disabled),
+.manager-mode-switch button.active {
+  border-color: rgb(245 154 11 / 0.30);
+  background: rgb(245 154 11 / 0.13);
+  color: var(--text);
+  transform: none;
+}
+
+.blueprint-permission-field {
+  grid-column: 1 / -1;
+}
+
+.config-form .blueprint-permission-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 54px;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  width: 100%;
+  max-width: 100%;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--paper-raised, var(--paper-strong));
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.config-form .blueprint-permission-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.blueprint-permission-label {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.config-form .blueprint-permission-toggle strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-form .blueprint-permission-toggle .harness-permission-switch {
+  justify-self: end;
+  width: 50px;
+  height: 26px;
+}
+
+.config-form .blueprint-permission-toggle .harness-permission-switch::after {
+  width: 18px;
+  height: 18px;
+}
+
+.config-form .blueprint-permission-toggle.enabled {
+  border-color: rgb(245 154 11 / 0.42);
+  background: rgb(245 154 11 / 0.10);
+}
+
+.config-form .blueprint-permission-toggle.inherited {
+  cursor: default;
+}
+
+.config-form .blueprint-permission-toggle.inherited .harness-permission-switch {
+  opacity: 0.74;
+}
+
+.config-form .blueprint-permission-toggle.enabled .harness-permission-switch {
+  border-color: rgb(245 154 11 / 0.52);
+  background: rgb(245 154 11 / 0.18);
+}
+
+.config-form .blueprint-permission-toggle.enabled .harness-permission-switch::after {
+  transform: translateX(24px);
+  background: var(--accent-strong);
+}
+
+.harness-permission-check {
+  flex: 0 0 auto;
+  color: var(--accent-strong);
+}
+
+.manager-settings-divider {
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line);
+}
+
+.manager-advanced-settings {
+  display: grid;
+  gap: 10px;
+}
+
+.manager-advanced-settings summary {
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 780;
+  list-style: none;
+}
+
+.manager-advanced-settings summary::-webkit-details-marker {
+  display: none;
+}
+
+.manager-advanced-settings summary svg {
+  flex: 0 0 auto;
+  transition: transform 140ms ease;
+}
+
+.manager-advanced-settings:not([open]) summary svg {
+  transform: rotate(-90deg);
+}
+
+.manager-advanced-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.node-detail-sidebar-manager .node-system-prompt-input {
+  min-height: 130px;
+}
+
+@media (max-width: 760px) {
+  .node-detail-sidebar-manager {
+    width: auto;
+  }
+}
