@@ -74,4 +74,12 @@ describe("getOpenClawConfigWizardMetadata", () => {
     ]);
     expect(options).not.toContain("mi-milab");
   });
+
+  it("uses the refreshed DeepSeek defaults instead of the legacy chat placeholder", () => {
+    const options = modelOptionsFor("deepseek", "api-key");
+
+    expect(options[0]).toBe("deepseek-v4-pro");
+    expect(options).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"]);
+    expect(options).not.toContain("deepseek-chat");
+  });
 });

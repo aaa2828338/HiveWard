@@ -500,7 +500,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
     ]
   },
   apiProvider({ id: "deepinfra", label: "DeepInfra", env: "DEEPINFRA_API_KEY", choiceId: "deepinfra-api-key" }),
-  apiProvider({ id: "deepseek", label: "DeepSeek", env: "DEEPSEEK_API_KEY", choiceId: "deepseek-api-key", modelPlaceholder: "deepseek-chat" }),
+  apiProvider({ id: "deepseek", label: "DeepSeek", env: "DEEPSEEK_API_KEY", choiceId: "deepseek-api-key" }),
   apiProvider({ id: "fireworks", label: "Fireworks", env: "FIREWORKS_API_KEY", choiceId: "fireworks-api-key" }),
   apiProvider({
     id: "google",
