@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { sqliteMigrations } from "./schema";
 import { SqliteDriver } from "./sqliteDriver";
 
 describe("SqliteDriver schema migrations", () => {
@@ -9,12 +10,31 @@ describe("SqliteDriver schema migrations", () => {
     const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-schema-empty-")), "hiveward.sqlite");
     const first = new SqliteDriver(sqlitePath);
     first.migrate();
-    expect(first.currentSchemaVersion()).toBe(1);
+    expect(first.currentSchemaVersion()).toBe(2);
     first.close();
 
     const second = new SqliteDriver(sqlitePath);
     expect(() => second.migrate()).not.toThrow();
     second.close();
+  });
+
+  it("upgrades v1 databases with legacy migration compatibility columns", () => {
+    const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-schema-v1-upgrade-")), "hiveward.sqlite");
+    const first = new SqliteDriver(sqlitePath);
+    const v1 = sqliteMigrations[0]!;
+    for (const statement of v1.up) first.db.exec(statement);
+    first.db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)"
+    ).run(v1.version, v1.name, new Date().toISOString(), v1.checksum);
+    expect(first.currentSchemaVersion()).toBe(1);
+    first.close();
+
+    const upgraded = new SqliteDriver(sqlitePath);
+    upgraded.migrate();
+    expect(upgraded.currentSchemaVersion()).toBe(2);
+    expect(listColumnNames(upgraded, "artifacts")).toContain("declared_node_run_id");
+    expect(listColumnNames(upgraded, "release_report_artifacts")).toContain("position");
+    upgraded.close();
   });
 
   it("fails closed when an applied migration checksum changes", () => {
@@ -79,6 +99,24 @@ describe("SqliteDriver schema migrations", () => {
     driver.migrate();
     driver.db.exec("ALTER TABLE chat_messages DROP COLUMN content");
     expect(() => driver.migrate()).toThrow(/SQLite schema drift detected; missing column chat_messages\.content/);
+    driver.close();
+  });
+
+  it("fails closed when the legacy artifact node run source column is missing", () => {
+    const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-schema-missing-artifact-source-")), "hiveward.sqlite");
+    const driver = new SqliteDriver(sqlitePath);
+    driver.migrate();
+    driver.db.exec("ALTER TABLE artifacts DROP COLUMN declared_node_run_id");
+    expect(() => driver.migrate()).toThrow(/missing column artifacts\.declared_node_run_id/);
+    driver.close();
+  });
+
+  it("fails closed when release report artifact ordering position is missing", () => {
+    const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-schema-missing-release-position-")), "hiveward.sqlite");
+    const driver = new SqliteDriver(sqlitePath);
+    driver.migrate();
+    driver.db.exec("ALTER TABLE release_report_artifacts DROP COLUMN position");
+    expect(() => driver.migrate()).toThrow(/missing column release_report_artifacts\.position/);
     driver.close();
   });
 
@@ -181,3 +219,7 @@ describe("SqliteDriver schema migrations", () => {
     driver.close();
   });
 });
+
+function listColumnNames(driver: SqliteDriver, table: string): string[] {
+  return (driver.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name);
+}

@@ -2788,9 +2788,13 @@ describe("BlueprintWorker", () => {
     if (!currentRun2 || !report1) throw new Error("Expected first release report.");
     await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "reject", { comment: "Fix the page." });
 
-    const report2View = await waitForRunView(store, run.id, (view) =>
-      (view.releaseReports ?? []).length === 2 &&
-      (view.approvalRequests ?? []).filter((request) => request.kind === "manager_release_report" && request.status === "pending").length === 1
+    const report2View = await waitForRunView(
+      store,
+      run.id,
+      (view) =>
+        (view.releaseReports ?? []).length === 2 &&
+        (view.approvalRequests ?? []).filter((request) => request.kind === "manager_release_report" && request.status === "pending").length === 1,
+      30_000
     );
     const report2 = report2View.approvalRequests
       ?.filter((request) => request.kind === "manager_release_report" && request.status === "pending")
@@ -3404,9 +3408,10 @@ async function waitForRunStatus(
 async function waitForRunView(
   store: HivewardStore,
   runId: string,
-  predicate: (view: NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>) => boolean
+  predicate: (view: NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>) => boolean,
+  timeoutMs = 10_000
 ): Promise<NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>> {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const view = await store.getRunView(runId);

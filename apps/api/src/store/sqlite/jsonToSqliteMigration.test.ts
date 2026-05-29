@@ -11,7 +11,8 @@ import {
   createContractEvent,
   createContractHandoff,
   createContractHumanReport,
-  createContractNodeRun
+  createContractNodeRun,
+  createContractReleaseReport
 } from "../storeContractFixtures";
 import {
   cleanupSqliteOrphanArtifacts,
@@ -21,6 +22,7 @@ import {
   runVerifySqliteStoreCli,
   verifySqliteMigration
 } from "./jsonToSqliteMigration";
+import { SqliteDriver } from "./sqliteDriver";
 import { SqliteHivewardStore } from "./sqliteHivewardStore";
 
 describe("JSON to SQLite migration", () => {
@@ -52,6 +54,88 @@ describe("JSON to SQLite migration", () => {
 
     const verification = await verifySqliteMigration({ dataDir, sqlitePath });
     expect(verification).toMatchObject({ ok: true, mismatches: [] });
+  });
+
+  it("preserves a legacy artifact nodeRunId that has no matching node_run row", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-legacy-artifact-node-"));
+    const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await source.init();
+    const blueprint = await source.saveBlueprint(createContractBlueprint());
+    const run = await source.createBlueprintRun(blueprint, "migration-user");
+    const missingNodeRunId = "legacy-missing-node-run";
+    await source.upsertArtifact({
+      ...createContractArtifact(run.id, missingNodeRunId),
+      id: "artifact-legacy-missing-node-run",
+      nodeRunId: missingNodeRunId
+    });
+
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+    const verification = await verifySqliteMigration({ dataDir, sqlitePath });
+    expect(verification).toMatchObject({ ok: true, mismatches: [] });
+
+    const sqlite = new SqliteHivewardStore(sqlitePath, { seedDefaults: false });
+    await sqlite.init();
+    try {
+      await expect(sqlite.listArtifacts()).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: "artifact-legacy-missing-node-run",
+          nodeRunId: missingNodeRunId
+        })
+      ]));
+    } finally {
+      sqlite.close();
+    }
+
+    const driver = new SqliteDriver(sqlitePath);
+    try {
+      const row = driver.db.prepare(
+        "SELECT node_run_id, declared_node_run_id FROM artifacts WHERE id = ?"
+      ).get("artifact-legacy-missing-node-run") as { node_run_id: string | null; declared_node_run_id: string | null };
+      expect(row).toEqual({
+        node_run_id: null,
+        declared_node_run_id: missingNodeRunId
+      });
+      expect(driver.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("preserves release report artifactRefs order during migration", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-release-order-"));
+    const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await source.init();
+    const blueprint = await source.saveBlueprint(createContractBlueprint());
+    const run = await source.createBlueprintRun(blueprint, "migration-user");
+    const nodeRun = createContractNodeRun(run, { result: { migrated: true } });
+    await source.upsertNodeRun(nodeRun);
+    const artifactB = { ...createContractArtifact(run.id, nodeRun.id), id: "artifact-b", title: "B", relativePath: "runs/b.md" };
+    const artifactA = { ...createContractArtifact(run.id, nodeRun.id), id: "artifact-a", title: "A", relativePath: "runs/a.md" };
+    await source.upsertArtifact(artifactB);
+    await source.upsertArtifact(artifactA);
+    await source.upsertReleaseReport({
+      ...createContractReleaseReport(run.id, "legacy-round", "legacy-approval"),
+      artifactRefs: [
+        { artifactId: artifactB.id, title: "B", location: "/artifacts/runs/b.md", current: true },
+        { artifactId: artifactA.id, title: "A", location: "/artifacts/runs/a.md", current: true }
+      ]
+    });
+
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+    const verification = await verifySqliteMigration({ dataDir, sqlitePath });
+    expect(verification).toMatchObject({ ok: true, mismatches: [] });
+
+    const sqlite = new SqliteHivewardStore(sqlitePath, { seedDefaults: false });
+    await sqlite.init();
+    try {
+      const reports = await sqlite.listReleaseReports(run.id);
+      expect(reports).toHaveLength(1);
+      expect(reports[0]?.artifactRefs.map((ref) => ref.artifactId)).toEqual(["artifact-b", "artifact-a"]);
+    } finally {
+      sqlite.close();
+    }
   });
 
   it("detects deep view drift beyond counts", async () => {

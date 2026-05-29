@@ -1239,15 +1239,17 @@ export class SqliteHivewardStore implements HivewardStore {
   }
 
   private upsertArtifactSync(artifact: Artifact): Artifact {
-    const nodeRunId = artifact.nodeRunId && this.nodeRunExists(artifact.nodeRunId) ? artifact.nodeRunId : undefined;
+    const declaredNodeRunId = artifact.nodeRunId;
+    const nodeRunId = declaredNodeRunId && this.nodeRunExists(declaredNodeRunId) ? declaredNodeRunId : undefined;
     this.driver.db.prepare(
       `INSERT INTO artifacts (
-        id, run_id, round_id, node_run_id, slot, title, kind, format, storage_path,
+        id, run_id, round_id, node_run_id, declared_node_run_id, slot, title, kind, format, storage_path,
         relative_path, download_url, preview_policy, trusted, status, bytes, sha256, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         round_id = excluded.round_id,
         node_run_id = excluded.node_run_id,
+        declared_node_run_id = excluded.declared_node_run_id,
         slot = excluded.slot,
         title = excluded.title,
         kind = excluded.kind,
@@ -1265,6 +1267,7 @@ export class SqliteHivewardStore implements HivewardStore {
       artifact.runId,
       artifact.roundId,
       nodeRunId,
+      declaredNodeRunId,
       artifact.slot,
       artifact.title,
       artifact.kind,
@@ -1305,10 +1308,10 @@ export class SqliteHivewardStore implements HivewardStore {
          supersedes_report_id = excluded.supersedes_report_id`
     ).run(report.id, report.runId, report.roundId, report.approvalRequestId, report.version, report.title, report.summary, report.supersedesReportId, report.createdAt);
     this.driver.db.prepare("DELETE FROM release_report_artifacts WHERE release_report_id = ?").run(report.id);
-    for (const ref of report.artifactRefs) {
+    for (const [position, ref] of report.artifactRefs.entries()) {
       this.driver.db.prepare(
-        `INSERT INTO release_report_artifacts (release_report_id, artifact_id, title, location, current) VALUES (?, ?, ?, ?, ?)`
-      ).run(report.id, ref.artifactId, ref.title, ref.location, ref.current ? 1 : 0);
+        `INSERT INTO release_report_artifacts (release_report_id, artifact_id, position, title, location, current) VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(report.id, ref.artifactId, position, ref.title, ref.location, ref.current ? 1 : 0);
     }
     return report;
   }
@@ -2533,7 +2536,7 @@ export class SqliteHivewardStore implements HivewardStore {
   }
 
   private releaseReportFromRow(row: Row): ReleaseReport {
-    const artifactRefs = (this.driver.db.prepare("SELECT * FROM release_report_artifacts WHERE release_report_id = ?").all(row.id) as Row[])
+    const artifactRefs = (this.driver.db.prepare("SELECT * FROM release_report_artifacts WHERE release_report_id = ? ORDER BY position ASC, artifact_id ASC").all(row.id) as Row[])
       .map((refRow) => ({
         artifactId: requireString(refRow.artifact_id),
         title: requireString(refRow.title),
@@ -2819,7 +2822,7 @@ function artifactFromRow(row: Row): Artifact {
     id: requireString(row.id),
     runId: requireString(row.run_id),
     roundId: readString(row.round_id),
-    nodeRunId: readString(row.node_run_id),
+    nodeRunId: readString(row.node_run_id) ?? readString(row.declared_node_run_id),
     slot: readString(row.slot),
     title: readString(row.title),
     kind: requireString(row.kind) as Artifact["kind"],

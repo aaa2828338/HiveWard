@@ -429,19 +429,33 @@ const sqliteInitialSchemaStatements = [
   `CREATE INDEX IF NOT EXISTS idx_run_timeline_run_created ON run_timeline_items(run_id, created_at)`
 ];
 
+const sqliteLegacyMigrationCompatibilityStatements = [
+  "ALTER TABLE artifacts ADD COLUMN declared_node_run_id TEXT",
+  "UPDATE artifacts SET declared_node_run_id = node_run_id WHERE declared_node_run_id IS NULL AND node_run_id IS NOT NULL",
+  "ALTER TABLE release_report_artifacts ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
 
-export const sqliteMigrations: SqliteMigration[] = [{
-  version: 1,
-  name: "sqlite_vnext_v1",
-  checksum: checksumStatements(sqliteInitialSchemaStatements),
-  up: sqliteInitialSchemaStatements
-}];
+export const sqliteMigrations: SqliteMigration[] = [
+  {
+    version: 1,
+    name: "sqlite_vnext_v1",
+    checksum: checksumStatements(sqliteInitialSchemaStatements),
+    up: sqliteInitialSchemaStatements
+  },
+  {
+    version: 2,
+    name: "legacy_migration_compatibility",
+    checksum: checksumStatements(sqliteLegacyMigrationCompatibilityStatements),
+    up: sqliteLegacyMigrationCompatibilityStatements
+  }
+];
 
 export const sqliteSchemaVersion = sqliteMigrations.at(-1)?.version ?? 0;
-export const sqliteSchemaStatements = sqliteInitialSchemaStatements;
+export const sqliteSchemaStatements = sqliteMigrations.flatMap((migration) => migration.up);
 
 export const sqliteRequiredSchema = {
   schema_migrations: ["version", "name", "applied_at", "checksum"],
@@ -457,8 +471,9 @@ export const sqliteRequiredSchema = {
   agent_outputs: ["id", "run_id", "round_id", "node_run_id", "node_id", "envelope_json", "created_at"],
   agent_human_reports: ["id", "run_id", "round_id", "node_run_id", "node_id", "node_label", "title", "body_md", "source", "created_at"],
   agent_handoffs: ["id", "run_id", "round_id", "node_run_id", "node_id", "payload_json", "created_at"],
-  artifacts: ["id", "run_id", "round_id", "node_run_id", "kind", "storage_path", "relative_path", "download_url", "preview_policy", "trusted", "status", "created_at"],
+  artifacts: ["id", "run_id", "round_id", "node_run_id", "declared_node_run_id", "kind", "storage_path", "relative_path", "download_url", "preview_policy", "trusted", "status", "created_at"],
   release_reports: ["id", "run_id", "round_id", "approval_request_id", "version", "title", "summary", "created_at"],
+  release_report_artifacts: ["release_report_id", "artifact_id", "position", "title", "location", "current"],
   run_timeline_items: ["id", "run_id", "sequence", "created_at", "actor_label", "kind", "title"],
   chat_sessions: ["id", "harness_id", "mode", "status", "created_at", "updated_at"],
   chat_messages: ["id", "session_id", "role", "content", "status", "harness_id", "created_at"]
