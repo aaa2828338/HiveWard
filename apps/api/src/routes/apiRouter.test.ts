@@ -2606,6 +2606,11 @@ describe("apiRouter", () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-leader"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
+    process.env.CODEX_HOME = codexHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
@@ -2625,10 +2630,12 @@ describe("apiRouter", () => {
 
         expect(response.status, text).toBe(200);
         expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-leader"]);
         expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
         expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
       }, adapter);
     } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2636,6 +2643,11 @@ describe("apiRouter", () => {
   it("includes the inbox submission contract for Chinese blueprint creation requests", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    process.env.CODEX_HOME = codexHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
@@ -2660,6 +2672,7 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.message).toContain("Use the current chat harness runtime");
       }, adapter);
     } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
