@@ -8,7 +8,7 @@ import type {
   IterationSession,
   ManagerNodeConfig
 } from "@hiveward/shared";
-import { isAgentBlueprintNode } from "@hiveward/shared";
+import { isAgentBlueprintNode, isManagerSlotInnerOutHandle } from "@hiveward/shared";
 import { ManagerContextService, type ManagerInjectedContext, type RoundStartContext } from "./managerContextService";
 
 export type RoundPreflightMode =
@@ -73,6 +73,9 @@ interface ParsedPreflightOutput {
   risks?: string[];
   assumptionBased?: boolean;
 }
+
+const selfIterationResearchSlot = 1;
+const selfIterationRequirementSlot = 2;
 
 class RoundPreflightBlockedError extends Error {
   constructor(
@@ -212,6 +215,7 @@ export class RoundPreflightService {
     const managerConfig = input.topManagerNode.config as ManagerNodeConfig;
     const preparationAttempt = input.preparationAttempt ?? 1;
     const maxPreparationAttempts = input.maxPreparationAttempts ?? normalizePreparationAttempts(managerConfig.maxPreparationAttempts);
+    const researchAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationResearchSlot);
     if (!input.forceResearch && input.context.previousSnapshot && !input.humanFeedback?.trim()) {
       return {
         status: "context_sufficient",
@@ -220,7 +224,7 @@ export class RoundPreflightService {
         source: "previous_snapshot"
       };
     }
-    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !managerConfig.researchAgentNodeId) {
+    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !researchAgent) {
       return {
         status: "context_sufficient",
         summary: input.context.previousReleaseReport.summary,
@@ -244,13 +248,7 @@ export class RoundPreflightService {
       maxPreparationAttempts,
       runContext: baseRunContext
     };
-    const researchAgent = managerConfig.researchAgentNodeId
-      ? input.blueprint.nodes.find((node) => node.id === managerConfig.researchAgentNodeId)
-      : undefined;
-    if (managerConfig.researchAgentNodeId) {
-      if (!researchAgent || !isAgentBlueprintNode(researchAgent)) {
-        throw new RoundPreflightBlockedError(`Configured research agent is missing or is not an agent: ${managerConfig.researchAgentNodeId}.`, "research_agent");
-      }
+    if (researchAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
           node: researchAgent,
@@ -334,13 +332,8 @@ export class RoundPreflightService {
       maxPreparationAttempts,
       runContext
     };
-    const requirementAgent = managerConfig.requirementAgentNodeId
-      ? input.blueprint.nodes.find((node) => node.id === managerConfig.requirementAgentNodeId)
-      : undefined;
-    if (managerConfig.requirementAgentNodeId) {
-      if (!requirementAgent || !isAgentBlueprintNode(requirementAgent)) {
-        throw new RoundPreflightBlockedError(`Configured requirement agent is missing or is not an agent: ${managerConfig.requirementAgentNodeId}.`, "requirement_agent");
-      }
+    const requirementAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationRequirementSlot);
+    if (requirementAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
           node: requirementAgent,
@@ -437,6 +430,39 @@ export class RoundPreflightService {
       reason: parsed.reason ?? parsed.text,
       researchBrief: parsed.researchBrief
     };
+  }
+
+  private resolvePreflightSlotAgent(
+    blueprint: BlueprintDefinition,
+    managerNode: BlueprintNode,
+    slot: number
+  ): BlueprintNode & { type: "agent"; config: AgentNodeConfig } | undefined {
+    const target = this.resolveManagerSlotTarget(blueprint, managerNode, slot);
+    if (!target || target.disabled) return undefined;
+    if (isAgentBlueprintNode(target)) return target;
+    if (target.type !== "manager_slot") return undefined;
+
+    const childAgents = blueprint.nodes.filter(
+      (node): node is BlueprintNode & { type: "agent"; config: AgentNodeConfig } =>
+        node.parentId === target.id && !node.disabled && isAgentBlueprintNode(node)
+    );
+    if (childAgents.length === 0) return undefined;
+
+    const entryEdge = blueprint.edges.find(
+      (edge) => edge.source === target.id && isManagerSlotInnerOutHandle(edge.sourceHandle)
+    );
+    return childAgents.find((node) => node.id === entryEdge?.target) ?? childAgents[0];
+  }
+
+  private resolveManagerSlotTarget(
+    blueprint: BlueprintDefinition,
+    managerNode: BlueprintNode,
+    slot: number
+  ): BlueprintNode | undefined {
+    const edge = blueprint.edges.find(
+      (candidate) => candidate.source === managerNode.id && candidate.sourceHandle === `manager-out-${slot}`
+    );
+    return edge ? blueprint.nodes.find((node) => node.id === edge.target) : undefined;
   }
 
   private blockedResult(

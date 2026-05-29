@@ -50,6 +50,7 @@ const executableTypes = new Set([
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const defaultManagerAgentName = "manager";
+const selfIterationPreparationSlotCount = 2;
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
 const reviewOutputSelectionId = "reviewOutput";
@@ -1736,15 +1737,16 @@ export class BlueprintWorker {
       : nodeRun;
     const managerUpstream = this.readUpstreamInput(nodeRunWithInput.input);
     const isAgentDriven = this.isAgentDrivenManager(node);
+    const firstWorkSlot = this.firstManagerWorkSlot(node);
     const trace: ManagerTraceItem[] = [];
-    let slot = this.firstConnectedManagerSlot(blueprint, node, portCount);
+    let slot = this.firstConnectedManagerSlot(blueprint, node, portCount, firstWorkSlot);
     let searchAfterIndex = nodeRuns.findIndex((candidate) => candidate.id === nodeRun.id);
     if (searchAfterIndex < 0) return false;
 
     if (!slot) {
       await this.completeNode(nodeRunWithInput, {
         status: "completed",
-        reason: "manager_has_no_connected_slots",
+        reason: firstWorkSlot > 1 ? "manager_has_no_connected_work_slots" : "manager_has_no_connected_slots",
         trace
       });
       return true;
@@ -1778,7 +1780,7 @@ export class BlueprintWorker {
             decision: item.decision
           }))
         };
-        const managerDecisionResult = await this.runManagerDecisionTask(blueprint, run, node, nodeRunWithInput, context, dispatchRunContext, slot, portCount);
+        const managerDecisionResult = await this.runManagerDecisionTask(blueprint, run, node, nodeRunWithInput, context, dispatchRunContext, slot, portCount, firstWorkSlot);
         if (managerDecisionResult.result.status !== "succeeded") {
           await this.failNode(nodeRunWithInput, managerDecisionResult.result.error ?? "Manager decision agent failed.");
           return true;
@@ -1806,7 +1808,7 @@ export class BlueprintWorker {
       }
 
       if (assignment.target.disabled) {
-        const decision = this.resolveManagerDecision({ status: "skipped" }, slot, portCount);
+        const decision = this.resolveManagerDecision({ status: "skipped" }, slot, portCount, { minSlot: firstWorkSlot });
         trace.push({
           handoff,
           slot,
@@ -1890,6 +1892,7 @@ export class BlueprintWorker {
       }
 
       const decision = this.resolveManagerDecision(result.output, slot, portCount, {
+        minSlot: firstWorkSlot,
         ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
       });
       traceItem.decision = decision;
@@ -1980,7 +1983,8 @@ export class BlueprintWorker {
     context: ManagerSlotContext,
     runContext: ManagerInjectedContext | undefined,
     fallbackSlot: number,
-    portCount: number
+    portCount: number,
+    minSlot = 1
   ): Promise<{ result: AgentTaskResult; decision: ManagerDecision; runtimeRef: RuntimeObjectRef }> {
     const config = node.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(node);
@@ -2004,7 +2008,7 @@ export class BlueprintWorker {
         ...(runContext ? { runContext } : {}),
         upstream: context.upstream,
         previousResults: context.previousResults,
-        delegationRoster: this.buildManagerDelegationRoster(blueprint, node, portCount),
+        delegationRoster: this.buildManagerDelegationRoster(blueprint, node, portCount, minSlot),
         decisionContract: {
           status: "continue | complete | retry",
           nextSlot: "numbered slot to delegate next",
@@ -2026,7 +2030,7 @@ export class BlueprintWorker {
     return {
       result,
       decision: result.status === "succeeded"
-        ? this.resolveManagerDecision(result.output, Math.max(0, fallbackSlot - 1), portCount)
+        ? this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot })
         : { status: "complete", reason: result.error ?? "manager_decision_failed" },
       runtimeRef
     };
@@ -2137,7 +2141,8 @@ export class BlueprintWorker {
   private buildManagerDelegationRoster(
     blueprint: BlueprintDefinition,
     managerNode: BlueprintNode,
-    portCount: number
+    portCount: number,
+    minSlot = 1
   ): Record<string, unknown> {
     let remainingPromptBudget = managerRosterPromptBudget;
     const readPrompt = (value: string | undefined): { prompt?: string; promptTruncated?: boolean } => {
@@ -2156,7 +2161,11 @@ export class BlueprintWorker {
     return {
       policy: "full_prompts_with_deterministic_truncation",
       promptBudget: managerRosterPromptBudget,
-      slots: Array.from({ length: portCount }, (_item, index) => index + 1).flatMap((slot) => {
+      slotRange: {
+        first: minSlot,
+        last: portCount
+      },
+      slots: Array.from({ length: Math.max(0, portCount - minSlot + 1) }, (_item, index) => minSlot + index).flatMap((slot) => {
         const assignment = this.findManagerSlotAssignment(blueprint, managerNode, slot);
         if (!assignment) return [];
         return [
@@ -2541,13 +2550,14 @@ export class BlueprintWorker {
       ...(dispatchRunContext ? { runContext: dispatchRunContext } : {})
     });
     const isAgentDriven = this.isAgentDrivenManager(node);
+    const firstWorkSlot = this.firstManagerWorkSlot(node);
     const trace: ManagerTraceItem[] = [];
-    let slot = this.firstConnectedManagerSlot(blueprint, node, portCount);
+    let slot = this.firstConnectedManagerSlot(blueprint, node, portCount, firstWorkSlot);
 
     if (!slot) {
       const output = {
         status: "completed",
-        reason: "manager_has_no_connected_slots",
+        reason: firstWorkSlot > 1 ? "manager_has_no_connected_work_slots" : "manager_has_no_connected_slots",
         trace
       };
       await this.completeNode(nodeRunWithInput, output);
@@ -2578,7 +2588,7 @@ export class BlueprintWorker {
       };
       let managerDecision: ManagerDecision | undefined;
       if (isAgentDriven) {
-        const managerDecisionResult = await this.runManagerDecisionTask(blueprint, run, node, nodeRunWithInput, managerContext, dispatchRunContext, slot, portCount);
+        const managerDecisionResult = await this.runManagerDecisionTask(blueprint, run, node, nodeRunWithInput, managerContext, dispatchRunContext, slot, portCount, firstWorkSlot);
         if (managerDecisionResult.result.status !== "succeeded") {
           const error = managerDecisionResult.result.error ?? "Manager decision agent failed.";
           await this.failNode(nodeRunWithInput, error);
@@ -2619,7 +2629,7 @@ export class BlueprintWorker {
           error: "disabled",
           returnEdgePresent: assignment.returnEdgePresent,
           managerDecision,
-          decision: this.resolveManagerDecision({ status: "skipped" }, slot, portCount)
+          decision: this.resolveManagerDecision({ status: "skipped" }, slot, portCount, { minSlot: firstWorkSlot })
         });
         slot += 1;
         if (slot > portCount) {
@@ -2689,6 +2699,7 @@ export class BlueprintWorker {
       }
 
       const decision = this.resolveManagerDecision(result.output, slot, portCount, {
+        minSlot: firstWorkSlot,
         ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
       });
       traceItem.decision = decision;
@@ -3184,11 +3195,21 @@ export class BlueprintWorker {
     return blueprint.variables[expression] === "true";
   }
 
-  private firstConnectedManagerSlot(blueprint: BlueprintDefinition, managerNode: BlueprintNode, portCount: number): number | undefined {
-    for (let slot = 1; slot <= portCount; slot += 1) {
+  private firstConnectedManagerSlot(
+    blueprint: BlueprintDefinition,
+    managerNode: BlueprintNode,
+    portCount: number,
+    minSlot = 1
+  ): number | undefined {
+    for (let slot = minSlot; slot <= portCount; slot += 1) {
       if (this.findManagerSlotAssignment(blueprint, managerNode, slot)) return slot;
     }
     return undefined;
+  }
+
+  private firstManagerWorkSlot(managerNode: BlueprintNode): number {
+    const config = managerNode.config as ManagerNodeConfig;
+    return config.lifecycleMode === "self_iteration" ? selfIterationPreparationSlotCount + 1 : 1;
   }
 
   private findManagerSlotAssignment(
@@ -3283,8 +3304,9 @@ export class BlueprintWorker {
     output: unknown,
     currentSlot: number,
     portCount: number,
-    options: { ignoreCompletionStatus?: boolean } = {}
+    options: { ignoreCompletionStatus?: boolean; minSlot?: number } = {}
   ): ManagerDecision {
+    const minSlot = normalizeInteger(options.minSlot, 1, portCount, 1);
     const record = readDecisionRecord(output);
     const explicitSlot =
       readInteger(record?.nextSlot) ??
@@ -3306,8 +3328,8 @@ export class BlueprintWorker {
       return { status: "complete", reason };
     }
     if (explicitSlot !== undefined) {
-      if (explicitSlot < 1 || explicitSlot > portCount) {
-        return { status: "complete", reason: reason ?? `next slot ${explicitSlot} is outside manager ports` };
+      if (explicitSlot < minSlot || explicitSlot > portCount) {
+        return { status: "complete", reason: reason ?? `next slot ${explicitSlot} is outside available manager work slots` };
       }
       return {
         status: explicitSlot <= currentSlot ? "retry" : "continue",
@@ -3322,7 +3344,7 @@ export class BlueprintWorker {
     if (failed) {
       return {
         status: "retry",
-        nextSlot: Math.max(1, currentSlot - 1),
+        nextSlot: Math.max(minSlot, currentSlot - 1),
         reason
       };
     }
@@ -3330,7 +3352,7 @@ export class BlueprintWorker {
     if (currentSlot >= portCount) {
       return { status: "complete", reason };
     }
-    return { status: "continue", nextSlot: currentSlot + 1, reason };
+    return { status: "continue", nextSlot: Math.max(minSlot, currentSlot + 1), reason };
   }
 
   private async collectUpstreamOutputs(

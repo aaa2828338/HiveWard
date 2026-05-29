@@ -141,8 +141,10 @@ export interface Messages {
     provider: string;
     relatedRun: string;
     requirementAgent: string;
+    requirementInterface: string;
     relatedBlueprint: string;
     researchAgent: string;
+    researchInterface: string;
     runLabel: string;
     safeMode: string;
     section: string;
@@ -398,8 +400,10 @@ export const messages: Record<Language, Messages> = {
       provider: "Provider",
       relatedRun: "Related run",
       requirementAgent: "Round plan agent",
+      requirementInterface: "Requirement interface",
       relatedBlueprint: "Related blueprint",
       researchAgent: "Research agent",
+      researchInterface: "Research interface",
       runLabel: "Run label",
       safeMode: "Safe mode",
       section: "Section",
@@ -794,8 +798,10 @@ export const messages: Record<Language, Messages> = {
       provider: "提供方",
       relatedRun: "关联运行",
       requirementAgent: "提需 / Round plan agent",
+      requirementInterface: "提取接口",
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
       researchAgent: "调研 agent",
+      researchInterface: "调研接口",
       runLabel: "运行标签",
       safeMode: "\u5b89\u5168\u6a21\u5f0f",
       section: "页面",
