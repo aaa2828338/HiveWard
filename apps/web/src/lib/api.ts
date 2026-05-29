@@ -20,12 +20,16 @@ import type {
   HarnessStatus,
   HarnessStatusResponse,
   ApplyHivewardUpdateResponse,
+  ApprovalRequest,
+  ApprovalRequestResponse,
   HivewardUpdateResponse,
   ImportBlueprintPackageRequest,
   ImportBlueprintPackageResponse,
   InstallHarnessSkillsResponse,
   LatestBlueprintRunResponse,
   ListPendingApprovalsResponse,
+  ListApprovalMessagesResponse,
+  ListApprovalRequestsResponse,
   ListBlueprintRunSummariesResponse,
   ListBlueprintsResponse,
   OpenClawConfigResponse,
@@ -116,8 +120,19 @@ async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-function buildApiUrl(path: string): string {
-  return apiBaseUrl ? `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}` : path;
+function buildApiUrl(path: string, baseUrl = apiBaseUrl): string {
+  if (isAbsoluteResourceUrl(path)) return path;
+  return baseUrl ? `${baseUrl}${path.startsWith("/") ? path : `/${path}`}` : path;
+}
+
+export function resolveApiResourceUrl(path: string, baseUrl = apiBaseUrl): string {
+  const trimmed = path.trim();
+  if (!trimmed) return trimmed;
+  return buildApiUrl(trimmed, baseUrl);
+}
+
+function isAbsoluteResourceUrl(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//");
 }
 
 function isAbortError(error: unknown): boolean {
@@ -395,6 +410,51 @@ export const api = {
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {
     const response = await request<ListPendingApprovalsResponse>("/api/approvals/pending");
     return response.approvals;
+  },
+
+  async listApprovalRequests(): Promise<ApprovalRequest[]> {
+    const response = await request<ListApprovalRequestsResponse>("/api/approval-requests");
+    return response.approvalRequests;
+  },
+
+  async listApprovalMessages(): Promise<ListApprovalMessagesResponse["messages"]> {
+    const response = await request<ListApprovalMessagesResponse>("/api/approval-messages");
+    return response.messages;
+  },
+
+  async approveApprovalRequest(approvalRequestId: string, comment?: string, selectedReplyId?: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ comment, selectedReplyId })
+    });
+  },
+
+  async rejectApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    });
+  },
+
+  async replyToApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ message })
+    });
+  },
+
+  async completeApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/complete`, {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    });
+  },
+
+  async terminateApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/terminate`, {
+      method: "POST",
+      body: JSON.stringify({ comment })
+    });
   },
 
   async getRoleDirectory(): Promise<RoleDirectoryResponse> {

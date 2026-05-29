@@ -18,6 +18,7 @@ import {
   type BlueprintEdge,
   type BlueprintNode,
   type BlueprintNodeRun,
+  type ManagerNodeConfig,
   type ManagerSlotNodeConfig
 } from "./blueprint";
 import { isCatalogStale, type CatalogSnapshot } from "./catalog";
@@ -518,6 +519,48 @@ describe("blueprint contracts", () => {
     expect(importedBuild.parentId).toBe(importedSlot.id);
     expect(importedPublish.parentId).toBeUndefined();
     expect(imported.display.viewport?.zoom).toBe(0.85);
+  });
+
+  it("normalizes manager self-iteration preflight agent configuration", () => {
+    const blueprintPackage = readPortableBlueprintPackage({
+      schema: "hiveward.blueprint-package/v1",
+      exportedAt: "2026-05-23T00:00:00.000Z",
+      blueprints: [
+        {
+          id: "manager-preflight-config",
+          name: "Manager preflight config",
+          version: 1,
+          nodes: [
+            {
+              id: "manager",
+              type: "manager",
+              position: { x: 0, y: 0 },
+              config: {
+                label: "Manager",
+                portCount: 1,
+                maxHandoffs: 4,
+                lifecycleMode: "self_iteration",
+                researchAgentNodeId: "research",
+                requirementAgentNodeId: "requirements",
+                maxPreparationAttempts: 99
+              }
+            },
+            createContractNode("research", "agent", "Research", undefined, { x: 0, y: 0 }),
+            createContractNode("requirements", "agent", "Requirements", undefined, { x: 0, y: 0 })
+          ],
+          edges: [],
+          variables: {},
+          display: { viewport: { x: 0, y: 0, zoom: 1 } }
+        }
+      ]
+    });
+
+    const manager = blueprintPackage.blueprints[0]?.nodes.find((node) => node.id === "manager");
+    const config = manager?.config as ManagerNodeConfig;
+
+    expect(config.researchAgentNodeId).toBe("research");
+    expect(config.requirementAgentNodeId).toBe("requirements");
+    expect(config.maxPreparationAttempts).toBe(10);
   });
 
   it("rejects manager-slot left outer output connections to non-manager nodes", () => {

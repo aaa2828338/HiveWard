@@ -10,6 +10,7 @@ import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { AgentSdkTaskRegistry } from "./task-registry";
+import { readAgentSdkRuntimeOptions } from "./types";
 
 describe("agent SDK runtime", () => {
   it("builds a stable prompt envelope without secret values", () => {
@@ -46,6 +47,7 @@ describe("agent SDK runtime", () => {
       required: ["status"],
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"] },
         nextSlot: { type: "integer" },
         reason: { type: "string" }
       }
@@ -53,15 +55,16 @@ describe("agent SDK runtime", () => {
 
     expect(toCodexOutputSchema(schema)).toEqual({
       type: "object",
-      required: ["status", "nextSlot", "reason"],
+      required: ["status", "handoffJson", "nextSlot", "reason"],
       additionalProperties: false,
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"], additionalProperties: false, properties: {}, required: [] },
         nextSlot: { type: ["integer", "null"] },
         reason: { type: ["string", "null"] }
       }
     });
-    expect(validateOutputSchema('{"status":"complete","nextSlot":null,"reason":null}', schema)).toBe(true);
+    expect(validateOutputSchema('{"status":"complete","handoffJson":{},"nextSlot":null,"reason":null}', schema)).toBe(true);
   });
 
   it("maps permission profiles to provider SDK settings", () => {
@@ -70,6 +73,90 @@ describe("agent SDK runtime", () => {
     expect(mapClaudeTools("workspace_write", ["repo.test"])).toContain("Bash(npm test:*)");
     expect(mapCodexSandbox("read_only")).toBe("read-only");
     expect(mapCodexSandbox("workspace_write")).toBe("workspace-write");
+  });
+
+  it("defaults SDK task timeout to one hour", () => {
+    const options = readAgentSdkRuntimeOptions(createWorkspace(), { HIVEWARD_AGENT_SDK_MAX_CONCURRENCY: "2" });
+    expect(options.defaultTimeoutMs).toBe(3_600_000);
+  });
+
+  it("fails Claude tasks that request unsupported network or web search policy changes", async () => {
+    const workspace = createWorkspace();
+    let claudeCalled = false;
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => {
+        claudeCalled = true;
+        return fakeClaudeQuery([])({ prompt: "" });
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "claude",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "read_only",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "claude"
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("does not support requested access policy axes: network, webSearch");
+    expect(claudeCalled).toBe(false);
+  });
+
+  it("maps Codex runtime access policy axes into native thread options", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-policy-thread",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        finalResponse: "policy ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "workspace_write",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(threadOptions).toMatchObject({
+      sandboxMode: "workspace-write",
+      networkAccessEnabled: false,
+      webSearchMode: "live"
+    });
   });
 
   it("starts Claude through the SDK without a platform auth precheck", async () => {

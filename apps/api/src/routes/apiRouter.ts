@@ -67,7 +67,10 @@ import type {
   UpdateHivewardChatSessionRequest,
   SelectBlueprintRunApprovalRequest,
   ChatStreamEvent,
+  ApprovalDecision,
+  ApprovalRequest,
   BlueprintDefinition,
+  BlueprintRun,
   HivewardChatMessage,
   HivewardChatSession,
   StartBlueprintRunRequest,
@@ -77,22 +80,27 @@ import type {
   ClaudeCodeModelConfigResponse,
   ClaudeCodeSavedModelProfile,
   SaveClaudeCodeModelProfileRequest,
-  UpdateClaudeCodeModelConfigRequest
+  UpdateClaudeCodeModelConfigRequest,
+  ApprovalRequestResponse
 } from "@hiveward/shared";
 import { claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { ApprovalService } from "../services/lifecycleApprovalService";
+import { isPathInside } from "../services/artifactService";
+import { ManagerMailProjector } from "../services/managerMailProjector";
 import type { RuntimeAdapter } from "@hiveward/adapter";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 
 interface ApiRouterDeps {
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   worker: BlueprintWorker;
+  artifactRoot?: string;
 }
 
 interface RunModelDefaults {
@@ -130,7 +138,7 @@ type StreamHivewardChatSessionInput = {
   sessionId: string;
   body: SendChatSessionMessageRequest;
   requestStartedAtMs: number;
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   res: Response;
@@ -190,8 +198,11 @@ const hivewardHarnessSkills: Array<{
   }
 ];
 
-export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
+export function createApiRouter({ store, openClawConfigStore, adapter, worker, artifactRoot: configuredArtifactRoot }: ApiRouterDeps): Router {
   const router = Router();
+  const approvalService = new ApprovalService(store);
+  const managerMailProjector = new ManagerMailProjector(store);
+  const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
 
   router.get("/healthz", (_req, res) => {
     res.json({ ok: true });
@@ -199,6 +210,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
 
   router.get("/readyz", (_req, res) => {
     res.json({ ok: true, runtimeDiscovery: "not_on_readiness_path" });
+  });
+
+  router.get(/^\/artifacts\/(.+)$/, (req, res, next) => {
+    const relativePath = (req.params as Record<string, string>)[0] ?? "";
+    const resolved = resolve(artifactRoot, relativePath);
+    if (!isPathInside(resolved, artifactRoot)) {
+      res.status(400).json({ error: { code: "artifact_path_invalid", message: "Artifact path escaped artifact root." } });
+      return;
+    }
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: { code: "artifact_not_found", message: "Artifact not found." } });
+      return;
+    }
+    res.sendFile(resolved, (error) => {
+      if (error) next(error);
+    });
   });
 
   router.get("/api/companies", async (_req, res, next) => {
@@ -628,6 +655,75 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.get("/api/approval-requests", async (_req, res, next) => {
+    try {
+      res.json({ approvalRequests: await store.listApprovalRequests() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-requests/:approvalRequestId", async (req, res, next) => {
+    try {
+      const approvalRequest = await store.getApprovalRequest(readRouteParam(req.params.approvalRequestId, "approvalRequestId"));
+      if (!approvalRequest) {
+        res.status(404).json({ error: { code: "approval_request_not_found", message: "Approval request not found." } });
+        return;
+      }
+      res.json({ approvalRequest });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/approve", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("approve", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/reject", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("reject", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/reply", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("reply", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/complete", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("complete", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/terminate", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("terminate", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-messages", async (_req, res, next) => {
+    try {
+      res.json({ messages: await managerMailProjector.refresh() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/roles", async (_req, res, next) => {
     try {
       res.json(await store.getRoleDirectory());
@@ -656,7 +752,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/delegations", async (req, res, next) => {
     try {
       const body = normalizeCreateLeaderDelegationRequest(req.body);
-      res.status(201).json({ item: await store.createLeaderDelegationRequest(body) });
+      const item = await store.createLeaderDelegationRequest(body);
+      await createInboxApprovalRequest(item, "leader_delegation");
+      res.status(201).json({ item });
     } catch (error) {
       next(error);
     }
@@ -665,7 +763,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/blueprint-proposals", async (req, res, next) => {
     try {
       const body = normalizeCreateBlueprintProposalRequest(req.body);
-      res.status(201).json({ item: await store.createBlueprintProposal(body) });
+      const item = await store.createBlueprintProposal(body);
+      await createInboxApprovalRequest(item, "blueprint_proposal");
+      res.status(201).json({ item });
     } catch (error) {
       next(error);
     }
@@ -675,7 +775,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const body = normalizeApproveInboxItemRequest(req.body);
       const config = await openClawConfigStore.getState();
-      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), buildBlueprintImportDefaults(config), body.comment));
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "approve", "approved", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "approve",
+        comment: body.comment,
+        defaults: buildBlueprintImportDefaults(config),
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item, importedBlueprints: result.importedBlueprints });
     } catch (error) {
       next(error);
     }
@@ -684,7 +800,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/:itemId/reject", async (req, res, next) => {
     try {
       const body = normalizeRejectInboxItemRequest(req.body);
-      res.json({ item: await store.rejectInboxItem(readRouteParam(req.params.itemId, "itemId"), body.comment) });
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reject", "rejected", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reject",
+        comment: body.comment,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -693,7 +824,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/:itemId/reply", async (req, res, next) => {
     try {
       const body = normalizeReplyInboxItemRequest(req.body);
-      res.json({ item: await store.replyToInboxItem(readRouteParam(req.params.itemId, "itemId"), body.message) });
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reply", "pending", body.message) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reply",
+        comment: body.message,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -953,9 +1099,20 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeApproveBlueprintRunRequest(req.body);
-      const updated = await worker.approveRun(blueprint, run, body.nodeRunId, body.comment, body.selectedReplyId);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "approve", {
+        comment: body.comment,
+        selectedReplyId: body.selectedReplyId
+      });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -974,9 +1131,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeRejectBlueprintRunRequest(req.body);
-      const updated = await worker.rejectRun(blueprint, run, body.nodeRunId, body.comment);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reject", { comment: body.comment });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -995,9 +1160,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeReplyBlueprintRunApprovalRequest(req.body);
-      const updated = await worker.replyToApproval(blueprint, run, body.nodeRunId, body.message);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reply", { message: body.message });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -1016,6 +1189,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeSelectBlueprintRunApprovalRequest(req.body);
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
       const updated = await worker.selectApprovalReply(blueprint, run, body.nodeRunId, body.selectedReplyId);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
@@ -1039,6 +1216,116 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       next(error);
     }
   });
+
+  async function applyApprovalRequestRouteAction(
+    action: "approve" | "reject" | "reply" | "complete" | "terminate",
+    approvalRequestId: string,
+    rawBody: unknown
+  ): Promise<ApprovalRequestResponse> {
+    const approvalRequest = await store.getApprovalRequest(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`Approval request not found: ${approvalRequestId}`);
+    }
+    const body = isPlainRecord(rawBody) ? rawBody : {};
+    const run = await store.getBlueprintRun(approvalRequest.runId);
+    if (run) {
+      if (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled") {
+        throw new Error("Run is already finished.");
+      }
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
+        comment: readOptionalString(body.comment),
+        message: readOptionalString(body.message),
+        selectedReplyId: readOptionalString(body.selectedReplyId)
+      });
+      return buildApprovalRequestResponse(approvalRequestId, updated.id);
+    }
+
+    const result = action === "approve"
+      ? await approvalService.approve(approvalRequestId, readOptionalString(body.comment), readOptionalString(body.selectedReplyId))
+      : action === "reject"
+        ? await approvalService.reject(approvalRequestId, readOptionalString(body.comment))
+        : action === "reply"
+          ? await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "")
+          : action === "complete"
+            ? await approvalService.complete(approvalRequestId, readOptionalString(body.comment))
+            : await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+    await managerMailProjector.refresh();
+    return result;
+  }
+
+  async function buildApprovalRequestResponse(approvalRequestId: string, runId?: string): Promise<ApprovalRequestResponse> {
+    const approvalRequest = await store.getApprovalRequest(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`Approval request not found: ${approvalRequestId}`);
+    }
+    const decisions = await store.listApprovalDecisions(approvalRequestId);
+    const nextApprovalRequest = (await store.listApprovalRequests({ runId: approvalRequest.runId }))
+      .find((request) => request.replacesRequestId === approvalRequestId);
+    return {
+      approvalRequest,
+      decision: decisions.at(-1),
+      nextApprovalRequest,
+      run: runId ? await store.getRunView(runId) : undefined
+    };
+  }
+
+  async function findPendingRunApprovalRequest(runId: string, nodeRunId?: string): Promise<{ id: string } | undefined> {
+    const requests = await store.listApprovalRequests({ runId, status: "pending" });
+    return requests.find((request) => !nodeRunId || request.nodeRunId === nodeRunId || request.id === nodeRunId);
+  }
+
+  function isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
+    return status === "succeeded" || status === "failed" || status === "cancelled";
+  }
+
+  async function createInboxApprovalRequest(item: InboxItem, kind: "leader_delegation" | "blueprint_proposal"): Promise<void> {
+    const existing = await findPendingInboxApprovalRequest(item.id);
+    if (existing) return;
+    await approvalService.createRequest({
+      runId: item.id,
+      kind,
+      title: item.title,
+      body: item.summary,
+      payloadRef: item.id,
+      sourceRef: { type: "inbox_item", id: item.id },
+      requestedBy: {
+        type: "role",
+        label: item.createdByRoleId,
+        roleId: item.createdByRoleId
+      }
+    });
+    await managerMailProjector.refresh();
+  }
+
+  async function findPendingInboxApprovalRequest(itemId: string): Promise<ApprovalRequest | undefined> {
+    const requests = await store.listApprovalRequests({ status: "pending" });
+    return requests.find((request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === itemId);
+  }
+
+  function buildApprovalDecision(
+    request: ApprovalRequest,
+    action: ApprovalDecision["action"],
+    resultingStatus: ApprovalDecision["resultingStatus"],
+    comment?: string,
+    selectedReplyId?: string
+  ): ApprovalDecision {
+    return {
+      id: `decision-${nanoid(10)}`,
+      approvalRequestId: request.id,
+      action,
+      actor: "user",
+      comment: comment?.trim() || undefined,
+      selectedReplyId,
+      resultingStatus,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  function sendConflict(res: Response, code: string, message: string): void {
+    res.status(409).json({ error: { code, message } });
+  }
 
   return router;
 }
@@ -1362,7 +1649,7 @@ function normalizeChatAttachments(value: unknown): ChatAttachment[] {
   });
 }
 
-async function buildChatRoleSkillPrompt(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
+async function buildChatRoleSkillPrompt(store: HivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
   if (!scope) return undefined;
   try {
     const { roles } = await store.getRoleDirectory();
@@ -1533,7 +1820,7 @@ async function streamHivewardChatSession({
         thinking: requestBody.thinkingEffort,
         permissionMode: requestBody.permissionMode,
         idempotencyKey: userMessage.id,
-        timeoutMs: 600_000,
+        timeoutMs: 3_600_000,
         skillIds: chatSkillIdsForRequest(resolvedRoleScope, requestBody.mode)
       },
       (event) => {
@@ -1668,7 +1955,7 @@ function buildChatPrompt(
 }
 
 async function buildSelectedBlueprintDraftingContext(
-  store: FileHivewardStore,
+  store: HivewardStore,
   roleScope: ChatRoleScope | undefined
 ): Promise<string | undefined> {
   if (!roleScope?.blueprintId) return undefined;
@@ -1705,7 +1992,7 @@ async function buildSelectedBlueprintDraftingContext(
 }
 
 async function syncChatHistoryInboxSubmissions(
-  store: FileHivewardStore,
+  store: HivewardStore,
   messages: ChatHistoryMessage[]
 ): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
   let knownInboxItems: InboxItem[] | undefined;
@@ -1819,7 +2106,7 @@ function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefine
 }
 
 async function materializeChatInboxSubmission(
-  store: FileHivewardStore,
+  store: HivewardStore,
   chatRequest: ResolvedChatSessionMessage,
   output: string,
   block = extractChatInboxSubmissionBlock(output)
@@ -3206,10 +3493,17 @@ function buildCliHarnessStatus({
 
 function detectCliVersion(command: string): { installed: boolean; version?: string; error?: string } {
   try {
-    const result = spawnSync(command, ["--version"], {
-      encoding: "utf8",
-      timeout: 2_000
-    });
+    const result = process.platform === "win32"
+      ? spawnSync(`${command} --version`, {
+          encoding: "utf8",
+          shell: true,
+          timeout: 2_000,
+          windowsHide: true
+        })
+      : spawnSync(command, ["--version"], {
+          encoding: "utf8",
+          timeout: 2_000
+        });
     if (result.error) {
       return { installed: false, error: result.error.message };
     }
@@ -3707,7 +4001,7 @@ const maxChatMessageChars = 40_000;
 const maxChatAttachments = 6;
 const maxChatAttachmentTextChars = 24_000;
 
-async function refreshCatalog(adapter: RuntimeAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
+async function refreshCatalog(adapter: RuntimeAdapter, store: HivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
     id: `catalog-${nanoid(8)}`,

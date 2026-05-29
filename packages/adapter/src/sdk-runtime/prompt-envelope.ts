@@ -12,7 +12,7 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
         "Output schema JSON:",
         stableStringify(input.outputSchema),
         "",
-        "Return JSON that matches the supplied schema."
+        "Return JSON that matches the supplied schema. If the schema contains humanReportMd, that Markdown report is the human-facing output and must include delivery locations."
       ].join("\n")
     : "";
 
@@ -31,7 +31,7 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
     stableStringify(redactSecrets(input.input)),
     schemaText,
     "",
-    "Return only the node result."
+    "Return only the node result JSON."
   ].join("\n");
 }
 
@@ -88,9 +88,11 @@ function strictJsonObjectSchema(schema: Record<string, unknown>): Record<string,
   const normalized = Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, strictJsonSchemaValue(value)]));
   const type = normalized.type;
   const properties = isRecord(normalized.properties) ? normalized.properties : undefined;
-  if (type === "object" || properties) {
+  if (readSchemaTypes(type).includes("object") || properties) {
+    const schemaProperties = properties ?? {};
     normalized.additionalProperties = false;
-    normalized.required = properties ? Object.keys(properties) : [];
+    normalized.properties = schemaProperties;
+    normalized.required = Object.keys(schemaProperties);
     const originalRequired = new Set(readRequiredKeys(schema.required));
     if (properties) {
       normalized.properties = Object.fromEntries(

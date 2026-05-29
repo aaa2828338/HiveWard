@@ -8,3 +8,4 @@ export * from "./company";
 export * from "./roles";
 export * from "./inboxSubmission";
 export * from "./roleSkills";
+export * from "./lifecycle";

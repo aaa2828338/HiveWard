@@ -1,0 +1,410 @@
+import type { BlueprintNodeType } from "./blueprint";
+
+export type ManagerLifecycleMode = "none" | "self_iteration";
+export type ManagerDispatchMode = "sequential" | "self_dispatch";
+
+export interface ManagerModeConfig {
+  lifecycleMode: ManagerLifecycleMode;
+  dispatchMode: ManagerDispatchMode;
+}
+
+export interface RuntimeAccessPolicy {
+  filesystem: "read_only" | "workspace_write";
+  network: "disabled" | "enabled";
+  webSearch: "disabled" | "live";
+}
+
+export type RuntimeAccessPolicyRuntime = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
+export type RuntimeAccessPolicyAxisSupport = "enforced" | "delegated" | "unsupported";
+
+export interface RuntimeAccessPolicySupport {
+  filesystem: RuntimeAccessPolicyAxisSupport;
+  network: RuntimeAccessPolicyAxisSupport;
+  webSearch: RuntimeAccessPolicyAxisSupport;
+}
+
+export const runtimeAccessPolicySupportByRuntime = Object.freeze({
+  codex: {
+    filesystem: "enforced",
+    network: "enforced",
+    webSearch: "enforced"
+  },
+  claude: {
+    filesystem: "enforced",
+    network: "unsupported",
+    webSearch: "unsupported"
+  },
+  openclaw: {
+    filesystem: "delegated",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  google: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  cursor: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  opencode: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  },
+  hermes: {
+    filesystem: "enforced",
+    network: "delegated",
+    webSearch: "delegated"
+  }
+} satisfies Record<RuntimeAccessPolicyRuntime, RuntimeAccessPolicySupport>);
+
+export interface ApprovalCapabilities {
+  approve: boolean;
+  reject: boolean;
+  reply: boolean;
+  complete: boolean;
+  terminate: boolean;
+}
+
+export type ApprovalRequestKind =
+  | "iteration_requirement_plan"
+  | "manager_release_report"
+  | "agent_proposal"
+  | "blueprint_proposal"
+  | "leader_delegation"
+  | "run_request"
+  | "company_config"
+  | "generic_message";
+
+export type ApprovalRequestStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "replied"
+  | "completed"
+  | "terminated"
+  | "superseded";
+
+export interface ApprovalRequest {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId?: string;
+  kind: ApprovalRequestKind;
+  status: ApprovalRequestStatus;
+  title: string;
+  body: string;
+  payloadRef?: string;
+  sourceRef?: {
+    type: "blueprint_run" | "node_run" | "inbox_item" | "system";
+    id: string;
+  };
+  threadId?: string;
+  revision: number;
+  replacesRequestId?: string;
+  supersededByRequestId?: string;
+  capabilities: ApprovalCapabilities;
+  requestedBy: {
+    type: "node" | "role" | "system";
+    label: string;
+    nodeId?: string;
+    roleId?: string;
+  };
+  requestedAt: string;
+  updatedAt?: string;
+}
+
+export type ApprovalDecisionAction =
+  | "approve"
+  | "reject"
+  | "reply"
+  | "complete"
+  | "terminate"
+  | "auto_approve"
+  | "supersede";
+
+export interface ApprovalDecision {
+  id: string;
+  approvalRequestId: string;
+  action: ApprovalDecisionAction;
+  actor: "user" | "system" | "manager";
+  comment?: string;
+  selectedReplyId?: string;
+  resultingStatus: ApprovalRequestStatus;
+  createdAt: string;
+}
+
+export interface IterationSession {
+  id: string;
+  runId: string;
+  topManagerNodeId: string;
+  blueprintSnapshotId: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  maxRounds: number;
+  currentRoundId?: string;
+  createdAt: string;
+  endedAt?: string;
+}
+
+export interface IterationRound {
+  id: string;
+  sessionId: string;
+  runId: string;
+  roundNumber: number;
+  status:
+    | "requirement_pending"
+    | "requirement_approved"
+    | "executing"
+    | "artifact_published"
+    | "report_pending"
+    | "report_approved"
+    | "completed"
+    | "failed"
+    | "cancelled";
+  requirementRequestId?: string;
+  approvedRequirementRequestId?: string;
+  approvedRequirementRevision?: number;
+  releaseReportRequestId?: string;
+  artifactIds: string[];
+  researchStatus?: "not_required" | "user_provided" | "context_sufficient" | "agent_generated" | "manager_fallback" | "assumption_based" | "blocked";
+  researchSummary?: string;
+  researchArtifactIds?: string[];
+  planSource?: "user_provided" | "agent_generated" | "manager_fallback" | "revised_from_reply";
+  contextSnapshotId?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+
+export interface ManagerContextSnapshot {
+  id: string;
+  runId: string;
+  sessionId: string;
+  roundId: string;
+  version: number;
+  sourceReportId?: string;
+  completedItems: string[];
+  rejectedOptions: string[];
+  keyDecisions: string[];
+  validatedFacts: string[];
+  openQuestions: string[];
+  activeRisks: string[];
+  assumptions: string[];
+  artifactRefs: Array<{
+    artifactId: string;
+    title: string;
+    current: boolean;
+  }>;
+  recommendedNextStep: "research" | "plan" | "execute" | "complete";
+  summary: string;
+  freeform?: string;
+  createdAt: string;
+}
+
+export interface ManagerMail {
+  id: string;
+  sourceType: "approval_request" | "artifact" | "system";
+  sourceId: string;
+  kind: string;
+  status: string;
+  title: string;
+  body: string;
+  capabilities: ApprovalCapabilities;
+  relatedRunId?: string;
+  relatedRoundId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Artifact {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId?: string;
+  slot?: string;
+  title?: string;
+  kind: "html" | "markdown" | "json" | "file" | "link";
+  format?: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl?: string;
+  previewPolicy: "none" | "source" | "sandboxed_iframe";
+  trusted: boolean;
+  status?: "current" | "rejected" | "superseded";
+  bytes?: number;
+  sha256?: string;
+  createdAt: string;
+}
+
+export interface ReleaseReport {
+  id: string;
+  runId: string;
+  roundId: string;
+  approvalRequestId: string;
+  version: number;
+  title: string;
+  summary: string;
+  artifactRefs: Array<{
+    artifactId: string;
+    title: string;
+    location: string;
+    current: boolean;
+  }>;
+  supersedesReportId?: string;
+  createdAt: string;
+}
+
+export interface AgentHumanReport {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId: string;
+  nodeId: string;
+  nodeLabel: string;
+  title: string;
+  bodyMd: string;
+  source: "agent" | "fallback";
+  fallbackReason?: string;
+  createdAt: string;
+}
+
+export interface AgentHandoff {
+  id: string;
+  runId: string;
+  roundId?: string;
+  nodeRunId: string;
+  nodeId: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface AgentArtifactPayload {
+  id?: string;
+  slot?: string;
+  title?: string;
+  kind: Artifact["kind"];
+  format?: string;
+  previewPolicy?: Artifact["previewPolicy"];
+  trusted?: boolean;
+  content?: unknown;
+  body?: unknown;
+  path?: string;
+  url?: string;
+}
+
+export interface AgentOutputEnvelope {
+  contractVersion?: 2;
+  humanReportMd?: string;
+  handoffJson?: unknown;
+  result?: unknown;
+  artifacts?: AgentArtifactPayload[];
+}
+
+export interface RunTimelineItem {
+  id: string;
+  runId: string;
+  sequence: number;
+  createdAt: string;
+  actorNodeId?: string;
+  actorLabel: string;
+  kind:
+    | "round_started"
+    | "requirement_published"
+    | "approval_created"
+    | "decision_created"
+    | "node_started"
+    | "node_output"
+    | "artifact_published"
+    | "release_report_published"
+    | "round_completed"
+    | "round_failed"
+    | "round_cancelled"
+    | "run_completed"
+    | "run_failed"
+    | "run_cancelled";
+  title: string;
+  body?: string;
+  payloadRef?: string;
+}
+
+export const emptyApprovalCapabilities = Object.freeze({
+  approve: false,
+  reject: false,
+  reply: false,
+  complete: false,
+  terminate: false
+}) satisfies ApprovalCapabilities;
+
+export function resolveApprovalCapabilities(
+  kind: ApprovalRequestKind,
+  status: ApprovalRequestStatus = "pending",
+  options: { finalRound?: boolean } = {}
+): ApprovalCapabilities {
+  if (status !== "pending") return { ...emptyApprovalCapabilities };
+
+  switch (kind) {
+    case "iteration_requirement_plan":
+    case "agent_proposal":
+    case "blueprint_proposal":
+    case "leader_delegation":
+    case "company_config":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false };
+    case "manager_release_report":
+      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false };
+    case "run_request":
+    case "generic_message":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: true };
+  }
+}
+
+export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: ApprovalDecisionAction): boolean {
+  if (action === "auto_approve") return capabilities.approve;
+  if (action === "supersede") return true;
+  if (action === "approve") return capabilities.approve;
+  if (action === "reject") return capabilities.reject;
+  if (action === "reply") return capabilities.reply;
+  if (action === "complete") return capabilities.complete;
+  if (action === "terminate") return capabilities.terminate;
+  return false;
+}
+
+export function normalizeRuntimeAccessPolicy(
+  value: Partial<RuntimeAccessPolicy> | undefined,
+  legacyPermissionProfile?: unknown
+): RuntimeAccessPolicy {
+  const filesystem = value?.filesystem === "workspace_write" || legacyPermissionProfile === "workspace_write"
+    ? "workspace_write"
+    : "read_only";
+  const network = value?.network === "disabled" || value?.network === "enabled" ? value.network : "enabled";
+  const webSearch = value?.webSearch === "disabled" || value?.webSearch === "live" ? value.webSearch : "disabled";
+  return { filesystem, network, webSearch };
+}
+
+export function runtimeAccessPolicySupportForRuntime(runtime: RuntimeAccessPolicyRuntime): RuntimeAccessPolicySupport {
+  return runtimeAccessPolicySupportByRuntime[runtime];
+}
+
+export function unsupportedRuntimeAccessPolicyChanges(
+  runtime: RuntimeAccessPolicyRuntime,
+  policy: RuntimeAccessPolicy
+): string[] {
+  const support = runtimeAccessPolicySupportForRuntime(runtime);
+  const defaults: RuntimeAccessPolicy = {
+    filesystem: "read_only",
+    network: "enabled",
+    webSearch: "disabled"
+  };
+  return (["filesystem", "network", "webSearch"] as const).filter((axis) =>
+    support[axis] === "unsupported" && policy[axis] !== defaults[axis]
+  );
+}
+
+export function runtimeAccessPolicyToPermissionProfile(policy: RuntimeAccessPolicy): "read_only" | "workspace_write" {
+  return policy.filesystem;
+}
+
+export function lifecycleKindForNodeType(type: BlueprintNodeType): ApprovalRequestKind {
+  return type === "agent" ? "agent_proposal" : "generic_message";
+}

@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
 import type {
   AgentNodeConfig,
   BlueprintDefinition,
+  BlueprintNodeRun,
   BlueprintRun,
   ChatHistoryMessage,
   ChatStreamEvent,
@@ -22,10 +23,12 @@ import type {
   OpenClawVersionInfo,
   RuntimeOverview,
   StartAgentTaskInput,
-  WorkspaceDashboard
+  WorkspaceDashboard,
+  ApprovalRequest
 } from "@hiveward/shared";
-import { hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { hivewardInboxSubmissionSchema, resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
+import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
@@ -541,30 +544,22 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes blueprint approval approve, reject, and reply actions to the worker", async () => {
+  it("routes legacy blueprint approval actions through pending approval requests", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
+    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
     const worker = {
-      async approveRun(
+      async applyApprovalRequest(
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
-        nodeRunId?: string,
-        comment?: string,
-        selectedReplyId?: string
+        approvalRequestId: string,
+        action: "approve" | "reject" | "reply",
+        input?: { comment?: string; message?: string; selectedReplyId?: string }
       ) {
-        calls.push({ action: "approve", nodeRunId, comment, selectedReplyId });
-        return { ...run, status: "running" as const };
-      },
-      async rejectRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
-        calls.push({ action: "reject", nodeRunId, comment });
-        return { ...run, status: "running" as const };
-      },
-      async replyToApproval(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, message: string) {
-        calls.push({ action: "reply", nodeRunId, message });
+        calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message, selectedReplyId: input?.selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       },
       async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, selectedReplyId: string) {
-        calls.push({ action: "select", nodeRunId, selectedReplyId });
+        calls.push({ action: "select", approvalRequestId: nodeRunId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -572,6 +567,9 @@ describe("apiRouter", () => {
     try {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      const approval1 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+      const approval2 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-2");
+      const approval3 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-3");
 
       await withApiServer(fixture.store, async (baseUrl) => {
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
@@ -597,11 +595,179 @@ describe("apiRouter", () => {
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" },
-        { action: "reject", nodeRunId: "node-run-2", comment: "Needs work." },
-        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." },
-        { action: "select", nodeRunId: "node-run-4", selectedReplyId: "reply-4" }
+        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: "reply-1" },
+        { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
+        { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
+        { action: "select", approvalRequestId: "node-run-4", selectedReplyId: "reply-4" }
       ]);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 409 for repeated approval and inbox decisions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "external-approval");
+      const roles = await fixture.store.getRoleDirectory();
+      const item = await fixture.store.createLeaderDelegationRequest({
+        leaderId: roles.roles.leaders[0]!.id,
+        title: "Delegate to leader"
+      });
+      await seedInboxApprovalRequest(fixture.store, item.id);
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Approved once." })
+        }));
+        const secondApproval = await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Duplicate click." })
+        });
+        const secondApprovalBody = await secondApproval.json() as { error?: { code?: string } };
+        expect(secondApproval.status, JSON.stringify(secondApprovalBody)).toBe(409);
+        expect(secondApprovalBody.error?.code).toBe("approval_conflict");
+        expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
+
+        await readOkJson(await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" }));
+        const secondInbox = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
+        const secondInboxBody = await secondInbox.json() as { error?: { code?: string } };
+        expect(secondInbox.status).toBe(409);
+        expect(secondInboxBody.error?.code).toBe("inbox_decision_conflict");
+        const inboxRequest = (await fixture.store.listApprovalRequests({ runId: item.id }))[0]!;
+        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published HTML artifact download URLs from the configured store data directory", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const [artifact] = await service.publishFromNodeRun({
+        runId: "run-artifact-route",
+        roundId: "round-artifact-route",
+        nodeRun: {
+          id: "node-run-artifact-route",
+          blueprintRunId: "run-artifact-route",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "html-builder",
+          nodeLabel: "HTML Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- HTML preview declared in artifacts[].",
+            artifacts: [{
+              title: "HTML Builder",
+              kind: "html",
+              content: "<!doctype html><html><body>artifact route ok</body></html>"
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      if (!artifact?.downloadUrl) throw new Error("Expected published HTML artifact with a downloadUrl.");
+
+      expect(artifact).toMatchObject({
+        kind: "html",
+        trusted: false,
+        previewPolicy: "sandboxed_iframe"
+      });
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}${artifact.downloadUrl}`);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("artifact route ok");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published markdown and JSON artifact download URLs", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const markdownArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-md",
+        roundId: "round-artifact-route-md",
+        nodeRun: {
+          id: "node-run-artifact-route-md",
+          blueprintRunId: "run-artifact-route-md",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "markdown-builder",
+          nodeLabel: "Markdown Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- Markdown declared in artifacts[].",
+            artifacts: [{
+              title: "Markdown Builder",
+              kind: "markdown",
+              content: "# Artifact route markdown"
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      const jsonArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-json",
+        roundId: "round-artifact-route-json",
+        nodeRun: {
+          id: "node-run-artifact-route-json",
+          blueprintRunId: "run-artifact-route-json",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "json-builder",
+          nodeLabel: "JSON Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- JSON declared in artifacts[].",
+            artifacts: [{
+              title: "JSON Builder",
+              kind: "json",
+              content: { ok: true, message: "artifact route json" }
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      const markdown = markdownArtifacts[0];
+      const json = jsonArtifacts[0];
+      if (!markdown?.downloadUrl || !json?.downloadUrl) throw new Error("Expected markdown and JSON artifacts with download URLs.");
+
+      expect(markdown).toMatchObject({
+        kind: "markdown",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".md")
+      });
+      expect(json).toMatchObject({
+        kind: "json",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".json")
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const markdownResponse = await fetch(`${baseUrl}${markdown.downloadUrl}`);
+        expect(markdownResponse.status).toBe(200);
+        expect(await markdownResponse.text()).toContain("Artifact route markdown");
+
+        const jsonResponse = await fetch(`${baseUrl}${json.downloadUrl}`);
+        expect(jsonResponse.status).toBe(200);
+        expect(await jsonResponse.json()).toMatchObject({ ok: true, message: "artifact route json" });
+      });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -849,7 +1015,7 @@ describe("apiRouter", () => {
     writeFakeExecutable(join(binDir, "cursor-agent"), "cursor-agent 2026.1.0");
     writeFakeExecutable(join(binDir, "opencode"), "opencode 1.2.3");
     writeFakeExecutable(join(binDir, "hermes"), "hermes 0.9.0");
-    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
     process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL = "gemini-2.5-pro";
     process.env.HIVEWARD_GOOGLE_CLI_MODELS = "gemini-2.5-pro,gemini-2.5-flash";
     process.env.HIVEWARD_CURSOR_DEFAULT_MODEL = "gpt-5";
@@ -3016,6 +3182,80 @@ async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardS
   return { dir, store };
 }
 
+async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, nodeRunId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${nodeRunId}`,
+    runId,
+    nodeRunId,
+    kind: "agent_proposal",
+    status: "pending",
+    title: `${nodeRunId} approval`,
+    body: "Review output",
+    sourceRef: { type: "node_run", id: nodeRunId },
+    threadId: `thread-${nodeRunId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("agent_proposal", "pending"),
+    requestedBy: {
+      type: "node",
+      label: nodeRunId,
+      nodeId: nodeRunId
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
+async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id,
+    runId: id,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Standalone approval",
+    body: "Approve the standalone request.",
+    sourceRef: { type: "inbox_item", id },
+    threadId: `thread-${id}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
+async function seedInboxApprovalRequest(store: FileHivewardStore, itemId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${itemId}`,
+    runId: itemId,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Inbox approval",
+    body: "Approve the inbox item.",
+    payloadRef: itemId,
+    sourceRef: { type: "inbox_item", id: itemId },
+    threadId: `thread-${itemId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
 async function withApiServer(
   store: FileHivewardStore,
   work: (baseUrl: string) => Promise<void>,
@@ -3031,6 +3271,18 @@ async function withApiServer(
     adapter,
     worker
   }));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error &&
+      typeof (error as { statusCode?: unknown }).statusCode === "number"
+      ? (error as { statusCode: number }).statusCode
+      : 500;
+    const code = typeof error === "object" && error !== null && "code" in error &&
+      typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "internal_error";
+    const message = error instanceof Error ? error.message : "Unexpected API failure.";
+    res.status(statusCode).json({ error: { code, message } });
+  });
 
   const server = app.listen(0);
   try {
@@ -3149,6 +3401,10 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 function writeFakeExecutable(path: string, output: string): void {
+  if (process.platform === "win32") {
+    writeFileSync(`${path}.cmd`, `@echo off\r\necho ${output}\r\n`, "utf8");
+    return;
+  }
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, "utf8");
   chmodSync(path, 0o755);
 }

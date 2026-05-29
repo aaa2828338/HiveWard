@@ -62,6 +62,8 @@ import {
   isManagerSlotForwardOutHandle,
   isManagerSlotInnerInHandle,
   isManagerSlotInnerOutHandle,
+  normalizeRuntimeAccessPolicy,
+  runtimeAccessPolicySupportByRuntime,
   resolveManagerSlotExecutionMode,
   resolveManagerSlotParallelLaneCount,
   type AgentRuntimeId
@@ -92,7 +94,8 @@ import type {
   BlueprintNodeRun,
   BlueprintNodeType,
   BlueprintRunSummary,
-  BlueprintRunView
+  BlueprintRunView,
+  RuntimeAccessPolicy
 } from "@hiveward/shared";
 import {
   MANAGER_SLOT_DEFAULT_SIZE,
@@ -1716,6 +1719,7 @@ export function BlueprintStudioPage({
             harnessStatuses={harnessStatuses}
             harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
+            allNodes={blueprint.nodes}
             node={inspectedNode}
             t={t}
             onClose={() => {
@@ -1969,6 +1973,7 @@ function NodeDetailSidebar({
   harnessStatuses,
   harnessPermissionModes,
   harnessSkillStatuses,
+  allNodes,
   node,
   t,
   onClose,
@@ -1980,6 +1985,7 @@ function NodeDetailSidebar({
   harnessStatuses?: HarnessStatus[];
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  allNodes: BlueprintNode[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -2009,6 +2015,7 @@ function NodeDetailSidebar({
             harnessStatuses={harnessStatuses}
             harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
+            allNodes={allNodes}
             models={models}
             channels={channels}
             onPatchNode={onPatchNode}
@@ -2179,6 +2186,106 @@ function BlueprintSelect({
   );
 }
 
+function RuntimeAccessPolicyFields({
+  runtimeId,
+  config,
+  t,
+  onPatchConfig
+}: {
+  runtimeId: AgentRuntimeId;
+  config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">;
+  t: Messages;
+  onPatchConfig: (patch: Partial<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig>) => void;
+}) {
+  const policy = normalizePolicyForRuntime(config, runtimeId);
+  const accessMode = resolveRuntimeAccessMode(policy, runtimeId);
+  const patchAccessMode = (mode: RuntimeAccessMode) => {
+    const nextPolicy = normalizePolicyForRuntime(
+      {
+        ...config,
+        permissionProfile: mode === "full" ? "workspace_write" : "read_only",
+        runtimeAccessPolicy: runtimeAccessPolicyForMode(mode, runtimeId)
+      },
+      runtimeId
+    );
+    onPatchConfig({
+      runtimeAccessPolicy: nextPolicy,
+      permissionProfile: nextPolicy.filesystem
+    });
+  };
+
+  return (
+    <label>
+      <span>{t.fields.accessMode}</span>
+      <BlueprintSelect
+        value={accessMode}
+        options={[
+          { value: "safe", label: t.fields.safeMode },
+          { value: "full", label: t.fields.fullAccessMode }
+        ]}
+        ariaLabel={t.fields.accessMode}
+        onChange={(value) => patchAccessMode(value as RuntimeAccessMode)}
+      />
+    </label>
+  );
+}
+
+function normalizePolicyForRuntime(
+  config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">,
+  runtimeId: AgentRuntimeId
+): RuntimeAccessPolicy {
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  const defaultPolicy = runtimeAccessPolicyForMode(
+    config.permissionProfile === "workspace_write" ? "full" : "safe",
+    runtimeId
+  );
+  const policy = normalizeRuntimeAccessPolicy(
+    { ...defaultPolicy, ...config.runtimeAccessPolicy },
+    config.permissionProfile
+  );
+  return {
+    filesystem: policy.filesystem,
+    network: support.network === "unsupported" ? "enabled" : policy.network,
+    webSearch: support.webSearch === "unsupported" ? "disabled" : policy.webSearch
+  };
+}
+
+function runtimeAccessPolicyForMode(mode: RuntimeAccessMode, runtimeId: AgentRuntimeId): RuntimeAccessPolicy {
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  if (mode === "full") {
+    return {
+      filesystem: "workspace_write",
+      network: "enabled",
+      webSearch: support.webSearch === "unsupported" ? "disabled" : "live"
+    };
+  }
+  return {
+    filesystem: "read_only",
+    network: support.network === "unsupported" ? "enabled" : "disabled",
+    webSearch: "disabled"
+  };
+}
+
+function resolveRuntimeAccessMode(policy: RuntimeAccessPolicy, runtimeId: AgentRuntimeId): RuntimeAccessMode {
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  const hasElevatedAccess = policy.filesystem === "workspace_write" ||
+    (support.network !== "unsupported" && policy.network === "enabled") ||
+    (support.webSearch !== "unsupported" && policy.webSearch === "live");
+  return hasElevatedAccess ? "full" : "safe";
+}
+
+function resolveManagerPanelMode(config: ManagerNodeConfig): ManagerPanelMode {
+  if (config.lifecycleMode === "self_iteration") return "self_iteration";
+  if (config.dispatchMode === "self_dispatch") return "self_dispatch";
+  return "sequential";
+}
+
+function managerModePatch(mode: ManagerPanelMode): Partial<ManagerNodeConfig> {
+  if (mode === "self_iteration") return { lifecycleMode: "self_iteration", dispatchMode: "self_dispatch" };
+  if (mode === "self_dispatch") return { lifecycleMode: "none", dispatchMode: "self_dispatch" };
+  return { lifecycleMode: "none", dispatchMode: "sequential" };
+}
+
 function BatchAgentSettingsModal({
   nodes,
   models,
@@ -2283,6 +2390,7 @@ function NodeConfigForm({
   harnessStatuses,
   harnessPermissionModes,
   harnessSkillStatuses,
+  allNodes,
   models,
   channels,
   onPatchNode,
@@ -2294,6 +2402,7 @@ function NodeConfigForm({
   harnessStatuses?: HarnessStatus[];
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
+  allNodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
@@ -2365,6 +2474,12 @@ function NodeConfigForm({
               />
             )}
           </label>
+          <RuntimeAccessPolicyFields
+            runtimeId={runtimeId}
+            config={config}
+            t={t}
+            onPatchConfig={onPatchConfig}
+          />
           <label className="field-span-full">
             <span>{t.fields.systemPrompt}</span>
             <textarea
@@ -2491,6 +2606,12 @@ function NodeConfigForm({
     const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const agentOptions = configuredAgents ?? [];
+    const preflightAgentOptions: BlueprintSelectOption[] = [
+      { value: "", label: "Manager fallback" },
+      ...allNodes
+        .filter((candidate) => candidate.type === "agent")
+        .map((candidate) => ({ value: candidate.id, label: candidate.config.label }))
+    ];
     const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
     const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
       selectedModel: config.modelId,
@@ -2498,6 +2619,12 @@ function NodeConfigForm({
       defaultLabel: t.common.defaultOption,
       defaultBadgeLabel: t.common.defaultOption
     });
+    const managerMode = resolveManagerPanelMode(config);
+    const managerModeOptions: BlueprintSelectOption[] = [
+      { value: "sequential", label: t.fields.sequentialDispatch },
+      { value: "self_dispatch", label: t.fields.selfDispatch },
+      { value: "self_iteration", label: t.fields.selfIteration }
+    ];
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
@@ -2530,6 +2657,44 @@ function NodeConfigForm({
             />
           )}
         </label>
+        <label>
+          <span>{t.fields.managerMode}</span>
+          <BlueprintSelect
+            value={managerMode}
+            options={managerModeOptions}
+            ariaLabel={t.fields.managerMode}
+            onChange={(value) => onPatchConfig(managerModePatch(value as ManagerPanelMode))}
+          />
+        </label>
+        <RuntimeAccessPolicyFields
+          runtimeId={runtimeId}
+          config={config}
+          t={t}
+          onPatchConfig={onPatchConfig}
+        />
+        <label>
+          <span>{t.fields.researchAgent}</span>
+          <BlueprintSelect
+            value={config.researchAgentNodeId ?? ""}
+            options={preflightAgentOptions}
+            ariaLabel={t.fields.researchAgent}
+            onChange={(value) => onPatchConfig({ researchAgentNodeId: value || undefined })}
+          />
+        </label>
+        <label>
+          <span>{t.fields.requirementAgent}</span>
+          <BlueprintSelect
+            value={config.requirementAgentNodeId ?? ""}
+            options={preflightAgentOptions}
+            ariaLabel={t.fields.requirementAgent}
+            onChange={(value) => onPatchConfig({ requirementAgentNodeId: value || undefined })}
+          />
+        </label>
+        {(!config.researchAgentNodeId || !config.requirementAgentNodeId) && (
+          <div className="empty-state compact-empty-state field-span-full">
+            Specialized research and round-plan agents are optional. When either is empty, the manager handles preflight fallback and automatic runs continue.
+          </div>
+        )}
         <AgentSkillField
           className="field-span-full"
           selectedSkills={config.skillIds ?? []}
@@ -2555,6 +2720,16 @@ function NodeConfigForm({
             max={50}
             fallback={12}
             onValueChange={(maxHandoffs) => onPatchConfig({ maxHandoffs })}
+          />
+        </label>
+        <label>
+          <span>{t.fields.maxPreparationAttempts}</span>
+          <BoundedNumberInput
+            value={config.maxPreparationAttempts ?? 3}
+            min={1}
+            max={10}
+            fallback={3}
+            onValueChange={(maxPreparationAttempts) => onPatchConfig({ maxPreparationAttempts })}
           />
         </label>
         <label className="field-span-full">
@@ -2859,6 +3034,9 @@ type BlueprintRuntimeModelOption = {
   isDefault?: boolean;
 };
 
+type RuntimeAccessMode = "safe" | "full";
+type ManagerPanelMode = "sequential" | "self_dispatch" | "self_iteration";
+
 type BlueprintSkillOption = {
   id: string;
   label: string;
@@ -2877,15 +3055,19 @@ function buildRuntimeConfigPatch(
   if (runtimeId === "openclaw") {
     return {
       ...patch,
-      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main"
+      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main",
+      runtimeAccessPolicy: normalizePolicyForRuntime(config, runtimeId),
+      permissionProfile: normalizePolicyForRuntime(config, runtimeId).filesystem
     };
   }
+  const runtimeAccessPolicy = normalizePolicyForRuntime(config, runtimeId);
   return {
     ...patch,
     openclawAgentId: undefined,
     send: undefined,
+    runtimeAccessPolicy,
     permissionProfile: resolveRuntimePermissionProfile(runtimeId, harnessPermissionModes, config.permissionProfile ?? "read_only"),
-    timeoutMs: config.timeoutMs ?? 600000
+    timeoutMs: config.timeoutMs ?? 3600000
   };
 }
 
@@ -3977,7 +4159,7 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       agentName: t.defaults.agentName,
       prompt: t.defaults.agentPrompt,
       permissionProfile: "read_only",
-      timeoutMs: 600000,
+      timeoutMs: 3600000,
       tools: []
     };
   }
@@ -3999,11 +4181,12 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       label: t.defaults.managerLabel,
       portCount: 3,
       maxHandoffs: 12,
+      maxPreparationAttempts: 3,
       instructions: t.defaults.managerInstructions,
       openclawAgentId: "main",
       agentName: "manager",
       permissionProfile: "read_only",
-      timeoutMs: 600000,
+      timeoutMs: 3600000,
       tools: []
     };
   }

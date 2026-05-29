@@ -1,6 +1,9 @@
 export type AgentSdkProvider = "claude" | "codex" | "google" | "cursor" | "opencode" | "hermes";
 export type AgentPermissionProfile = "read_only" | "workspace_write";
 export type OpenClawObjectSource = "openclaw" | AgentSdkProvider;
+export type RuntimeFilesystemPolicy = "read_only" | "workspace_write";
+export type RuntimeNetworkPolicy = "disabled" | "enabled";
+export type RuntimeWebSearchPolicy = "disabled" | "live";
 
 export interface OpenClawObjectRef {
   source: OpenClawObjectSource;
@@ -170,6 +173,11 @@ export interface StartAgentTaskInput {
   workingDirectory?: string;
   timeoutMs?: number;
   outputSchema?: Record<string, unknown>;
+  runtimeAccessPolicy?: {
+    filesystem: RuntimeFilesystemPolicy;
+    network: RuntimeNetworkPolicy;
+    webSearch: RuntimeWebSearchPolicy;
+  };
   input: unknown;
   skillIds?: string[];
   tools: string[];
@@ -196,7 +204,7 @@ export interface WaitForAgentTaskInput {
 }
 
 export interface AgentTaskResult extends StartedAgentTaskResult {
-  output?: string;
+  output?: unknown;
   usage?: OpenClawUsageFact;
 }
 
