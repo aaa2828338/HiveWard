@@ -67,6 +67,8 @@ import type {
   UpdateHivewardChatSessionRequest,
   SelectBlueprintRunApprovalRequest,
   ChatStreamEvent,
+  ApprovalDecision,
+  ApprovalRequest,
   BlueprintDefinition,
   BlueprintRun,
   HivewardChatMessage,
@@ -87,14 +89,14 @@ import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import type { RuntimeAdapter } from "@hiveward/adapter";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 
 interface ApiRouterDeps {
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   worker: BlueprintWorker;
@@ -136,7 +138,7 @@ type StreamHivewardChatSessionInput = {
   sessionId: string;
   body: SendChatSessionMessageRequest;
   requestStartedAtMs: number;
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   res: Response;
@@ -773,10 +775,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const body = normalizeApproveInboxItemRequest(req.body);
       const config = await openClawConfigStore.getState();
-      const request = await findPendingInboxApprovalRequest(readRouteParam(req.params.itemId, "itemId"));
-      if (request) await approvalService.approve(request.id, body.comment);
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "approve", "approved", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "approve",
+        comment: body.comment,
+        defaults: buildBlueprintImportDefaults(config),
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
       await managerMailProjector.refresh();
-      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), buildBlueprintImportDefaults(config), body.comment));
+      res.json({ item: result.item, importedBlueprints: result.importedBlueprints });
     } catch (error) {
       next(error);
     }
@@ -785,10 +800,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.post("/api/inbox/:itemId/reject", async (req, res, next) => {
     try {
       const body = normalizeRejectInboxItemRequest(req.body);
-      const request = await findPendingInboxApprovalRequest(readRouteParam(req.params.itemId, "itemId"));
-      if (request) await approvalService.reject(request.id, body.comment);
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reject", "rejected", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reject",
+        comment: body.comment,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
       await managerMailProjector.refresh();
-      res.json({ item: await store.rejectInboxItem(readRouteParam(req.params.itemId, "itemId"), body.comment) });
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -797,10 +824,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.post("/api/inbox/:itemId/reply", async (req, res, next) => {
     try {
       const body = normalizeReplyInboxItemRequest(req.body);
-      const request = await findPendingInboxApprovalRequest(readRouteParam(req.params.itemId, "itemId"));
-      if (request) await approvalService.reply(request.id, body.message);
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reply", "pending", body.message) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reply",
+        comment: body.message,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
       await managerMailProjector.refresh();
-      res.json({ item: await store.replyToInboxItem(readRouteParam(req.params.itemId, "itemId"), body.message) });
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -1260,9 +1299,32 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     await managerMailProjector.refresh();
   }
 
-  async function findPendingInboxApprovalRequest(itemId: string): Promise<{ id: string } | undefined> {
+  async function findPendingInboxApprovalRequest(itemId: string): Promise<ApprovalRequest | undefined> {
     const requests = await store.listApprovalRequests({ status: "pending" });
     return requests.find((request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === itemId);
+  }
+
+  function buildApprovalDecision(
+    request: ApprovalRequest,
+    action: ApprovalDecision["action"],
+    resultingStatus: ApprovalDecision["resultingStatus"],
+    comment?: string,
+    selectedReplyId?: string
+  ): ApprovalDecision {
+    return {
+      id: `decision-${nanoid(10)}`,
+      approvalRequestId: request.id,
+      action,
+      actor: "user",
+      comment: comment?.trim() || undefined,
+      selectedReplyId,
+      resultingStatus,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  function sendConflict(res: Response, code: string, message: string): void {
+    res.status(409).json({ error: { code, message } });
   }
 
   return router;
@@ -1587,7 +1649,7 @@ function normalizeChatAttachments(value: unknown): ChatAttachment[] {
   });
 }
 
-async function buildChatRoleSkillPrompt(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
+async function buildChatRoleSkillPrompt(store: HivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
   if (!scope) return undefined;
   try {
     const { roles } = await store.getRoleDirectory();
@@ -1758,7 +1820,7 @@ async function streamHivewardChatSession({
         thinking: requestBody.thinkingEffort,
         permissionMode: requestBody.permissionMode,
         idempotencyKey: userMessage.id,
-        timeoutMs: 600_000,
+        timeoutMs: 3_600_000,
         skillIds: chatSkillIdsForRequest(resolvedRoleScope, requestBody.mode)
       },
       (event) => {
@@ -1893,7 +1955,7 @@ function buildChatPrompt(
 }
 
 async function buildSelectedBlueprintDraftingContext(
-  store: FileHivewardStore,
+  store: HivewardStore,
   roleScope: ChatRoleScope | undefined
 ): Promise<string | undefined> {
   if (!roleScope?.blueprintId) return undefined;
@@ -1930,7 +1992,7 @@ async function buildSelectedBlueprintDraftingContext(
 }
 
 async function syncChatHistoryInboxSubmissions(
-  store: FileHivewardStore,
+  store: HivewardStore,
   messages: ChatHistoryMessage[]
 ): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
   let knownInboxItems: InboxItem[] | undefined;
@@ -2044,7 +2106,7 @@ function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefine
 }
 
 async function materializeChatInboxSubmission(
-  store: FileHivewardStore,
+  store: HivewardStore,
   chatRequest: ResolvedChatSessionMessage,
   output: string,
   block = extractChatInboxSubmissionBlock(output)
@@ -3939,7 +4001,7 @@ const maxChatMessageChars = 40_000;
 const maxChatAttachments = 6;
 const maxChatAttachmentTextChars = 24_000;
 
-async function refreshCatalog(adapter: RuntimeAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
+async function refreshCatalog(adapter: RuntimeAdapter, store: HivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
     id: `catalog-${nanoid(8)}`,

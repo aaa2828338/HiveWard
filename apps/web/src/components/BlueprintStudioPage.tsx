@@ -3034,7 +3034,7 @@ function buildRuntimeConfigPatch(
     send: undefined,
     runtimeAccessPolicy,
     permissionProfile: resolveRuntimePermissionProfile(runtimeId, harnessPermissionModes, config.permissionProfile ?? "read_only"),
-    timeoutMs: config.timeoutMs ?? 600000
+    timeoutMs: config.timeoutMs ?? 3600000
   };
 }
 
@@ -4126,7 +4126,7 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       agentName: t.defaults.agentName,
       prompt: t.defaults.agentPrompt,
       permissionProfile: "read_only",
-      timeoutMs: 600000,
+      timeoutMs: 3600000,
       tools: []
     };
   }
@@ -4153,7 +4153,7 @@ export function defaultConfig(type: BlueprintNodeType, t: Messages): BlueprintNo
       openclawAgentId: "main",
       agentName: "manager",
       permissionProfile: "read_only",
-      timeoutMs: 600000,
+      timeoutMs: 3600000,
       tools: []
     };
   }

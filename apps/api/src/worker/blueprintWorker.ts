@@ -27,7 +27,7 @@ import {
   type BlueprintNodeRun,
   type BlueprintRun
 } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import { ApprovalService, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
@@ -88,6 +88,26 @@ const flexibleJsonObjectSchema: Record<string, unknown> = {
     notes: { type: "string" }
   }
 };
+const agentArtifactPayloadSchema: Record<string, unknown> = {
+  type: "array",
+  items: {
+    type: "object",
+    required: ["kind", "title"],
+    properties: {
+      id: { type: "string" },
+      slot: { type: "string" },
+      title: { type: "string" },
+      kind: { type: "string", enum: ["html", "markdown", "json", "file", "link"] },
+      format: { type: "string" },
+      previewPolicy: { type: "string", enum: ["none", "source", "sandboxed_iframe"] },
+      trusted: { type: "boolean" },
+      content: { type: "string" },
+      body: { type: "string" },
+      path: { type: "string" },
+      url: { type: "string" }
+    }
+  }
+};
 const managerDecisionResultSchema: Record<string, unknown> = {
   type: "object",
   required: ["status"],
@@ -128,7 +148,8 @@ const preflightOutputSchema: Record<string, unknown> = {
   properties: {
     humanReportMd: { type: "string" },
     handoffJson: flexibleJsonObjectSchema,
-    result: preflightResultSchema
+    result: preflightResultSchema,
+    artifacts: agentArtifactPayloadSchema
   }
 };
 const agentOutputContractLines = [
@@ -140,6 +161,8 @@ const agentOutputContractLines = [
   "- humanReportMd must include a visible delivery-location section near the top. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\" and write \"\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002\" if this step created no new deliverable. For English reports, use \"## Delivery location\" and \"No new deliverable produced in this step.\"",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
+  "- If you created a concrete deliverable file or preview, declare it in artifacts[]. Do not hide deliverables inside humanReportMd or result.",
+  "- Each artifacts[] item must include kind (html, markdown, json, file, or link), title, and content/body for generated text artifacts, path for existing file artifacts, or url for link artifacts.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -149,7 +172,8 @@ const humanReportEnvelopeSchemaBase: Record<string, unknown> = {
   properties: {
     humanReportMd: { type: "string" },
     handoffJson: flexibleJsonObjectSchema,
-    result: flexibleJsonObjectSchema
+    result: flexibleJsonObjectSchema,
+    artifacts: agentArtifactPayloadSchema
   }
 };
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
@@ -257,6 +281,8 @@ interface AutoAdvanceResult {
 
 interface BlueprintWorkerOptions {
   artifactRoot?: string;
+  workerId?: string;
+  nodeRunLeaseMs?: number;
 }
 
 export class BlueprintWorker {
@@ -272,9 +298,12 @@ export class BlueprintWorker {
   private readonly managerMailProjector: ManagerMailProjector;
   private readonly migrationService: MigrationService;
   private readonly selfIterationOrchestrator: SelfIterationOrchestrator;
+  private readonly workerId: string;
+  private readonly nodeRunLeaseMs: number;
+  private readonly nodeRunClaims = new Map<string, { owner: string; workerEpoch: number }>();
 
   constructor(
-    private readonly store: FileHivewardStore,
+    private readonly store: HivewardStore,
     private readonly adapter: RuntimeAdapter,
     options: BlueprintWorkerOptions = {}
   ) {
@@ -287,6 +316,8 @@ export class BlueprintWorker {
     this.managerMailProjector = new ManagerMailProjector(store);
     this.migrationService = new MigrationService(store, this.approvalService);
     this.selfIterationOrchestrator = new SelfIterationOrchestrator();
+    this.workerId = options.workerId ?? `worker-${nanoid(8)}`;
+    this.nodeRunLeaseMs = options.nodeRunLeaseMs ?? 30 * 60 * 1000;
   }
 
   async resumeActiveRuns(): Promise<void> {
@@ -581,6 +612,7 @@ export class BlueprintWorker {
     const config = node.config;
     const runtimeId = node.runtimeId ?? "openclaw";
     const nodeRunId = `preflight-${mode}-${round.id}-${node.id}-${nanoid(6)}`;
+    const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, node, nodeRunId);
     await this.appendPreflightTaskStarted(run, round, node, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
@@ -603,26 +635,29 @@ export class BlueprintWorker {
         },
         skillIds: config.skillIds,
         tools: config.tools
+      }, async (openclawRef) => {
+        await this.store.startNodeRun({
+          nodeRunId,
+          owner: preflightNode.claim.owner,
+          workerEpoch: preflightNode.claim.workerEpoch,
+          openclawRef
+        });
       }));
     } catch (error) {
+      await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
-      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, result.error ?? `Agent task ended with status ${result.status}.`);
+      const error = result.error ?? `Agent task ended with status ${result.status}.`;
+      await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
-      ? await this.publishPreflightArtifacts(blueprint, run, round, node, nodeRunId, result)
+      ? await this.publishPreflightOutput(blueprint, run, round, node, preflightNode, mode, result)
       : [];
-    if (result.status === "succeeded") {
-      await this.agentReportService.publishFromOutput({
-        runId: run.id,
-        roundId: round.id,
-        nodeRunId,
-        nodeId: node.id,
-        nodeLabel: node.config.label,
-        output: result.output
-      });
+    if (result.status === "succeeded" && mode !== "research_resolution") {
+      await this.publishPreflightOutput(blueprint, run, round, node, preflightNode, mode, result);
     }
     return { result, artifactIds };
   }
@@ -639,6 +674,7 @@ export class BlueprintWorker {
     const config = topManager.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(topManager);
     const nodeRunId = `preflight-${mode}-${round.id}-${topManager.id}-${nanoid(6)}`;
+    const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, topManager, nodeRunId);
     await this.appendPreflightTaskStarted(run, round, topManager, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
@@ -661,28 +697,78 @@ export class BlueprintWorker {
         },
         skillIds: config.skillIds,
         tools: config.tools ?? []
+      }, async (openclawRef) => {
+        await this.store.startNodeRun({
+          nodeRunId,
+          owner: preflightNode.claim.owner,
+          workerEpoch: preflightNode.claim.workerEpoch,
+          openclawRef
+        });
       }));
     } catch (error) {
+      await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
-      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, result.error ?? `Agent task ended with status ${result.status}.`);
+      const error = result.error ?? `Agent task ended with status ${result.status}.`;
+      await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
-      ? await this.publishPreflightArtifacts(blueprint, run, round, topManager, nodeRunId, result)
+      ? await this.publishPreflightOutput(blueprint, run, round, topManager, preflightNode, mode, result)
       : [];
-    if (result.status === "succeeded") {
-      await this.agentReportService.publishFromOutput({
-        runId: run.id,
-        roundId: round.id,
-        nodeRunId,
-        nodeId: topManager.id,
-        nodeLabel: topManager.config.label,
-        output: result.output
-      });
+    if (result.status === "succeeded" && mode !== "research_resolution") {
+      await this.publishPreflightOutput(blueprint, run, round, topManager, preflightNode, mode, result);
     }
     return { result, artifactIds };
+  }
+
+  private async startPreflightNodeRun(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    round: IterationRound,
+    node: BlueprintNode,
+    nodeRunId: string
+  ): Promise<{ nodeRun: BlueprintNodeRun; claim: { owner: string; workerEpoch: number } }> {
+    const now = new Date().toISOString();
+    const nodeRun: BlueprintNodeRun = {
+      id: nodeRunId,
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      iterationRoundId: round.id,
+      nodeId: node.id,
+      nodeLabel: node.config.label,
+      nodeType: node.type,
+      status: "queued",
+      queuedAt: now
+    };
+    await this.store.createQueuedNodeRun(nodeRun);
+    const claim = await this.store.claimNodeRun({
+      nodeRunId,
+      owner: this.workerId,
+      leaseMs: this.nodeRunLeaseMs
+    });
+    if (!claim.claimed || claim.workerEpoch === undefined) {
+      throw new Error(`Unable to claim preflight node run ${nodeRunId}.`);
+    }
+    const token = { owner: this.workerId, workerEpoch: claim.workerEpoch };
+    this.nodeRunClaims.set(nodeRunId, token);
+    return { nodeRun, claim: token };
+  }
+
+  private async failPreflightNodeRun(
+    nodeRun: BlueprintNodeRun,
+    claim: { owner: string; workerEpoch: number },
+    error: string
+  ): Promise<void> {
+    await this.store.failNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: claim.owner,
+      workerEpoch: claim.workerEpoch,
+      error
+    });
+    this.nodeRunClaims.delete(nodeRun.id);
   }
 
   private async appendPreflightTaskStarted(
@@ -734,34 +820,100 @@ export class BlueprintWorker {
     return "preflight";
   }
 
-  private async publishPreflightArtifacts(
+  private async publishPreflightOutput(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     round: IterationRound,
     node: BlueprintNode,
-    nodeRunId: string,
+    preflightNode: { nodeRun: BlueprintNodeRun; claim: { owner: string; workerEpoch: number } },
+    mode: RoundPreflightMode,
     result: AgentTaskResult
   ): Promise<string[]> {
     if (result.status !== "succeeded" || result.output === undefined || result.output === null) return [];
     const now = new Date().toISOString();
-    const artifacts = await this.artifactService.publishFromNodeRun({
+    const completed: BlueprintNodeRun = {
+      ...preflightNode.nodeRun,
+      status: "succeeded",
+      startedAt: preflightNode.nodeRun.startedAt ?? now,
+      endedAt: now,
+      output: result.output,
+      usage: result.usage,
+      openclawRef: result.taskId
+        ? {
+          source: result.source,
+          sourceId: result.taskId,
+          sourceUpdatedAt: result.updatedAt,
+          taskId: result.taskId,
+          runId: result.runId,
+          sessionKey: result.sessionKey,
+          usageRef: result.usage?.id
+        }
+        : preflightNode.nodeRun.openclawRef
+    };
+    const artifacts = mode === "research_resolution" ? await this.artifactService.prepareFromNodeRun({
       runId: run.id,
       roundId: round.id,
-      nodeRun: {
-        id: nodeRunId,
-        blueprintRunId: run.id,
-        blueprintId: blueprint.id,
-        iterationRoundId: round.id,
-        nodeId: node.id,
-        nodeLabel: node.config.label,
-        nodeType: node.type,
-        status: "succeeded",
-        queuedAt: now,
-        startedAt: now,
-        endedAt: now,
-        output: result.output
-      } satisfies BlueprintNodeRun
+      nodeRun: completed
+    }) : [];
+    const reports = this.agentReportService.prepareFromOutput({
+      runId: run.id,
+      roundId: round.id,
+      nodeRunId: completed.id,
+      nodeId: node.id,
+      nodeLabel: node.config.label,
+      output: result.output,
+      createdAt: now
     });
+    const timelineItems = [
+      {
+        id: `timeline-${completed.id}-output`,
+        runId: run.id,
+        createdAt: now,
+        actorNodeId: node.id,
+        actorLabel: node.config.label,
+        kind: "node_output" as const,
+        title: `${node.config.label}: ${this.preflightModeLabel(mode)} completed`,
+        payloadRef: completed.id
+      },
+      ...artifacts.map((artifact) => ({
+        id: `timeline-${artifact.id}`,
+        runId: run.id,
+        createdAt: now,
+        actorNodeId: node.id,
+        actorLabel: node.config.label,
+        kind: "artifact_published" as const,
+        title: artifact.title ?? artifact.kind,
+        body: artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath,
+        payloadRef: artifact.id
+      }))
+    ];
+    const published = await this.store.publishAgentOutput({
+      runId: run.id,
+      roundId: round.id,
+      nodeRunId: completed.id,
+      owner: preflightNode.claim.owner,
+      workerEpoch: preflightNode.claim.workerEpoch,
+      nodeRun: completed,
+      output: result.output,
+      rawResult: result.output,
+      artifacts,
+      humanReport: reports.humanReport,
+      handoff: reports.handoff,
+      event: {
+        id: `event-${completed.id}-completed`,
+        blueprintRunId: run.id,
+        nodeRunId: completed.id,
+        type: "node.run.completed",
+        message: `${node.config.label} ${this.preflightModeLabel(mode)} completed.`,
+        openclawRef: completed.openclawRef,
+        createdAt: now
+      },
+      timelineItems
+    });
+    if (!published.published) {
+      throw new Error(`Preflight node run ${completed.id} could not publish atomically.`);
+    }
+    this.nodeRunClaims.delete(completed.id);
     return artifacts.map((artifact) => artifact.id);
   }
 
@@ -962,7 +1114,15 @@ export class BlueprintWorker {
         replies: markSelectedApprovalReplies([...waiting.output.replies, userReply], waiting.output.selectedReplyId)
       }
     };
-    await this.store.upsertNodeRun(runningNodeRun);
+    const claim = await this.ensureNodeRunClaim(waiting);
+    if (!claim) throw new Error(`Node run ${runningNodeRun.id} could not be reclaimed for approval reply.`);
+    await this.store.startNodeRun({
+      nodeRunId: runningNodeRun.id,
+      owner: claim.owner,
+      workerEpoch: claim.workerEpoch,
+      startedAt: now,
+      input: runningNodeRun.input
+    });
     await this.event(run.id, "node.run.started", `${waiting.nodeLabel} received a review reply.`, waiting.id);
     await this.store.updateBlueprintRun({ ...run, status: "running" });
 
@@ -1188,17 +1348,20 @@ export class BlueprintWorker {
     const executingRound = (await this.store.listIterationRounds({ runId: run.id, status: "executing" })).at(-1);
     if (!executingRound) return "none";
 
-    const succeededRuns = nodeRuns.filter((nodeRun) => nodeRun.status === "succeeded" && nodeRun.output !== undefined);
-    const artifactRuns = succeededRuns.filter((nodeRun) => this.isArtifactProducingNodeRun(blueprint, nodeRun));
-    const artifacts = (
-      await Promise.all(artifactRuns.map((nodeRun) =>
-        this.artifactService.publishFromNodeRun({
-          runId: run.id,
-          roundId: executingRound.id,
-          nodeRun
-        })
-      ))
-    ).flat();
+    const succeededRuns = nodeRuns.filter((nodeRun) =>
+      !this.isPreflightNodeRun(nodeRun) && nodeRun.status === "succeeded" && nodeRun.output !== undefined
+    );
+    const artifactRunIds = new Set(
+      succeededRuns
+        .filter((nodeRun) => this.isArtifactProducingNodeRun(blueprint, nodeRun))
+        .map((nodeRun) => nodeRun.id)
+    );
+    const artifacts = (await this.store.listArtifacts(run.id)).filter((artifact) =>
+      artifact.roundId === executingRound.id &&
+      artifact.nodeRunId !== undefined &&
+      artifactRunIds.has(artifact.nodeRunId) &&
+      (artifact.status ?? "current") === "current"
+    );
     const [agentReports, agentHandoffs, approvedPlanRequest] = await Promise.all([
       this.store.listAgentHumanReports(run.id).then((reports) => reports.filter((report) => report.roundId === executingRound.id)),
       this.store.listAgentHandoffs(run.id).then((handoffs) => handoffs.filter((handoff) => handoff.roundId === executingRound.id)),
@@ -1394,19 +1557,20 @@ export class BlueprintWorker {
     runId: string,
     nodeRuns: BlueprintNodeRun[]
   ): Promise<BlueprintNodeRun[]> {
+    const runtimeNodeRuns = nodeRuns.filter((nodeRun) => !this.isPreflightNodeRun(nodeRun));
     const executingRound = (await this.store.listIterationRounds({ runId, status: "executing" })).at(-1);
-    if (!executingRound) return nodeRuns;
+    if (!executingRound) return runtimeNodeRuns;
 
     const roundStartedAt = Date.parse(executingRound.startedAt);
-    const scoped = nodeRuns.filter((nodeRun) =>
+    const scoped = runtimeNodeRuns.filter((nodeRun) =>
       nodeRun.iterationRoundId === executingRound.id && isNodeRunAtOrAfter(nodeRun, roundStartedAt)
     );
-    if (scoped.length > 0 || nodeRuns.some((nodeRun) => nodeRun.iterationRoundId)) {
+    if (scoped.length > 0 || runtimeNodeRuns.some((nodeRun) => nodeRun.iterationRoundId)) {
       return scoped;
     }
 
-    if (!Number.isFinite(roundStartedAt)) return nodeRuns;
-    return nodeRuns.filter((nodeRun) => isNodeRunAtOrAfter(nodeRun, roundStartedAt));
+    if (!Number.isFinite(roundStartedAt)) return runtimeNodeRuns;
+    return runtimeNodeRuns.filter((nodeRun) => isNodeRunAtOrAfter(nodeRun, roundStartedAt));
   }
 
   private async currentExecutingRoundId(runId: string): Promise<string | undefined> {
@@ -1418,7 +1582,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRuns: BlueprintNodeRun[]
   ): Promise<boolean> {
-    const runningNodeRuns = nodeRuns.filter((nodeRun) => nodeRun.status === "running");
+    const runningNodeRuns = nodeRuns.filter((nodeRun) => !this.isPreflightNodeRun(nodeRun) && nodeRun.status === "running");
     for (const nodeRun of runningNodeRuns) {
       const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
       if (node && isAgentBlueprintNode(node)) {
@@ -1452,6 +1616,11 @@ export class BlueprintWorker {
     const openclawRef = this.resolveAgentOpenClawRef(node, nodeRun);
     if (!openclawRef?.sessionKey) return false;
     const runtimeId = node.runtimeId ?? "openclaw";
+    const claim = await this.ensureNodeRunClaim(nodeRun);
+    if (!claim) {
+      await this.keepRunActive(run, "running");
+      return false;
+    }
 
     let result: AgentTaskResult;
     try {
@@ -2101,6 +2270,7 @@ export class BlueprintWorker {
   ): { nodeRun: BlueprintNodeRun; index: number } | undefined {
     for (let index = requiredAfterIndex + 1; index < nodeRuns.length; index += 1) {
       const nodeRun = nodeRuns[index]!;
+      if (this.isPreflightNodeRun(nodeRun)) continue;
       if (nodeRun.nodeId === nodeId) return { nodeRun, index };
     }
     return undefined;
@@ -2204,15 +2374,30 @@ export class BlueprintWorker {
       nodeLabel: node.config.label,
       nodeType: node.type,
       ...(iterationRoundId ? { iterationRoundId } : {}),
-      status: "running",
+      status: "queued",
       queuedAt: now,
-      startedAt: now,
       ...(input === undefined ? {} : { input })
     };
-    await this.store.upsertNodeRun(nodeRun);
+    await this.store.createQueuedNodeRun(nodeRun);
     await this.event(run.id, "node.run.queued", `${node.config.label} queued.`, nodeRun.id);
+    const claim = await this.store.claimNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: this.workerId,
+      leaseMs: this.nodeRunLeaseMs
+    });
+    if (!claim.claimed || !claim.nodeRun || claim.workerEpoch === undefined) {
+      throw new Error(`Node run ${nodeRun.id} could not be claimed by ${this.workerId}.`);
+    }
+    this.nodeRunClaims.set(nodeRun.id, { owner: this.workerId, workerEpoch: claim.workerEpoch });
+    await this.store.startNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: this.workerId,
+      workerEpoch: claim.workerEpoch,
+      startedAt: now,
+      input
+    });
     await this.event(run.id, "node.run.started", `${node.config.label} started.`, nodeRun.id);
-    return nodeRun;
+    return { ...claim.nodeRun, input, startedAt: claim.nodeRun.startedAt ?? now };
   }
 
   private async executeAgentNode(
@@ -2516,6 +2701,7 @@ export class BlueprintWorker {
       const nodeRuns = await this.store.listNodeRuns(run.id);
       const failed = nodeRuns.find(
         (nodeRun, index) =>
+          !this.isPreflightNodeRun(nodeRun) &&
           index > scopeStartIndex &&
           childIds.has(nodeRun.nodeId) &&
           (nodeRun.status === "failed" || nodeRun.status === "cancelled")
@@ -2884,6 +3070,7 @@ export class BlueprintWorker {
       } satisfies AgentApprovalWaitingOutput
     };
     await this.store.upsertNodeRun(waiting);
+    this.nodeRunClaims.delete(nodeRun.id);
     await this.event(nodeRun.blueprintRunId, "node.run.waiting_approval", `${nodeRun.nodeLabel} is waiting for approval.`, nodeRun.id);
     await this.migrationService.migratePendingNodeApproval({
       runId: nodeRun.blueprintRunId,
@@ -3010,6 +3197,7 @@ export class BlueprintWorker {
 
       for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
         const nodeRun = nodeRuns[index]!;
+        if (this.isPreflightNodeRun(nodeRun)) continue;
         if (nodeRun.nodeId !== candidate.id || nodeRun.status !== "succeeded") continue;
         const status = readString(readOutputRecord(nodeRun.output)?.status);
         if (status !== "rerun") continue;
@@ -3133,8 +3321,8 @@ export class BlueprintWorker {
     nodeRun: BlueprintNodeRun,
     output = nodeRun.output,
     context: {
-      humanReport?: Awaited<ReturnType<FileHivewardStore["listAgentHumanReports"]>>[number];
-      handoff?: Awaited<ReturnType<FileHivewardStore["listAgentHandoffs"]>>[number];
+      humanReport?: Awaited<ReturnType<HivewardStore["listAgentHumanReports"]>>[number];
+      handoff?: Awaited<ReturnType<HivewardStore["listAgentHandoffs"]>>[number];
     } = {}
   ): UpstreamOutputItem {
     return {
@@ -3155,22 +3343,57 @@ export class BlueprintWorker {
       return;
     }
 
+    const completedAt = new Date().toISOString();
     const completed: BlueprintNodeRun = {
       ...nodeRun,
       status: "succeeded",
-      endedAt: new Date().toISOString(),
+      endedAt: completedAt,
       output,
       openclawRef: openclawRef ?? nodeRun.openclawRef
     };
-    await this.store.upsertNodeRun(completed);
-    if (completed.nodeType === "agent" || completed.nodeType === "manager") {
-      await this.agentReportService.publishFromNodeRun({
+    const artifacts = completed.nodeType === "agent" || completed.nodeType === "summary"
+      ? await this.artifactService.prepareFromNodeRun({
         runId: completed.blueprintRunId,
         roundId: completed.iterationRoundId,
         nodeRun: completed
-      });
-    }
-    await this.event(nodeRun.blueprintRunId, "node.run.completed", `${nodeRun.nodeLabel} completed.`, nodeRun.id, openclawRef);
+      })
+      : [];
+    const reports = completed.nodeType === "agent" || completed.nodeType === "manager"
+      ? this.agentReportService.prepareFromOutput({
+        runId: completed.blueprintRunId,
+        roundId: completed.iterationRoundId,
+        nodeRunId: completed.id,
+        nodeId: completed.nodeId,
+        nodeLabel: completed.nodeLabel,
+        output: completed.output,
+        createdAt: completedAt
+      })
+      : {};
+    const claim = await this.ensureNodeRunClaim(nodeRun);
+    if (!claim) return;
+    const published = await this.store.publishAgentOutput({
+      runId: completed.blueprintRunId,
+      roundId: completed.iterationRoundId,
+      nodeRunId: completed.id,
+      owner: claim.owner,
+      workerEpoch: claim.workerEpoch,
+      nodeRun: completed,
+      output,
+      rawResult: output,
+      artifacts,
+      humanReport: reports.humanReport,
+      handoff: reports.handoff,
+      event: {
+        id: `event-${nanoid(10)}`,
+        blueprintRunId: nodeRun.blueprintRunId,
+        nodeRunId: nodeRun.id,
+        type: "node.run.completed",
+        message: `${nodeRun.nodeLabel} completed.`,
+        openclawRef,
+        createdAt: completedAt
+      }
+    });
+    if (published.published) this.nodeRunClaims.delete(nodeRun.id);
   }
 
   private async collectStandardNodeInput(
@@ -3188,8 +3411,38 @@ export class BlueprintWorker {
       ...nodeRun,
       input
     };
-    await this.store.upsertNodeRun(nodeRunWithInput);
+    const claim = await this.ensureNodeRunClaim(nodeRun);
+    if (claim) {
+      await this.store.startNodeRun({
+        nodeRunId: nodeRun.id,
+        owner: claim.owner,
+        workerEpoch: claim.workerEpoch,
+        input
+      });
+    } else {
+      await this.store.upsertNodeRun(nodeRunWithInput);
+    }
     return nodeRunWithInput;
+  }
+
+  private async ensureNodeRunClaim(nodeRun: BlueprintNodeRun): Promise<{ owner: string; workerEpoch: number } | undefined> {
+    const existing = this.nodeRunClaims.get(nodeRun.id);
+    if (existing && nodeRun.status !== "waiting_approval") return existing;
+    if (existing) this.nodeRunClaims.delete(nodeRun.id);
+    if (!this.isOpenNodeRunStatus(nodeRun.status)) return undefined;
+    if (nodeRun.status !== "queued" && nodeRun.status !== "running" && nodeRun.status !== "waiting_approval") return undefined;
+    if (nodeRun.status === "waiting_approval") {
+      await this.store.createQueuedNodeRun({ ...nodeRun, status: "queued" });
+    }
+    const claim = await this.store.claimNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: this.workerId,
+      leaseMs: this.nodeRunLeaseMs
+    });
+    if (!claim.claimed || claim.workerEpoch === undefined) return undefined;
+    const token = { owner: this.workerId, workerEpoch: claim.workerEpoch };
+    this.nodeRunClaims.set(nodeRun.id, token);
+    return token;
   }
 
   private async recordNodeOpenClawRef(nodeRun: BlueprintNodeRun, openclawRef: OpenClawObjectRef): Promise<BlueprintNodeRun> {
@@ -3198,7 +3451,17 @@ export class BlueprintWorker {
       ...(currentNodeRun ?? nodeRun),
       openclawRef
     };
-    await this.store.upsertNodeRun(nodeRunWithRef);
+    const claim = await this.ensureNodeRunClaim(nodeRun);
+    if (claim) {
+      await this.store.startNodeRun({
+        nodeRunId: nodeRun.id,
+        owner: claim.owner,
+        workerEpoch: claim.workerEpoch,
+        openclawRef
+      });
+    } else {
+      await this.store.upsertNodeRun(nodeRunWithRef);
+    }
     return nodeRunWithRef;
   }
 
@@ -3208,13 +3471,20 @@ export class BlueprintWorker {
       return;
     }
 
-    await this.store.upsertNodeRun({
-      ...nodeRun,
-      status: "failed",
-      endedAt: new Date().toISOString(),
-      error
-    });
-    await this.event(nodeRun.blueprintRunId, "node.run.failed", `${nodeRun.nodeLabel} failed: ${error}`, nodeRun.id);
+    const claim = await this.ensureNodeRunClaim(nodeRun);
+    const failed = claim
+      ? await this.store.failNodeRun({
+          nodeRunId: nodeRun.id,
+          owner: claim.owner,
+          workerEpoch: claim.workerEpoch,
+          endedAt: new Date().toISOString(),
+          error
+        })
+      : false;
+    if (failed) {
+      this.nodeRunClaims.delete(nodeRun.id);
+      await this.event(nodeRun.blueprintRunId, "node.run.failed", `${nodeRun.nodeLabel} failed: ${error}`, nodeRun.id);
+    }
   }
 
   private async skipNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<void> {
@@ -3267,8 +3537,21 @@ export class BlueprintWorker {
       error: reason,
       openclawRef: openclawRef ?? currentNodeRun?.openclawRef ?? nodeRun.openclawRef
     };
-    await this.store.upsertNodeRun(cancelled);
-    await this.event(nodeRun.blueprintRunId, "node.run.cancelled", `${nodeRun.nodeLabel} cancelled: ${reason}`, nodeRun.id, cancelled.openclawRef);
+    const claim = await this.ensureNodeRunClaim(currentNodeRun ?? nodeRun);
+    const cancelledOk = claim
+      ? await this.store.cancelNodeRun({
+          nodeRunId: nodeRun.id,
+          owner: claim.owner,
+          workerEpoch: claim.workerEpoch,
+          endedAt: cancelled.endedAt,
+          reason,
+          openclawRef: cancelled.openclawRef
+        })
+      : false;
+    if (cancelledOk) {
+      this.nodeRunClaims.delete(nodeRun.id);
+      await this.event(nodeRun.blueprintRunId, "node.run.cancelled", `${nodeRun.nodeLabel} cancelled: ${reason}`, nodeRun.id, cancelled.openclawRef);
+    }
   }
 
   private async applyRunTotals(run: BlueprintRun, startedAt: number, status: "succeeded" | "failed" | "cancelled"): Promise<BlueprintRun> {
@@ -3330,6 +3613,10 @@ export class BlueprintWorker {
     return status === "queued" || status === "running" || status === "waiting_approval";
   }
 
+  private isPreflightNodeRun(nodeRun: BlueprintNodeRun): boolean {
+    return nodeRun.id.startsWith("preflight-");
+  }
+
   private hasCurrentNodeRun(blueprint: BlueprintDefinition, node: BlueprintNode, nodeRuns: BlueprintNodeRun[]): boolean {
     if (node.type === "loop") {
       const latestLoopRun = this.findLatestNodeRunWithIndex(nodeRuns, node.id);
@@ -3338,7 +3625,11 @@ export class BlueprintWorker {
     }
 
     const requiredAfterIndex = this.getRequiredAfterIndex(blueprint, node, nodeRuns);
-    return nodeRuns.some((nodeRun, index) => nodeRun.nodeId === node.id && this.isAfterRequiredIndex(index, requiredAfterIndex));
+    return nodeRuns.some((nodeRun, index) =>
+      !this.isPreflightNodeRun(nodeRun) &&
+      nodeRun.nodeId === node.id &&
+      this.isAfterRequiredIndex(index, requiredAfterIndex)
+    );
   }
 
   private hasCurrentTerminalNodeRun(blueprint: BlueprintDefinition, node: BlueprintNode, nodeRuns: BlueprintNodeRun[]): boolean {
@@ -3351,6 +3642,7 @@ export class BlueprintWorker {
     const requiredAfterIndex = this.getRequiredAfterIndex(blueprint, node, nodeRuns);
     return nodeRuns.some(
       (nodeRun, index) =>
+        !this.isPreflightNodeRun(nodeRun) &&
         nodeRun.nodeId === node.id &&
         this.isAfterRequiredIndex(index, requiredAfterIndex) &&
         ["succeeded", "failed", "cancelled", "skipped"].includes(nodeRun.status)
@@ -3419,6 +3711,7 @@ export class BlueprintWorker {
   ): BlueprintNodeRun | undefined {
     for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
       const nodeRun = nodeRuns[index]!;
+      if (this.isPreflightNodeRun(nodeRun)) continue;
       if (nodeRun.nodeId !== nodeId) continue;
       if (!this.isAfterRequiredIndex(index, requiredAfterIndex)) continue;
       if (status && nodeRun.status !== status) continue;
@@ -3434,6 +3727,7 @@ export class BlueprintWorker {
   ): { nodeRun: BlueprintNodeRun; index: number } | undefined {
     for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
       const nodeRun = nodeRuns[index]!;
+      if (this.isPreflightNodeRun(nodeRun)) continue;
       if (nodeRun.nodeId !== nodeId) continue;
       if (status && nodeRun.status !== status) continue;
       return { nodeRun, index };
@@ -3447,6 +3741,7 @@ export class BlueprintWorker {
   ): { nodeRun: BlueprintNodeRun; index: number } | undefined {
     for (let index = nodeRuns.length - 1; index >= 0; index -= 1) {
       const nodeRun = nodeRuns[index]!;
+      if (this.isPreflightNodeRun(nodeRun)) continue;
       if (nodeRun.nodeId !== nodeId) continue;
       if (!this.isTerminalStatus(nodeRun.status)) continue;
       return { nodeRun, index };

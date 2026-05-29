@@ -22,6 +22,8 @@ import {
   type BlueprintRunStatus
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
+import { SqliteHivewardStore } from "../store/sqlite/sqliteHivewardStore";
 import { BlueprintWorker } from "./blueprintWorker";
 
 class ScriptedAdapter implements RuntimeAdapter {
@@ -324,6 +326,38 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("succeeded");
   });
 
+  it("does not mark a node succeeded when declared file artifact preparation fails", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-artifact-fail-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("builder", "Builder")], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-missing-artifact")
+    ], [
+      createCompletedAgentTask("task-missing-artifact", "succeeded", {
+        contractVersion: 2,
+        humanReportMd: "## Builder report\n\nThe file path is invalid.",
+        result: { attempted: true },
+        artifacts: [{
+          kind: "file",
+          title: "Missing artifact",
+          path: "definitely-missing-hiveward-artifact-file.txt"
+        }]
+      })
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "builder");
+
+    expect(view?.run.status).toBe("failed");
+    expect(nodeRun?.status).not.toBe("succeeded");
+    expect(view?.artifacts ?? []).toHaveLength(0);
+    expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(true);
+  });
+
   it("keeps resumed SDK agent nodes running when task lookup is temporarily unavailable", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
@@ -371,7 +405,7 @@ describe("BlueprintWorker", () => {
     const missingTaskAdapter = new ScriptedAdapter([], [
       new Error("SDK task not found: codex-task-1")
     ]);
-    const firstWorker = new BlueprintWorker(store, missingTaskAdapter);
+    const firstWorker = new BlueprintWorker(store, missingTaskAdapter, { nodeRunLeaseMs: 10 });
     await firstWorker.resumeActiveRuns();
 
     const stillRunningView = await waitForRunView(store, run.id, (view) =>
@@ -381,6 +415,7 @@ describe("BlueprintWorker", () => {
     expect(stillRunningView.run.status).toBe("running");
     expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)?.status).toBe("running");
     expect(stillRunningView.events.some((event) => event.type === "blueprint.run.failed")).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
 
     const recoveredAdapter = new ScriptedAdapter([], [
       createCompletedAgentTask("codex-task-1", "succeeded", "brief ok", undefined, "codex")
@@ -1820,12 +1855,13 @@ describe("BlueprintWorker", () => {
       ]
     );
     const blockedAdapter = new BlockingAdapter(createStartedAgentTask("task-1"));
-    const firstWorker = new BlueprintWorker(store, blockedAdapter);
+    const firstWorker = new BlueprintWorker(store, blockedAdapter, { nodeRunLeaseMs: 100 });
 
     const run = await firstWorker.startRun(blueprint, "test-user");
     await waitForNodeRun(store, run.id, "builder", (nodeRun) =>
       nodeRun.status === "running" && nodeRun.openclawRef?.taskId === "task-1"
     );
+    await new Promise((resolve) => setTimeout(resolve, 150));
 
     const recoveryAdapter = new ScriptedAdapter([], [
       createCompletedAgentTask("task-1", "succeeded", "built html")
@@ -2113,7 +2149,7 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-round-1-research", "succeeded", "round 1 research summary"),
       createCompletedAgentTask("task-round-1-plan", "succeeded", "round 1 execution plan"),
-      createCompletedAgentTask("task-round-1", "succeeded", "<!doctype html><html><body>round 1</body></html>"),
+      createCompletedAgentTask("task-round-1", "succeeded", htmlArtifactOutput("round 1")),
       createCompletedAgentTask("task-round-1-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 1 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 2."],
@@ -2126,7 +2162,7 @@ describe("BlueprintWorker", () => {
         freeform: "Round 1 freeform memory."
       })),
       createCompletedAgentTask("task-round-2-plan", "succeeded", "round 2 execution plan from manager"),
-      createCompletedAgentTask("task-round-2", "succeeded", "<!doctype html><html><body>round 2</body></html>"),
+      createCompletedAgentTask("task-round-2", "succeeded", htmlArtifactOutput("round 2")),
       createCompletedAgentTask("task-round-2-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 2 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 3."],
@@ -2139,7 +2175,7 @@ describe("BlueprintWorker", () => {
         freeform: "Round 2 freeform memory."
       })),
       createCompletedAgentTask("task-round-3-plan", "succeeded", "round 3 execution plan from manager"),
-      createCompletedAgentTask("task-round-3", "succeeded", "<!doctype html><html><body>round 3</body></html>"),
+      createCompletedAgentTask("task-round-3", "succeeded", htmlArtifactOutput("round 3")),
       createCompletedAgentTask("task-round-3-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 3 delivered final HTML."],
         keyDecisions: ["Complete the run."],
@@ -2168,7 +2204,8 @@ describe("BlueprintWorker", () => {
     expect(requirement1?.body).toContain("Research source: manager_fallback");
     expect(requirement1?.body).toContain("Plan source: manager_fallback");
     expect(started?.managerMail).toHaveLength(1);
-    expect(started?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "top-manager")).toBe(false);
+    expect(started?.nodeRuns.some((nodeRun) => nodeRun.id.startsWith("preflight-") && nodeRun.nodeId === "top-manager")).toBe(true);
+    expect(started?.nodeRuns.some((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toBe(false);
 
     const currentRun1 = await store.getBlueprintRun(run.id);
     if (!currentRun1 || !requirement1) throw new Error("Expected first requirement approval.");
@@ -2189,13 +2226,13 @@ describe("BlueprintWorker", () => {
     expect(report1View.agentHumanReports).toEqual(expect.arrayContaining([
       expect.objectContaining({
         nodeId: "builder",
-        source: "fallback"
+        source: "agent"
       })
     ]));
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(1);
-    expect(report1View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "top-manager")).toHaveLength(1);
-    expect(report1View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "slot-1")).toHaveLength(1);
-    expect(report1View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder")).toHaveLength(1);
+    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(1);
+    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(1);
+    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(1);
     expect(report1View.artifacts?.find((artifact) => artifact.kind === "html")).toMatchObject({
       kind: "html",
       trusted: false,
@@ -2236,9 +2273,9 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: true, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "top-manager")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "slot-1")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(new Set(report2View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(2);
 
     const currentRun4 = await store.getBlueprintRun(run.id);
@@ -2270,9 +2307,9 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: false, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(3);
-    expect(report3View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "top-manager")).toHaveLength(3);
-    expect(report3View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "slot-1")).toHaveLength(3);
-    expect(report3View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder")).toHaveLength(3);
+    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(3);
+    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(3);
     expect(new Set(report3View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(3);
 
     const currentRun6 = await store.getBlueprintRun(run.id);
@@ -2294,7 +2331,7 @@ describe("BlueprintWorker", () => {
     expect(completed?.runTimeline?.map((item) => item.sequence)).toEqual(
       completed?.runTimeline?.map((item) => item.sequence).slice().sort((left, right) => left - right)
     );
-    expect(completed?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(completed?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
     expect(completed?.managerContextSnapshots).toHaveLength(3);
     expect(completed?.managerContextSnapshots?.[0]).toMatchObject({
       completedItems: ["Round 1 delivered an HTML artifact."],
@@ -2347,7 +2384,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-research-agent"),
       createStartedAgentTask("task-requirement-agent")
     ], [
-      createCompletedAgentTask("task-research-agent", "succeeded", "agent research summary"),
+      createCompletedAgentTask("task-research-agent", "succeeded", markdownArtifactOutput("agent research summary", "Research summary")),
       createCompletedAgentTask("task-requirement-agent", "succeeded", "agent round execution plan")
     ]);
     const worker = new BlueprintWorker(store, adapter);
@@ -2674,7 +2711,7 @@ describe("BlueprintWorker", () => {
     const reportView = await waitForRunView(store, run.id, (view) =>
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
-    const managerRunInput = reportView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "top-manager")?.input;
+    const managerRunInput = reportView.nodeRuns.find((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")?.input;
     const round = reportView.iterationRounds?.[0];
 
     expect(round).toMatchObject({
@@ -2708,7 +2745,7 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-reject-research", "succeeded", "reject test research"),
       createCompletedAgentTask("task-reject-plan", "succeeded", "reject test plan"),
-      createCompletedAgentTask("task-rejected-round", "succeeded", "<!doctype html><html><body>needs work</body></html>"),
+      createCompletedAgentTask("task-rejected-round", "succeeded", htmlArtifactOutput("needs work")),
       createCompletedAgentTask("task-rejected-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Rejected draft produced."],
         keyDecisions: ["Fix the rejected artifact."],
@@ -2719,7 +2756,7 @@ describe("BlueprintWorker", () => {
         recommendedNextStep: "execute",
         summary: "rejected snapshot"
       })),
-      createCompletedAgentTask("task-fixed-round", "succeeded", "<!doctype html><html><body>fixed</body></html>"),
+      createCompletedAgentTask("task-fixed-round", "succeeded", htmlArtifactOutput("fixed")),
       createCompletedAgentTask("task-fixed-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Fixed draft produced."],
         keyDecisions: ["Complete after fix."],
@@ -2760,15 +2797,15 @@ describe("BlueprintWorker", () => {
       .at(-1);
 
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "top-manager")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "slot-1")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(report2View.releaseReports?.map((report) => report.version)).toEqual([1, 2]);
     expect(report2View.releaseReports?.[1]?.supersedesReportId).toBe(report2View.releaseReports?.[0]?.id);
     expect(report2View.artifacts?.some((artifact) => artifact.status === "rejected")).toBe(true);
     expect(report2View.artifacts?.some((artifact) => artifact.status === "current")).toBe(true);
     const rerunManagerInput = report2View.nodeRuns
-      .filter((nodeRun) => nodeRun.nodeId === "top-manager")
+      .filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")
       .at(-1)?.input;
     expect(rerunManagerInput).toMatchObject({
       runContext: expect.objectContaining({
@@ -3006,6 +3043,63 @@ describe("BlueprintWorker", () => {
     expect(completed?.managerMail?.map((mail) => mail.status).sort()).toEqual(["approved", "completed"]);
   });
 
+  it("runs manager self-iteration end-to-end on SQLite without run JSON archives", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-sqlite-"));
+    const store = new SqliteHivewardStore(path.join(tempDir, "hiveward.sqlite"));
+    await store.init();
+
+    try {
+      const blueprint = createSelfIterationBlueprint({
+        maxRounds: 1,
+        autoApproveRequirements: true,
+        autoApproveReleaseReports: true
+      });
+      const adapter = new ScriptedAdapter([
+        createStartedAgentTask("task-sqlite-research"),
+        createStartedAgentTask("task-sqlite-plan"),
+        createStartedAgentTask("task-sqlite-round"),
+        createStartedAgentTask("task-sqlite-snapshot")
+      ], [
+        createCompletedAgentTask("task-sqlite-research", "succeeded", "sqlite research"),
+        createCompletedAgentTask("task-sqlite-plan", "succeeded", "sqlite execution plan"),
+        createCompletedAgentTask("task-sqlite-round", "succeeded", htmlArtifactOutput("sqlite round")),
+        createCompletedAgentTask("task-sqlite-snapshot", "succeeded", JSON.stringify({
+          completedItems: ["SQLite round output completed."],
+          keyDecisions: ["Complete the SQLite-backed run."],
+          validatedFacts: ["sqlite artifact exists"],
+          openQuestions: [],
+          activeRisks: [],
+          assumptions: [],
+          recommendedNextStep: "complete",
+          summary: "sqlite snapshot"
+        }))
+      ]);
+      const worker = new BlueprintWorker(store, adapter);
+
+      const run = await worker.startRun(blueprint, "test-user");
+      const completed = await waitForRunTerminal(store, run.id);
+      const runArchiveDir = path.join(tempDir, "runs");
+      const htmlArtifacts = completed?.artifacts?.filter((artifact) => artifact.kind === "html") ?? [];
+      const releaseReport = completed?.releaseReports?.[0];
+
+      expect(completed?.run.status).toBe("succeeded");
+      expect(htmlArtifacts).toHaveLength(1);
+      expect(htmlArtifacts[0]).toMatchObject({
+        downloadUrl: expect.stringContaining("/artifacts/"),
+        status: "current"
+      });
+      expect(htmlArtifacts[0]?.relativePath).toMatch(/^objects\/sha256\//);
+      expect(releaseReport?.artifactRefs).toEqual([expect.objectContaining({
+        artifactId: htmlArtifacts[0]?.id,
+        location: htmlArtifacts[0]?.downloadUrl
+      })]);
+      expect(completed?.approvalRequests?.map((request) => request.status).sort()).toEqual(["approved", "completed"]);
+      expect(existsSync(runArchiveDir)).toBe(false);
+    } finally {
+      store.close();
+    }
+  }, 15_000);
+
   it("does not auto-approve a blocked self-iteration request", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -3210,6 +3304,35 @@ function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["
   };
 }
 
+function htmlArtifactOutput(label: string): Record<string, unknown> {
+  return {
+    contractVersion: 2,
+    humanReportMd: `## Builder report\n\n${label}`,
+    handoffJson: { delivered: label },
+    result: { label },
+    artifacts: [{
+      slot: "html",
+      title: `${label} HTML`,
+      kind: "html",
+      content: `<!doctype html><html><body>${label}</body></html>`
+    }]
+  };
+}
+
+function markdownArtifactOutput(markdown: string, title: string): Record<string, unknown> {
+  return {
+    contractVersion: 2,
+    humanReportMd: markdown,
+    result: { summary: markdown },
+    artifacts: [{
+      slot: "research",
+      title,
+      kind: "markdown",
+      content: markdown
+    }]
+  };
+}
+
 function createCompletedAgentTask(
   taskId: string,
   status: AgentTaskResult["status"],
@@ -3234,7 +3357,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -3244,26 +3367,28 @@ async function waitForCondition(predicate: () => boolean, label: string): Promis
   throw new Error(`Timed out waiting for ${label}.`);
 }
 
-async function waitForRunTerminal(store: FileHivewardStore, runId: string): Promise<Awaited<ReturnType<FileHivewardStore["getRunView"]>>> {
-  const deadline = Date.now() + 2_000;
+async function waitForRunTerminal(store: HivewardStore, runId: string): Promise<Awaited<ReturnType<HivewardStore["getRunView"]>>> {
+  const deadline = Date.now() + 10_000;
+  let lastView: Awaited<ReturnType<HivewardStore["getRunView"]>> | undefined;
 
   while (Date.now() < deadline) {
     const view = await store.getRunView(runId);
+    lastView = view;
     if (view && !["queued", "running", "waiting_approval"].includes(view.run.status)) {
       return view;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}`);
+  throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}; last status=${lastView?.run.status}; approvals=${lastView?.approvalRequests?.map((request) => `${request.kind}:${request.status}:${request.requestedBy.nodeId}:approve=${request.capabilities.approve}:complete=${request.capabilities.complete}:body=${request.body.slice(0, 240)}`).join(",")}; nodes=${lastView?.nodeRuns.map((nodeRun) => `${nodeRun.nodeId}:${nodeRun.status}`).join(",")}`);
 }
 
 async function waitForRunStatus(
-  store: FileHivewardStore,
+  store: HivewardStore,
   runId: string,
   status: BlueprintRunStatus
-): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>> {
-  const deadline = Date.now() + 2_000;
+): Promise<NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>> {
+  const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
     const view = await store.getRunView(runId);
@@ -3277,10 +3402,10 @@ async function waitForRunStatus(
 }
 
 async function waitForRunView(
-  store: FileHivewardStore,
+  store: HivewardStore,
   runId: string,
-  predicate: (view: NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>) => boolean
-): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>> {
+  predicate: (view: NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>) => boolean
+): Promise<NonNullable<Awaited<ReturnType<HivewardStore["getRunView"]>>>> {
   const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
@@ -3300,7 +3425,7 @@ async function waitForNodeRun(
   nodeId: string,
   predicate: (nodeRun: NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>["nodeRuns"][number]) => boolean
 ): Promise<NonNullable<Awaited<ReturnType<FileHivewardStore["getRunView"]>>>["nodeRuns"][number]> {
-  const deadline = Date.now() + 2_000;
+  const deadline = Date.now() + 10_000;
 
   while (Date.now() < deadline) {
     const view = await store.getRunView(runId);
@@ -3449,4 +3574,8 @@ function createSelfIterationBlueprint(config: {
       }
     ]
   );
+}
+
+function isRuntimeNodeRun(nodeRun: BlueprintNodeRun): boolean {
+  return !nodeRun.id.startsWith("preflight-");
 }

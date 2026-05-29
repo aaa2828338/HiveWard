@@ -6,14 +6,15 @@ import type {
   ApprovalRequest,
   ApprovalRequestKind,
   ApprovalRequestStatus,
-  ReleaseReport
+  ReleaseReport,
+  RunTimelineItem
 } from "@hiveward/shared";
 import {
   capabilitiesAllow,
   emptyApprovalCapabilities,
   resolveApprovalCapabilities
 } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 export interface ApprovalActionResult {
   approvalRequest: ApprovalRequest;
   decision: ApprovalDecision;
@@ -31,8 +32,18 @@ export interface LifecycleApprovalOutcome {
   };
 }
 
+export class ApprovalConflictError extends Error {
+  readonly statusCode = 409;
+  readonly code = "approval_conflict";
+
+  constructor(message = "Approval request is no longer pending.") {
+    super(message);
+    this.name = "ApprovalConflictError";
+  }
+}
+
 export class ApprovalService {
-  constructor(private readonly store: FileHivewardStore) {}
+  constructor(private readonly store: HivewardStore) {}
 
   async createRequest(input: {
     runId: string;
@@ -133,45 +144,49 @@ export class ApprovalService {
       ...baseRevision,
       ...revisionOverride
     };
-    const closed: ApprovalRequest = {
-      ...current,
-      status: "replied",
-      capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: now
-    };
-    const decision = this.buildDecision(current.id, "reply", "replied", "user", trimmed, now);
-    const nextRequest = await this.createRequest({
+    const nextRequest: ApprovalRequest = {
+      id: `approval-${nanoid(10)}`,
       runId: current.runId,
       roundId: current.roundId,
       nodeRunId: current.nodeRunId,
       kind: current.kind,
+      status: "pending",
       title: revised.title,
       body: revised.body,
       payloadRef: revised.payloadRef,
       sourceRef: current.sourceRef,
       threadId: current.threadId,
-      requestedBy: current.requestedBy,
       revision,
       replacesRequestId: current.id,
-      closeReplacedRequest: false,
-      capabilities: revised.capabilities,
-      finalRound: current.kind === "manager_release_report" && current.capabilities.complete && !current.capabilities.approve
-    });
-    if (revised.releaseReport) {
-      await this.store.upsertReleaseReport({
-        ...revised.releaseReport,
-        approvalRequestId: nextRequest.id,
-        createdAt: nextRequest.requestedAt
-      });
-    }
-    const linkedClosed: ApprovalRequest = {
-      ...closed,
-      supersededByRequestId: nextRequest.id
+      capabilities: revised.capabilities ?? resolveApprovalCapabilities(
+        current.kind,
+        "pending",
+        { finalRound: current.kind === "manager_release_report" && current.capabilities.complete && !current.capabilities.approve }
+      ),
+      requestedBy: current.requestedBy,
+      requestedAt: now,
+      updatedAt: now
     };
-    await this.store.upsertApprovalRequest(linkedClosed);
-    await this.store.appendApprovalDecision(decision);
-    await this.appendDecisionTimeline(linkedClosed, decision);
-    return { approvalRequest: linkedClosed, decision, nextApprovalRequest: nextRequest };
+    const linkedClosed: ApprovalRequest = {
+      ...current,
+      status: "replied",
+      supersededByRequestId: nextRequest.id,
+      capabilities: { ...emptyApprovalCapabilities },
+      updatedAt: now
+    };
+    const decision = this.buildDecision(current.id, "reply", "replied", "user", trimmed, now);
+    return this.applyDecisionOrThrow({
+      approvalRequest: linkedClosed,
+      decision,
+      nextApprovalRequest: nextRequest,
+      releaseReport: revised.releaseReport
+        ? {
+            ...revised.releaseReport,
+            approvalRequestId: nextRequest.id,
+            createdAt: nextRequest.requestedAt
+          }
+        : undefined
+    });
   }
 
   async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {
@@ -182,10 +197,7 @@ export class ApprovalService {
     const now = new Date().toISOString();
     const updated: ApprovalRequest = { ...current, updatedAt: now };
     const decision = this.buildDecision(current.id, "reply", "pending", "user", trimmed, now);
-    await this.store.upsertApprovalRequest(updated);
-    await this.store.appendApprovalDecision(decision);
-    await this.appendDecisionTimeline(updated, decision);
-    return { approvalRequest: updated, decision };
+    return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
   }
 
   async autoApprove(input: Parameters<ApprovalService["createRequest"]>[0], comment?: string): Promise<ApprovalActionResult> {
@@ -196,7 +208,7 @@ export class ApprovalService {
   async autoResolve(id: string, comment?: string): Promise<ApprovalActionResult> {
     const request = await this.requireRequest(id);
     if (request.status !== "pending") {
-      throw new Error("Approval request is already closed.");
+      throw new ApprovalConflictError("Approval request is already closed.");
     }
     if (request.capabilities.approve) {
       return this.decide(request.id, "auto_approve", "approved", { actor: "system", comment });
@@ -253,10 +265,7 @@ export class ApprovalService {
       capabilities: { ...emptyApprovalCapabilities },
       updatedAt: now
     };
-    await this.store.upsertApprovalRequest(next);
-    await this.store.appendApprovalDecision(decision);
-    await this.appendDecisionTimeline(next, decision);
-    return { approvalRequest: next, decision };
+    return this.applyDecisionOrThrow({ approvalRequest: next, decision });
   }
 
   private async closeRequest(
@@ -276,16 +285,14 @@ export class ApprovalService {
       capabilities: { ...emptyApprovalCapabilities },
       updatedAt: now
     };
-    await this.store.upsertApprovalRequest(next);
-    await this.store.appendApprovalDecision(decision);
-    await this.appendDecisionTimeline(next, decision);
+    await this.applyDecisionOrThrow({ approvalRequest: next, decision });
     return next;
   }
 
   private async requirePendingRequest(id: string, action: ApprovalDecisionAction): Promise<ApprovalRequest> {
     const request = await this.requireRequest(id);
     if (request.status !== "pending") {
-      throw new Error("Approval request is already closed.");
+      throw new ApprovalConflictError("Approval request is already closed.");
     }
     if (!capabilitiesAllow(request.capabilities, action)) {
       throw new Error(`Approval request does not allow ${action}.`);
@@ -320,8 +327,38 @@ export class ApprovalService {
     };
   }
 
+  private async applyDecisionOrThrow(input: {
+    approvalRequest: ApprovalRequest;
+    decision: ApprovalDecision;
+    nextApprovalRequest?: ApprovalRequest;
+    releaseReport?: ReleaseReport;
+  }): Promise<ApprovalActionResult> {
+    const result = await this.store.applyApprovalDecision({
+      approvalRequestId: input.approvalRequest.id,
+      expectedStatus: "pending",
+      nextRequest: input.approvalRequest,
+      decision: input.decision,
+      nextApprovalRequest: input.nextApprovalRequest,
+      releaseReport: input.releaseReport,
+      timelineItem: await this.store.getBlueprintRun(input.approvalRequest.runId)
+        ? this.buildDecisionTimelineItem(input.approvalRequest, input.decision)
+        : undefined
+    });
+    if (result.status === "conflict") {
+      throw new ApprovalConflictError();
+    }
+    return result;
+  }
+
   private appendDecisionTimeline(request: ApprovalRequest, decision: ApprovalDecision): Promise<unknown> {
-    return this.store.appendRunTimelineItem({
+    return this.store.appendRunTimelineItem(this.buildDecisionTimelineItem(request, decision));
+  }
+
+  private buildDecisionTimelineItem(
+    request: ApprovalRequest,
+    decision: ApprovalDecision
+  ): Omit<RunTimelineItem, "sequence"> & { sequence?: number } {
+    return {
       id: `timeline-${nanoid(10)}`,
       runId: request.runId,
       createdAt: decision.createdAt,
@@ -331,7 +368,7 @@ export class ApprovalService {
       title: `${request.title}: ${decision.action}`,
       body: decision.comment,
       payloadRef: request.payloadRef
-    });
+    };
   }
 
   private async buildReplyRevision(

@@ -223,6 +223,7 @@ export interface Artifact {
   runId: string;
   roundId?: string;
   nodeRunId?: string;
+  slot?: string;
   title?: string;
   kind: "html" | "markdown" | "json" | "file" | "link";
   format?: string;
@@ -232,6 +233,8 @@ export interface Artifact {
   previewPolicy: "none" | "source" | "sandboxed_iframe";
   trusted: boolean;
   status?: "current" | "rejected" | "superseded";
+  bytes?: number;
+  sha256?: string;
   createdAt: string;
 }
 
@@ -277,10 +280,26 @@ export interface AgentHandoff {
   createdAt: string;
 }
 
+export interface AgentArtifactPayload {
+  id?: string;
+  slot?: string;
+  title?: string;
+  kind: Artifact["kind"];
+  format?: string;
+  previewPolicy?: Artifact["previewPolicy"];
+  trusted?: boolean;
+  content?: unknown;
+  body?: unknown;
+  path?: string;
+  url?: string;
+}
+
 export interface AgentOutputEnvelope {
+  contractVersion?: 2;
   humanReportMd?: string;
   handoffJson?: unknown;
   result?: unknown;
+  artifacts?: AgentArtifactPayload[];
 }
 
 export interface RunTimelineItem {

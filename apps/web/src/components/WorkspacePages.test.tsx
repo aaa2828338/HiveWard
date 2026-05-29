@@ -47,7 +47,7 @@ describe("RunsPage", () => {
           queuedAt: now,
           startedAt: now,
           endedAt: now,
-          output: "SECRET_RAW_OUTPUT"
+          output: "SECRET_RAW_OUTPUT http://localhost:5173/raw-only.html"
         },
         {
           id: "node-run-2",
@@ -201,8 +201,98 @@ describe("RunsPage", () => {
     expect(html).toContain("Manager summary from reports.");
     expect(html).toContain("Readable artifact");
     expect(html.indexOf("/artifacts/artifact-1")).toBeLessThan(html.indexOf("Advanced details"));
+    expect(html.indexOf("http://localhost:5173/raw-only.html")).toBeGreaterThan(html.indexOf("Advanced details"));
     expect(html.indexOf("SECRET_RAW_OUTPUT")).toBeGreaterThan(html.indexOf("Advanced details"));
     expect(html.indexOf("machine-only")).toBeGreaterThan(html.indexOf("Advanced details"));
+  });
+
+  it("does not promote raw output paths into delivery locations when artifacts are empty", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-raw-path",
+      companyId: "company-1",
+      name: "Raw path blueprint",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-raw-path",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "succeeded",
+        startedBy: "user-1",
+        startedAt: now,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [
+        {
+          id: "node-run-raw-path",
+          blueprintRunId: "run-raw-path",
+          blueprintId: blueprint.id,
+          nodeId: "agent-raw-path",
+          nodeLabel: "Raw Path Agent",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: { path: "D:/HiveWard/raw-only.html", result: { ok: true } }
+        }
+      ],
+      events: [],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [
+        {
+          id: "human-report-raw-path",
+          runId: "run-raw-path",
+          nodeRunId: "node-run-raw-path",
+          nodeId: "agent-raw-path",
+          nodeLabel: "Raw Path Agent",
+          title: "Raw Path Agent report",
+          bodyMd: "## Summary\n\nThe agent returned debug output only.",
+          source: "agent",
+          createdAt: now
+        }
+      ],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="en"
+        t={messages.en}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toContain("No new deliverable produced in this step.");
+    expect(html.indexOf("D:/HiveWard/raw-only.html")).toBeGreaterThan(html.indexOf("Advanced details"));
+    expect(html).not.toContain('href="D:/HiveWard/raw-only.html"');
   });
 
   it("localizes common agent report chrome and shows Windows artifact paths in Chinese runs", () => {

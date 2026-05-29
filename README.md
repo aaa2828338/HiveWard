@@ -129,6 +129,53 @@ npm run check:env
 npm run dev
 ```
 
+### SQLite runtime migration gate
+
+HiveWard vNext uses SQLite for runtime state, but startup is fail-closed when legacy JSON state exists and no migrated SQLite database is present. Do not delete `data/hiveward-store.json` to bypass this gate.
+
+Default runtime policy:
+
+- `sqlite` is the default and only normal writable runtime backend.
+- `json-readonly` is an explicit short-term read-only fallback for inspecting old JSON data; it does not seed defaults and rejects runtime writes.
+- `json` remains only as a development escape hatch and is not intended for production runtime use.
+
+Real-data migration rehearsal:
+
+1. Stop API/worker processes that may write runtime state.
+2. Run a dry-run against a copied backup SQLite file and review the generated report.
+3. Run verify with artifact checks and orphan listing.
+4. Apply the migration only after dry-run and verify are clean.
+5. Run verify again against `data/hiveward.sqlite`.
+6. If apply must be rolled back, stop services and restore the previous SQLite files from the reported `data/migration-backups/<id>/` directory, or use `HIVEWARD_STORE_BACKEND=json-readonly` for temporary inspection while fixing migration issues.
+
+```bash
+# Dry-run through startup without enabling SQLite.
+HIVEWARD_JSON_MIGRATION_MODE=dry-run npm run dev
+
+# Manual dry-run, then deep verification.
+node scripts/migrate-json-store-to-sqlite.mjs --data-dir data --sqlite-path data/hiveward.sqlite --dry-run
+node scripts/verify-sqlite-store.mjs --data-dir data --sqlite-path data/hiveward.sqlite --check-artifacts --list-orphan-artifacts
+
+# Apply after the dry-run report is clean, then verify again.
+node scripts/migrate-json-store-to-sqlite.mjs --data-dir data --sqlite-path data/hiveward.sqlite --apply
+node scripts/verify-sqlite-store.mjs --data-dir data --sqlite-path data/hiveward.sqlite --check-artifacts --list-orphan-artifacts
+
+# Startup auto-apply is available only when the dry-run path is trusted.
+HIVEWARD_JSON_MIGRATION_MODE=auto npm run dev
+
+# Artifact maintenance: list, dry-run cleanup, then cleanup.
+node scripts/verify-sqlite-store.mjs --data-dir data --sqlite-path data/hiveward.sqlite --list-orphan-artifacts
+node scripts/verify-sqlite-store.mjs --data-dir data --sqlite-path data/hiveward.sqlite --cleanup-orphan-artifacts --dry-run
+node scripts/verify-sqlite-store.mjs --data-dir data --sqlite-path data/hiveward.sqlite --cleanup-orphan-artifacts
+```
+
+Relevant environment variables:
+
+- `HIVEWARD_STORE_BACKEND=sqlite|json-readonly|json`
+- `HIVEWARD_SQLITE_PATH=data/hiveward.sqlite`
+- `HIVEWARD_JSON_MIGRATION_MODE=off|dry-run|auto`
+- `HIVEWARD_JSON_READONLY_FALLBACK=false`
+
 默认情况下，HiveWard 会优先连接本机可用的 OpenClaw Gateway；如果没有检测到真实配置，会进入 mock 模式，方便先体验界面和蓝图流转。
 
 ### 权限提示

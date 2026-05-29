@@ -11,12 +11,12 @@ import type {
   ManagerSlotNodeConfig,
   ReleaseReport
 } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import type { ApprovalActionResult, LifecycleApprovalOutcome } from "./lifecycleApprovalService";
 import { ApprovalService } from "./lifecycleApprovalService";
 export class IterationService {
   constructor(
-    private readonly store: FileHivewardStore,
+    private readonly store: HivewardStore,
     private readonly approvalService: ApprovalService
   ) {}
 
@@ -249,7 +249,7 @@ export class IterationService {
   }
 
   private async handleRequirementDecision(result: ApprovalActionResult): Promise<LifecycleApprovalOutcome> {
-    const round = await this.roundForRequest(result.approvalRequest.id);
+    const round = await this.roundForRequest(result.approvalRequest);
     if (!round) return { resumeExecution: false, completeRun: false };
     if (result.decision.action === "approve" || result.decision.action === "auto_approve") {
       await this.store.upsertIterationRound({
@@ -272,7 +272,7 @@ export class IterationService {
   }
 
   private async handleReleaseReportDecision(result: ApprovalActionResult): Promise<LifecycleApprovalOutcome> {
-    const round = await this.roundForRequest(result.approvalRequest.id);
+    const round = await this.roundForRequest(result.approvalRequest);
     if (!round) return { resumeExecution: false, completeRun: false };
     const session = await this.requireSession(round.sessionId);
     if (result.decision.action === "complete") {
@@ -424,9 +424,9 @@ export class IterationService {
     return (await this.store.listIterationRounds({ runId, status: "executing" })).at(-1);
   }
 
-  private async roundForRequest(requestId: string): Promise<IterationRound | undefined> {
+  private async roundForRequest(request: ApprovalRequest): Promise<IterationRound | undefined> {
     return (await this.store.listIterationRounds()).find((round) =>
-      round.requirementRequestId === requestId || round.releaseReportRequestId === requestId
+      round.requirementRequestId === request.id || round.releaseReportRequestId === request.id || round.id === request.roundId
     );
   }
 

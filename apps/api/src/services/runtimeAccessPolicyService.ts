@@ -4,7 +4,7 @@ import {
   resolveApprovalCapabilities,
   runtimeAccessPolicyToPermissionProfile
 } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import { ApprovalService } from "./lifecycleApprovalService";
 export class RuntimeAccessPolicyService {
   static normalize(value: Partial<RuntimeAccessPolicy> | undefined, legacyPermissionProfile?: AgentPermissionProfile): RuntimeAccessPolicy {
@@ -18,7 +18,7 @@ export class RuntimeAccessPolicyService {
 
 export class MigrationService {
   constructor(
-    private readonly store: FileHivewardStore,
+    private readonly store: HivewardStore,
     private readonly approvalService: ApprovalService
   ) {}
 

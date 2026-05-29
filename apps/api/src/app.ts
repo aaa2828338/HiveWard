@@ -4,12 +4,12 @@ import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
 import { createRuntimeAdapter } from "@hiveward/adapter";
 import { createApiRouter } from "./routes/apiRouter";
-import { FileHivewardStore } from "./store/fileHivewardStore";
+import { createHivewardStore } from "./store/createHivewardStore";
 import { OpenClawConfigStore } from "./store/openClawConfigStore";
 import { BlueprintWorker } from "./worker/blueprintWorker";
 
 export async function createHivewardApiApp(): Promise<ReturnType<typeof express>> {
-  const store = new FileHivewardStore();
+  const store = await createHivewardStore();
   await store.init();
 
   const openClawConfigStore = new OpenClawConfigStore();
@@ -42,13 +42,33 @@ const apiNotFoundHandler: express.RequestHandler = (req, res, next) => {
 
 const errorHandler: ErrorRequestHandler = (error, _req, res, _next) => {
   const message = error instanceof Error ? error.message : "Unexpected API failure.";
-  res.status(500).json({
+  const statusCode = readErrorStatusCode(error);
+  const code = readErrorCode(error) ?? (statusCode === 409 ? "conflict" : "internal_error");
+  res.status(statusCode).json({
     error: {
-      code: "internal_error",
+      code,
       message
     }
   });
 };
+
+function readErrorStatusCode(error: unknown): number {
+  if (typeof error === "object" && error !== null && "statusCode" in error) {
+    const statusCode = (error as { statusCode?: unknown }).statusCode;
+    if (typeof statusCode === "number" && Number.isInteger(statusCode) && statusCode >= 400 && statusCode < 600) {
+      return statusCode;
+    }
+  }
+  return 500;
+}
+
+function readErrorCode(error: unknown): string | undefined {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code.trim()) return code;
+  }
+  return undefined;
+}
 
 function projectRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../..");

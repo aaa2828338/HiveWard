@@ -10,6 +10,7 @@ import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { AgentSdkTaskRegistry } from "./task-registry";
+import { readAgentSdkRuntimeOptions } from "./types";
 
 describe("agent SDK runtime", () => {
   it("builds a stable prompt envelope without secret values", () => {
@@ -72,6 +73,11 @@ describe("agent SDK runtime", () => {
     expect(mapClaudeTools("workspace_write", ["repo.test"])).toContain("Bash(npm test:*)");
     expect(mapCodexSandbox("read_only")).toBe("read-only");
     expect(mapCodexSandbox("workspace_write")).toBe("workspace-write");
+  });
+
+  it("defaults SDK task timeout to one hour", () => {
+    const options = readAgentSdkRuntimeOptions(createWorkspace(), { HIVEWARD_AGENT_SDK_MAX_CONCURRENCY: "2" });
+    expect(options.defaultTimeoutMs).toBe(3_600_000);
   });
 
   it("fails Claude tasks that request unsupported network or web search policy changes", async () => {

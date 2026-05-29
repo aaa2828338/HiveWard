@@ -53,14 +53,28 @@ import {
   hydrateImportedBlueprint,
   normalizeWorkspaceDashboard,
   readPortableBlueprintPackage,
+  resolveApprovalCapabilities,
   resolveFinalRunResult
 } from "@hiveward/shared";
 import { FileHivewardChatStore, type LegacyHivewardChatState } from "./fileHivewardChatStore";
+import type {
+  ApplyApprovalDecisionInput,
+  ApplyApprovalDecisionResult,
+  ApplyInboxDecisionInput,
+  ApplyInboxDecisionResult,
+  CancelNodeRunInput,
+  ClaimNodeRunResult,
+  CompleteNodeRunInput,
+  FailNodeRunInput,
+  HivewardStore,
+  PublishAgentOutputInput,
+  PublishAgentOutputResult
+} from "./hivewardStore";
 import { isFileNotFoundError, safeWriteJson } from "./jsonFile";
 
 const storeIndexSchema = "hiveward.store-index/v1";
 
-interface BlueprintIndexEntry {
+export interface BlueprintIndexEntry {
   id: string;
   companyId: string;
   name: string;
@@ -70,7 +84,7 @@ interface BlueprintIndexEntry {
   updatedAt: string;
 }
 
-interface HivewardStoreIndex {
+export interface HivewardStoreIndex {
   schema: typeof storeIndexSchema;
   companies: CompanyProfile[];
   selectedCompanyId: string | null;
@@ -128,22 +142,28 @@ interface BlueprintSkillSourceSnapshot {
   }>;
 }
 
-export class FileHivewardStore {
+export class FileHivewardStore implements HivewardStore {
   private readonly filePath: string;
   private readonly dataDir: string;
   private readonly blueprintsDir: string;
   private readonly blueprintWorkspacesDir: string;
   private readonly runsDir: string;
   private readonly chatStore: FileHivewardChatStore;
+  private readonly seedDefaultsOnInit: boolean;
+  private readonly nodeRunLeases = new Map<string, { owner: string; workerEpoch: number; leaseExpiresAt: string }>();
   private operationQueue: Promise<void> = Promise.resolve();
 
-  constructor(filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/hiveward-store.json")) {
+  constructor(
+    filePath = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../data/hiveward-store.json"),
+    options: { seedDefaults?: boolean } = {}
+  ) {
     this.filePath = filePath;
     this.dataDir = dirname(filePath);
     this.blueprintsDir = join(this.dataDir, "blueprints");
     this.blueprintWorkspacesDir = join(this.dataDir, "blueprint-workspaces");
     this.runsDir = join(this.dataDir, "runs");
     this.chatStore = new FileHivewardChatStore(join(this.dataDir, "hiveward-chat-store.json"));
+    this.seedDefaultsOnInit = options.seedDefaults ?? true;
   }
 
   getDataDir(): string {
@@ -156,6 +176,9 @@ export class FileHivewardStore {
       await mkdir(this.blueprintsDir, { recursive: true });
       await mkdir(this.blueprintWorkspacesDir, { recursive: true });
       await mkdir(this.runsDir, { recursive: true });
+      if (!this.seedDefaultsOnInit && !await isReadableFile(this.filePath)) {
+        return;
+      }
       try {
         const { index, legacyChat } = await this.readIndexWithLegacyChatUnlocked();
         await this.chatStore.init(index.companies, legacyChat);
@@ -164,6 +187,9 @@ export class FileHivewardStore {
       } catch (error) {
         if (!isFileNotFoundError(error)) {
           throw error;
+        }
+        if (!this.seedDefaultsOnInit) {
+          return;
         }
         const now = new Date().toISOString();
         const companies = createDefaultCompanies(now);
@@ -729,6 +755,88 @@ export class FileHivewardStore {
     });
   }
 
+  async applyInboxDecision(input: ApplyInboxDecisionInput): Promise<ApplyInboxDecisionResult> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.requireSelectedCompanyId(index);
+      const items = index.inboxItems[companyId] ?? [];
+      const itemIndex = items.findIndex((item) => item.id === input.inboxItemId);
+      const item = itemIndex >= 0 ? items[itemIndex]! : undefined;
+      if (!item || item.status !== "pending") return { status: "conflict", item };
+      const requestIndex = input.approvalRequestId
+        ? index.approvalRequests.findIndex((request) => request.id === input.approvalRequestId)
+        : -1;
+      const request = requestIndex >= 0 ? index.approvalRequests[requestIndex]! : undefined;
+      if (input.approvalRequestId && (!request || request.status !== "pending")) {
+        return { status: "conflict", item };
+      }
+
+      let importedBlueprints: BlueprintDefinition[] | undefined;
+      const now = new Date().toISOString();
+      if (input.action === "reply") {
+        const body = readOptionalString(input.comment);
+        if (!body) throw new Error("Inbox reply message is required.");
+        const replied = {
+          ...item,
+          replies: [...(item.replies ?? []), { id: `inbox-reply-${nanoid(10)}`, role: "user" as const, body, createdAt: now }],
+          updatedAt: now
+        };
+        items[itemIndex] = replied;
+        index.inboxItems[companyId] = items;
+        if (requestIndex >= 0 && request) {
+          index.approvalRequests[requestIndex] = { ...request, updatedAt: now };
+          if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
+          if (input.approvalTimelineItem) {
+            upsertById(index.runTimeline, {
+              ...input.approvalTimelineItem,
+              sequence: input.approvalTimelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.approvalTimelineItem.runId)
+            });
+          }
+        }
+        await this.writeIndexUnlocked(index);
+        return { status: "applied", item: replied };
+      }
+
+      if (input.action === "approve" && item.type === "blueprint_proposal") {
+        const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
+        if (!blueprintPackage) throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
+        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, blueprintPackage, {
+          ...(input.defaults ?? {}),
+          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? input.defaults?.runtimeId,
+          replaceBlueprintId: item.blueprintId ?? input.defaults?.replaceBlueprintId
+        });
+      }
+
+      const decided: InboxItem = {
+        ...item,
+        status: input.action === "approve" ? "approved" : "rejected",
+        updatedAt: now,
+        decidedAt: now,
+        decisionComment: readOptionalString(input.comment)
+      };
+      items[itemIndex] = decided;
+      index.inboxItems[companyId] = items;
+      if (requestIndex >= 0 && request) {
+        index.approvalRequests[requestIndex] = {
+          ...request,
+          status: input.action === "approve" ? "approved" : "rejected",
+          capabilities: resolveApprovalCapabilities(request.kind, input.action === "approve" ? "approved" : "rejected"),
+          updatedAt: now
+        };
+        if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
+        if (input.approvalTimelineItem) {
+          upsertById(index.runTimeline, {
+            ...input.approvalTimelineItem,
+            sequence: input.approvalTimelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.approvalTimelineItem.runId)
+          });
+        }
+      }
+      await this.writeIndexUnlocked(index);
+      await Promise.all((importedBlueprints ?? []).map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
+      return { status: "applied", item: decided, importedBlueprints };
+    });
+  }
+
   async createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -820,6 +928,151 @@ export class FileHivewardStore {
       if (runIndex >= 0) {
         await this.writeIndexUnlocked(indexState);
       }
+    });
+  }
+
+  async createQueuedNodeRun(nodeRun: BlueprintNodeRun): Promise<BlueprintNodeRun> {
+    const queued: BlueprintNodeRun = {
+      ...nodeRun,
+      status: "queued",
+      startedAt: undefined,
+      endedAt: undefined,
+      error: undefined
+    };
+    await this.upsertNodeRun(queued);
+    return queued;
+  }
+
+  async claimNodeRun(input: { nodeRunId: string; owner: string; leaseMs: number }): Promise<ClaimNodeRunResult> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || !this.isClaimableNodeRun(located.nodeRun, input.nodeRunId)) return { claimed: false };
+      const now = new Date().toISOString();
+      const previousEpoch = this.nodeRunLeases.get(input.nodeRunId)?.workerEpoch ?? 0;
+      const workerEpoch = previousEpoch + 1;
+      const leaseExpiresAt = new Date(Date.now() + input.leaseMs).toISOString();
+      const nodeRun: BlueprintNodeRun = {
+        ...located.nodeRun,
+        status: "running",
+        startedAt: located.nodeRun.startedAt ?? now
+      };
+      located.archive.nodeRuns[located.index] = nodeRun;
+      this.nodeRunLeases.set(input.nodeRunId, { owner: input.owner, workerEpoch, leaseExpiresAt });
+      await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
+      return { claimed: true, nodeRun, workerEpoch, leaseExpiresAt };
+    });
+  }
+
+  async renewNodeRunLease(input: { nodeRunId: string; owner: string; workerEpoch: number; leaseMs: number }): Promise<boolean> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
+      const leaseExpiresAt = new Date(Date.now() + input.leaseMs).toISOString();
+      this.nodeRunLeases.set(input.nodeRunId, { owner: input.owner, workerEpoch: input.workerEpoch, leaseExpiresAt });
+      return true;
+    });
+  }
+
+  async startNodeRun(input: { nodeRunId: string; owner: string; workerEpoch: number; startedAt?: string; input?: unknown; openclawRef?: BlueprintNodeRun["openclawRef"] }): Promise<boolean> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
+      located.archive.nodeRuns[located.index] = {
+        ...located.nodeRun,
+        startedAt: input.startedAt ?? located.nodeRun.startedAt ?? new Date().toISOString(),
+        ...(input.input === undefined ? {} : { input: input.input }),
+        ...(input.openclawRef === undefined ? {} : { openclawRef: input.openclawRef })
+      };
+      await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
+      return true;
+    });
+  }
+
+  async completeNodeRun(input: CompleteNodeRunInput): Promise<boolean> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
+      located.archive.nodeRuns[located.index] = {
+        ...located.nodeRun,
+        ...input.nodeRun,
+        status: "succeeded",
+        endedAt: input.nodeRun.endedAt ?? new Date().toISOString(),
+        error: undefined
+      };
+      await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
+      return true;
+    });
+  }
+
+  async failNodeRun(input: FailNodeRunInput): Promise<boolean> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
+      located.archive.nodeRuns[located.index] = {
+        ...located.nodeRun,
+        status: "failed",
+        endedAt: input.endedAt ?? new Date().toISOString(),
+        error: input.error
+      };
+      await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
+      return true;
+    });
+  }
+
+  async cancelNodeRun(input: CancelNodeRunInput): Promise<boolean> {
+    return this.enqueue(async () => {
+      const located = await this.findNodeRunUnlocked(input.nodeRunId);
+      if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
+      located.archive.nodeRuns[located.index] = {
+        ...located.nodeRun,
+        status: "cancelled",
+        endedAt: input.endedAt ?? new Date().toISOString(),
+        error: input.reason,
+        openclawRef: input.openclawRef ?? located.nodeRun.openclawRef
+      };
+      await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
+      return true;
+    });
+  }
+
+  async publishAgentOutput(input: PublishAgentOutputInput): Promise<PublishAgentOutputResult> {
+    return this.enqueue(async () => {
+      const indexState = await this.readIndexUnlocked();
+      const archive = await this.readRunArchiveUnlocked(input.nodeRun.blueprintRunId);
+      const nodeIndex = archive.nodeRuns.findIndex((item) => item.id === input.nodeRunId);
+      const current = nodeIndex >= 0 ? archive.nodeRuns[nodeIndex] : undefined;
+      if (!current || current.status !== "running" || !this.matchesLease(input)) return { published: false };
+      const completed: BlueprintNodeRun = {
+        ...current,
+        ...input.nodeRun,
+        status: "succeeded",
+        endedAt: input.nodeRun.endedAt ?? new Date().toISOString(),
+        output: input.output,
+        usage: input.nodeRun.usage,
+        openclawRef: input.nodeRun.openclawRef,
+        error: undefined
+      };
+      archive.nodeRuns[nodeIndex] = completed;
+      archive.events.push(input.event);
+      for (const artifact of input.artifacts) upsertById(indexState.artifacts, artifact);
+      if (input.humanReport) upsertById(indexState.agentHumanReports, input.humanReport);
+      if (input.handoff) upsertById(indexState.agentHandoffs, input.handoff);
+      for (const item of input.timelineItems ?? []) {
+        upsertById(indexState.runTimeline, {
+          ...item,
+          sequence: item.sequence ?? nextTimelineSequence(indexState.runTimeline, item.runId)
+        });
+      }
+      const run = applyNodeRunFactsToRun(archive.run, archive.nodeRuns);
+      const runIndex = indexState.runIndex.findIndex((item) => item.id === run.id);
+      if (runIndex >= 0) indexState.runIndex[runIndex] = run;
+      await this.writeRunArchiveUnlocked({
+        ...archive,
+        run,
+        finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, run.status)
+      });
+      await this.writeIndexUnlocked(indexState);
+      return { published: true };
     });
   }
 
@@ -983,6 +1236,34 @@ export class FileHivewardStore {
       upsertById(index.approvalDecisions, decision);
       await this.writeIndexUnlocked(index);
       return decision;
+    });
+  }
+
+  async applyApprovalDecision(input: ApplyApprovalDecisionInput): Promise<ApplyApprovalDecisionResult> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const requestIndex = index.approvalRequests.findIndex((request) => request.id === input.approvalRequestId);
+      const current = requestIndex >= 0 ? index.approvalRequests[requestIndex]! : undefined;
+      if (!current || current.status !== input.expectedStatus) {
+        return { status: "conflict", approvalRequest: current };
+      }
+      index.approvalRequests[requestIndex] = input.nextRequest;
+      upsertById(index.approvalDecisions, input.decision);
+      if (input.nextApprovalRequest) upsertById(index.approvalRequests, input.nextApprovalRequest);
+      if (input.releaseReport) upsertById(index.releaseReports, input.releaseReport);
+      if (input.timelineItem) {
+        upsertById(index.runTimeline, {
+          ...input.timelineItem,
+          sequence: input.timelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.timelineItem.runId)
+        });
+      }
+      await this.writeIndexUnlocked(index);
+      return {
+        status: "applied",
+        approvalRequest: input.nextRequest,
+        decision: input.decision,
+        nextApprovalRequest: input.nextApprovalRequest
+      };
     });
   }
 
@@ -1153,11 +1434,14 @@ export class FileHivewardStore {
     });
   }
 
-  async replaceManagerMail(mail: ManagerMail[]): Promise<ManagerMail[]> {
+  async replaceManagerMail(mail: ManagerMail[], scope?: { runId?: string }): Promise<ManagerMail[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const mailIds = new Set(mail.map((item) => item.id));
-      index.managerMail = [...index.managerMail.filter((item) => !mailIds.has(item.id)), ...mail];
+      const retained = scope
+        ? index.managerMail.filter((item) => scope.runId !== undefined ? item.relatedRunId !== scope.runId : false)
+        : index.managerMail.filter((item) => !mailIds.has(item.id));
+      index.managerMail = [...retained, ...mail];
       await this.writeIndexUnlocked(index);
       return mail;
     });
@@ -1315,7 +1599,13 @@ export class FileHivewardStore {
     index: HivewardStoreIndex;
     legacyChat?: LegacyHivewardChatState;
   }> {
-    const raw = await readFile(this.filePath, "utf8");
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (error) {
+      if (!isFileNotFoundError(error) || this.seedDefaultsOnInit) throw error;
+      return { index: this.emptyIndex() };
+    }
     const parsed = JSON.parse(raw) as LegacyHivewardStoreState;
     if (parsed.schema === storeIndexSchema) {
       return {
@@ -1331,6 +1621,30 @@ export class FileHivewardStore {
 
   private async writeIndexUnlocked(index: HivewardStoreIndex): Promise<void> {
     await safeWriteJson(this.filePath, index);
+  }
+
+  private emptyIndex(): HivewardStoreIndex {
+    return {
+      schema: storeIndexSchema,
+      companies: [],
+      selectedCompanyId: null,
+      blueprintIndex: [],
+      runIndex: [],
+      companyDashboards: {},
+      roleDirectories: {},
+      inboxItems: {},
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: []
+    };
   }
 
   private async readBlueprintUnlocked(id: string): Promise<BlueprintDefinition> {
@@ -1358,6 +1672,52 @@ export class FileHivewardStore {
 
   private async writeRunArchiveUnlocked(archive: BlueprintRunArchive): Promise<void> {
     await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(archive));
+  }
+
+  private async findNodeRunUnlocked(nodeRunId: string): Promise<{
+    archive: BlueprintRunArchive;
+    nodeRun: BlueprintNodeRun;
+    index: number;
+  } | undefined> {
+    const indexState = await this.readIndexUnlocked();
+    for (const run of indexState.runIndex) {
+      const archive = await this.readRunArchiveUnlocked(run.id);
+      const index = archive.nodeRuns.findIndex((item) => item.id === nodeRunId);
+      if (index >= 0) {
+        return { archive, nodeRun: archive.nodeRuns[index]!, index };
+      }
+    }
+    return undefined;
+  }
+
+  private async persistNodeRunArchiveAndIndexUnlocked(archive: BlueprintRunArchive): Promise<void> {
+    const indexState = await this.readIndexUnlocked();
+    const run = applyNodeRunFactsToRun(archive.run, archive.nodeRuns);
+    const runIndex = indexState.runIndex.findIndex((item) => item.id === run.id);
+    if (runIndex >= 0) indexState.runIndex[runIndex] = run;
+    await this.writeRunArchiveUnlocked({
+      ...archive,
+      run,
+      finalResult: resolveFinalRunResult(archive.blueprintSnapshot, archive.nodeRuns, run.status)
+    });
+    if (runIndex >= 0) await this.writeIndexUnlocked(indexState);
+  }
+
+  private matchesLease(input: { nodeRunId: string; owner: string; workerEpoch: number }): boolean {
+    const lease = this.nodeRunLeases.get(input.nodeRunId);
+    return Boolean(
+      lease &&
+      lease.owner === input.owner &&
+      lease.workerEpoch === input.workerEpoch &&
+      Date.parse(lease.leaseExpiresAt) > Date.now()
+    );
+  }
+
+  private isClaimableNodeRun(nodeRun: BlueprintNodeRun, nodeRunId: string): boolean {
+    if (nodeRun.status === "queued") return true;
+    if (nodeRun.status !== "running") return false;
+    const lease = this.nodeRunLeases.get(nodeRunId);
+    return !lease || Date.parse(lease.leaseExpiresAt) <= Date.now();
   }
 
   private async importBlueprintPackageUnlocked(
@@ -1723,7 +2083,7 @@ export class FileHivewardStore {
 
 const removedStandaloneBlueprintNodeTypes = new Set(["approval", "send", "parallel_agents"]);
 
-function stripRemovedBlueprintNodes(blueprint: BlueprintDefinition): BlueprintDefinition {
+export function stripRemovedBlueprintNodes(blueprint: BlueprintDefinition): BlueprintDefinition {
   const nodes = blueprint.nodes.filter((node) => !isRemovedStandaloneBlueprintNodeType(node.type));
   if (nodes.length === blueprint.nodes.length) return blueprint;
 
@@ -1735,7 +2095,7 @@ function stripRemovedBlueprintNodes(blueprint: BlueprintDefinition): BlueprintDe
   };
 }
 
-function stripRemovedBlueprintRunArchive(archive: BlueprintRunArchive): BlueprintRunArchive {
+export function stripRemovedBlueprintRunArchive(archive: BlueprintRunArchive): BlueprintRunArchive {
   const blueprintSnapshot = stripRemovedBlueprintNodes(archive.blueprintSnapshot);
   const snapshotNodeIds = new Set(blueprintSnapshot.nodes.map((node) => node.id));
   const nodeRuns = archive.nodeRuns.filter((nodeRun) =>
@@ -1914,7 +2274,7 @@ function readCompanyBlueprintId(index: HivewardStoreIndex, companyId: string, bl
     : undefined;
 }
 
-function buildRoleDirectory(
+export function buildRoleDirectory(
   index: HivewardStoreIndex,
   companyId: string,
   now: string,
@@ -2030,7 +2390,7 @@ function normalizeRoleDriverHarnessId(value: unknown): RoleDriverBinding["harnes
     : "openclaw";
 }
 
-function buildArchitectureBlueprintView(
+export function buildArchitectureBlueprintView(
   index: HivewardStoreIndex,
   companyId: string,
   roles: CompanyRoleDirectory
@@ -2192,7 +2552,7 @@ function normalizeRunSummary(run: BlueprintRunSummary, fallbackCompanyId: string
   };
 }
 
-function toBlueprintIndexEntry(blueprint: BlueprintDefinition): BlueprintIndexEntry {
+export function toBlueprintIndexEntry(blueprint: BlueprintDefinition): BlueprintIndexEntry {
   return {
     id: blueprint.id,
     companyId: blueprint.companyId,
@@ -2204,14 +2564,14 @@ function toBlueprintIndexEntry(blueprint: BlueprintDefinition): BlueprintIndexEn
   };
 }
 
-function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDefinition): BlueprintRunSummary {
+export function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDefinition): BlueprintRunSummary {
   return {
     ...run,
     blueprintName: run.blueprintName ?? blueprint?.name ?? run.blueprintId
   };
 }
 
-function applyNodeRunFactsToRun(run: BlueprintRunSummary, nodeRuns: BlueprintNodeRun[]): BlueprintRunSummary {
+export function applyNodeRunFactsToRun(run: BlueprintRunSummary, nodeRuns: BlueprintNodeRun[]): BlueprintRunSummary {
   const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
   const openclawRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.openclawRef ? [nodeRun.openclawRef] : []));
   return {

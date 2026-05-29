@@ -605,6 +605,46 @@ describe("apiRouter", () => {
     }
   });
 
+  it("returns 409 for repeated approval and inbox decisions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "external-approval");
+      const roles = await fixture.store.getRoleDirectory();
+      const item = await fixture.store.createLeaderDelegationRequest({
+        leaderId: roles.roles.leaders[0]!.id,
+        title: "Delegate to leader"
+      });
+      await seedInboxApprovalRequest(fixture.store, item.id);
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Approved once." })
+        }));
+        const secondApproval = await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Duplicate click." })
+        });
+        const secondApprovalBody = await secondApproval.json() as { error?: { code?: string } };
+        expect(secondApproval.status, JSON.stringify(secondApprovalBody)).toBe(409);
+        expect(secondApprovalBody.error?.code).toBe("approval_conflict");
+        expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
+
+        await readOkJson(await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" }));
+        const secondInbox = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
+        const secondInboxBody = await secondInbox.json() as { error?: { code?: string } };
+        expect(secondInbox.status).toBe(409);
+        expect(secondInboxBody.error?.code).toBe("inbox_decision_conflict");
+        const inboxRequest = (await fixture.store.listApprovalRequests({ runId: item.id }))[0]!;
+        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("serves published HTML artifact download URLs from the configured store data directory", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -624,7 +664,14 @@ describe("apiRouter", () => {
           queuedAt: now,
           startedAt: now,
           endedAt: now,
-          output: "<!doctype html><html><body>artifact route ok</body></html>"
+          output: {
+            humanReportMd: "## Delivery location\n\n- HTML preview declared in artifacts[].",
+            artifacts: [{
+              title: "HTML Builder",
+              kind: "html",
+              content: "<!doctype html><html><body>artifact route ok</body></html>"
+            }]
+          }
         } satisfies BlueprintNodeRun
       });
       if (!artifact?.downloadUrl) throw new Error("Expected published HTML artifact with a downloadUrl.");
@@ -663,7 +710,14 @@ describe("apiRouter", () => {
           queuedAt: now,
           startedAt: now,
           endedAt: now,
-          output: "# Artifact route markdown"
+          output: {
+            humanReportMd: "## Delivery location\n\n- Markdown declared in artifacts[].",
+            artifacts: [{
+              title: "Markdown Builder",
+              kind: "markdown",
+              content: "# Artifact route markdown"
+            }]
+          }
         } satisfies BlueprintNodeRun
       });
       const jsonArtifacts = await service.publishFromNodeRun({
@@ -680,7 +734,14 @@ describe("apiRouter", () => {
           queuedAt: now,
           startedAt: now,
           endedAt: now,
-          output: { ok: true, message: "artifact route json" }
+          output: {
+            humanReportMd: "## Delivery location\n\n- JSON declared in artifacts[].",
+            artifacts: [{
+              title: "JSON Builder",
+              kind: "json",
+              content: { ok: true, message: "artifact route json" }
+            }]
+          }
         } satisfies BlueprintNodeRun
       });
       const markdown = markdownArtifacts[0];
@@ -3146,6 +3207,55 @@ async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, n
   return store.upsertApprovalRequest(request);
 }
 
+async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id,
+    runId: id,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Standalone approval",
+    body: "Approve the standalone request.",
+    sourceRef: { type: "inbox_item", id },
+    threadId: `thread-${id}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
+async function seedInboxApprovalRequest(store: FileHivewardStore, itemId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${itemId}`,
+    runId: itemId,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Inbox approval",
+    body: "Approve the inbox item.",
+    payloadRef: itemId,
+    sourceRef: { type: "inbox_item", id: itemId },
+    threadId: `thread-${itemId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
 async function withApiServer(
   store: FileHivewardStore,
   work: (baseUrl: string) => Promise<void>,
@@ -3161,6 +3271,18 @@ async function withApiServer(
     adapter,
     worker
   }));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error &&
+      typeof (error as { statusCode?: unknown }).statusCode === "number"
+      ? (error as { statusCode: number }).statusCode
+      : 500;
+    const code = typeof error === "object" && error !== null && "code" in error &&
+      typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "internal_error";
+    const message = error instanceof Error ? error.message : "Unexpected API failure.";
+    res.status(statusCode).json({ error: { code, message } });
+  });
 
   const server = app.listen(0);
   try {

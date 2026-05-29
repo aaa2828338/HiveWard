@@ -1,6 +1,5 @@
-import { nanoid } from "nanoid";
 import type { AgentHandoff, AgentHumanReport, BlueprintNodeRun } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 
 export interface ExtractedHumanReport {
   bodyMd: string;
@@ -9,7 +8,7 @@ export interface ExtractedHumanReport {
 }
 
 export class AgentReportService {
-  constructor(private readonly store: FileHivewardStore) {}
+  constructor(private readonly store: HivewardStore) {}
 
   extractHumanReport(output: unknown): ExtractedHumanReport | undefined {
     const record = readOutputRecord(output);
@@ -74,16 +73,30 @@ export class AgentReportService {
     nodeLabel: string;
     output: unknown;
   }): Promise<{ humanReport?: AgentHumanReport; handoff?: AgentHandoff }> {
-    const createdAt = new Date().toISOString();
+    const prepared = this.prepareFromOutput(input);
+    const result: { humanReport?: AgentHumanReport; handoff?: AgentHandoff } = {};
+    if (prepared.humanReport) result.humanReport = await this.store.upsertAgentHumanReport(prepared.humanReport);
+    if (prepared.handoff) result.handoff = await this.store.upsertAgentHandoff(prepared.handoff);
+    return result;
+  }
+
+  prepareFromOutput(input: {
+    runId: string;
+    roundId?: string;
+    nodeRunId: string;
+    nodeId: string;
+    nodeLabel: string;
+    output: unknown;
+    createdAt?: string;
+  }): { humanReport?: AgentHumanReport; handoff?: AgentHandoff } {
+    const createdAt = input.createdAt ?? new Date().toISOString();
     const extractedReport = this.extractHumanReport(input.output);
     const handoffJson = this.extractHandoffJson(input.output);
     const result: { humanReport?: AgentHumanReport; handoff?: AgentHandoff } = {};
 
     if (extractedReport) {
-      const existing = (await this.store.listAgentHumanReports(input.runId))
-        .find((report) => report.nodeRunId === input.nodeRunId);
       const humanReport: AgentHumanReport = {
-        id: existing?.id ?? `agent-human-report-${nanoid(10)}`,
+        id: `agent-human-report-${input.nodeRunId}`,
         runId: input.runId,
         roundId: input.roundId,
         nodeRunId: input.nodeRunId,
@@ -93,24 +106,22 @@ export class AgentReportService {
         bodyMd: extractedReport.bodyMd,
         source: extractedReport.source,
         fallbackReason: extractedReport.fallbackReason,
-        createdAt: existing?.createdAt ?? createdAt
+        createdAt
       };
-      result.humanReport = await this.store.upsertAgentHumanReport(humanReport);
+      result.humanReport = humanReport;
     }
 
     if (handoffJson !== undefined) {
-      const existing = (await this.store.listAgentHandoffs(input.runId))
-        .find((handoff) => handoff.nodeRunId === input.nodeRunId);
       const handoff: AgentHandoff = {
-        id: existing?.id ?? `agent-handoff-${nanoid(10)}`,
+        id: `agent-handoff-${input.nodeRunId}`,
         runId: input.runId,
         roundId: input.roundId,
         nodeRunId: input.nodeRunId,
         nodeId: input.nodeId,
         payload: handoffJson,
-        createdAt: existing?.createdAt ?? createdAt
+        createdAt
       };
-      result.handoff = await this.store.upsertAgentHandoff(handoff);
+      result.handoff = handoff;
     }
 
     return result;

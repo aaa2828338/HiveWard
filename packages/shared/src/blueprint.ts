@@ -850,7 +850,7 @@ export function createMultiAgentCompatibilityBlueprint(
           prompt:
             "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be codex.",
           permissionProfile: "read_only",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           outputSchema: {
             type: "object",
             required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
@@ -876,7 +876,7 @@ export function createMultiAgentCompatibilityBlueprint(
           prompt:
             "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be claude_code.",
           permissionProfile: "read_only",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           outputSchema: {
             type: "object",
             required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
@@ -953,7 +953,7 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
           maxHandoffs: 8,
           openclawAgentId: "main",
           agentName: "html-delivery-manager",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             "先运行 Slot 1。Slot 1 中，Agent 1 收集具体新闻简报，Agent 2 把新闻简报整理成可执行的 HTML 页面制作说明。然后把 Slot 1 的输出交给 Slot 2。Slot 2 中，Agent 1 根据制作说明写出完整、可直接运行的独立 HTML 页面。Slot 2 完成后即可结束流程。"
@@ -1132,7 +1132,7 @@ export function createActiveManagerNewsHtmlChaosBlueprint(
           openclawAgentId: "main",
           agentName: "active-dispatch-manager",
           dispatchMode: "self_dispatch",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             [
@@ -1338,7 +1338,7 @@ export function createActiveManagerRemotionVideoChaosBlueprint(
           openclawAgentId: "main",
           agentName: "remotion-dispatch-manager",
           dispatchMode: "self_dispatch",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             [

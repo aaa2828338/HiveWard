@@ -10,7 +10,7 @@ import type {
   ManagerNodeConfig,
   ReleaseReport
 } from "@hiveward/shared";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 
 export interface RoundStartContext {
   runId: string;
@@ -83,7 +83,7 @@ export interface ManagerSnapshotDraft {
 }
 
 export class ManagerContextService {
-  constructor(private readonly store: FileHivewardStore) {}
+  constructor(private readonly store: HivewardStore) {}
 
   async buildRoundStartContext(input: {
     run: BlueprintRun;

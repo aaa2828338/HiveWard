@@ -7,10 +7,15 @@ coverage/
 .omx/
 data/*.json
 data/*.tmp
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
 data/artifacts/
 data/blueprint-workspaces/
 data/blueprints/*.json
+data/migration-backups/
 data/runs/*.json
+apps/web/data/
 docs/superpowers/
 tmp/
 !.gitkeep
