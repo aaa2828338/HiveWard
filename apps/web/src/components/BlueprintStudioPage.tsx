@@ -49,6 +49,7 @@ import {
   Play,
   Plus,
   Repeat2,
+  Save,
   Search,
   ShieldCheck,
   Settings2,
@@ -229,11 +230,13 @@ export function BlueprintStudioPage({
   selectedCompanyId,
   busy,
   busyAction,
+  blueprintDirty,
   onSelectBlueprint,
   onCreateBlueprint,
   onOpenBlueprintImport,
   onExportBlueprint,
   onDeleteBlueprint,
+  onSaveBlueprint,
   onRunBlueprint,
   onCancelBlueprintRun,
   onSelectNode,
@@ -257,6 +260,7 @@ export function BlueprintStudioPage({
   selectedCompanyId?: string;
   busy: boolean;
   busyAction?: string;
+  blueprintDirty: boolean;
   onSelectBlueprint: (blueprintId: string) => void;
   onCreateBlueprint: () => void;
   onOpenBlueprintImport: () => void;
@@ -518,6 +522,7 @@ export function BlueprintStudioPage({
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
+  const isSaveButtonBusy = busyAction === "saveBlueprint";
   const blueprintCanvasContentBounds = useMemo(
     () => buildBlueprintCanvasContentBounds(blueprintBoard === "architecture" ? architectureFlowNodes : localNodes),
     [architectureFlowNodes, blueprintBoard, localNodes]
@@ -1499,6 +1504,16 @@ export function BlueprintStudioPage({
             >
               {isRunButtonBusy ? <Loader2 className="spin" size={16} /> : isRunButtonStopMode ? <Square size={16} /> : <Play size={16} />}
               {runButtonLabel}
+            </button>
+            <button
+              type="button"
+              className={`blueprint-dock-save${blueprintDirty ? " dirty" : ""}`}
+              title={t.actions.saveBlueprint}
+              onClick={onSaveBlueprint}
+              disabled={!blueprint || busy || isBlueprintInteractionLocked || !blueprintDirty}
+            >
+              {isSaveButtonBusy ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              <span>{t.actions.save}</span>
             </button>
             <button
               ref={nodeMenuButtonRef}

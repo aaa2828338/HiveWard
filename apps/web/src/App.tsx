@@ -67,6 +67,17 @@ import { appSectionGroups, appSystemLabels, type AppNavSectionId, type AppSectio
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { harnessDisplayLabel, harnessDisplayParts, isHarnessId } from "./lib/harness-labels";
 import { applyHarnessPermissionModesToBlueprint } from "./lib/harness-permissions";
+import {
+  applyBlueprintUpdaterToCollection,
+  blueprintCollectionSignature,
+  clearBlueprintDirty,
+  isSameBlueprintSnapshot,
+  listDirtyBlueprintsForAutosave,
+  markBlueprintDirty,
+  mergeBlueprintsPreservingLocalEdits,
+  removeBlueprintFromDirtySet,
+  replaceBlueprint
+} from "./lib/blueprint-edit-state";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
@@ -109,6 +120,7 @@ const sidebarIcons = {
 
 const RUN_POLL_INTERVAL_MS = 2500;
 const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
+const BLUEPRINT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
 const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
@@ -174,6 +186,7 @@ export function App() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
   const [blueprints, setBlueprints] = useState<BlueprintDefinition[]>([]);
   const [blueprint, setBlueprint] = useState<BlueprintDefinition | undefined>();
+  const [dirtyBlueprintIds, setDirtyBlueprintIds] = useState<Set<string>>(() => new Set());
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
@@ -219,6 +232,9 @@ export function App() {
   const messageRef = useRef(t);
   const blueprintRef = useRef<BlueprintDefinition | undefined>(undefined);
   const blueprintsRef = useRef<BlueprintDefinition[]>([]);
+  const dirtyBlueprintIdsRef = useRef<Set<string>>(new Set());
+  const chatPermissionModesRef = useRef<Record<SdkChatHarnessId, ChatPermissionMode>>(chatPermissionModes);
+  const blueprintAutosaveInFlightRef = useRef(false);
   const busyActionRef = useRef<string | undefined>(undefined);
   const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
@@ -239,6 +255,10 @@ export function App() {
   }, [blueprints]);
 
   useEffect(() => {
+    dirtyBlueprintIdsRef.current = dirtyBlueprintIds;
+  }, [dirtyBlueprintIds]);
+
+  useEffect(() => {
     busyActionRef.current = busyAction;
   }, [busyAction]);
 
@@ -252,6 +272,10 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem("hiveward-chat-permission-modes", JSON.stringify(chatPermissionModes));
+  }, [chatPermissionModes]);
+
+  useEffect(() => {
+    chatPermissionModesRef.current = chatPermissionModes;
   }, [chatPermissionModes]);
 
   useEffect(() => {
@@ -343,7 +367,13 @@ export function App() {
 
       setCompanies(companyDirectory.companies);
       setSelectedCompanyId(companyDirectory.selectedCompanyId);
-      setBlueprints(nextBlueprints);
+      const hydratedBlueprints = mergeBlueprintsPreservingLocalEdits(
+        nextBlueprints,
+        blueprintsRef.current,
+        dirtyBlueprintIdsRef.current
+      );
+      blueprintsRef.current = hydratedBlueprints;
+      setBlueprints(hydratedBlueprints);
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
@@ -363,8 +393,10 @@ export function App() {
       setRuntime(nextRuntime);
       setDashboardDirty(false);
 
-      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? nextBlueprints[0]?.id;
-      const nextBlueprint = nextBlueprints.find((item) => item.id === preferredBlueprintId) ?? nextBlueprints[0];
+      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? hydratedBlueprints[0]?.id;
+      const nextBlueprint = hydratedBlueprints.find((item) => item.id === preferredBlueprintId) ?? hydratedBlueprints[0];
+      blueprintRef.current = nextBlueprint;
+      selectedBlueprintIdRef.current = nextBlueprint?.id;
       setBlueprint(nextBlueprint);
       setSelectedNodeId(undefined);
       setSelectedRunId(nextRunId);
@@ -553,6 +585,7 @@ export function App() {
       });
   }, [hydrateWorkspace]);
 
+  const isSelectedBlueprintDirty = Boolean(blueprint && dirtyBlueprintIds.has(blueprint.id));
   const latestRunForBlueprint = useMemo(
     () => (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined),
     [runs, blueprint]
@@ -603,6 +636,8 @@ export function App() {
     (blueprintId: string) => {
       const next = blueprints.find((item) => item.id === blueprintId);
       if (!next) return;
+      blueprintRef.current = next;
+      selectedBlueprintIdRef.current = next.id;
       setBlueprint(next);
       setSelectedNodeId(undefined);
       const latestRunForNextBlueprint = runs.find((runView) => runView.run.blueprintId === next.id);
@@ -697,7 +732,38 @@ export function App() {
   }, [loadOpenClawVersion]);
 
   const updateBlueprint = useCallback((updater: (current: BlueprintDefinition) => BlueprintDefinition) => {
-    setBlueprint((current) => (current ? updater(current) : current));
+    const result = applyBlueprintUpdaterToCollection(blueprintRef.current, blueprintsRef.current, updater);
+    if (!result.changed || !result.blueprint) return;
+
+    blueprintRef.current = result.blueprint;
+    selectedBlueprintIdRef.current = result.blueprint.id;
+    blueprintsRef.current = result.blueprints;
+    setBlueprint(result.blueprint);
+    setBlueprints(result.blueprints);
+    setDirtyBlueprintIds((currentDirty) => {
+      const nextDirty = markBlueprintDirty(currentDirty, result.blueprint!.id);
+      dirtyBlueprintIdsRef.current = nextDirty;
+      return nextDirty;
+    });
+  }, []);
+
+  const acceptSavedBlueprintSnapshot = useCallback((saved: BlueprintDefinition, savedSnapshot: BlueprintDefinition) => {
+    const currentSnapshot = blueprintsRef.current.find((candidate) => candidate.id === savedSnapshot.id);
+    if (!currentSnapshot || !isSameBlueprintSnapshot(currentSnapshot, savedSnapshot)) return false;
+
+    const nextBlueprints = replaceBlueprint(blueprintsRef.current, saved);
+    blueprintsRef.current = nextBlueprints;
+    setBlueprints(nextBlueprints);
+    if (selectedBlueprintIdRef.current === saved.id) {
+      blueprintRef.current = saved;
+      setBlueprint(saved);
+    }
+    setDirtyBlueprintIds((current) => {
+      const next = clearBlueprintDirty(current, saved.id);
+      dirtyBlueprintIdsRef.current = next;
+      return next;
+    });
+    return true;
   }, []);
 
   const updateArchitectureLayout = useCallback((positions: Record<string, CanvasPosition>) => {
@@ -980,10 +1046,44 @@ export function App() {
   const saveBlueprint = useCallback(() => {
     if (!blueprint) return;
     void withBusy("saveBlueprint", async () => {
-      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
-      await hydrateWorkspace({ blueprintId: saved.id });
+      const savedSnapshot = blueprint;
+      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModes));
+      acceptSavedBlueprintSnapshot(saved, savedSnapshot);
     });
-  }, [hydrateWorkspace, withBusy, blueprint, chatPermissionModes]);
+  }, [acceptSavedBlueprintSnapshot, withBusy, blueprint, chatPermissionModes]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+
+    const saveDirtyBlueprints = async () => {
+      if (blueprintAutosaveInFlightRef.current || busyActionRef.current) return;
+      const dirtyBlueprints = listDirtyBlueprintsForAutosave(blueprintsRef.current, dirtyBlueprintIdsRef.current);
+      if (dirtyBlueprints.length === 0) return;
+
+      blueprintAutosaveInFlightRef.current = true;
+      try {
+        for (const dirtyBlueprint of dirtyBlueprints) {
+          if (!dirtyBlueprintIdsRef.current.has(dirtyBlueprint.id)) continue;
+          const savedSnapshot = blueprintsRef.current.find((candidate) => candidate.id === dirtyBlueprint.id);
+          if (!savedSnapshot) continue;
+          const saved = await api.saveBlueprint(
+            applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModesRef.current)
+          );
+          acceptSavedBlueprintSnapshot(saved, savedSnapshot);
+        }
+      } catch (autosaveError) {
+        setError(autosaveError instanceof Error ? autosaveError.message : messageRef.current.errors.save);
+      } finally {
+        blueprintAutosaveInFlightRef.current = false;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void saveDirtyBlueprints();
+    }, BLUEPRINT_AUTOSAVE_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [acceptSavedBlueprintSnapshot, selectedCompanyId]);
 
   const exportBlueprint = useCallback((blueprintId?: string) => {
     const targetBlueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : blueprint;
@@ -997,6 +1097,11 @@ export function App() {
   const deleteBlueprint = useCallback((blueprintId: string) => {
     void withBusy("deleteBlueprint", async () => {
       await api.deleteBlueprint(blueprintId);
+      setDirtyBlueprintIds((current) => {
+        const next = removeBlueprintFromDirtySet(current, blueprintId);
+        dirtyBlueprintIdsRef.current = next;
+        return next;
+      });
       const remainingBlueprints = blueprints.filter((item) => item.id !== blueprintId);
       const nextBlueprintId = blueprint?.id === blueprintId ? remainingBlueprints[0]?.id : blueprint?.id;
       await hydrateWorkspace({ blueprintId: nextBlueprintId });
@@ -1034,8 +1139,19 @@ export function App() {
     if (!blueprint) return;
     void withBusy("runBlueprint", async () => {
       const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
+      blueprintRef.current = saved;
+      selectedBlueprintIdRef.current = saved.id;
       setBlueprint(saved);
-      setBlueprints((current) => replaceBlueprint(current, saved));
+      setBlueprints((current) => {
+        const next = replaceBlueprint(current, saved);
+        blueprintsRef.current = next;
+        return next;
+      });
+      setDirtyBlueprintIds((current) => {
+        const next = clearBlueprintDirty(current, saved.id);
+        dirtyBlueprintIdsRef.current = next;
+        return next;
+      });
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
       setRunPageBlueprintId(saved.id);
@@ -1299,15 +1415,28 @@ export function App() {
       try {
         const previousBlueprints = blueprintsRef.current;
         const nextBlueprints = await api.listBlueprints();
-        if (cancelled || blueprintCollectionSignature(nextBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
+        const nextMergedBlueprints = mergeBlueprintsPreservingLocalEdits(
+          nextBlueprints,
+          previousBlueprints,
+          dirtyBlueprintIdsRef.current
+        );
+        if (cancelled || blueprintCollectionSignature(nextMergedBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
 
         const selectedBlueprintId = selectedBlueprintIdRef.current;
-        if (!hasLocalBlueprintEdits(blueprintRef.current, previousBlueprints)) {
+        if (dirtyBlueprintIdsRef.current.size === 0) {
           await hydrateWorkspace({ blueprintId: selectedBlueprintId });
           return;
         }
 
-        setBlueprints(nextBlueprints);
+        blueprintsRef.current = nextMergedBlueprints;
+        setBlueprints(nextMergedBlueprints);
+        const nextSelectedBlueprint = selectedBlueprintId
+          ? nextMergedBlueprints.find((item) => item.id === selectedBlueprintId)
+          : undefined;
+        if (nextSelectedBlueprint && !dirtyBlueprintIdsRef.current.has(nextSelectedBlueprint.id)) {
+          blueprintRef.current = nextSelectedBlueprint;
+          setBlueprint(nextSelectedBlueprint);
+        }
         const nextRoles = await api.getRoleDirectory().catch(() => undefined);
         if (cancelled || !nextRoles) return;
         setRoleDirectory(nextRoles.roles);
@@ -1425,6 +1554,7 @@ export function App() {
           selectedCompanyId={selectedCompanyId}
           busy={Boolean(busyAction)}
           busyAction={busyAction}
+          blueprintDirty={isSelectedBlueprintDirty}
           onSelectBlueprint={selectBlueprint}
           onCreateBlueprint={createBlueprint}
           onOpenBlueprintImport={openBlueprintImport}
@@ -3273,27 +3403,6 @@ function defaultWidgetLayout(index: number) {
     w: 6,
     h: 4
   };
-}
-
-function replaceBlueprint(blueprints: BlueprintDefinition[], blueprint: BlueprintDefinition): BlueprintDefinition[] {
-  let replaced = false;
-  const next = blueprints.map((candidate) => {
-    if (candidate.id !== blueprint.id) return candidate;
-    replaced = true;
-    return blueprint;
-  });
-  return replaced ? next : [blueprint, ...next];
-}
-
-function blueprintCollectionSignature(blueprints: BlueprintDefinition[]): string {
-  return JSON.stringify([...blueprints].sort((left, right) => left.id.localeCompare(right.id)));
-}
-
-function hasLocalBlueprintEdits(blueprint: BlueprintDefinition | undefined, serverBlueprints: BlueprintDefinition[]): boolean {
-  if (!blueprint) return false;
-  const serverBlueprint = serverBlueprints.find((candidate) => candidate.id === blueprint.id);
-  if (!serverBlueprint) return false;
-  return JSON.stringify(blueprint) !== JSON.stringify(serverBlueprint);
 }
 
 function defaultNewBlueprintName(index: number, language: Language): string {

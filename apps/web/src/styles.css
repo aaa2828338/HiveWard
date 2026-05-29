@@ -5687,6 +5687,22 @@ html[data-theme="light"] .node-output-row pre {
   font-weight: 800;
 }
 
+.blueprint-dock-save {
+  gap: var(--blueprint-dock-gap);
+  min-width: 72px;
+  padding: 0 9px;
+  color: var(--muted);
+}
+
+.blueprint-dock-save.dirty {
+  color: var(--accent-strong);
+}
+
+.blueprint-dock-save span {
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .blueprint-run-button {
   gap: var(--blueprint-dock-gap);
   min-width: 100px;
@@ -6248,6 +6264,7 @@ html[data-theme="light"] .node-menu-item:hover:not(:disabled) {
 
   .blueprint-dock-add,
   .blueprint-dock-batch,
+  .blueprint-dock-save,
   .blueprint-run-button {
     flex: 1 1 auto;
   }
