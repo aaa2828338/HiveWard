@@ -29,6 +29,8 @@ export interface BlueprintNodeCardData extends Record<string, unknown> {
   disabled?: boolean;
   isStartNode?: boolean;
   managerPortCount?: number;
+  managerPreflightSlotsActive?: boolean;
+  managerPreflightSlotLabels?: Partial<Record<number, string>>;
   managerSlotLaneCount?: number;
   managerSlotSize?: CanvasSize;
 }
@@ -80,6 +82,7 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
   const StatusIcon = statusIcon(nodeData.status);
   const managerPortCount = clampManagerPortCount(nodeData.managerPortCount);
   const managerSlots = Array.from({ length: managerPortCount }, (_item, index) => index + 1);
+  const managerPreflightSlotLabels = nodeData.managerPreflightSlotLabels ?? {};
   const managerSlotLaneCount = clampManagerSlotLaneCount(nodeData.managerSlotLaneCount);
   const managerSlotLanes = Array.from({ length: managerSlotLaneCount }, (_item, index) => index + 1);
   const nodeStyle =
@@ -187,7 +190,7 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
             <Handle
               key={`manager-in-${slot}`}
               id={`manager-in-${slot}`}
-              className="node-handle input-handle manager-slot-handle manager-slot-input-handle"
+              className={`node-handle input-handle manager-slot-handle manager-slot-input-handle ${managerPreflightSlotHandleClass(slot, managerPreflightSlotLabels, nodeData.managerPreflightSlotsActive)}`}
               type="target"
               position={Position.Right}
               style={managerHandleStyle(index, "input")}
@@ -242,7 +245,7 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
       {nodeData.type === "manager" && (
         <div className="manager-port-list" aria-hidden="true">
           {managerSlots.map((slot) => (
-            <div key={slot} className="manager-port-row">
+            <div key={slot} className={`manager-port-row ${managerPreflightSlotRowClass(slot, managerPreflightSlotLabels, nodeData.managerPreflightSlotsActive)}`}>
               <span className="manager-port-index">{slot}</span>
               <span className="manager-port-rule" />
               <span className="manager-port-guide" />
@@ -262,7 +265,7 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
             <Handle
               key={`manager-out-${slot}`}
               id={`manager-out-${slot}`}
-              className="node-handle output-handle manager-slot-handle manager-slot-output-handle"
+              className={`node-handle output-handle manager-slot-handle manager-slot-output-handle ${managerPreflightSlotHandleClass(slot, managerPreflightSlotLabels, nodeData.managerPreflightSlotsActive)}`}
               type="source"
               position={Position.Right}
               style={managerHandleStyle(index, "output")}
@@ -286,6 +289,24 @@ function clampManagerPortCount(value: unknown): number {
 function clampManagerSlotLaneCount(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 1;
   return Math.min(16, Math.max(1, Math.round(value)));
+}
+
+function managerPreflightSlotRowClass(
+  slot: number,
+  labels: Partial<Record<number, string>>,
+  active: boolean | undefined
+): string {
+  if (!labels[slot]) return "";
+  return active ? "manager-port-preflight manager-port-preflight-active" : "manager-port-preflight manager-port-preflight-inactive";
+}
+
+function managerPreflightSlotHandleClass(
+  slot: number,
+  labels: Partial<Record<number, string>>,
+  active: boolean | undefined
+): string {
+  if (!labels[slot]) return "";
+  return active ? "manager-slot-preflight-handle active" : "manager-slot-preflight-handle inactive";
 }
 
 function managerNodeStyle(portCount: number): CSSProperties {

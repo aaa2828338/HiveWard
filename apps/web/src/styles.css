@@ -2889,8 +2889,40 @@ dd {
   border-radius: var(--radius-md);
 }
 
+.manager-port-preflight .manager-port-index {
+  color: #8c99a3;
+}
+
+.manager-port-preflight .manager-port-rule,
+.manager-port-preflight .manager-port-guide {
+  opacity: 0.46;
+}
+
+.manager-port-preflight-active .manager-port-index {
+  color: var(--accent-strong);
+}
+
+.manager-port-preflight-active .manager-port-rule {
+  height: 2px;
+  background: rgb(245 154 11 / 0.46);
+}
+
+.manager-port-preflight-active .manager-port-guide {
+  border-right-color: rgb(245 154 11 / 0.48);
+  opacity: 1;
+}
+
 .manager-slot-handle {
   z-index: 4;
+}
+
+.manager-slot-preflight-handle.inactive {
+  opacity: 0.46;
+  filter: grayscale(0.45);
+}
+
+.manager-slot-preflight-handle.active {
+  box-shadow: 0 0 0 1px rgb(245 154 11 / 0.35), 0 0 0 5px rgb(245 154 11 / 0.10), 0 4px 10px rgb(245 154 11 / 0.18);
 }
 
 .manager-blueprint-handle {
@@ -11865,6 +11897,53 @@ html[data-theme="light"] select {
   height: 1px;
   margin: 2px 0;
   background: var(--line);
+}
+
+.manager-preflight-slots {
+  display: grid;
+  gap: 8px;
+}
+
+.manager-preflight-slot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--paper-raised, var(--paper-strong));
+}
+
+.manager-preflight-slot-row span,
+.manager-preflight-slot-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.manager-preflight-slot-row span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.manager-preflight-slot-row strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 780;
+  text-align: right;
+}
+
+.manager-preflight-slot-row.connected {
+  border-color: rgb(245 154 11 / 0.34);
+  background: rgb(245 154 11 / 0.09);
+}
+
+.manager-preflight-slot-row.fallback strong {
+  color: var(--muted);
 }
 
 .manager-advanced-settings {
