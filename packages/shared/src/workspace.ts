@@ -49,6 +49,8 @@ export interface WorkspaceNote {
 }
 
 export interface PendingApprovalItem {
+  approvalRequestId?: string;
+  kind?: string;
   blueprintId: string;
   blueprintName: string;
   blueprintRunId: string;
@@ -68,6 +70,8 @@ export interface PendingApprovalItem {
   canApprove?: boolean;
   canReply?: boolean;
   canReject?: boolean;
+  canComplete?: boolean;
+  canTerminate?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
 }
 

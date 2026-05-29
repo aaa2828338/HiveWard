@@ -104,18 +104,29 @@ export interface Messages {
   fields: {
     advancedSettings: string;
     advancedSettingsHint: string;
+    accessMode: string;
     body: string;
     category: string;
     channels: string;
+    crossRoundContext: string;
+    crossRoundContextHint: string;
     description: string;
     agentName: string;
     expression: string;
     harness: string;
+    harnessPermission: string;
     instructions: string;
     label: string;
     manager: string;
+    managerDispatchStepLimit: string;
+    managerMode: string;
+    managerSlotCount: string;
+    autoApproveRequirements: string;
+    autoApproveReleaseReports: string;
     maxHandoffs: string;
     maxIterations: string;
+    maxRounds: string;
+    maxPreparationAttempts: string;
     model: string;
     mode: string;
     nodeId: string;
@@ -123,14 +134,21 @@ export interface Messages {
     output: string;
     parallelLanes: string;
     position: string;
+    profile: string;
     ports: string;
     primaryModel: string;
     prompt: string;
     provider: string;
     relatedRun: string;
+    requirementAgent: string;
     relatedBlueprint: string;
+    researchAgent: string;
     runLabel: string;
+    safeMode: string;
     section: string;
+    selfDispatch: string;
+    selfIteration: string;
+    sequentialDispatch: string;
     settings: string;
     skills: string;
     slot: string;
@@ -140,6 +158,7 @@ export interface Messages {
     tagColor: string;
     tagLabel: string;
     title: string;
+    fullAccessMode: string;
     updatedAt: string;
     systemPrompt: string;
     userPrompt: string;
@@ -186,9 +205,19 @@ export interface Messages {
     workspacePlaceholder: string;
   };
   options: {
+    crossRoundNodeHistory: string;
+    crossRoundNodeHistoryWithManagerMemory: string;
+    crossRoundNodeHistoryWithUpstream: string;
+    crossRoundOff: string;
     firstSuccess: string;
+    fullAccessMode: string;
     harnessSummary: string;
+    managerFallback: string;
     openClawAgent: string;
+    safeMode: string;
+    selfDispatch: string;
+    selfIteration: string;
+    sequential: string;
     structuredMerge: string;
     waitForAll: string;
   };
@@ -331,19 +360,30 @@ export const messages: Record<Language, Messages> = {
     },
     fields: {
       advancedSettings: "Advanced settings",
-      advancedSettingsHint: "Model, identity, permission, workspace, timeout, output",
+      advancedSettingsHint: "Model, identity, access mode, workspace, timeout, output",
+      accessMode: "Access mode",
       body: "Body",
       category: "Category",
       channels: "Channels",
+      crossRoundContext: "Cross-round context",
+      crossRoundContextHint: "Applies only inside this blueprint run; it is not long-term harness memory.",
       description: "Description",
       agentName: "Agent name",
       expression: "Expression",
       harness: "Harness",
+      harnessPermission: "Permission mode",
       instructions: "Instructions",
       label: "Label",
       manager: "Manager",
+      managerDispatchStepLimit: "Max dispatch steps",
+      managerMode: "Manager mode",
+      managerSlotCount: "Slot count",
+      autoApproveRequirements: "Auto-approve plans",
+      autoApproveReleaseReports: "Auto-approve reports",
       maxHandoffs: "Max handoffs",
       maxIterations: "Max iterations",
+      maxRounds: "Max rounds",
+      maxPreparationAttempts: "Preparation attempts",
       model: "Model",
       mode: "Mode",
       nodeId: "Node ID",
@@ -351,14 +391,21 @@ export const messages: Record<Language, Messages> = {
       output: "Output",
       parallelLanes: "Parallel lanes",
       position: "Position",
+      profile: "Profile",
       ports: "Ports",
       primaryModel: "Primary model",
       prompt: "Prompt",
       provider: "Provider",
       relatedRun: "Related run",
+      requirementAgent: "Round plan agent",
       relatedBlueprint: "Related blueprint",
+      researchAgent: "Research agent",
       runLabel: "Run label",
+      safeMode: "Safe mode",
       section: "Section",
+      selfDispatch: "Self dispatch",
+      selfIteration: "Self iteration",
+      sequentialDispatch: "Sequential dispatch",
       settings: "Settings",
       skills: "Skills",
       slot: "Slot",
@@ -368,6 +415,7 @@ export const messages: Record<Language, Messages> = {
       tagColor: "Tag color",
       tagLabel: "Tag label",
       title: "Title",
+      fullAccessMode: "Full access mode",
       updatedAt: "Updated",
       systemPrompt: "System prompt",
       userPrompt: "User prompt",
@@ -409,7 +457,11 @@ export const messages: Record<Language, Messages> = {
       googleConfig: "Config",
       cursorConfig: "Config",
       opencodeConfig: "Config",
-      hermesConfig: "Config"
+      hermesConfig: "Config",
+      hermesModels: "Models",
+      hermesAgents: "Agents",
+      hermesSkills: "Skills",
+      hermesChannels: "Channels"
     },
     nodeTypes: {
       agent: "Agent",
@@ -493,6 +545,22 @@ export const messages: Record<Language, Messages> = {
       hermesConfig: {
         title: "Hermes Beta Config",
         description: "Check whether the local Hermes CLI harness is installed and ready."
+      },
+      hermesModels: {
+        title: "Hermes Models",
+        description: "Model options resolved for Hermes blueprint and chat execution."
+      },
+      hermesAgents: {
+        title: "Hermes Agents",
+        description: "Each Agent here maps to one Hermes profile."
+      },
+      hermesSkills: {
+        title: "Hermes Skills",
+        description: "HiveWard operating skills installed into Hermes."
+      },
+      hermesChannels: {
+        title: "Hermes Channels",
+        description: "Channels scanned from the Hermes channel directory."
       }
     },
     panels: {
@@ -509,9 +577,19 @@ export const messages: Record<Language, Messages> = {
       workspacePlaceholder: "Leave blank to auto-generate"
     },
     options: {
+      crossRoundNodeHistory: "This node history",
+      crossRoundNodeHistoryWithManagerMemory: "Node history + upstream + Manager memory",
+      crossRoundNodeHistoryWithUpstream: "Node history + upstream artifacts",
+      crossRoundOff: "Off",
       firstSuccess: "first success",
+      fullAccessMode: "Full access",
       harnessSummary: "harness summary",
+      managerFallback: "Manager handles it",
       openClawAgent: "OpenClaw agent",
+      safeMode: "Safe mode",
+      selfDispatch: "Self dispatch",
+      selfIteration: "Self iteration",
+      sequential: "Sequential",
       structuredMerge: "structured merge",
       waitForAll: "all"
     },
@@ -676,21 +754,32 @@ export const messages: Record<Language, Messages> = {
     },
     fields: {
       advancedSettings: "\u9ad8\u7ea7\u8bbe\u7f6e",
-      advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u6743\u9650\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
+      advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u8bbf\u95ee\u6a21\u5f0f\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
+      accessMode: "\u8bbf\u95ee\u6a21\u5f0f",
       harness: "Harness",
+      harnessPermission: "\u6743\u9650\u6a21\u5f0f",
       systemPrompt: "\u7cfb\u7edf\u63d0\u793a\u8bcd",
       userPrompt: "\u7528\u6237\u63d0\u793a\u8bcd",
       body: "内容",
       category: "分类",
       channels: "\u9891\u9053",
+      crossRoundContext: "\u8de8\u8f6e\u4e0a\u4e0b\u6587",
+      crossRoundContextHint: "\u4ec5\u5728\u540c\u4e00\u6b21\u84dd\u56fe run \u5185\u751f\u6548\uff0c\u4e0d\u662f Harness \u957f\u671f\u8bb0\u5fc6\u3002",
       description: "说明",
       agentName: "Agent 名称",
       expression: "表达式",
       instructions: "说明",
       label: "标签",
       manager: "管理器",
+      managerDispatchStepLimit: "\u6700\u5927\u5206\u53d1\u6b65\u6570",
+      managerMode: "\u7ba1\u7406\u5668\u6a21\u5f0f",
+      managerSlotCount: "\u69fd\u4f4d\u6570",
+      autoApproveRequirements: "\u81ea\u52a8\u6279\u51c6\u6267\u884c\u8ba1\u5212",
+      autoApproveReleaseReports: "\u81ea\u52a8\u6279\u51c6\u6c47\u62a5",
+      maxRounds: "\u6700\u5927\u8f6e\u6570",
       maxHandoffs: "最大交接次数",
       maxIterations: "最大迭代次数",
+      maxPreparationAttempts: "准备尝试次数",
       model: "模型",
       mode: "模式",
       nodeId: "节点 ID",
@@ -698,14 +787,21 @@ export const messages: Record<Language, Messages> = {
       output: "输出",
       parallelLanes: "\u5e76\u884c\u6392\u6570",
       position: "位置",
+      profile: "Profile",
       ports: "端口",
       primaryModel: "主模型",
       prompt: "提示词",
       provider: "提供方",
       relatedRun: "关联运行",
+      requirementAgent: "提需 / Round plan agent",
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
+      researchAgent: "调研 agent",
       runLabel: "运行标签",
+      safeMode: "\u5b89\u5168\u6a21\u5f0f",
       section: "页面",
+      selfDispatch: "\u81ea\u5206\u53d1",
+      selfIteration: "\u81ea\u8fed\u4ee3",
+      sequentialDispatch: "\u987a\u5e8f\u5206\u53d1",
       settings: "设置",
       skills: "Skills",
       slot: "槽位",
@@ -715,6 +811,7 @@ export const messages: Record<Language, Messages> = {
       tagColor: "标签颜色",
       tagLabel: "标签名称",
       title: "标题",
+      fullAccessMode: "\u5b8c\u5168\u8bbf\u95ee\u6a21\u5f0f",
       updatedAt: "更新时间",
       waitFor: "等待条件",
       blueprint: "\u84dd\u56fe",
@@ -753,7 +850,11 @@ export const messages: Record<Language, Messages> = {
       googleConfig: "\u914d\u7f6e",
       cursorConfig: "\u914d\u7f6e",
       opencodeConfig: "\u914d\u7f6e",
-      hermesConfig: "\u914d\u7f6e"
+      hermesConfig: "\u914d\u7f6e",
+      hermesModels: "\u6a21\u578b",
+      hermesAgents: "Agent",
+      hermesSkills: "Skills",
+      hermesChannels: "\u9891\u9053"
     },
     nodeTypes: {
       agent: "Agent",
@@ -837,6 +938,22 @@ export const messages: Record<Language, Messages> = {
       hermesConfig: {
         title: "Hermes Beta \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Hermes CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
+      },
+      hermesModels: {
+        title: "Hermes \u6a21\u578b",
+        description: "\u7528\u4e8e Hermes \u84dd\u56fe\u548c\u804a\u5929\u6267\u884c\u7684\u6a21\u578b\u9009\u9879\u3002"
+      },
+      hermesAgents: {
+        title: "Hermes Agent",
+        description: "\u8fd9\u91cc\u7684\u6bcf\u4e2a Agent \u5bf9\u5e94 Hermes \u91cc\u7684\u4e00\u4e2a Profile\u3002"
+      },
+      hermesSkills: {
+        title: "Hermes Skills",
+        description: "\u5b89\u88c5\u5230 Hermes \u7684 HiveWard \u6267\u884c\u624b\u518c Skills\u3002"
+      },
+      hermesChannels: {
+        title: "Hermes \u9891\u9053",
+        description: "\u4ece Hermes channel directory \u626b\u63cf\u5230\u7684\u901a\u4fe1\u9891\u9053\u3002"
       }
     },
     panels: {
@@ -853,9 +970,19 @@ export const messages: Record<Language, Messages> = {
       workspacePlaceholder: "留空则自动生成"
     },
     options: {
+      crossRoundNodeHistory: "\u4ec5\u672c\u8282\u70b9\u5386\u53f2",
+      crossRoundNodeHistoryWithManagerMemory: "\u8282\u70b9\u5386\u53f2 + \u4e0a\u6e38 + Manager \u8bb0\u5fc6",
+      crossRoundNodeHistoryWithUpstream: "\u8282\u70b9\u5386\u53f2 + \u4e0a\u6e38\u4ea7\u7269",
+      crossRoundOff: "\u5173\u95ed",
       firstSuccess: "首个成功",
+      fullAccessMode: "\u5168\u6743\u9650",
       harnessSummary: "Harness 总结",
+      managerFallback: "\u7531\u7ba1\u7406\u5668\u5904\u7406",
       openClawAgent: "OpenClaw Agent",
+      safeMode: "\u5b89\u5168\u6a21\u5f0f",
+      selfDispatch: "\u81ea\u4e3b\u5206\u53d1",
+      selfIteration: "\u81ea\u8fed\u4ee3",
+      sequential: "\u987a\u5e8f\u5206\u53d1",
       structuredMerge: "结构化合并",
       waitForAll: "全部完成"
     },

@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import { describe, expect, it } from "vitest";
@@ -13,6 +13,7 @@ import {
 import type {
   AgentNodeConfig,
   BlueprintDefinition,
+  BlueprintNodeRun,
   BlueprintRun,
   ChatHistoryMessage,
   ChatStreamEvent,
@@ -22,10 +23,12 @@ import type {
   OpenClawVersionInfo,
   RuntimeOverview,
   StartAgentTaskInput,
-  WorkspaceDashboard
+  WorkspaceDashboard,
+  ApprovalRequest
 } from "@hiveward/shared";
-import { hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { hivewardInboxSubmissionSchema, resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
+import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
@@ -541,30 +544,22 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes blueprint approval approve, reject, and reply actions to the worker", async () => {
+  it("routes legacy blueprint approval actions through pending approval requests", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; nodeRunId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
+    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
     const worker = {
-      async approveRun(
+      async applyApprovalRequest(
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
-        nodeRunId?: string,
-        comment?: string,
-        selectedReplyId?: string
+        approvalRequestId: string,
+        action: "approve" | "reject" | "reply",
+        input?: { comment?: string; message?: string; selectedReplyId?: string }
       ) {
-        calls.push({ action: "approve", nodeRunId, comment, selectedReplyId });
-        return { ...run, status: "running" as const };
-      },
-      async rejectRun(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string) {
-        calls.push({ action: "reject", nodeRunId, comment });
-        return { ...run, status: "running" as const };
-      },
-      async replyToApproval(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, message: string) {
-        calls.push({ action: "reply", nodeRunId, message });
+        calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message, selectedReplyId: input?.selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       },
       async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, selectedReplyId: string) {
-        calls.push({ action: "select", nodeRunId, selectedReplyId });
+        calls.push({ action: "select", approvalRequestId: nodeRunId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -572,6 +567,9 @@ describe("apiRouter", () => {
     try {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      const approval1 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+      const approval2 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-2");
+      const approval3 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-3");
 
       await withApiServer(fixture.store, async (baseUrl) => {
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
@@ -597,11 +595,179 @@ describe("apiRouter", () => {
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "approve", nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" },
-        { action: "reject", nodeRunId: "node-run-2", comment: "Needs work." },
-        { action: "reply", nodeRunId: "node-run-3", message: "Please revise this answer." },
-        { action: "select", nodeRunId: "node-run-4", selectedReplyId: "reply-4" }
+        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: "reply-1" },
+        { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
+        { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
+        { action: "select", approvalRequestId: "node-run-4", selectedReplyId: "reply-4" }
       ]);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 409 for repeated approval and inbox decisions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "external-approval");
+      const roles = await fixture.store.getRoleDirectory();
+      const item = await fixture.store.createLeaderDelegationRequest({
+        leaderId: roles.roles.leaders[0]!.id,
+        title: "Delegate to leader"
+      });
+      await seedInboxApprovalRequest(fixture.store, item.id);
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Approved once." })
+        }));
+        const secondApproval = await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Duplicate click." })
+        });
+        const secondApprovalBody = await secondApproval.json() as { error?: { code?: string } };
+        expect(secondApproval.status, JSON.stringify(secondApprovalBody)).toBe(409);
+        expect(secondApprovalBody.error?.code).toBe("approval_conflict");
+        expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
+
+        await readOkJson(await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" }));
+        const secondInbox = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
+        const secondInboxBody = await secondInbox.json() as { error?: { code?: string } };
+        expect(secondInbox.status).toBe(409);
+        expect(secondInboxBody.error?.code).toBe("inbox_decision_conflict");
+        const inboxRequest = (await fixture.store.listApprovalRequests({ runId: item.id }))[0]!;
+        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published HTML artifact download URLs from the configured store data directory", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const [artifact] = await service.publishFromNodeRun({
+        runId: "run-artifact-route",
+        roundId: "round-artifact-route",
+        nodeRun: {
+          id: "node-run-artifact-route",
+          blueprintRunId: "run-artifact-route",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "html-builder",
+          nodeLabel: "HTML Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- HTML preview declared in artifacts[].",
+            artifacts: [{
+              title: "HTML Builder",
+              kind: "html",
+              content: "<!doctype html><html><body>artifact route ok</body></html>"
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      if (!artifact?.downloadUrl) throw new Error("Expected published HTML artifact with a downloadUrl.");
+
+      expect(artifact).toMatchObject({
+        kind: "html",
+        trusted: false,
+        previewPolicy: "sandboxed_iframe"
+      });
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}${artifact.downloadUrl}`);
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("artifact route ok");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("serves published markdown and JSON artifact download URLs", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = new Date().toISOString();
+      const service = new ArtifactService(fixture.store);
+      const markdownArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-md",
+        roundId: "round-artifact-route-md",
+        nodeRun: {
+          id: "node-run-artifact-route-md",
+          blueprintRunId: "run-artifact-route-md",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "markdown-builder",
+          nodeLabel: "Markdown Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- Markdown declared in artifacts[].",
+            artifacts: [{
+              title: "Markdown Builder",
+              kind: "markdown",
+              content: "# Artifact route markdown"
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      const jsonArtifacts = await service.publishFromNodeRun({
+        runId: "run-artifact-route-json",
+        roundId: "round-artifact-route-json",
+        nodeRun: {
+          id: "node-run-artifact-route-json",
+          blueprintRunId: "run-artifact-route-json",
+          blueprintId: "blueprint-artifact-route",
+          nodeId: "json-builder",
+          nodeLabel: "JSON Builder",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: {
+            humanReportMd: "## Delivery location\n\n- JSON declared in artifacts[].",
+            artifacts: [{
+              title: "JSON Builder",
+              kind: "json",
+              content: { ok: true, message: "artifact route json" }
+            }]
+          }
+        } satisfies BlueprintNodeRun
+      });
+      const markdown = markdownArtifacts[0];
+      const json = jsonArtifacts[0];
+      if (!markdown?.downloadUrl || !json?.downloadUrl) throw new Error("Expected markdown and JSON artifacts with download URLs.");
+
+      expect(markdown).toMatchObject({
+        kind: "markdown",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".md")
+      });
+      expect(json).toMatchObject({
+        kind: "json",
+        previewPolicy: "source",
+        relativePath: expect.stringContaining(".json")
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const markdownResponse = await fetch(`${baseUrl}${markdown.downloadUrl}`);
+        expect(markdownResponse.status).toBe(200);
+        expect(await markdownResponse.text()).toContain("Artifact route markdown");
+
+        const jsonResponse = await fetch(`${baseUrl}${json.downloadUrl}`);
+        expect(jsonResponse.status).toBe(200);
+        expect(await jsonResponse.json()).toMatchObject({ ok: true, message: "artifact route json" });
+      });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -835,6 +1001,7 @@ describe("apiRouter", () => {
   it("reports Google, Cursor, OpenCode, and Hermes CLI harness status and model defaults", async () => {
     const fixture = await createStoreFixture();
     const binDir = join(fixture.dir, "bin");
+    const hermesHome = join(fixture.dir, "hermes-home");
     const previousPath = process.env.PATH;
     const previousGoogleDefault = process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL;
     const previousGoogleModels = process.env.HIVEWARD_GOOGLE_CLI_MODELS;
@@ -844,20 +1011,24 @@ describe("apiRouter", () => {
     const previousOpenCodeModels = process.env.HIVEWARD_OPENCODE_MODELS;
     const previousHermesDefault = process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
     const previousHermesModels = process.env.HIVEWARD_HERMES_MODELS;
+    const previousHermesHome = process.env.HERMES_HOME;
     mkdirSync(binDir, { recursive: true });
+    mkdirSync(hermesHome, { recursive: true });
     writeFakeExecutable(join(binDir, "gemini"), "gemini 0.38.1");
     writeFakeExecutable(join(binDir, "cursor-agent"), "cursor-agent 2026.1.0");
     writeFakeExecutable(join(binDir, "opencode"), "opencode 1.2.3");
-    writeFakeExecutable(join(binDir, "hermes"), "hermes 0.9.0");
-    process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+    writeFakeExecutable(join(binDir, "hermes-architect"), "hermes profile architect wrapper");
+    writeFakeHermesExecutable(join(binDir, "hermes"));
+    process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
     process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL = "gemini-2.5-pro";
     process.env.HIVEWARD_GOOGLE_CLI_MODELS = "gemini-2.5-pro,gemini-2.5-flash";
     process.env.HIVEWARD_CURSOR_DEFAULT_MODEL = "gpt-5";
     process.env.HIVEWARD_CURSOR_MODELS = "gpt-5,claude-4-sonnet";
     process.env.HIVEWARD_OPENCODE_DEFAULT_MODEL = "anthropic/claude-sonnet-4";
     process.env.HIVEWARD_OPENCODE_MODELS = "anthropic/claude-sonnet-4,openai/gpt-5.4";
-    process.env.HIVEWARD_HERMES_DEFAULT_MODEL = "nous/hermes-4";
-    process.env.HIVEWARD_HERMES_MODELS = "nous/hermes-4,openrouter/qwen3-coder";
+    process.env.HIVEWARD_HERMES_DEFAULT_MODEL = "hermes-env-default";
+    process.env.HIVEWARD_HERMES_MODELS = "hermes-env-default,hermes-env-fallback";
+    process.env.HERMES_HOME = hermesHome;
 
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -871,6 +1042,7 @@ describe("apiRouter", () => {
             connectionState?: string;
             defaultModelId?: string;
             models?: Array<{ id: string; isDefault?: boolean }>;
+            profiles?: Array<{ id: string; label: string; alias?: string; isDefault?: boolean }>;
             checks?: Array<{ label: string }>;
           }>;
         }>(response);
@@ -919,12 +1091,17 @@ describe("apiRouter", () => {
           label: "Hermes Beta",
           installed: true,
           connectionState: "available",
-          defaultModelId: "nous/hermes-4"
+          defaultModelId: "hermes-env-default"
         });
         expect(hermesStatus?.checks?.[0]?.label).toBe("Hermes CLI");
         expect(hermesStatus?.models?.map((model) => model.id)).toEqual([
-          "nous/hermes-4",
-          "openrouter/qwen3-coder"
+          "hermes-env-default",
+          "hermes-env-fallback"
+        ]);
+        expect(hermesStatus?.profiles).toEqual([
+          { id: "ceo", label: "ceo", alias: "hw-ceo", modelId: "hermes-primary-test", isDefault: true },
+          { id: "architect", label: "architect", modelId: "hermes-profile-model-test" },
+          { id: "researcher", label: "researcher", modelId: "hermes-research-model-test" }
         ]);
       });
     } finally {
@@ -935,6 +1112,163 @@ describe("apiRouter", () => {
       restoreEnv("HIVEWARD_CURSOR_MODELS", previousCursorModels);
       restoreEnv("HIVEWARD_OPENCODE_DEFAULT_MODEL", previousOpenCodeDefault);
       restoreEnv("HIVEWARD_OPENCODE_MODELS", previousOpenCodeModels);
+      restoreEnv("HIVEWARD_HERMES_DEFAULT_MODEL", previousHermesDefault);
+      restoreEnv("HIVEWARD_HERMES_MODELS", previousHermesModels);
+      restoreEnv("HERMES_HOME", previousHermesHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Hermes agents and channels, then creates local entries", async () => {
+    const fixture = await createStoreFixture();
+    const binDir = join(fixture.dir, "bin");
+    const hermesHome = join(fixture.dir, "hermes-home");
+    const previousPath = process.env.PATH;
+    const previousHermesHome = process.env.HERMES_HOME;
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(hermesHome, { recursive: true });
+    mkdirSync(join(hermesHome, "skills", "hiveward-leader"), { recursive: true });
+    mkdirSync(join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(hermesHome, "profiles", "ceo"), { recursive: true });
+    writeFileSync(join(hermesHome, "config.yaml"), [
+      "model:",
+      "  default: hermes-primary-test",
+      "  provider: custom:test-primary",
+      "fallback_providers:",
+      "  - provider: custom:test-fallback",
+      "    model: hermes-fallback-test",
+      "terminal:",
+      "  cwd: ."
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "profiles", "ceo", "config.yaml"), [
+      "model:",
+      "  default: claude-sonnet-4",
+      "  provider: anthropic",
+      "terminal:",
+      `  cwd: ${join(fixture.dir, "ceo-workspace")}`
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
+    writeFileSync(join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(hermesHome, "channel_directory.json"), JSON.stringify({
+      updated_at: "2026-05-01T00:00:00.000Z",
+      platforms: {
+        feishu: [
+          { id: "channel_demo", name: "Demo Group", type: "group", thread_id: null }
+        ]
+      }
+    }));
+    writeFileSync(join(hermesHome, "profiles", "ceo", "channel_directory.json"), JSON.stringify({
+      updated_at: "2026-05-01T00:00:00.000Z",
+      platforms: {
+        feishu: [
+          { id: "profile_room", name: "CEO Room", type: "group", thread_id: "thread-1" }
+        ]
+      }
+    }));
+    writeFakeHermesExecutable(join(binDir, "hermes"), {
+      allowProfileWrites: true,
+      profileRows: [
+        " Profile          Model                        Gateway      Alias        Distribution",
+        "\u25c6ceo             hermes-primary-test            stopped      hermes-ceo   \u2014"
+      ]
+    });
+    process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
+    process.env.HERMES_HOME = hermesHome;
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const initialResponse = await fetch(`${baseUrl}/api/hermes-config`);
+        const initial = await readOkJson<{
+          profiles: Array<{ id: string; alias?: string; provider?: string; path?: string; workspace?: string; modelId?: string }>;
+          channels: Array<{ profileId?: string; platform: string; id: string; name: string; type?: string }>;
+          skills: Array<{ id: string; profileId?: string; path: string }>;
+          channelDirectoryPath: string;
+        }>(initialResponse);
+
+        expect(initial.profiles).toEqual([
+          expect.objectContaining({
+            id: "ceo",
+            alias: "hermes-ceo",
+            modelId: "hermes-primary-test",
+            provider: "anthropic",
+            path: join(hermesHome, "profiles", "ceo"),
+            workspace: join(fixture.dir, "ceo-workspace")
+          })
+        ]);
+        expect(initial.channels).toEqual(expect.arrayContaining([
+          expect.objectContaining({ profileId: "default", platform: "feishu", id: "channel_demo", name: "Demo Group", type: "group" }),
+          expect.objectContaining({ profileId: "ceo", platform: "feishu", id: "profile_room", name: "CEO Room", type: "group" })
+        ]));
+        expect(initial.skills).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: "hiveward-leader", path: join(hermesHome, "skills", "hiveward-leader", "SKILL.md") }),
+          expect.objectContaining({ id: "hiveward-ceo", profileId: "ceo", path: join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo", "SKILL.md") })
+        ]));
+        expect(initial.channelDirectoryPath).toBe(join(hermesHome, "channel_directory.json"));
+
+        const profileResponse = await fetch(`${baseUrl}/api/hermes-config/profiles`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "researcher", description: "Research tasks", cloneFrom: "ceo" })
+        });
+        expect(profileResponse.status).toBe(201);
+
+        const channelResponse = await fetch(`${baseUrl}/api/hermes-config/channels`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ platform: "slack", id: "C123", name: "ops", type: "group" })
+        });
+        const channelBody = await readOkJson<{ channels: Array<{ platform: string; id: string; name: string }> }>(channelResponse);
+        expect(channelResponse.status).toBe(201);
+        expect(channelBody.channels).toEqual(expect.arrayContaining([expect.objectContaining({ platform: "slack", id: "C123", name: "ops" })]));
+      });
+    } finally {
+      restoreEnv("PATH", previousPath);
+      restoreEnv("HERMES_HOME", previousHermesHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Hermes configured models from local config files", async () => {
+    const fixture = await createStoreFixture();
+    const hermesHome = join(fixture.dir, "hermes-home");
+    const previousHermesHome = process.env.HERMES_HOME;
+    const previousHermesDefault = process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
+    const previousHermesModels = process.env.HIVEWARD_HERMES_MODELS;
+    mkdirSync(join(hermesHome, "profiles", "writer"), { recursive: true });
+    writeFileSync(join(hermesHome, "config.yaml"), [
+      "model:",
+      "  default: hermes-primary-test",
+      "  provider: custom:test-primary",
+      "fallback_providers:",
+      "  - provider: custom:test-fallback",
+      "    model: hermes-fallback-test"
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "profiles", "writer", "config.yaml"), [
+      "model:",
+      "  default: hermes-profile-test",
+      "  provider: custom:test-profile"
+    ].join("\n"));
+    process.env.HERMES_HOME = hermesHome;
+    delete process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
+    delete process.env.HIVEWARD_HERMES_MODELS;
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{ id: string; defaultModelId?: string; models?: Array<{ id: string; provider?: string; isDefault?: boolean }> }>;
+        }>(response);
+        const hermesStatus = body.statuses.find((status) => status.id === "hermes");
+
+        expect(hermesStatus?.defaultModelId).toBe("hermes-primary-test");
+        expect(hermesStatus?.models).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: "hermes-primary-test", provider: "custom:test-primary", isDefault: true }),
+          expect.objectContaining({ id: "hermes-fallback-test", provider: "custom:test-fallback" }),
+          expect.objectContaining({ id: "hermes-profile-test", provider: "custom:test-profile" })
+        ]));
+      });
+    } finally {
+      restoreEnv("HERMES_HOME", previousHermesHome);
       restoreEnv("HIVEWARD_HERMES_DEFAULT_MODEL", previousHermesDefault);
       restoreEnv("HIVEWARD_HERMES_MODELS", previousHermesModels);
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -1988,7 +2322,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("streams OpenClaw chat responses through the runtime adapter", async () => {
+  it("streams native chat responses through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -2013,11 +2347,14 @@ describe("apiRouter", () => {
         expect(text).toContain("event: started");
         expect(text).toContain("event: delta");
         expect(text).toContain("event: done");
-        expect(text).toContain("main completed through OpenClaw adapter");
+        expect(text).toContain("main completed through runtime adapter");
         expect(adapter.lastStartInput).toBeUndefined();
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("main");
         expect(adapter.lastChatStreamInput?.message).toContain("System context:");
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard is a local company operations console");
+        expect(adapter.lastChatStreamInput?.message).toContain("selected harness owns runtime execution");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("OpenClaw owns runtime execution");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("OpenClaw-native tools");
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
         expect(adapter.lastChatStreamInput?.message).toContain("Installed external skill:");
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
@@ -2030,6 +2367,39 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.thinking).toBe("medium");
       }, adapter);
     } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass native chat skills to a harness when those skills are not installed", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills"), { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "Say hello from Codex chat.",
+          attachments: [],
+          modelId: "gpt-5.5",
+          thinkingEffort: "medium",
+          includePlatformContext: true,
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.skillIds).toBeUndefined();
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
+      }, adapter);
+    } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2054,10 +2424,20 @@ describe("apiRouter", () => {
   it("streams Codex and Claude Code chat responses through the selected harness source", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const claudeHome = join(fixture.dir, "claude-home");
     const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
     const previousClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(claudeHome, "skills", "hiveward-leader"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(claudeHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
     process.env.HIVEWARD_CODEX_DEFAULT_MODEL = "codex/chat-default";
     process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL = "inherit";
+    process.env.CODEX_HOME = codexHome;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const codexResponse = await streamSessionChat(baseUrl, {
@@ -2112,6 +2492,8 @@ describe("apiRouter", () => {
     } finally {
       restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2119,6 +2501,13 @@ describe("apiRouter", () => {
   it("injects CEO skill decomposition guidance in skill split mode", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(codexHome, "skills", "hiveward-skill-decomposer"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(codexHome, "skills", "hiveward-skill-decomposer", "SKILL.md"), "# Decomposer\n");
+    process.env.CODEX_HOME = codexHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
@@ -2148,6 +2537,7 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo", "hiveward-skill-decomposer"]);
       }, adapter);
     } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2702,7 +3092,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("proxies OpenClaw native chat history by session key", async () => {
+  it("proxies native chat history by session key", async () => {
     const fixture = await createStoreFixture();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -2712,7 +3102,7 @@ describe("apiRouter", () => {
         expect(body.messages.length).toBeGreaterThan(0);
         expect(body.messages[0]).toMatchObject({
           role: "user",
-          content: "Mock OpenClaw session history."
+          content: "Mock runtime session history."
         });
       });
     } finally {
@@ -2732,7 +3122,7 @@ describe("apiRouter", () => {
         type: "blueprint_proposal",
         blueprintId: blueprint.id,
         title: "History synced blueprint package",
-        summary: "Created from a native OpenClaw history response.",
+        summary: "Created from a native runtime history response.",
         diffSummary: "Adds a history-synced blueprint package.",
         blueprintPackage: {
           schema: "hiveward.blueprint-package/v1",
@@ -2811,7 +3201,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("creates native OpenClaw chat sessions through the runtime adapter", async () => {
+  it("creates native chat sessions through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -2838,7 +3228,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("updates native OpenClaw chat session titles through the runtime adapter", async () => {
+  it("updates native chat session titles through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -3023,6 +3413,80 @@ async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardS
   return { dir, store };
 }
 
+async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, nodeRunId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${nodeRunId}`,
+    runId,
+    nodeRunId,
+    kind: "agent_proposal",
+    status: "pending",
+    title: `${nodeRunId} approval`,
+    body: "Review output",
+    sourceRef: { type: "node_run", id: nodeRunId },
+    threadId: `thread-${nodeRunId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("agent_proposal", "pending"),
+    requestedBy: {
+      type: "node",
+      label: nodeRunId,
+      nodeId: nodeRunId
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
+async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id,
+    runId: id,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Standalone approval",
+    body: "Approve the standalone request.",
+    sourceRef: { type: "inbox_item", id },
+    threadId: `thread-${id}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
+async function seedInboxApprovalRequest(store: FileHivewardStore, itemId: string): Promise<ApprovalRequest> {
+  const now = new Date().toISOString();
+  const request: ApprovalRequest = {
+    id: `approval-${itemId}`,
+    runId: itemId,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "Inbox approval",
+    body: "Approve the inbox item.",
+    payloadRef: itemId,
+    sourceRef: { type: "inbox_item", id: itemId },
+    threadId: `thread-${itemId}`,
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "ceo",
+      roleId: "ceo"
+    },
+    requestedAt: now,
+    updatedAt: now
+  };
+  return store.upsertApprovalRequest(request);
+}
+
 async function withApiServer(
   store: FileHivewardStore,
   work: (baseUrl: string) => Promise<void>,
@@ -3038,6 +3502,18 @@ async function withApiServer(
     adapter,
     worker
   }));
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const statusCode = typeof error === "object" && error !== null && "statusCode" in error &&
+      typeof (error as { statusCode?: unknown }).statusCode === "number"
+      ? (error as { statusCode: number }).statusCode
+      : 500;
+    const code = typeof error === "object" && error !== null && "code" in error &&
+      typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : "internal_error";
+    const message = error instanceof Error ? error.message : "Unexpected API failure.";
+    res.status(statusCode).json({ error: { code, message } });
+  });
 
   const server = app.listen(0);
   try {
@@ -3156,6 +3632,42 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 function writeFakeExecutable(path: string, output: string): void {
+  if (process.platform === "win32") {
+    writeFileSync(`${path}.cmd`, `@echo off\r\necho ${output}\r\n`, "utf8");
+    return;
+  }
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, "utf8");
+  chmodSync(path, 0o755);
+}
+
+function writeFakeHermesExecutable(
+  path: string,
+  options: { allowProfileWrites?: boolean; profileRows?: string[] } = {}
+): void {
+  const profileRows = options.profileRows ?? [
+    " Profile          Model                        Gateway      Alias        Distribution",
+    "\u25c6ceo             hermes-primary-test            stopped      hw-ceo       \u2014",
+    " architect       hermes-profile-model-test                      stopped      \u2014            \u2014",
+    " researcher      hermes-research-model-test      stopped      -            \u2014"
+  ];
+  const scriptPath = `${path}.js`;
+  const script = [
+    "const args = process.argv.slice(2);",
+    "if (args[0] === \"--version\") { console.log(\"hermes 0.9.0\"); process.exit(0); }",
+    "if (args[0] === \"profile\" && args[1] === \"list\") {",
+    ...profileRows.map((row) => `  console.log(${JSON.stringify(row)});`),
+    "  process.exit(0);",
+    "}",
+    options.allowProfileWrites
+      ? "if (args[0] === \"profile\" && (args[1] === \"create\" || args[1] === \"alias\")) process.exit(0);"
+      : "",
+    "process.exit(1);"
+  ].filter(Boolean).join("\n");
+  writeFileSync(scriptPath, script, "utf8");
+  if (process.platform === "win32") {
+    writeFileSync(`${path}.cmd`, `@echo off\r\nnode "${scriptPath}" %*\r\n`, "utf8");
+    return;
+  }
+  writeFileSync(path, `#!/bin/sh\nnode '${scriptPath.replace(/'/g, "'\\''")}' "$@"\n`, "utf8");
   chmodSync(path, 0o755);
 }

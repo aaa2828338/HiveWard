@@ -58,12 +58,17 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { resolveApiResourceUrl } from "../lib/api";
 import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
+type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
+type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
+type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
+type RunOutputTabKey = "current" | "plan" | "agentReports" | "release" | "artifacts" | "advanced";
 
 type IdentitySpec = {
   key: string;
@@ -170,10 +175,12 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
-  kind: "node" | "slot_input" | "slot_output";
+  kind: "node" | "report" | "timeline";
   depth: number;
   node?: BlueprintNode;
   nodeRun?: BlueprintNodeRun;
+  humanReport?: RunAgentHumanReport;
+  timelineItem?: RunTimelineTraceItem;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   outputPreview: string;
@@ -490,12 +497,12 @@ export function RunsPage({
   );
   const activeRun = selectedRunId ? blueprintRuns.find((runView) => runView.run.id === selectedRunId) : undefined;
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
+  const [activeOutputTab, setActiveOutputTab] = useState<RunOutputTabKey>("current");
   const [blueprintPickerOpen, setBlueprintPickerOpen] = useState(false);
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
   const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() =>
     readAcknowledgedTerminalRunIds(getBrowserStorage())
   );
-  const orderedNodes = useMemo(() => getBlueprintNodeOrder(blueprint), [blueprint]);
   const blueprintRunStats = useMemo(() => {
     const stats = new Map<string, { latestRunId?: string; latestStatus?: BlueprintRunStatus; latestRawStatus?: BlueprintRunStatus; lastUsedAt: number }>();
     for (const runView of runs) {
@@ -515,24 +522,55 @@ export function RunsPage({
   const currentBlueprintRunStats = blueprint ? blueprintRunStats.get(blueprint.id) : undefined;
 
   const issues = useMemo<TraceIssue[]>(() => {
-    return buildTraceIssues(activeRun, blueprint, orderedNodes, t);
-  }, [activeRun?.events, activeRun?.nodeRuns, orderedNodes, t, blueprint?.nodes]);
+    return buildTraceIssues(activeRun, blueprint, t, language);
+  }, [
+    activeRun?.events,
+    activeRun?.nodeRuns,
+    activeRun?.agentHumanReports,
+    activeRun?.artifacts,
+    activeRun?.runTimeline,
+    activeRun?.iterationRounds,
+    activeRun?.approvalRequests,
+    activeRun?.run.status,
+    t,
+    language,
+    blueprint?.nodes
+  ]);
 
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : undefined;
   const activeIssueOutput =
     activeIssue?.outputBody !== undefined
       ? activeIssue.outputBody
-      : activeIssue?.nodeRun?.output !== undefined
-        ? formatOutput(activeIssue.nodeRun.output)
-        : activeIssue?.nodeRun?.error;
-  const isActiveIssueError = activeIssue?.outputBody === undefined && activeIssue?.nodeRun?.output === undefined && Boolean(activeIssue?.nodeRun?.error);
+      : activeIssue?.nodeRun?.error;
+  const isActiveIssueError = activeIssue?.outputBody === undefined && Boolean(activeIssue?.nodeRun?.error);
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
+  const reportLayerCopy = getRunReportLayerCopy(language);
+  const approvedPlan = resolveRunApprovedPlan(activeRun);
+  const activeRound = resolveRunActiveRound(activeRun);
+  const agentHumanReports = activeRun?.agentHumanReports ?? [];
+  const agentHandoffs = activeRun?.agentHandoffs ?? [];
+  const latestReleaseReport = activeRun?.releaseReports?.at(-1);
+  const artifacts = activeRun?.artifacts ?? [];
+  const advancedDetailsBody = activeRun ? buildRunAdvancedDetailsBody(activeRun, approvedPlan) : "";
+  const outputTabAriaLabel = language === "zh-CN" ? "运行输出标签" : "Run output tabs";
+  const outputTabs: Array<{ key: RunOutputTabKey; label: string; badge?: string }> = [
+    { key: "current", label: t.trace.modelOutput },
+    { key: "plan", label: reportLayerCopy.planTitle, badge: activeRun ? t.status[activeRun.run.status] : undefined },
+    { key: "agentReports", label: reportLayerCopy.agentReportsTitle, badge: reportLayerCopy.count(agentHumanReports.length) },
+    { key: "release", label: reportLayerCopy.releaseTitle, badge: latestReleaseReport ? `v${latestReleaseReport.version}` : undefined },
+    { key: "artifacts", label: reportLayerCopy.artifactsTitle, badge: reportLayerCopy.count(artifacts.length) },
+    { key: "advanced", label: reportLayerCopy.runAdvancedDetails }
+  ];
 
   useEffect(() => {
     if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
     setActiveIssueKey(undefined);
   }, [activeIssueKey, issues]);
+
+  useEffect(() => {
+    setActiveOutputTab("current");
+  }, [activeRun?.run.id]);
 
   useEffect(() => {
     if (!activeRun || activeIssueKey || issues.length === 0) return;
@@ -595,7 +633,7 @@ export function RunsPage({
   };
 
   return (
-    <section className="page-grid trace-page-grid">
+    <section className="page-grid trace-page-grid runs-page-grid">
       <div className="trace-page-title">
         <h2>{t.navigation.runs}</h2>
         <div className="run-top-actions">
@@ -703,7 +741,10 @@ export function RunsPage({
                     key={issue.key}
                     type="button"
                     className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
-                    onClick={() => setActiveIssueKey(issue.key)}
+                    onClick={() => {
+                      setActiveIssueKey(issue.key);
+                      setActiveOutputTab("current");
+                    }}
                   >
                     <div className="trace-issue-index">{issue.index}</div>
                     <div className="trace-issue-main">
@@ -724,28 +765,392 @@ export function RunsPage({
           <div className="trace-column-header">
             <h3>{t.trace.modelOutput}</h3>
           </div>
-          <div className="content-card stack-card trace-output-column">
-            {activeIssue ? (
-              activeIssueOutput !== undefined ? (
-                <MarkdownRenderer
-                  value={activeIssueOutput}
-                  className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
-                />
-              ) : (
-                <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
-              )
-            ) : !blueprint ? (
-              <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-            ) : activeRun ? (
-              <div className="empty-state page-empty">{t.empty.selectNode}</div>
-            ) : (
-              <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-            )}
+          <div className="content-card stack-card trace-output-column run-output-column">
+            <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
+              {outputTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeOutputTab === tab.key}
+                  className={`run-output-tab${activeOutputTab === tab.key ? " selected" : ""}`}
+                  onClick={() => setActiveOutputTab(tab.key)}
+                  disabled={!activeRun && tab.key !== "current"}
+                >
+                  <span>{tab.label}</span>
+                  {tab.badge && <small>{tab.badge}</small>}
+                </button>
+              ))}
+            </div>
+
+            <div className="run-output-panel-stack">
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "current"}>
+                {activeIssue ? (
+                  activeIssueOutput !== undefined ? (
+                    <MarkdownRenderer
+                      value={activeIssueOutput}
+                      className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
+                    />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+                  )
+                ) : !blueprint ? (
+                  <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                ) : activeRun ? (
+                  <div className="empty-state page-empty">{t.empty.selectNode}</div>
+                ) : (
+                  <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                )}
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "plan"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.planTitle}</h4>
+                      <p>{activeRound ? reportLayerCopy.roundLabel(activeRound.roundNumber) : reportLayerCopy.noRound}</p>
+                    </div>
+                    {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : approvedPlan ? (
+                    <MarkdownRenderer value={approvedPlan.body} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noPlan}</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "agentReports"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.agentReportsTitle}</h4>
+                      <p>{reportLayerCopy.agentReportsHint}</p>
+                    </div>
+                    <span className="status-pill status-default">{reportLayerCopy.count(agentHumanReports.length)}</span>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : agentHumanReports.length === 0 ? (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noAgentReports}</div>
+                  ) : (
+                    <div className="run-agent-report-list">
+                      {agentHumanReports.map((report) => {
+                        const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
+                        const handoff = agentHandoffs.find((candidate) => candidate.nodeRunId === report.nodeRunId);
+                        const reportArtifacts = artifacts.filter((artifact) => artifact.nodeRunId === report.nodeRunId);
+                        const reportBody = buildHumanReportDisplayBody(report.bodyMd, reportArtifacts, language);
+                        const reportAdvancedBody = buildAgentReportAdvancedBody(nodeRun, handoff);
+                        return (
+                          <section className="run-agent-report" key={report.id}>
+                            <div className="run-agent-report-header">
+                              <div>
+                                <strong>{report.nodeLabel}</strong>
+                                <span>{report.title}</span>
+                              </div>
+                              <span className={`status-pill ${report.source === "fallback" ? "status-empty" : "status-succeeded"}`}>
+                                {reportLayerCopy.source(report.source)}
+                              </span>
+                            </div>
+                            <MarkdownRenderer value={reportBody} className="run-report-body" />
+                            {reportAdvancedBody && (
+                              <details className="run-report-advanced">
+                                <summary>{reportLayerCopy.advancedDetails}</summary>
+                                <MarkdownRenderer value={reportAdvancedBody} className="run-report-body" />
+                              </details>
+                            )}
+                          </section>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "release"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.releaseTitle}</h4>
+                      <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
+                    </div>
+                    {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : latestReleaseReport ? (
+                    <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "artifacts"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.artifactsTitle}</h4>
+                      <p>{reportLayerCopy.artifactsHint}</p>
+                    </div>
+                    <span className="status-pill status-default">{reportLayerCopy.count(artifacts.length)}</span>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : artifacts.length === 0 ? (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noArtifacts}</div>
+                  ) : (
+                    <div className="run-artifact-list">
+                      {artifacts.map((artifact) => (
+                        <div className="run-artifact-row" key={artifact.id}>
+                          <div>
+                            <strong>{artifact.title ?? artifact.kind}</strong>
+                            <span>{artifact.kind}{artifact.format ? ` · ${artifact.format}` : ""}</span>
+                          </div>
+                          {artifact.downloadUrl ? (
+                            <a href={resolveArtifactDownloadUrl(artifact.downloadUrl)} rel="noreferrer" target="_blank">
+                              {reportLayerCopy.openArtifact}
+                            </a>
+                          ) : (
+                            <span>{formatArtifactLocation(artifact)}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "advanced"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.runAdvancedDetails}</h4>
+                      <p>{reportLayerCopy.layerLabel}</p>
+                    </div>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : advancedDetailsBody ? (
+                    <MarkdownRenderer value={advancedDetailsBody} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+                  )}
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </section>
     </section>
   );
+}
+
+type RunApprovalRequest = NonNullable<BlueprintRunView["approvalRequests"]>[number];
+type RunArtifact = NonNullable<BlueprintRunView["artifacts"]>[number];
+type RunRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
+type RunAgentHandoff = NonNullable<BlueprintRunView["agentHandoffs"]>[number];
+
+function getRunReportLayerCopy(language: Language) {
+  const zh = language === "zh-CN";
+  return {
+    layerLabel: zh ? "运行报告看板" : "Run report board",
+    planTitle: zh ? "本轮执行计划" : "Round Execution Plan",
+    roundLabel: (roundNumber: number) => zh ? `第 ${roundNumber} 轮` : `Round ${roundNumber}`,
+    noRound: zh ? "尚未进入自迭代轮次" : "No self-iteration round yet",
+    noPlan: zh ? "本轮还没有已批准的执行计划。" : "No approved plan has been published for this run.",
+    agentReportsTitle: zh ? "Agent Markdown 报告" : "Agent Markdown reports",
+    agentReportsHint: zh ? "默认展示写给人的报告层。" : "Default human-readable report layer.",
+    noAgentReports: zh ? "还没有 agent 报告。" : "No agent reports yet.",
+    releaseTitle: zh ? "Manager 发布报告" : "Manager Release Report",
+    noReleaseHint: zh ? "等待 Manager 汇总本轮结果" : "Waiting for the manager's round summary",
+    noRelease: zh ? "还没有发布报告。" : "No release report yet.",
+    artifactsTitle: zh ? "产物" : "Artifacts",
+    artifactsHint: zh ? "本轮发布的产物索引。" : "Published output index for this run.",
+    noArtifacts: zh ? "还没有产物。" : "No artifacts yet.",
+    openArtifact: zh ? "打开" : "Open",
+    advancedDetails: zh ? "高级详情" : "Advanced details",
+    runAdvancedDetails: zh ? "运行高级详情" : "Run Advanced Details",
+    count: (value: number) => zh ? `${value} 条` : `${value}`,
+    source: (source: "agent" | "fallback") => source === "fallback"
+      ? (zh ? "fallback" : "fallback")
+      : (zh ? "agent" : "agent")
+  };
+}
+
+function resolveRunActiveRound(runView?: BlueprintRunView): RunRound | undefined {
+  const rounds = runView?.iterationRounds ?? [];
+  return rounds
+    .filter((round) => round.status === "executing" || round.status === "report_pending" || round.status === "artifact_published")
+    .at(-1) ?? rounds.at(-1);
+}
+
+function resolveRunApprovedPlan(runView?: BlueprintRunView): RunApprovalRequest | undefined {
+  if (!runView) return undefined;
+  const round = resolveRunActiveRound(runView);
+  const requestId = round?.approvedRequirementRequestId ?? round?.requirementRequestId;
+  if (requestId) {
+    const request = runView.approvalRequests?.find((candidate) => candidate.id === requestId);
+    if (request) return request;
+  }
+  return runView.approvalRequests?.filter((request) => request.kind === "iteration_requirement_plan").at(-1);
+}
+
+function buildHumanReportDisplayBody(
+  bodyMd: string,
+  artifacts: RunArtifact[],
+  language: Language
+): string {
+  const body = bodyMd.trim();
+  const reportBody = hasDeliverySection(body)
+    ? body
+    : insertDeliverySectionNearTop(body, buildDeliverySection(artifacts, language));
+  return localizeHumanReportBody(reportBody, language);
+}
+
+function hasDeliverySection(markdown: string): boolean {
+  return /^#{1,6}\s*(?:交付位置|产物位置|产出位置|Delivery location|Delivery|Deliverables?|Artifact locations?)(?:\s|$)/im.test(markdown);
+}
+
+function localizeHumanReportBody(markdown: string, language: Language): string {
+  if (language !== "zh-CN") return markdown;
+  return markdown
+    .replace(/^(#{1,6})\s*Delivery location\b/im, "$1 \u4ea4\u4ed8\u4f4d\u7f6e")
+    .replace(/^(#{1,6})\s*Manager Routing Decision\b/gim, "$1 Manager \u8def\u7531\u51b3\u7b56")
+    .replace(/^(#{1,6})\s*Decision\b/gim, "$1 \u51b3\u7b56")
+    .replace(/^(#{1,6})\s*Next slot\b/gim, "$1 \u4e0b\u4e00\u4e2a\u69fd\u4f4d")
+    .replace(/^(#{1,6})\s*Summary\b/gim, "$1 \u6458\u8981")
+    .replace(/^(#{1,6})\s*Validation\b/gim, "$1 \u9a8c\u8bc1")
+    .replace(/^(#{1,6})\s*Artifacts?\b/gim, "$1 \u4ea7\u7269")
+    .replace(/^(#{1,6})\s*Assumptions\b/gim, "$1 \u5047\u8bbe")
+    .replace(/^(#{1,6})\s*Risks\b/gim, "$1 \u98ce\u9669")
+    .replace(/^(#{1,6})\s*Next steps\b/gim, "$1 \u4e0b\u4e00\u6b65")
+    .replace(/^Manager Routing Decision$/gim, "Manager \u8def\u7531\u51b3\u7b56")
+    .replace(/^No filesystem file was created in this read-only node\./gim, "\u672c\u8282\u70b9\u4ee5\u53ea\u8bfb\u65b9\u5f0f\u8fd0\u884c\uff0c\u6ca1\u6709\u521b\u5efa\u672c\u5730\u6587\u4ef6\u3002")
+    .replace(/\bNo new deliverable produced in this step\./g, "\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002")
+    .replace(/\bRoute to Slot\s+(\d+)\b/g, "\u8def\u7531\u5230 Slot $1");
+}
+
+function insertDeliverySectionNearTop(body: string, deliverySection: string): string {
+  if (!body) return deliverySection;
+  const lines = body.split(/\r?\n/);
+  if (!/^#{1,6}\s+/.test(lines[0] ?? "")) {
+    return [deliverySection, body].join("\n\n");
+  }
+  let insertAt = 1;
+  while (insertAt < lines.length && !lines[insertAt]?.trim()) {
+    insertAt += 1;
+  }
+  return [
+    ...lines.slice(0, insertAt),
+    "",
+    deliverySection,
+    "",
+    ...lines.slice(insertAt)
+  ].join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function buildDeliverySection(artifacts: RunArtifact[], language: Language): string {
+  const zh = language === "zh-CN";
+  const title = zh ? "## 交付位置" : "## Delivery location";
+  const deliveryItems = collectDeliveryItems(artifacts, language);
+  if (deliveryItems.length === 0) {
+    return `${title}\n\n- ${zh ? "\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002" : "No new deliverable produced in this step."}`;
+  }
+  return [
+    title,
+    "",
+    ...deliveryItems.map((item) => `- ${item.label}: ${item.location}`)
+  ].join("\n");
+}
+
+function collectDeliveryItems(artifacts: RunArtifact[], language: Language): Array<{ label: string; location: string }> {
+  const zh = language === "zh-CN";
+  const items: Array<{ label: string; location: string }> = [];
+  const seen = new Set<string>();
+  const addItem = (label: string, location: unknown) => {
+    if (typeof location !== "string") return;
+    const trimmed = formatDeliveryLocationForDisplay(location.trim(), language);
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    items.push({ label, location: trimmed });
+  };
+
+  for (const artifact of artifacts) {
+    const label = artifact.title ?? artifact.kind;
+    if (artifact.storagePath) addItem(zh ? `${label} \u672c\u5730\u6587\u4ef6` : `${label} local file`, artifact.storagePath);
+    if (artifact.downloadUrl) addItem(zh ? `${label} \u6d4f\u89c8\u5668\u94fe\u63a5` : `${label} browser link`, artifact.downloadUrl);
+    if (!artifact.storagePath && !artifact.downloadUrl) addItem(label, formatArtifactLocation(artifact));
+  }
+  return items;
+}
+
+function formatDeliveryLocationForDisplay(location: string, language: Language): string {
+  if (language !== "zh-CN") return location;
+  if (/^(https?:\/\/|\/|#|mailto:|localhost\b|127\.0\.0\.1\b)/i.test(location)) return location;
+  if (/^[A-Za-z]:[\\/]/.test(location)) return location.replace(/\//g, "\\");
+  if (/^(?:runs|artifacts|blueprints|tmp)[\\/]/i.test(location)) return location.replace(/\//g, "\\");
+  return location;
+}
+
+function buildAgentReportAdvancedBody(nodeRun: BlueprintNodeRun | undefined, handoff: RunAgentHandoff | undefined): string {
+  return [
+    handoff ? buildMarkdownCodeSection("JSON handoff", handoff.payload, "json") : "",
+    nodeRun?.output !== undefined ? buildMarkdownCodeSection("Raw output", nodeRun.output) : "",
+    nodeRun ? buildMarkdownCodeSection("nodeRun", nodeRun, "json") : ""
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildRunAdvancedDetailsBody(runView: BlueprintRunView, approvedPlan: RunApprovalRequest | undefined): string {
+  const round = resolveRunActiveRound(runView);
+  return [
+    approvedPlan ? buildMarkdownCodeSection("Approved plan JSON", approvedPlan, "json") : "",
+    round ? buildMarkdownCodeSection("Research context", {
+      roundId: round.id,
+      roundNumber: round.roundNumber,
+      researchStatus: round.researchStatus,
+      researchSummary: round.researchSummary,
+      researchArtifactIds: round.researchArtifactIds,
+      planSource: round.planSource
+    }, "json") : "",
+    buildMarkdownCodeSection("Agent handoffs", runView.agentHandoffs ?? [], "json"),
+    buildMarkdownCodeSection("Manager context snapshots", runView.managerContextSnapshots ?? [], "json"),
+    buildMarkdownCodeSection("nodeRuns", runView.nodeRuns, "json"),
+    buildMarkdownCodeSection("runContext source metadata", {
+      run: runView.run,
+      iterationRounds: runView.iterationRounds ?? [],
+      approvalRequests: runView.approvalRequests ?? [],
+      releaseReports: runView.releaseReports ?? []
+    }, "json")
+  ].filter(Boolean).join("\n\n");
+}
+
+function buildMarkdownCodeSection(title: string, value: unknown, language = ""): string {
+  if (value === undefined || value === null) return "";
+  const body = formatOutput(value).trim();
+  if (!body) return "";
+  const fence = language ? `\`\`\`${language}` : "```";
+  return [`#### ${title}`, "", fence, body, "```"].join("\n");
+}
+
+function formatArtifactLocation(artifact: RunArtifact): string {
+  return artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath ?? artifact.id;
+}
+
+function resolveArtifactDownloadUrl(downloadUrl: string): string {
+  return resolveApiResourceUrl(downloadUrl);
 }
 
 export function ApprovalsPage({
@@ -754,8 +1159,12 @@ export function ApprovalsPage({
   language,
   t,
   onApprove,
+  onApproveApprovalRequest,
+  onComplete,
   onReject,
+  onRejectApprovalRequest,
   onReply,
+  onReplyApprovalRequest,
   onSelectApprovalReply,
   onReplyInboxItem,
   onApproveInboxItem,
@@ -766,8 +1175,12 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string, selectedReplyId?: string) => void;
+  onApproveApprovalRequest: (approvalRequestId: string, comment?: string, selectedReplyId?: string) => void;
+  onComplete: (approvalRequestId: string, comment?: string) => void;
   onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
+  onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
+  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSelectApprovalReply: (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
@@ -807,7 +1220,7 @@ export function ApprovalsPage({
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
   const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
   const canApproveSelection = Boolean(
-    selectedApproval ? selectedApproval.canApprove !== false : selectedInboxOperable
+    selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable
   );
   const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
@@ -879,11 +1292,14 @@ export function ApprovalsPage({
       createdAt: new Date().toISOString()
     };
     if (selectedApproval?.canReply) {
-      const pendingHarnessReply = {
-        id: `${reply.id}:pending`,
-        harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
-        createdAt: reply.createdAt
-      };
+      const shouldWaitForHarnessReply = !selectedApproval.approvalRequestId || selectedApproval.kind === "agent_proposal";
+      const pendingHarnessReply = shouldWaitForHarnessReply
+        ? {
+            id: `${reply.id}:pending`,
+            harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
+            createdAt: reply.createdAt
+          }
+        : undefined;
       flushSync(() => {
         setLocalReplies((current) => ({
           ...current,
@@ -892,10 +1308,23 @@ export function ApprovalsPage({
             reply
           ]
         }));
-        setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+        if (pendingHarnessReply) {
+          setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+        } else {
+          setPendingHarnessReplies((current) => {
+            if (!current[selectedThreadKey]) return current;
+            const next = { ...current };
+            delete next[selectedThreadKey];
+            return next;
+          });
+        }
         setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
       });
       window.setTimeout(() => {
+        if (selectedApproval.approvalRequestId) {
+          onReplyApprovalRequest(selectedApproval.approvalRequestId, body);
+          return;
+        }
         onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
       }, 0);
       return;
@@ -925,7 +1354,16 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval && selectedApproval.canApprove !== false) {
-      onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
+      if (selectedApproval.approvalRequestId) {
+        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId);
+      } else {
+        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
+      }
+      clearReplyDraft();
+      return;
+    }
+    if (selectedApproval?.canComplete && selectedApproval.approvalRequestId) {
+      onComplete(selectedApproval.approvalRequestId, comment);
       clearReplyDraft();
     }
   };
@@ -943,7 +1381,11 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval?.canReject) {
-      onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
+      if (selectedApproval.approvalRequestId) {
+        onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
+      } else {
+        onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
+      }
     }
     clearReplyDraft();
   };
@@ -1052,6 +1494,8 @@ export function ApprovalsPage({
                   const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
                   const processed = approval.status === "approved" || approval.status === "rejected";
+                  const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
+                  const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
                     <article
                       key={approval.nodeRunId}
@@ -1083,12 +1527,20 @@ export function ApprovalsPage({
                         <button
                           type="button"
                           className="inbox-row-action primary-action"
-                          title={approval.canApprove === false ? inboxCopy.processedAction : t.actions.approve}
-                          aria-label={t.actions.approve}
-                          disabled={approval.canApprove === false}
-                          onClick={() =>
-                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId)
-                          }
+                          title={canApproveOrComplete ? approveOrCompleteLabel : inboxCopy.processedAction}
+                          aria-label={approveOrCompleteLabel}
+                          disabled={!canApproveOrComplete}
+                          onClick={() => {
+                            if (approval.canApprove === false && approval.canComplete && approval.approvalRequestId) {
+                              onComplete(approval.approvalRequestId);
+                              return;
+                            }
+                            if (approval.approvalRequestId) {
+                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId);
+                              return;
+                            }
+                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId);
+                          }}
                         >
                           <BadgeCheck size={16} />
                         </button>
@@ -1098,7 +1550,13 @@ export function ApprovalsPage({
                           title={inboxCopy.reject}
                           aria-label={inboxCopy.reject}
                           disabled={!approval.canReject}
-                          onClick={() => onReject(approval.blueprintRunId, approval.nodeRunId)}
+                          onClick={() => {
+                            if (approval.approvalRequestId) {
+                              onRejectApprovalRequest(approval.approvalRequestId);
+                              return;
+                            }
+                            onReject(approval.blueprintRunId, approval.nodeRunId);
+                          }}
                         >
                           <Trash2 size={15} />
                         </button>
@@ -1123,6 +1581,7 @@ export function ApprovalsPage({
             language={language}
             messages={selectedMessages}
             onApprove={approveSelectedThread}
+            approveLabel={selectedApproval?.canApprove === false && selectedApproval.canComplete ? inboxCopy.complete : inboxCopy.approve}
             canApprove={canApproveSelection}
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
@@ -1203,6 +1662,7 @@ type InboxConversationMessage = {
 
 function InboxConversationPanel({
   approval,
+  approveLabel,
   copy,
   inboxItem,
   language,
@@ -1218,6 +1678,7 @@ function InboxConversationPanel({
   onSendReply
 }: {
   approval?: PendingApprovalItem;
+  approveLabel: string;
   copy: InboxCopy;
   inboxItem?: InboxItem;
   language: Language;
@@ -1328,7 +1789,7 @@ function InboxConversationPanel({
           </button>
           <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
-            {copy.approve}
+            {approveLabel}
           </button>
           <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
             <Trash2 size={15} />
@@ -1344,6 +1805,7 @@ type InboxCopy = {
   allBlueprints: string;
   approvalRequest: string;
   approve: string;
+  complete: string;
   blueprintFilter: string;
   conversation: string;
   decidedAt: string;
@@ -1389,6 +1851,7 @@ function getInboxCopy(language: Language): InboxCopy {
       allBlueprints: "全部蓝图",
       approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
       approve: "\u6279\u51c6",
+      complete: "\u5b8c\u6210",
       blueprintFilter: "蓝图",
       conversation: "\u5bf9\u8bdd",
       decidedAt: "处理时间",
@@ -1428,6 +1891,7 @@ function getInboxCopy(language: Language): InboxCopy {
     allBlueprints: "All blueprints",
     approvalRequest: "Approval request",
     approve: "Approve",
+    complete: "Complete",
     blueprintFilter: "Blueprint",
     conversation: "Conversation",
     decidedAt: "Decided",
@@ -1615,6 +2079,7 @@ function formalInboxTypeLabel(type: InboxItem["type"], language: Language): stri
 }
 
 function approvalSubject(approval: PendingApprovalItem): string {
+  if (approval.kind === "iteration_requirement_plan") return "Round Execution Plan";
   return approval.nodeLabel || approval.blueprintName;
 }
 
@@ -3020,7 +3485,7 @@ function mergeModelCatalogOptions(fields: OpenClawWizardField[], providerId: str
   });
 }
 
-function IdentityTitle({ kind, id, label }: { kind: IdentityKind; id: string; label: string }) {
+export function IdentityTitle({ kind, id, label }: { kind: IdentityKind; id: string; label: string }) {
   return (
     <div className="identity-title">
       <IdentityMark kind={kind} id={id} label={label} />
@@ -3262,118 +3727,195 @@ function isWizardFieldVisible(field: OpenClawWizardField, values: Record<string,
 function buildTraceIssues(
   activeRun: BlueprintRunView | undefined,
   blueprint: BlueprintDefinition | undefined,
-  orderedNodes: BlueprintNode[],
-  t: Messages
+  t: Messages,
+  language: Language
 ): TraceIssue[] {
-  if (!activeRun?.nodeRuns.length) {
-    return buildPendingTraceIssues(blueprint, orderedNodes, t);
-  }
-
+  if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
-  const childrenBySlotId = new Map<string, Set<string>>();
-  for (const node of blueprint?.nodes ?? []) {
-    if (!node.parentId) continue;
-    const parent = nodesById.get(node.parentId);
-    if (parent?.type !== "manager_slot") continue;
-    childrenBySlotId.set(node.parentId, new Set([...(childrenBySlotId.get(node.parentId) ?? []), node.id]));
-  }
+  const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
+  const humanReportIds = new Set((activeRun.agentHumanReports ?? []).map((report) => report.id));
+  const visibleNodeRuns = activeRun.nodeRuns.filter((nodeRun) => nodeRun.nodeType !== "manager_slot");
+  const nodeItems = visibleNodeRuns.map((nodeRun, order) => ({
+    kind: "node" as const,
+    nodeRun,
+    order,
+    createdAt: traceTimestampForNodeRun(nodeRun)
+  }));
+  const timelineItems = buildRunTimelineTraceItems(activeRun, nodeRunIds, humanReportIds, language).map((timelineItem, order) => ({
+    kind: "timeline" as const,
+    timelineItem,
+    order: visibleNodeRuns.length + order,
+    createdAt: timelineItem.createdAt
+  }));
+  const reportItems = (activeRun.agentHumanReports ?? [])
+    .filter((report) => !nodeRunIds.has(report.nodeRunId))
+    .map((humanReport, order) => ({
+      kind: "report" as const,
+      humanReport,
+      order: visibleNodeRuns.length + timelineItems.length + order,
+      createdAt: humanReport.createdAt
+    }));
 
-  const issues: TraceIssue[] = [];
-  let issueIndex = 1;
-  for (let runIndex = 0; runIndex < activeRun.nodeRuns.length; runIndex += 1) {
-    const nodeRun = activeRun.nodeRuns[runIndex]!;
-    const node = nodesById.get(nodeRun.nodeId);
-    if (node?.type !== "manager_slot") {
-      issues.push(createNodeTraceIssue(activeRun, nodeRun, node, issueIndex, node?.parentId ? 1 : 0, t));
-      issueIndex += 1;
-      continue;
-    }
-
-    const slotLabel = nodeRun.nodeLabel || node.config.label || nodeRun.nodeId;
-    const slotEvents = activeRun.events.filter((event) => event.nodeRunId === nodeRun.id);
-    const slotInputStatus = nodeRun.startedAt ? "completed" : toIssueStatus(nodeRun.status);
-    issues.push({
-      key: `${nodeRun.id}:input`,
-      index: issueIndex,
-      label: `${slotLabel} ${t.trace.slotInputSuffix}`,
-      kind: "slot_input",
-      depth: 0,
-      node,
-      nodeRun,
-      issueStatus: slotInputStatus,
-      statusLabel: nodeRun.startedAt ? t.trace.completed : statusLabelForNodeRun(nodeRun.status, t),
-      outputPreview: t.trace.managerInputPreview,
-      outputBody: t.trace.managerInputBody,
-      events: slotEvents.filter((event) => event.type !== "node.run.completed")
+  return [...nodeItems, ...timelineItems, ...reportItems]
+    .sort(compareTraceChronologyItems)
+    .map((item, index) => {
+      if (item.kind === "node") {
+        const node = nodesById.get(item.nodeRun.nodeId);
+        return createNodeTraceIssue(activeRun, item.nodeRun, node, index + 1, node?.parentId ? 1 : 0, t, language);
+      }
+      if (item.kind === "timeline") {
+        return createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
+      }
+      return createReportTraceIssue(activeRun, item.humanReport, index + 1, t, language);
     });
-    issueIndex += 1;
-
-    const childIds = childrenBySlotId.get(node.id) ?? new Set<string>();
-    let childRunIndex = runIndex + 1;
-    while (childRunIndex < activeRun.nodeRuns.length) {
-      const childRun = activeRun.nodeRuns[childRunIndex]!;
-      if (!childIds.has(childRun.nodeId)) break;
-      const childNode = nodesById.get(childRun.nodeId);
-      issues.push(createNodeTraceIssue(activeRun, childRun, childNode, issueIndex, 1, t));
-      issueIndex += 1;
-      childRunIndex += 1;
-    }
-
-    const slotOutputStatus = toSlotOutputIssueStatus(nodeRun);
-    issues.push({
-      key: `${nodeRun.id}:output`,
-      index: issueIndex,
-      label: `${slotLabel} ${t.trace.slotOutputSuffix}`,
-      kind: "slot_output",
-      depth: 0,
-      node,
-      nodeRun,
-      issueStatus: slotOutputStatus,
-      statusLabel: labelForIssueStatus(slotOutputStatus, t),
-      outputPreview: nodeRun.output === undefined ? t.trace.waitingNestedNodes : summarizeOutput(nodeRun.output, t),
-      events: slotEvents
-    });
-    issueIndex += 1;
-    runIndex = childRunIndex - 1;
-  }
-
-  return issues;
 }
 
-function buildPendingTraceIssues(blueprint: BlueprintDefinition | undefined, orderedNodes: BlueprintNode[], t: Messages): TraceIssue[] {
-  if (!blueprint) return [];
+function buildRunTimelineTraceItems(
+  activeRun: BlueprintRunView,
+  nodeRunIds: Set<string>,
+  humanReportIds: Set<string>,
+  language: Language
+): RunTimelineTraceItem[] {
+  const visible = (activeRun.runTimeline ?? [])
+    .filter((item) => isVisibleRunTimelineKind(item.kind))
+    .filter((item) => item.kind !== "node_output" || !item.payloadRef || !humanReportIds.has(item.payloadRef))
+    .filter((item) => item.kind !== "node_started" || !item.payloadRef || !nodeRunIds.has(item.payloadRef));
+  const eventFallback = visible.length === 0
+    ? buildRunEventTimelineFallbackItems(activeRun, nodeRunIds, language)
+    : [];
+  const artifactFallback = visible.some((item) => item.kind === "artifact_published")
+    ? []
+    : buildArtifactTimelineFallbackItems(activeRun);
+  const projected = [...visible, ...eventFallback, ...artifactFallback];
+  return [...projected, ...buildSyntheticPreflightTimelineItems(activeRun, projected, language)];
+}
 
-  const childrenBySlotId = new Map<string, BlueprintNode[]>();
-  for (const node of blueprint.nodes) {
-    if (!node.parentId) continue;
-    const parent = blueprint.nodes.find((candidate) => candidate.id === node.parentId);
-    if (parent?.type !== "manager_slot") continue;
-    childrenBySlotId.set(node.parentId, [...(childrenBySlotId.get(node.parentId) ?? []), node]);
+function buildRunEventTimelineFallbackItems(
+  activeRun: BlueprintRunView,
+  nodeRunIds: Set<string>,
+  language: Language
+): RunTimelineTraceItem[] {
+  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
+  return activeRun.events.flatMap((event, index) => {
+    const kind = runEventTimelineKind(event.type);
+    if (!kind) return [];
+    if (event.nodeRunId && nodeRunIds.has(event.nodeRunId)) return [];
+    const nodeRun = event.nodeRunId ? nodeRunsById.get(event.nodeRunId) : undefined;
+    return [{
+      id: `event-timeline-${event.id}`,
+      runId: event.blueprintRunId,
+      sequence: index + 1,
+      createdAt: event.createdAt,
+      actorNodeId: event.nodeRunId,
+      actorLabel: nodeRun?.nodeLabel ?? runEventActorLabel(event, language),
+      kind,
+      title: runEventTimelineTitle(event, nodeRun, language),
+      body: event.message,
+      payloadRef: event.nodeRunId
+    }];
+  });
+}
+
+function runEventTimelineKind(type: BlueprintNodeEvent["type"]): RunTimelineTraceItem["kind"] | undefined {
+  if (type === "blueprint.run.started") return "round_started";
+  if (type === "blueprint.run.completed") return "run_completed";
+  if (type === "blueprint.run.failed") return "run_failed";
+  if (type === "blueprint.run.cancelled") return "run_cancelled";
+  if (type === "node.run.queued" || type === "node.run.started" || type === "node.run.waiting_approval") return "node_started";
+  if (type === "node.run.completed" || type === "node.run.failed" || type === "node.run.cancelled") return "node_output";
+  return undefined;
+}
+
+function runEventActorLabel(event: BlueprintNodeEvent, language: Language): string {
+  if (event.nodeRunId) return language === "zh-CN" ? "运行节点" : "Run node";
+  return language === "zh-CN" ? "运行" : "Run";
+}
+
+function runEventTimelineTitle(
+  event: BlueprintNodeEvent,
+  nodeRun: BlueprintNodeRun | undefined,
+  language: Language
+): string {
+  const zh = language === "zh-CN";
+  const nodeLabel = nodeRun?.nodeLabel ?? (zh ? "运行节点" : "Run node");
+  if (event.type === "blueprint.run.started") return zh ? "运行已开始" : "Run started";
+  if (event.type === "blueprint.run.completed") return zh ? "运行已完成" : "Run completed";
+  if (event.type === "blueprint.run.failed") return zh ? "运行失败" : "Run failed";
+  if (event.type === "blueprint.run.cancelled") return zh ? "运行已取消" : "Run cancelled";
+  if (event.type === "node.run.queued") return zh ? `${nodeLabel} 已排队` : `${nodeLabel} queued`;
+  if (event.type === "node.run.started") return zh ? `${nodeLabel} 已开始` : `${nodeLabel} started`;
+  if (event.type === "node.run.waiting_approval") return zh ? `${nodeLabel} 等待审批` : `${nodeLabel} waiting for approval`;
+  if (event.type === "node.run.completed") return zh ? `${nodeLabel} 已完成` : `${nodeLabel} completed`;
+  if (event.type === "node.run.failed") return zh ? `${nodeLabel} 失败` : `${nodeLabel} failed`;
+  if (event.type === "node.run.cancelled") return zh ? `${nodeLabel} 已取消` : `${nodeLabel} cancelled`;
+  return event.message;
+}
+
+function buildArtifactTimelineFallbackItems(activeRun: BlueprintRunView): RunTimelineTraceItem[] {
+  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
+  return (activeRun.artifacts ?? []).map((artifact, index) => {
+    const nodeRun = artifact.nodeRunId ? nodeRunsById.get(artifact.nodeRunId) : undefined;
+    return {
+      id: `artifact-timeline-${artifact.id}`,
+      runId: artifact.runId,
+      sequence: index + 1,
+      createdAt: artifact.createdAt,
+      actorNodeId: artifact.nodeRunId,
+      actorLabel: nodeRun?.nodeLabel ?? artifact.title ?? artifact.kind,
+      kind: "artifact_published",
+      title: artifact.title ?? artifact.kind,
+      body: artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath,
+      payloadRef: artifact.id
+    };
+  });
+}
+
+function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {
+  return kind === "round_started" ||
+    kind === "requirement_published" ||
+    kind === "decision_created" ||
+    kind === "node_started" ||
+    kind === "node_output" ||
+    kind === "artifact_published" ||
+    kind === "release_report_published" ||
+    kind === "round_completed" ||
+    kind === "round_failed" ||
+    kind === "round_cancelled" ||
+    kind === "run_completed" ||
+    kind === "run_failed" ||
+    kind === "run_cancelled";
+}
+
+function buildSyntheticPreflightTimelineItems(
+  activeRun: BlueprintRunView,
+  timelineItems: RunTimelineTraceItem[],
+  language: Language
+): RunTimelineTraceItem[] {
+  const zh = language === "zh-CN";
+  const synthetic: RunTimelineTraceItem[] = [];
+  for (const round of activeRun.iterationRounds ?? []) {
+    const hasPreflightStarted = timelineItems.some((item) =>
+      item.kind === "node_started" && item.payloadRef?.startsWith("preflight-") && item.payloadRef.includes(round.id)
+    );
+    if (round.status !== "requirement_pending" || round.requirementRequestId || hasPreflightStarted) continue;
+    const roundStart = timelineItems.find((item) => item.kind === "round_started" && toSafeTimestamp(item.createdAt) === toSafeTimestamp(round.startedAt));
+    synthetic.push({
+      id: `synthetic-preflight-${round.id}`,
+      runId: activeRun.run.id,
+      sequence: (roundStart?.sequence ?? 0) + 0.1,
+      createdAt: round.startedAt,
+      actorNodeId: roundStart?.actorNodeId,
+      actorLabel: roundStart?.actorLabel ?? "Manager",
+      kind: "node_started",
+      title: zh ? `Manager 正在准备第 ${round.roundNumber} 轮计划` : `Manager is preparing round ${round.roundNumber}`,
+      body: zh
+        ? "调研、提需和计划整理都属于运行步骤。完成后会把本轮计划送到收件箱审批。"
+        : "Research, requirement drafting, and plan preparation are part of the run. The round plan will move to inbox approval when ready.",
+      payloadRef: `synthetic-preflight-${round.id}`
+    });
   }
 
-  const visited = new Set<string>();
-  const issues: TraceIssue[] = [];
-  let issueIndex = 1;
-  for (const node of orderedNodes) {
-    if (visited.has(node.id) || node.parentId) continue;
-    visited.add(node.id);
-    if (node.type !== "manager_slot") {
-      issues.push(createPendingTraceIssue(node, issueIndex, 0, t));
-      issueIndex += 1;
-      continue;
-    }
-
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_input", t));
-    issueIndex += 1;
-    for (const child of childrenBySlotId.get(node.id) ?? []) {
-      visited.add(child.id);
-      issues.push(createPendingTraceIssue(child, issueIndex, 1, t));
-      issueIndex += 1;
-    }
-    issues.push(createPendingSlotBoundaryIssue(node, issueIndex, "slot_output", t));
-    issueIndex += 1;
-  }
-  return issues;
+  return synthetic;
 }
 
 function createNodeTraceIssue(
@@ -3382,9 +3924,16 @@ function createNodeTraceIssue(
   node: BlueprintNode | undefined,
   index: number,
   depth: number,
-  t: Messages
+  t: Messages,
+  language: Language
 ): TraceIssue {
-  const label = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
+  const baseLabel = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
+  const label = formatNodeTraceLabel(baseLabel, nodeRun, language);
+  const humanReport = activeRun.agentHumanReports?.find((report) => report.nodeRunId === nodeRun.id);
+  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === nodeRun.id) ?? [];
+  const readableBody = humanReport
+    ? buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language)
+    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language);
   return {
     key: nodeRun.id,
     index,
@@ -3393,42 +3942,246 @@ function createNodeTraceIssue(
     depth,
     node,
     nodeRun,
+    humanReport,
     issueStatus: toIssueStatus(nodeRun.status),
     statusLabel: statusLabelForNodeRun(nodeRun.status, t),
-    outputPreview: summarizeOutput(nodeRun.output, t),
+    outputPreview: summarizeOutput(readableBody ?? nodeRun.output, t),
+    outputBody: readableBody,
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
 }
 
-function createPendingTraceIssue(node: BlueprintNode, index: number, depth: number, t: Messages): TraceIssue {
+function createReportTraceIssue(
+  activeRun: BlueprintRunView,
+  humanReport: RunAgentHumanReport,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === humanReport.nodeRunId) ?? [];
+  const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === humanReport.nodeRunId);
+  const body = buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language);
   return {
-    key: `node:${node.id}`,
+    key: `report:${humanReport.id}`,
     index,
-    label: node.config.label,
-    kind: "node",
-    depth,
-    node,
-    issueStatus: "pending",
-    statusLabel: t.trace.pending,
-    outputPreview: summarizeOutput(undefined, t),
+    label: formatReportTraceLabel(humanReport.nodeLabel, humanReport.nodeRunId, language),
+    kind: "report",
+    depth: 0,
+    humanReport,
+    issueStatus: "completed",
+    statusLabel: t.trace.completed,
+    outputPreview: summarizeOutput(body, t),
+    outputBody: body,
     events: []
   };
 }
 
-function createPendingSlotBoundaryIssue(node: BlueprintNode, index: number, kind: "slot_input" | "slot_output", t: Messages): TraceIssue {
-  const isInput = kind === "slot_input";
+function formatNodeTraceLabel(label: string, nodeRun: BlueprintNodeRun, language: Language): string {
+  const zh = language === "zh-CN";
+  if (nodeRun.nodeType === "manager") return `${label} · ${zh ? "\u6267\u884c\u8c03\u5ea6" : "dispatch"}`;
+  return label;
+}
+
+function formatReportTraceLabel(label: string, nodeRunId: string, language: Language): string {
+  const displayLabel = localizeReportNodeLabel(label, language);
+  const mode = preflightModeFromNodeRunId(nodeRunId);
+  if (!mode) return displayLabel;
+  return `${displayLabel} · ${preflightModeDisplayLabel(mode, language)}`;
+}
+
+function localizeReportNodeLabel(label: string, language: Language): string {
+  if (language !== "zh-CN") return label;
+  return label.replace(/\s+dispatch\s+(\d+)$/i, " \u00b7 \u8c03\u5ea6 $1");
+}
+
+function preflightModeFromNodeRunId(nodeRunId: string): RunPreflightMode | undefined {
+  if (!nodeRunId.startsWith("preflight-")) return undefined;
+  if (nodeRunId.startsWith("preflight-research_resolution-")) return "research_resolution";
+  if (nodeRunId.startsWith("preflight-requirement_resolution-")) return "requirement_resolution";
+  if (nodeRunId.startsWith("preflight-revise_plan-")) return "revise_plan";
+  if (nodeRunId.startsWith("preflight-preflight_judgment-")) return "preflight_judgment";
+  if (nodeRunId.startsWith("preflight-context_snapshot-")) return "context_snapshot";
+  return undefined;
+}
+
+function preflightModeDisplayLabel(mode: RunPreflightMode, language: Language): string {
+  const zh = language === "zh-CN";
+  if (mode === "research_resolution") return zh ? "\u8c03\u7814" : "research";
+  if (mode === "requirement_resolution") return zh ? "\u8ba1\u5212\u51c6\u5907" : "plan preparation";
+  if (mode === "revise_plan") return zh ? "\u8ba1\u5212\u4fee\u8ba2" : "plan revision";
+  if (mode === "preflight_judgment") return zh ? "\u8ba1\u5212\u6821\u9a8c" : "plan review";
+  if (mode === "context_snapshot") return zh ? "\u8bb0\u5fc6\u5feb\u7167" : "context snapshot";
+  return zh ? "\u51c6\u5907" : "preflight";
+}
+
+function createTimelineTraceIssue(
+  activeRun: BlueprintRunView,
+  timelineItem: RunTimelineTraceItem,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const body = buildTimelineIssueBody(activeRun, timelineItem, language);
+  const issueStatus = timelineIssueStatus(activeRun, timelineItem);
   return {
-    key: `node:${node.id}:${kind}`,
+    key: `timeline:${timelineItem.id}`,
     index,
-    label: `${node.config.label} ${isInput ? t.trace.slotInputSuffix : t.trace.slotOutputSuffix}`,
-    kind,
+    label: timelineIssueTitle(timelineItem, language),
+    kind: "timeline",
     depth: 0,
-    node,
-    issueStatus: "pending",
-    statusLabel: t.trace.pending,
-    outputPreview: isInput ? t.trace.managerInputWaiting : t.trace.waitingNestedNodes,
+    timelineItem,
+    issueStatus,
+    statusLabel: traceIssueStatusLabel(issueStatus, language),
+    outputPreview: summarizeOutput(body, t),
+    outputBody: body,
     events: []
   };
+}
+
+type TraceChronologyItem =
+  | { kind: "node"; nodeRun: BlueprintNodeRun; order: number; createdAt: string }
+  | { kind: "timeline"; timelineItem: RunTimelineTraceItem; order: number; createdAt: string }
+  | { kind: "report"; humanReport: RunAgentHumanReport; order: number; createdAt: string };
+
+function compareTraceChronologyItems(left: TraceChronologyItem, right: TraceChronologyItem): number {
+  return toSafeTimestamp(left.createdAt) - toSafeTimestamp(right.createdAt) || left.order - right.order;
+}
+
+function traceTimestampForNodeRun(nodeRun: BlueprintNodeRun): string {
+  return nodeRun.queuedAt || nodeRun.startedAt || nodeRun.endedAt || "";
+}
+
+function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): TraceIssueStatus {
+  if (
+    timelineItem.kind === "round_failed" ||
+    timelineItem.kind === "round_cancelled" ||
+    timelineItem.kind === "run_failed" ||
+    timelineItem.kind === "run_cancelled" ||
+    /\b(failed|cancelled|error)\b/i.test(timelineItem.title)
+  ) {
+    return "failed";
+  }
+  if (timelineItem.kind === "node_started") {
+    const hasOutput = Boolean(
+      timelineItem.payloadRef &&
+        ((activeRun.agentHumanReports ?? []).some((report) => report.nodeRunId === timelineItem.payloadRef) ||
+          (activeRun.runTimeline ?? []).some((item) => item.kind === "node_output" && item.payloadRef === timelineItem.payloadRef))
+    );
+    if (hasOutput || isTerminalBlueprintRunStatus(activeRun.run.status)) return "completed";
+    return "in_progress";
+  }
+  if (timelineItem.kind === "requirement_published") {
+    const request = (activeRun.approvalRequests ?? []).find(
+      (approval) => approval.kind === "iteration_requirement_plan" && approval.title === timelineItem.title
+    );
+    return request?.status === "pending" ? "in_progress" : "completed";
+  }
+  if (timelineItem.kind === "release_report_published") {
+    const request = (activeRun.approvalRequests ?? []).find(
+      (approval) => approval.kind === "manager_release_report" && approval.title === timelineItem.title
+    );
+    return request?.status === "pending" ? "in_progress" : "completed";
+  }
+  return "completed";
+}
+
+function timelineIssueTitle(timelineItem: RunTimelineTraceItem, language: Language): string {
+  const zh = language === "zh-CN";
+  if (!zh) return timelineItem.title;
+  const roundStarted = timelineItem.title.match(/^Round\s+(\d+)\s+started$/i);
+  if (roundStarted?.[1]) return `第 ${roundStarted[1]} 轮启动`;
+  const roundPlan = timelineItem.title.match(/^Round\s+(\d+)\s+Execution Plan(?:\s+v(\d+))?$/i);
+  if (roundPlan?.[1]) return `第 ${roundPlan[1]} 轮执行计划${roundPlan[2] ? ` v${roundPlan[2]}` : ""}`;
+  const release = timelineItem.title.match(/^Round\s+(\d+)\s+Release Report(?:\s+v(\d+))?$/i);
+  if (release?.[1]) return `第 ${release[1]} 轮发布报告${release[2] ? ` v${release[2]}` : ""}`;
+  const preflight = timelineItem.title.match(/^(.+):\s+(.+)\s+(started|failed)$/i);
+  if (preflight?.[1] && preflight[2] && preflight[3]) {
+    const mode = preflightModeFromDisplayText(preflight[2]);
+    const action = preflight[3].toLowerCase() === "failed" ? "失败" : "开始";
+    return `${preflight[1]} · ${mode ? preflightModeDisplayLabel(mode, language) : preflight[2]}${action}`;
+  }
+  return timelineItem.title;
+}
+
+function buildTimelineIssueBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
+  const zh = language === "zh-CN";
+  const kind = timelineKindDescription(timelineItem.kind, language);
+  const artifactLines = timelineItem.kind === "artifact_published"
+    ? buildTimelineArtifactLocationLines(activeRun, timelineItem, language)
+    : undefined;
+  return [
+    kind,
+    ...(artifactLines ?? [localizeTimelineBody(timelineItem.body, language)]),
+    zh ? `执行者：${timelineItem.actorLabel}` : `Actor: ${timelineItem.actorLabel}`
+  ].filter((line): line is string => Boolean(line?.trim())).join("\n\n");
+}
+
+function buildTimelineArtifactLocationLines(
+  activeRun: BlueprintRunView,
+  timelineItem: RunTimelineTraceItem,
+  language: Language
+): string[] | undefined {
+  const artifact = (activeRun.artifacts ?? []).find((candidate) =>
+    candidate.nodeRunId === timelineItem.actorNodeId &&
+    (!timelineItem.body || candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body || candidate.title === timelineItem.title)
+  ) ?? (activeRun.artifacts ?? []).find((candidate) =>
+    Boolean(timelineItem.body) && (candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body)
+  );
+  if (!artifact) return undefined;
+
+  const zh = language === "zh-CN";
+  const lines: string[] = [];
+  if (artifact.storagePath) {
+    lines.push(`${zh ? "\u672c\u5730\u6587\u4ef6" : "Local file"}: ${formatDeliveryLocationForDisplay(artifact.storagePath, language)}`);
+  }
+  if (artifact.downloadUrl) {
+    lines.push(`${zh ? "\u6d4f\u89c8\u5668\u94fe\u63a5" : "Browser link"}: ${artifact.downloadUrl}`);
+  }
+  if (!lines.length) {
+    lines.push(formatArtifactLocation(artifact));
+  }
+  return lines;
+}
+
+function preflightModeFromDisplayText(value: string): RunPreflightMode | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "research") return "research_resolution";
+  if (normalized === "requirement planning") return "requirement_resolution";
+  if (normalized === "plan revision") return "revise_plan";
+  if (normalized === "plan review") return "preflight_judgment";
+  if (normalized === "context snapshot") return "context_snapshot";
+  return undefined;
+}
+
+function localizeTimelineBody(body: string | undefined, language: Language): string | undefined {
+  if (language !== "zh-CN" || !body) return body;
+  return body.replace(/^Round\s+(\d+)\s+preflight is running (.+)\.$/i, (_match, roundNumber: string, modeText: string) => {
+    const mode = preflightModeFromDisplayText(modeText);
+    if (mode === "research_resolution") return `第 ${roundNumber} 轮正在调研。`;
+    if (mode === "requirement_resolution") return `第 ${roundNumber} 轮正在整理执行计划。`;
+    if (mode === "revise_plan") return `第 ${roundNumber} 轮正在根据反馈修订计划。`;
+    if (mode === "preflight_judgment") return `第 ${roundNumber} 轮正在校验计划是否需要补充调研。`;
+    if (mode === "context_snapshot") return `第 ${roundNumber} 轮正在沉淀上下文记忆。`;
+    return `第 ${roundNumber} 轮正在准备。`;
+  });
+}
+
+function timelineKindDescription(kind: RunTimelineTraceItem["kind"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (kind === "round_started") return zh ? "自迭代轮次已经启动。" : "The self-iteration round has started.";
+  if (kind === "requirement_published") return zh ? "Manager 已经把本轮执行计划送到审批流程。" : "The manager has published the round execution plan for approval.";
+  if (kind === "decision_created") return zh ? "审批动作已经记录。" : "The approval decision has been recorded.";
+  if (kind === "node_started") return zh ? "该步骤正在运行。" : "This step is running.";
+  if (kind === "node_output") return zh ? "该步骤已经产生输出。" : "This step produced output.";
+  if (kind === "artifact_published") return zh ? "产物已经发布。" : "An artifact was published.";
+  if (kind === "release_report_published") return zh ? "Manager 已经发布本轮报告。" : "The manager has published the round report.";
+  if (kind === "round_completed") return zh ? "本轮已经完成。" : "The round has completed.";
+  if (kind === "round_failed") return zh ? "本轮失败。" : "The round failed.";
+  if (kind === "round_cancelled") return zh ? "本轮已取消。" : "The round was cancelled.";
+  if (kind === "run_completed") return zh ? "运行已经完成。" : "The run has completed.";
+  if (kind === "run_failed") return zh ? "运行失败。" : "The run failed.";
+  if (kind === "run_cancelled") return zh ? "运行已取消。" : "The run was cancelled.";
+  return zh ? "运行事件。" : "Run event.";
 }
 
 function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
@@ -3436,20 +4189,6 @@ function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
   if (status === "succeeded" || status === "skipped") return "completed";
   if (status === "failed" || status === "cancelled") return "failed";
   return "pending";
-}
-
-function toSlotOutputIssueStatus(nodeRun: BlueprintNodeRun): TraceIssueStatus {
-  if (nodeRun.status === "failed" || nodeRun.status === "cancelled") return "failed";
-  if (nodeRun.output !== undefined || nodeRun.status === "succeeded" || nodeRun.status === "skipped") return "completed";
-  if (nodeRun.status === "queued" || nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "in_progress";
-  return "pending";
-}
-
-function labelForIssueStatus(status: TraceIssueStatus, t: Messages): string {
-  if (status === "completed") return t.trace.completed;
-  if (status === "in_progress") return t.trace.inProgress;
-  if (status === "failed") return t.status.failed;
-  return t.trace.pending;
 }
 
 function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): string {
@@ -3483,6 +4222,79 @@ function summarizeOutput(output: unknown, t: Messages): string {
   return previewLines.map((line) => (line.length > 120 ? `${line.slice(0, 117)}...` : line)).join("\n");
 }
 
+function buildReadableNodeOutputBody(output: unknown, error: string | undefined, t: Messages): string | undefined {
+  if (error?.trim()) return error.trim();
+  if (output === undefined || output === null) return undefined;
+
+  const record = readOutputRecord(output);
+  const explicitReport = readNonEmptyString(record?.humanReportMd);
+  if (explicitReport) return explicitReport;
+
+  const directText =
+    readNonEmptyString(record?.summary) ??
+    readNonEmptyString(record?.body) ??
+    readNonEmptyString(record?.markdown) ??
+    readNonEmptyString(record?.reason) ??
+    readNonEmptyString(record?.message);
+  if (directText) return directText;
+
+  const resultText = readReadableResult(record?.result);
+  if (resultText) return resultText;
+
+  if (typeof output === "string") {
+    const trimmed = output.trim();
+    if (!trimmed) return undefined;
+    return trimmed;
+  }
+
+  const status = readNonEmptyString(record?.status);
+  if (status) return `Status: ${status}`;
+  return t.trace.noOutput;
+}
+
+function buildRunningNodeProgressBody(nodeRun: BlueprintNodeRun, language: Language): string | undefined {
+  if (nodeRun.status !== "queued" && nodeRun.status !== "running" && nodeRun.status !== "waiting_approval") return undefined;
+  const zh = language === "zh-CN";
+  if (nodeRun.nodeType === "manager") {
+    return zh
+      ? "Manager \u6b63\u5728\u8c03\u5ea6\u4e0b\u6e38 Agent\u3002\u5982\u679c\u5f53\u524d\u6709 Agent \u5728\u8fd0\u884c\uff0c\u5b83\u4f1a\u7b49\u5f85\u8be5 Agent \u8fd4\u56de\u540e\u518d\u51b3\u5b9a\u4e0b\u4e00\u6b65\u3002"
+      : "The manager is dispatching downstream agents. If an agent is currently running, it will wait for that result before choosing the next step.";
+  }
+  if (nodeRun.status === "waiting_approval") {
+    return zh ? "\u8be5\u6b65\u9aa4\u6b63\u5728\u7b49\u5f85\u5ba1\u6279\u3002" : "This step is waiting for approval.";
+  }
+  return zh ? "\u8be5\u6b65\u9aa4\u6b63\u5728\u8fd0\u884c\u3002" : "This step is running.";
+}
+
+function readReadableResult(value: unknown): string | undefined {
+  const direct = readNonEmptyString(value);
+  if (direct) return direct;
+  const record = readOutputRecord(value);
+  return readNonEmptyString(record?.summary) ??
+    readNonEmptyString(record?.body) ??
+    readNonEmptyString(record?.markdown) ??
+    readNonEmptyString(record?.reason) ??
+    readNonEmptyString(record?.message);
+}
+
+function readOutputRecord(output: unknown): Record<string, unknown> | undefined {
+  if (isPlainObject(output)) return output;
+  if (typeof output !== "string") return undefined;
+
+  const trimmed = output.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
 function toTracePreviewLine(line: string): string {
   const trimmed = line.trim();
   if (!trimmed) return "";
@@ -3512,43 +4324,6 @@ function parseTracePreviewTableCells(line: string): string[] {
 function isTracePreviewTableSeparator(line: string): boolean {
   const cells = parseTracePreviewTableCells(line);
   return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function getBlueprintNodeOrder(blueprint?: BlueprintDefinition): BlueprintNode[] {
-  if (!blueprint) return [];
-
-  const nodesById = new Map(blueprint.nodes.map((node) => [node.id, node]));
-  const indegree = new Map<string, number>(blueprint.nodes.map((node) => [node.id, 0]));
-  const outgoing = new Map<string, string[]>();
-
-  for (const edge of blueprint.edges) {
-    indegree.set(edge.target, (indegree.get(edge.target) ?? 0) + 1);
-    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
-  }
-
-  const queue = blueprint.nodes.filter((node) => (indegree.get(node.id) ?? 0) === 0).map((node) => node.id);
-  const ordered: BlueprintNode[] = [];
-  const visited = new Set<string>();
-
-  while (queue.length > 0) {
-    const currentId = queue.shift();
-    if (!currentId || visited.has(currentId)) continue;
-    visited.add(currentId);
-    const node = nodesById.get(currentId);
-    if (node) ordered.push(node);
-
-    for (const targetId of outgoing.get(currentId) ?? []) {
-      const nextDegree = (indegree.get(targetId) ?? 1) - 1;
-      indegree.set(targetId, nextDegree);
-      if (nextDegree === 0) queue.push(targetId);
-    }
-  }
-
-  for (const node of blueprint.nodes) {
-    if (!visited.has(node.id)) ordered.push(node);
-  }
-
-  return ordered;
 }
 
 function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {

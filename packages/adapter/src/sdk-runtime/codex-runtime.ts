@@ -3,13 +3,13 @@ import { Codex, type ThreadEvent, type ThreadOptions, type TurnOptions, type Usa
 import type {
   AgentTaskResult,
   ChatStreamEvent,
-  OpenClawUsageFact,
+  RuntimeUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
 } from "@hiveward/shared";
 import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
-import { mapCodexSandbox, normalizePermissionProfile } from "./permissions";
+import { mapCodexSandbox, normalizeTaskRuntimeAccessPolicy } from "./permissions";
 import { buildSdkChatPrompt, mapCodexReasoningEffort } from "./chat-envelope";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { runtimeLabelFromRecord } from "./runtime-state";
@@ -198,7 +198,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     abortController: AbortController;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
-    const permissionProfile = normalizePermissionProfile(input.permissionProfile);
+    const runtimeAccessPolicy = normalizeTaskRuntimeAccessPolicy(input, "codex");
+    const permissionProfile = runtimeAccessPolicy.filesystem;
     let sessionKey = initialSessionKey;
 
     try {
@@ -213,8 +214,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         workingDirectory,
         sandboxMode: mapCodexSandbox(permissionProfile),
         approvalPolicy: "never",
-        networkAccessEnabled: false,
-        webSearchMode: "disabled"
+        networkAccessEnabled: runtimeAccessPolicy.network === "enabled",
+        webSearchMode: runtimeAccessPolicy.webSearch
       });
       const turn = await thread.run(buildPromptEnvelope({ ...input, outputSchema }), {
         outputSchema,
@@ -380,7 +381,7 @@ function requireConfiguredModel(modelId: string | undefined): void {
   }
 }
 
-function mapCodexUsage(input: { modelId?: string }, usage: Usage | null): OpenClawUsageFact {
+function mapCodexUsage(input: { modelId?: string }, usage: Usage | null): RuntimeUsageFact {
   return {
     id: `usage-${nanoid(10)}`,
     modelId: input.modelId ?? "codex",

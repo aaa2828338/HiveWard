@@ -30,6 +30,7 @@ export interface AgentSdkChatStreamInput {
   idempotencyKey: string;
   timeoutMs?: number;
   skillIds?: HarnessSkillId[];
+  profileId?: string;
 }
 
 export interface AgentSdkTaskRecord {
@@ -57,7 +58,7 @@ export function isAgentSdkProvider(value: unknown): value is AgentSdkProvider {
 
 export function readAgentSdkRuntimeOptions(workspaceRoot: string, env: NodeJS.ProcessEnv = process.env): AgentSdkRuntimeOptions {
   return {
-    defaultTimeoutMs: readPositiveInteger(env.HIVEWARD_AGENT_SDK_TASK_TIMEOUT_MS, 600_000),
+    defaultTimeoutMs: readPositiveInteger(env.HIVEWARD_AGENT_SDK_TASK_TIMEOUT_MS, 3_600_000),
     maxConcurrency: readPositiveInteger(env.HIVEWARD_AGENT_SDK_MAX_CONCURRENCY, 2),
     workspaceRoot: resolve(workspaceRoot)
   };

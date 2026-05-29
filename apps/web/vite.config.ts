@@ -65,7 +65,7 @@ export default defineConfig(({ mode }) => {
 
           server.middlewares.use(async (req, res, next) => {
             const url = req.url ?? "";
-            if (url.startsWith("/api/") || url === "/healthz" || url === "/readyz") {
+            if (url.startsWith("/api/") || url.startsWith("/artifacts/") || url === "/healthz" || url === "/readyz") {
               try {
                 const apiApp = await loadApiApp();
                 apiApp(req, res, next);

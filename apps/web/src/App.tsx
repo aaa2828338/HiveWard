@@ -18,6 +18,7 @@ import {
   ListChecks,
   MessageSquareText,
   Moon,
+  Plus,
   Puzzle,
   Radio,
   RefreshCw,
@@ -37,7 +38,10 @@ import type {
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
   DashboardWidgetType,
+  CreateHermesChannelRequest,
+  CreateHermesProfileRequest,
   HarnessId,
+  HermesConfigResponse,
   HarnessSkillInstallStatus,
   HarnessSkillStatusResponse,
   HarnessStatus,
@@ -67,6 +71,17 @@ import { appSectionGroups, appSystemLabels, type AppNavSectionId, type AppSectio
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { harnessDisplayLabel, harnessDisplayParts, isHarnessId } from "./lib/harness-labels";
 import { applyHarnessPermissionModesToBlueprint } from "./lib/harness-permissions";
+import {
+  applyBlueprintUpdaterToCollection,
+  blueprintCollectionSignature,
+  clearBlueprintDirty,
+  isSameBlueprintSnapshot,
+  listDirtyBlueprintsForAutosave,
+  markBlueprintDirty,
+  mergeBlueprintsPreservingLocalEdits,
+  removeBlueprintFromDirtySet,
+  replaceBlueprint
+} from "./lib/blueprint-edit-state";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
@@ -80,6 +95,7 @@ import {
   CompanyPage,
   ConfiguredModelCard,
   HistoryPage,
+  IdentityTitle,
   ModelsPage,
   RunsPage,
   SkillsPage
@@ -104,11 +120,16 @@ const sidebarIcons = {
   googleConfig: Settings,
   cursorConfig: Settings,
   opencodeConfig: Settings,
-  hermesConfig: Settings
+  hermesConfig: Settings,
+  hermesModels: Database,
+  hermesAgents: Bot,
+  hermesSkills: Puzzle,
+  hermesChannels: Radio
 };
 
 const RUN_POLL_INTERVAL_MS = 2500;
 const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
+const BLUEPRINT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
 const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
@@ -174,6 +195,7 @@ export function App() {
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
   const [blueprints, setBlueprints] = useState<BlueprintDefinition[]>([]);
   const [blueprint, setBlueprint] = useState<BlueprintDefinition | undefined>();
+  const [dirtyBlueprintIds, setDirtyBlueprintIds] = useState<Set<string>>(() => new Set());
   const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
   const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
   const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
@@ -183,6 +205,7 @@ export function App() {
   const [hivewardUpdateResult, setHivewardUpdateResult] = useState<ApplyHivewardUpdateResponse | undefined>();
   const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
+  const [hermesConfig, setHermesConfig] = useState<HermesConfigResponse | undefined>();
   const [claudeCodeModelConfig, setClaudeCodeModelConfig] = useState<ClaudeCodeModelConfig | undefined>();
   const [claudeCodeModelPresets, setClaudeCodeModelPresets] = useState<ClaudeCodeModelPreset[]>([]);
   const [claudeCodeSavedModelProfiles, setClaudeCodeSavedModelProfiles] = useState<ClaudeCodeSavedModelProfile[]>([]);
@@ -219,6 +242,9 @@ export function App() {
   const messageRef = useRef(t);
   const blueprintRef = useRef<BlueprintDefinition | undefined>(undefined);
   const blueprintsRef = useRef<BlueprintDefinition[]>([]);
+  const dirtyBlueprintIdsRef = useRef<Set<string>>(new Set());
+  const chatPermissionModesRef = useRef<Record<SdkChatHarnessId, ChatPermissionMode>>(chatPermissionModes);
+  const blueprintAutosaveInFlightRef = useRef(false);
   const busyActionRef = useRef<string | undefined>(undefined);
   const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
   const selectedRunIdRef = useRef<string | undefined>(undefined);
@@ -239,6 +265,10 @@ export function App() {
   }, [blueprints]);
 
   useEffect(() => {
+    dirtyBlueprintIdsRef.current = dirtyBlueprintIds;
+  }, [dirtyBlueprintIds]);
+
+  useEffect(() => {
     busyActionRef.current = busyAction;
   }, [busyAction]);
 
@@ -252,6 +282,10 @@ export function App() {
 
   useEffect(() => {
     localStorage.setItem("hiveward-chat-permission-modes", JSON.stringify(chatPermissionModes));
+  }, [chatPermissionModes]);
+
+  useEffect(() => {
+    chatPermissionModesRef.current = chatPermissionModes;
   }, [chatPermissionModes]);
 
   useEffect(() => {
@@ -311,6 +345,7 @@ export function App() {
         nextOpenClawWizard,
         nextOpenClawModelUsage,
         nextHarnessStatuses,
+        nextHermesConfig,
         nextClaudeCodeModelResponse,
         nextHarnessSkillStatuses,
         nextRunSummaries,
@@ -327,6 +362,7 @@ export function App() {
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
         api.getHarnessStatus().catch(() => []),
+        api.getHermesConfig().catch(() => undefined),
         api.getClaudeCodeModelConfig().catch(() => undefined),
         loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
@@ -343,12 +379,19 @@ export function App() {
 
       setCompanies(companyDirectory.companies);
       setSelectedCompanyId(companyDirectory.selectedCompanyId);
-      setBlueprints(nextBlueprints);
+      const hydratedBlueprints = mergeBlueprintsPreservingLocalEdits(
+        nextBlueprints,
+        blueprintsRef.current,
+        dirtyBlueprintIdsRef.current
+      );
+      blueprintsRef.current = hydratedBlueprints;
+      setBlueprints(hydratedBlueprints);
       setCatalog(nextCatalog);
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
       setHarnessStatuses(nextHarnessStatuses);
+      setHermesConfig(nextHermesConfig);
       setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
       setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
       setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
@@ -363,8 +406,10 @@ export function App() {
       setRuntime(nextRuntime);
       setDashboardDirty(false);
 
-      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? nextBlueprints[0]?.id;
-      const nextBlueprint = nextBlueprints.find((item) => item.id === preferredBlueprintId) ?? nextBlueprints[0];
+      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? hydratedBlueprints[0]?.id;
+      const nextBlueprint = hydratedBlueprints.find((item) => item.id === preferredBlueprintId) ?? hydratedBlueprints[0];
+      blueprintRef.current = nextBlueprint;
+      selectedBlueprintIdRef.current = nextBlueprint?.id;
       setBlueprint(nextBlueprint);
       setSelectedNodeId(undefined);
       setSelectedRunId(nextRunId);
@@ -553,6 +598,7 @@ export function App() {
       });
   }, [hydrateWorkspace]);
 
+  const isSelectedBlueprintDirty = Boolean(blueprint && dirtyBlueprintIds.has(blueprint.id));
   const latestRunForBlueprint = useMemo(
     () => (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined),
     [runs, blueprint]
@@ -603,6 +649,8 @@ export function App() {
     (blueprintId: string) => {
       const next = blueprints.find((item) => item.id === blueprintId);
       if (!next) return;
+      blueprintRef.current = next;
+      selectedBlueprintIdRef.current = next.id;
       setBlueprint(next);
       setSelectedNodeId(undefined);
       const latestRunForNextBlueprint = runs.find((runView) => runView.run.blueprintId === next.id);
@@ -697,7 +745,38 @@ export function App() {
   }, [loadOpenClawVersion]);
 
   const updateBlueprint = useCallback((updater: (current: BlueprintDefinition) => BlueprintDefinition) => {
-    setBlueprint((current) => (current ? updater(current) : current));
+    const result = applyBlueprintUpdaterToCollection(blueprintRef.current, blueprintsRef.current, updater);
+    if (!result.changed || !result.blueprint) return;
+
+    blueprintRef.current = result.blueprint;
+    selectedBlueprintIdRef.current = result.blueprint.id;
+    blueprintsRef.current = result.blueprints;
+    setBlueprint(result.blueprint);
+    setBlueprints(result.blueprints);
+    setDirtyBlueprintIds((currentDirty) => {
+      const nextDirty = markBlueprintDirty(currentDirty, result.blueprint!.id);
+      dirtyBlueprintIdsRef.current = nextDirty;
+      return nextDirty;
+    });
+  }, []);
+
+  const acceptSavedBlueprintSnapshot = useCallback((saved: BlueprintDefinition, savedSnapshot: BlueprintDefinition) => {
+    const currentSnapshot = blueprintsRef.current.find((candidate) => candidate.id === savedSnapshot.id);
+    if (!currentSnapshot || !isSameBlueprintSnapshot(currentSnapshot, savedSnapshot)) return false;
+
+    const nextBlueprints = replaceBlueprint(blueprintsRef.current, saved);
+    blueprintsRef.current = nextBlueprints;
+    setBlueprints(nextBlueprints);
+    if (selectedBlueprintIdRef.current === saved.id) {
+      blueprintRef.current = saved;
+      setBlueprint(saved);
+    }
+    setDirtyBlueprintIds((current) => {
+      const next = clearBlueprintDirty(current, saved.id);
+      dirtyBlueprintIdsRef.current = next;
+      return next;
+    });
+    return true;
   }, []);
 
   const updateArchitectureLayout = useCallback((positions: Record<string, CanvasPosition>) => {
@@ -850,17 +929,41 @@ export function App() {
   const refreshHarnessStatus = useCallback(
     () =>
       withBusy("refreshHarnessStatus", async () => {
-        const [nextHarnessStatuses, nextClaudeCodeModelResponse, nextHarnessSkillStatuses] = await Promise.all([
+        const [nextHarnessStatuses, nextHermesConfig, nextClaudeCodeModelResponse, nextHarnessSkillStatuses] = await Promise.all([
           api.getHarnessStatus(),
+          api.getHermesConfig().catch(() => undefined),
           api.getClaudeCodeModelConfig().catch(() => undefined),
           loadHarnessSkillStatuses()
         ]);
         setHarnessStatuses(nextHarnessStatuses);
+        setHermesConfig(nextHermesConfig);
         setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
         setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
         setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
         setHarnessSkillStatuses(nextHarnessSkillStatuses);
       }),
+    [withBusy]
+  );
+
+  const addHermesProfile = useCallback(
+    (input: CreateHermesProfileRequest) => {
+      void withBusy("addHermesProfile", async () => {
+        const nextHermesConfig = await api.addHermesProfile(input);
+        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
+        setHermesConfig(nextHermesConfig);
+        setHarnessStatuses(nextHarnessStatuses);
+      });
+    },
+    [harnessStatuses, withBusy]
+  );
+
+  const addHermesChannel = useCallback(
+    (input: CreateHermesChannelRequest) => {
+      void withBusy("addHermesChannel", async () => {
+        const nextHermesConfig = await api.addHermesChannel(input);
+        setHermesConfig(nextHermesConfig);
+      });
+    },
     [withBusy]
   );
 
@@ -980,10 +1083,44 @@ export function App() {
   const saveBlueprint = useCallback(() => {
     if (!blueprint) return;
     void withBusy("saveBlueprint", async () => {
-      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
-      await hydrateWorkspace({ blueprintId: saved.id });
+      const savedSnapshot = blueprint;
+      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModes));
+      acceptSavedBlueprintSnapshot(saved, savedSnapshot);
     });
-  }, [hydrateWorkspace, withBusy, blueprint, chatPermissionModes]);
+  }, [acceptSavedBlueprintSnapshot, withBusy, blueprint, chatPermissionModes]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+
+    const saveDirtyBlueprints = async () => {
+      if (blueprintAutosaveInFlightRef.current || busyActionRef.current) return;
+      const dirtyBlueprints = listDirtyBlueprintsForAutosave(blueprintsRef.current, dirtyBlueprintIdsRef.current);
+      if (dirtyBlueprints.length === 0) return;
+
+      blueprintAutosaveInFlightRef.current = true;
+      try {
+        for (const dirtyBlueprint of dirtyBlueprints) {
+          if (!dirtyBlueprintIdsRef.current.has(dirtyBlueprint.id)) continue;
+          const savedSnapshot = blueprintsRef.current.find((candidate) => candidate.id === dirtyBlueprint.id);
+          if (!savedSnapshot) continue;
+          const saved = await api.saveBlueprint(
+            applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModesRef.current)
+          );
+          acceptSavedBlueprintSnapshot(saved, savedSnapshot);
+        }
+      } catch (autosaveError) {
+        setError(autosaveError instanceof Error ? autosaveError.message : messageRef.current.errors.save);
+      } finally {
+        blueprintAutosaveInFlightRef.current = false;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void saveDirtyBlueprints();
+    }, BLUEPRINT_AUTOSAVE_INTERVAL_MS);
+
+    return () => window.clearInterval(timer);
+  }, [acceptSavedBlueprintSnapshot, selectedCompanyId]);
 
   const exportBlueprint = useCallback((blueprintId?: string) => {
     const targetBlueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : blueprint;
@@ -997,6 +1134,11 @@ export function App() {
   const deleteBlueprint = useCallback((blueprintId: string) => {
     void withBusy("deleteBlueprint", async () => {
       await api.deleteBlueprint(blueprintId);
+      setDirtyBlueprintIds((current) => {
+        const next = removeBlueprintFromDirtySet(current, blueprintId);
+        dirtyBlueprintIdsRef.current = next;
+        return next;
+      });
       const remainingBlueprints = blueprints.filter((item) => item.id !== blueprintId);
       const nextBlueprintId = blueprint?.id === blueprintId ? remainingBlueprints[0]?.id : blueprint?.id;
       await hydrateWorkspace({ blueprintId: nextBlueprintId });
@@ -1034,8 +1176,19 @@ export function App() {
     if (!blueprint) return;
     void withBusy("runBlueprint", async () => {
       const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
+      blueprintRef.current = saved;
+      selectedBlueprintIdRef.current = saved.id;
       setBlueprint(saved);
-      setBlueprints((current) => replaceBlueprint(current, saved));
+      setBlueprints((current) => {
+        const next = replaceBlueprint(current, saved);
+        blueprintsRef.current = next;
+        return next;
+      });
+      setDirtyBlueprintIds((current) => {
+        const next = clearBlueprintDirty(current, saved.id);
+        dirtyBlueprintIdsRef.current = next;
+        return next;
+      });
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
       setRunPageBlueprintId(saved.id);
@@ -1086,6 +1239,55 @@ export function App() {
       });
     },
     [applyRunView, withBusy]
+  );
+
+  const applyApprovalRequestResponse = useCallback(
+    async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
+      if (response.run) {
+        applyRunView(response.run);
+        setSelectedRunId(response.run.run.id);
+        return;
+      }
+      await hydrateWorkspace({ blueprintId: blueprint?.id });
+    },
+    [applyRunView, blueprint?.id, hydrateWorkspace]
+  );
+
+  const approveApprovalRequest = useCallback(
+    (approvalRequestId: string, comment?: string, selectedReplyId?: string) => {
+      void withBusy("approveApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment, selectedReplyId));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const rejectApprovalRequest = useCallback(
+    (approvalRequestId: string, comment?: string) => {
+      void withBusy("rejectApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.rejectApprovalRequest(approvalRequestId, comment));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const replyToApprovalRequest = useCallback(
+    (approvalRequestId: string, message: string) => {
+      void withBusy("replyApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
+  );
+
+  const completeRunApproval = useCallback(
+    (approvalRequestId: string, comment?: string) => {
+      void withBusy("completeRunApproval", async () => {
+        const response = await api.completeApprovalRequest(approvalRequestId, comment);
+        await applyApprovalRequestResponse(response);
+      });
+    },
+    [applyApprovalRequestResponse, withBusy]
   );
 
   const selectRunApprovalReply = useCallback(
@@ -1250,15 +1452,28 @@ export function App() {
       try {
         const previousBlueprints = blueprintsRef.current;
         const nextBlueprints = await api.listBlueprints();
-        if (cancelled || blueprintCollectionSignature(nextBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
+        const nextMergedBlueprints = mergeBlueprintsPreservingLocalEdits(
+          nextBlueprints,
+          previousBlueprints,
+          dirtyBlueprintIdsRef.current
+        );
+        if (cancelled || blueprintCollectionSignature(nextMergedBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
 
         const selectedBlueprintId = selectedBlueprintIdRef.current;
-        if (!hasLocalBlueprintEdits(blueprintRef.current, previousBlueprints)) {
+        if (dirtyBlueprintIdsRef.current.size === 0) {
           await hydrateWorkspace({ blueprintId: selectedBlueprintId });
           return;
         }
 
-        setBlueprints(nextBlueprints);
+        blueprintsRef.current = nextMergedBlueprints;
+        setBlueprints(nextMergedBlueprints);
+        const nextSelectedBlueprint = selectedBlueprintId
+          ? nextMergedBlueprints.find((item) => item.id === selectedBlueprintId)
+          : undefined;
+        if (nextSelectedBlueprint && !dirtyBlueprintIdsRef.current.has(nextSelectedBlueprint.id)) {
+          blueprintRef.current = nextSelectedBlueprint;
+          setBlueprint(nextSelectedBlueprint);
+        }
         const nextRoles = await api.getRoleDirectory().catch(() => undefined);
         if (cancelled || !nextRoles) return;
         setRoleDirectory(nextRoles.roles);
@@ -1376,6 +1591,7 @@ export function App() {
           selectedCompanyId={selectedCompanyId}
           busy={Boolean(busyAction)}
           busyAction={busyAction}
+          blueprintDirty={isSelectedBlueprintDirty}
           onSelectBlueprint={selectBlueprint}
           onCreateBlueprint={createBlueprint}
           onOpenBlueprintImport={openBlueprintImport}
@@ -1414,8 +1630,12 @@ export function App() {
           language={language}
           t={t}
           onApprove={approveRun}
+          onApproveApprovalRequest={approveApprovalRequest}
+          onComplete={completeRunApproval}
           onReject={rejectRunApproval}
+          onRejectApprovalRequest={rejectApprovalRequest}
           onReply={replyToRunApproval}
+          onReplyApprovalRequest={replyToApprovalRequest}
           onSelectApprovalReply={selectRunApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
@@ -1586,6 +1806,60 @@ export function App() {
           onPermissionModeChange={(permissionMode) => setSdkChatPermissionMode("hermes", permissionMode)}
           onRefresh={refreshHarnessStatus}
           onInstallSkills={() => installHarnessSkills("hermes")}
+        />
+      );
+    }
+    if (section === "hermesModels") {
+      return (
+        <HermesModelsPage
+          title={t.pages.hermesModels?.title ?? "Hermes Models"}
+          description={t.pages.hermesModels?.description ?? ""}
+          status={hermesHarnessStatus}
+          language={language}
+          busy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+        />
+      );
+    }
+    if (section === "hermesAgents") {
+      return (
+        <HermesAgentsPage
+          title={t.pages.hermesAgents?.title ?? "Hermes Agents"}
+          description={t.pages.hermesAgents?.description ?? ""}
+          config={hermesConfig}
+          status={hermesHarnessStatus}
+          language={language}
+          busy={busyAction === "addHermesProfile"}
+          refreshBusy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+          onAddProfile={addHermesProfile}
+        />
+      );
+    }
+    if (section === "hermesSkills") {
+      return (
+        <HarnessSkillsPage
+          title={t.pages.hermesSkills?.title ?? "Hermes Skills"}
+          description={t.pages.hermesSkills?.description ?? ""}
+          language={language}
+          skillStatus={harnessSkillStatuses.hermes}
+          hermesSkills={hermesConfig?.skills}
+          busy={installingHermesSkills}
+          onInstallSkills={() => installHarnessSkills("hermes")}
+        />
+      );
+    }
+    if (section === "hermesChannels") {
+      return (
+        <HermesChannelsPage
+          title={t.pages.hermesChannels?.title ?? "Hermes Channels"}
+          description={t.pages.hermesChannels?.description ?? ""}
+          config={hermesConfig}
+          language={language}
+          busy={busyAction === "addHermesChannel"}
+          refreshBusy={busyAction === "refreshHarnessStatus"}
+          onRefresh={refreshHarnessStatus}
+          onAddChannel={addHermesChannel}
         />
       );
     }
@@ -2380,6 +2654,308 @@ function ClaudeCodeModelsPage({
   );
 }
 
+function HermesModelsPage({
+  title,
+  description,
+  status,
+  language,
+  busy,
+  onRefresh
+}: {
+  title: string;
+  description: string;
+  status?: HarnessStatus;
+  language: Language;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const copy = language === "zh-CN"
+    ? { refresh: "\u91cd\u65b0\u68c0\u67e5", refreshing: "\u68c0\u67e5\u4e2d", empty: "\u5c1a\u672a\u89e3\u6790\u5230 Hermes \u6a21\u578b\u3002", usage: "\u7528\u91cf", calls: "\u8c03\u7528", tokens: "Token", cost: "\u8d39\u7528", recent7d: "\u6700\u8fd1 7 \u5929", defaultOption: "\u9ed8\u8ba4" }
+    : { refresh: "Refresh", refreshing: "Checking", empty: "No Hermes models have been resolved.", usage: "Usage", calls: "Calls", tokens: "Tokens", cost: "Cost", recent7d: "Last 7 days", defaultOption: "Default" };
+  const models = status?.models ?? [];
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{title}</h3>
+            <p>{description}</p>
+          </div>
+          <button type="button" title={copy.refresh} disabled={busy} onClick={onRefresh}>
+            <RefreshCw size={16} className={busy ? "spin" : undefined} />
+            {busy ? copy.refreshing : copy.refresh}
+          </button>
+        </div>
+        <div className="model-card-grid">
+          {models.length ? models.map((model) => (
+            <ConfiguredModelCard
+              key={model.id}
+              model={{ id: model.id, label: model.label, provider: model.provider ?? "hermes" }}
+              badgeLabel={model.isDefault ? copy.defaultOption : model.provider}
+              copy={copy}
+              language={language}
+            />
+          )) : <div className="empty-state page-empty">{copy.empty}</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HermesAgentsPage({
+  title,
+  description,
+  config,
+  status,
+  language,
+  busy,
+  refreshBusy,
+  onRefresh,
+  onAddProfile
+}: {
+  title: string;
+  description: string;
+  config?: HermesConfigResponse;
+  status?: HarnessStatus;
+  language: Language;
+  busy: boolean;
+  refreshBusy: boolean;
+  onRefresh: () => void;
+  onAddProfile: (input: CreateHermesProfileRequest) => void;
+}) {
+  const copy = language === "zh-CN"
+    ? { configured: "已配置 Agent", add: "添加 Agent", adding: "添加中", refresh: "重新检查", refreshing: "检查中", name: "Profile ID", description: "描述", cloneFrom: "从 Profile 复制", noClone: "不复制", defaultBadge: "默认", defaultModel: "默认模型", provider: "提供方", alias: "Alias", path: "Agent 路径", workspace: "工作区", empty: "尚未解析到 Hermes Profile。", hint: "这里的每个 Agent 对应到 Hermes 里面的每个 Profile。" }
+    : { configured: "Configured agents", add: "Add Agent", adding: "Adding", refresh: "Refresh", refreshing: "Checking", name: "Profile ID", description: "Description", cloneFrom: "Clone from profile", noClone: "Do not clone", defaultBadge: "Default", defaultModel: "Default model", provider: "Provider", alias: "Alias", path: "Agent path", workspace: "Workspace", empty: "No Hermes profiles have been resolved.", hint: "Each Agent here maps to one Hermes profile." };
+  const profiles = config?.profiles ?? status?.profiles ?? [];
+  const [name, setName] = useState("");
+  const [profileDescription, setProfileDescription] = useState("");
+  const [cloneFrom, setCloneFrom] = useState("");
+  const submit = () => {
+    const nextName = name.trim();
+    if (!nextName || busy) return;
+    onAddProfile({ name: nextName, description: profileDescription.trim() || undefined, cloneFrom: cloneFrom || undefined });
+    setName("");
+    setProfileDescription("");
+  };
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.configured}</h3>
+            <p>{copy.hint}</p>
+          </div>
+          <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
+            <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
+            {refreshBusy ? copy.refreshing : copy.refresh}
+          </button>
+        </div>
+        <div className="model-card-grid">
+          {profiles.length ? (
+            profiles.map((profile) => (
+              <article key={profile.id} className="model-card">
+                <div className="model-card-head">
+                  <IdentityTitle kind="agent" id={profile.id} label={profile.label} />
+                  {profile.isDefault && <span className="status-pill status-default">{copy.defaultBadge}</span>}
+                </div>
+                <div className="model-card-main">
+                  <code>{profile.path ?? profile.id}</code>
+                </div>
+                <div className="model-card-meta">
+                  <span>{`${copy.defaultModel}: ${profile.modelId ?? "-"}`}</span>
+                  <span>{`${copy.provider}: ${profile.provider ?? "-"}`}</span>
+                  <span>{`${copy.workspace}: ${profile.workspace ?? "-"}`}</span>
+                  <span>{`${copy.alias}: ${profile.alias ?? "-"}`}</span>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{copy.empty}</div>
+          )}
+        </div>
+      </div>
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.add}</h3>
+            <p>{description}</p>
+          </div>
+        </div>
+        <div className="form-grid">
+          <label>
+            <span>{copy.name}</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="researcher" />
+          </label>
+          <label>
+            <span>{copy.cloneFrom}</span>
+            <select value={cloneFrom} onChange={(event) => setCloneFrom(event.target.value)}>
+              <option value="">{copy.noClone}</option>
+              {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+            </select>
+          </label>
+          <label className="field-span-full">
+            <span>{copy.description}</span>
+            <input value={profileDescription} onChange={(event) => setProfileDescription(event.target.value)} />
+          </label>
+        </div>
+        <div className="card-actions">
+          <button type="button" className="primary-action" disabled={busy || !name.trim()} onClick={submit}>
+            {busy ? <RefreshCw size={16} className="spin" /> : <Plus size={16} />}
+            {busy ? copy.adding : copy.add}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function HarnessSkillsPage({
+  title,
+  description,
+  language,
+  skillStatus,
+  hermesSkills,
+  busy,
+  onInstallSkills
+}: {
+  title: string;
+  description: string;
+  language: Language;
+  skillStatus?: HarnessSkillStatusResponse;
+  hermesSkills?: HermesConfigResponse["skills"];
+  busy: boolean;
+  onInstallSkills: () => void;
+}) {
+  const copy = language === "zh-CN"
+    ? { installed: "已安装 Hermes Skill", profile: "Profile", path: "路径", source: "数据源", count: (value: number) => `${value.toLocaleString(language)} Skills`, empty: "尚未扫描到 Hermes 已安装 Skill。" }
+    : { installed: "Installed Hermes Skills", profile: "Profile", path: "Path", source: "Source", count: (value: number) => `${value.toLocaleString(language)} Skills`, empty: "No installed Hermes skills were scanned." };
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{title}</h3>
+            <p>{description}</p>
+          </div>
+          <span className="status-pill status-running">{copy.count(hermesSkills?.length ?? 0)}</span>
+        </div>
+        <div className="model-card-grid">
+          {hermesSkills?.length ? (
+            hermesSkills.map((skill) => (
+              <article key={`${skill.profileId ?? "default"}:${skill.id}:${skill.path}`} className="model-card">
+                <div className="model-card-head">
+                  <div className="model-card-main">
+                    <strong>{skill.label}</strong>
+                    <code>{skill.id}</code>
+                  </div>
+                  <span className="status-pill status-succeeded">{skill.profileId ?? "default"}</span>
+                </div>
+                <div className="model-card-main">
+                  <code>{skill.path}</code>
+                </div>
+                <div className="model-card-meta">
+                  <span>{`${copy.source}: Hermes`}</span>
+                  <span>{`${copy.profile}: ${skill.profileId ?? "default"}`}</span>
+                </div>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state page-empty">{copy.empty}</div>
+          )}
+        </div>
+      </div>
+      <HarnessSkillsCard ui={openClawPanelSkillCopy(language)} skillStatus={skillStatus} language={language} busy={busy} onInstallSkills={onInstallSkills} />
+    </section>
+  );
+}
+
+function HermesChannelsPage({
+  title,
+  description,
+  config,
+  language,
+  busy,
+  refreshBusy,
+  onRefresh,
+  onAddChannel
+}: {
+  title: string;
+  description: string;
+  config?: HermesConfigResponse;
+  language: Language;
+  busy: boolean;
+  refreshBusy: boolean;
+  onRefresh: () => void;
+  onAddChannel: (input: CreateHermesChannelRequest) => void;
+}) {
+  const copy = language === "zh-CN"
+    ? { configured: "已配置频道", add: "添加频道配置", adding: "添加中", refresh: "重新检查", refreshing: "检查中", enabled: "已启用", platform: "平台", profile: "Profile", id: "频道 ID", name: "名称", type: "类型", threadId: "Thread ID", source: "目录", empty: "尚未解析到 Hermes 频道。" }
+    : { configured: "Configured channels", add: "Add channel config", adding: "Adding", refresh: "Refresh", refreshing: "Checking", enabled: "Enabled", platform: "Platform", profile: "Profile", id: "Channel ID", name: "Name", type: "Type", threadId: "Thread ID", source: "Directory", empty: "No Hermes channels have been resolved." };
+  const channels = config?.channels ?? [];
+  const [draft, setDraft] = useState<CreateHermesChannelRequest>({ platform: "feishu", id: "", name: "", type: "group" });
+  const updateDraft = (field: keyof CreateHermesChannelRequest, value: string) => setDraft((current) => ({ ...current, [field]: value }));
+  const submit = () => {
+    if (!draft.platform.trim() || !draft.id.trim() || busy) return;
+    onAddChannel(draft);
+    setDraft({ platform: draft.platform, id: "", name: "", type: draft.type });
+  };
+  return (
+    <section className="page-grid">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.configured}</h3>
+            <p>{description}</p>
+          </div>
+          <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
+            <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
+            {refreshBusy ? copy.refreshing : copy.refresh}
+          </button>
+        </div>
+        <div className="model-card-grid">
+          {channels.length ? channels.map((channel) => (
+            <article key={`${channel.profileId ?? "default"}:${channel.platform}:${channel.id}:${channel.threadId ?? ""}`} className="model-card">
+              <div className="model-card-head">
+                <IdentityTitle kind="channel" id={channel.platform} label={channel.name} />
+                <span className="status-pill status-succeeded">{copy.enabled}</span>
+              </div>
+              <div className="model-card-main">
+                <code>{`${channel.platform}:${channel.id}`}</code>
+              </div>
+              <div className="model-card-meta">
+                <span>{`${copy.profile}: ${channel.profileId ?? "default"}`}</span>
+                <span>{`${copy.type}: ${channel.type ?? "-"}`}</span>
+                <span>{`${copy.threadId}: ${channel.threadId ?? "-"}`}</span>
+              </div>
+            </article>
+          )) : <div className="empty-state page-empty">{copy.empty}</div>}
+        </div>
+      </div>
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{copy.add}</h3>
+            <p>{config?.channelDirectoryPath ?? copy.source}</p>
+          </div>
+        </div>
+        <div className="form-grid">
+          <label><span>{copy.platform}</span><input value={draft.platform} onChange={(event) => updateDraft("platform", event.target.value)} /></label>
+          <label><span>{copy.id}</span><input value={draft.id} onChange={(event) => updateDraft("id", event.target.value)} /></label>
+          <label><span>{copy.name}</span><input value={draft.name ?? ""} onChange={(event) => updateDraft("name", event.target.value)} /></label>
+          <label><span>{copy.type}</span><input value={draft.type ?? ""} onChange={(event) => updateDraft("type", event.target.value)} /></label>
+          <label className="field-span-full"><span>{copy.threadId}</span><input value={draft.threadId ?? ""} onChange={(event) => updateDraft("threadId", event.target.value)} /></label>
+        </div>
+        <div className="card-actions">
+          <button type="button" className="primary-action" disabled={busy || !draft.platform.trim() || !draft.id.trim()} onClick={submit}>
+            {busy ? <RefreshCw size={16} className="spin" /> : <Plus size={16} />}
+            {busy ? copy.adding : copy.add}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ClaudeCodeModelConfigCard({
   title,
   config,
@@ -2790,7 +3366,7 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
           items: [
             "节点：Agent、Manager、并行 Slot、汇总、审批和交付步骤。",
             "连线：成功路径、失败路径、执行顺序和回滚路线。",
-            "运行记录：每个执行步骤的状态、输入、输出、OpenClaw 引用、成本和时间证据。"
+            "运行记录：每个执行步骤的状态、输入、输出、运行时引用、成本和时间证据。"
           ]
         },
         {
@@ -2870,7 +3446,7 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
         items: [
           "Nodes: agents, managers, parallel lanes, summaries, approvals, and delivery steps.",
           "Edges: success paths, failure paths, sequencing, and rollback routes.",
-          "Run records: node status, inputs, outputs, OpenClaw references, cost, and timing evidence."
+          "Run records: node status, inputs, outputs, runtime references, cost, and timing evidence."
         ]
       },
       {
@@ -3234,27 +3810,6 @@ function defaultWidgetLayout(index: number) {
   };
 }
 
-function replaceBlueprint(blueprints: BlueprintDefinition[], blueprint: BlueprintDefinition): BlueprintDefinition[] {
-  let replaced = false;
-  const next = blueprints.map((candidate) => {
-    if (candidate.id !== blueprint.id) return candidate;
-    replaced = true;
-    return blueprint;
-  });
-  return replaced ? next : [blueprint, ...next];
-}
-
-function blueprintCollectionSignature(blueprints: BlueprintDefinition[]): string {
-  return JSON.stringify([...blueprints].sort((left, right) => left.id.localeCompare(right.id)));
-}
-
-function hasLocalBlueprintEdits(blueprint: BlueprintDefinition | undefined, serverBlueprints: BlueprintDefinition[]): boolean {
-  if (!blueprint) return false;
-  const serverBlueprint = serverBlueprints.find((candidate) => candidate.id === blueprint.id);
-  if (!serverBlueprint) return false;
-  return JSON.stringify(blueprint) !== JSON.stringify(serverBlueprint);
-}
-
 function defaultNewBlueprintName(index: number, language: Language): string {
   return language === "zh-CN" ? `\u65b0\u5efa\u84dd\u56fe ${index}` : `New blueprint ${index}`;
 }
@@ -3298,6 +3853,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "approveRun") return t.errors.approve;
+  if (action === "completeRunApproval") return t.errors.approve;
   if (action === "selectRunApprovalReply") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

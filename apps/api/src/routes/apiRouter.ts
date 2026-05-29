@@ -1,7 +1,7 @@
 import { Router, type Response } from "express";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -25,6 +25,12 @@ import type {
   CreateLeaderDelegationRequest,
   HarnessId,
   HarnessModelOption,
+  HarnessProfileOption,
+  HermesChannelOption,
+  HermesConfigResponse,
+  HermesSkillOption,
+  CreateHermesProfileRequest,
+  CreateHermesChannelRequest,
   HarnessSkillInstallCandidate,
   HarnessSkillInstallCandidateSource,
   HarnessSkillId,
@@ -37,7 +43,7 @@ import type {
   OpenClawConfiguredAgent,
   OpenClawConfiguredChannel,
   OpenClawConfigState,
-  OpenClawObjectSource,
+  RuntimeObjectSource,
   OpenClawVersionInfo,
   ManagerNodeConfig,
   SummaryNodeConfig,
@@ -67,7 +73,10 @@ import type {
   UpdateHivewardChatSessionRequest,
   SelectBlueprintRunApprovalRequest,
   ChatStreamEvent,
+  ApprovalDecision,
+  ApprovalRequest,
   BlueprintDefinition,
+  BlueprintRun,
   HivewardChatMessage,
   HivewardChatSession,
   StartBlueprintRunRequest,
@@ -77,22 +86,27 @@ import type {
   ClaudeCodeModelConfigResponse,
   ClaudeCodeSavedModelProfile,
   SaveClaudeCodeModelProfileRequest,
-  UpdateClaudeCodeModelConfigRequest
+  UpdateClaudeCodeModelConfigRequest,
+  ApprovalRequestResponse
 } from "@hiveward/shared";
 import { claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { ApprovalService } from "../services/lifecycleApprovalService";
+import { isPathInside } from "../services/artifactService";
+import { ManagerMailProjector } from "../services/managerMailProjector";
 import type { RuntimeAdapter } from "@hiveward/adapter";
-import type { FileHivewardStore } from "../store/fileHivewardStore";
+import type { HivewardStore } from "../store/hivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 
 interface ApiRouterDeps {
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   worker: BlueprintWorker;
+  artifactRoot?: string;
 }
 
 interface RunModelDefaults {
@@ -130,7 +144,7 @@ type StreamHivewardChatSessionInput = {
   sessionId: string;
   body: SendChatSessionMessageRequest;
   requestStartedAtMs: number;
-  store: FileHivewardStore;
+  store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   res: Response;
@@ -190,8 +204,11 @@ const hivewardHarnessSkills: Array<{
   }
 ];
 
-export function createApiRouter({ store, openClawConfigStore, adapter, worker }: ApiRouterDeps): Router {
+export function createApiRouter({ store, openClawConfigStore, adapter, worker, artifactRoot: configuredArtifactRoot }: ApiRouterDeps): Router {
   const router = Router();
+  const approvalService = new ApprovalService(store);
+  const managerMailProjector = new ManagerMailProjector(store);
+  const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
 
   router.get("/healthz", (_req, res) => {
     res.json({ ok: true });
@@ -199,6 +216,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
 
   router.get("/readyz", (_req, res) => {
     res.json({ ok: true, runtimeDiscovery: "not_on_readiness_path" });
+  });
+
+  router.get(/^\/artifacts\/(.+)$/, (req, res, next) => {
+    const relativePath = (req.params as Record<string, string>)[0] ?? "";
+    const resolved = resolve(artifactRoot, relativePath);
+    if (!isPathInside(resolved, artifactRoot)) {
+      res.status(400).json({ error: { code: "artifact_path_invalid", message: "Artifact path escaped artifact root." } });
+      return;
+    }
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: { code: "artifact_not_found", message: "Artifact not found." } });
+      return;
+    }
+    res.sendFile(resolved, (error) => {
+      if (error) next(error);
+    });
   });
 
   router.get("/api/companies", async (_req, res, next) => {
@@ -281,6 +314,32 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const [version, config] = await Promise.all([openClawConfigStore.getVersion(), openClawConfigStore.getState()]);
       res.json({ statuses: buildHarnessStatuses(version, config, resolveHarnessModelDefaults()) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/hermes-config", (_req, res, next) => {
+    try {
+      res.json(readHermesConfigResponse());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/hermes-config/profiles", (req, res, next) => {
+    try {
+      createHermesProfile(req.body as CreateHermesProfileRequest);
+      res.status(201).json(readHermesConfigResponse());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/hermes-config/channels", async (req, res, next) => {
+    try {
+      await createHermesChannel(req.body as CreateHermesChannelRequest);
+      res.status(201).json(readHermesConfigResponse());
     } catch (error) {
       next(error);
     }
@@ -628,6 +687,75 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     }
   });
 
+  router.get("/api/approval-requests", async (_req, res, next) => {
+    try {
+      res.json({ approvalRequests: await store.listApprovalRequests() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-requests/:approvalRequestId", async (req, res, next) => {
+    try {
+      const approvalRequest = await store.getApprovalRequest(readRouteParam(req.params.approvalRequestId, "approvalRequestId"));
+      if (!approvalRequest) {
+        res.status(404).json({ error: { code: "approval_request_not_found", message: "Approval request not found." } });
+        return;
+      }
+      res.json({ approvalRequest });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/approve", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("approve", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/reject", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("reject", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/reply", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("reply", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/complete", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("complete", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/terminate", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("terminate", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-messages", async (_req, res, next) => {
+    try {
+      res.json({ messages: await managerMailProjector.refresh() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/roles", async (_req, res, next) => {
     try {
       res.json(await store.getRoleDirectory());
@@ -656,7 +784,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/delegations", async (req, res, next) => {
     try {
       const body = normalizeCreateLeaderDelegationRequest(req.body);
-      res.status(201).json({ item: await store.createLeaderDelegationRequest(body) });
+      const item = await store.createLeaderDelegationRequest(body);
+      await createInboxApprovalRequest(item, "leader_delegation");
+      res.status(201).json({ item });
     } catch (error) {
       next(error);
     }
@@ -665,7 +795,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/blueprint-proposals", async (req, res, next) => {
     try {
       const body = normalizeCreateBlueprintProposalRequest(req.body);
-      res.status(201).json({ item: await store.createBlueprintProposal(body) });
+      const item = await store.createBlueprintProposal(body);
+      await createInboxApprovalRequest(item, "blueprint_proposal");
+      res.status(201).json({ item });
     } catch (error) {
       next(error);
     }
@@ -675,7 +807,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
     try {
       const body = normalizeApproveInboxItemRequest(req.body);
       const config = await openClawConfigStore.getState();
-      res.json(await store.approveInboxItem(readRouteParam(req.params.itemId, "itemId"), buildBlueprintImportDefaults(config), body.comment));
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "approve", "approved", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "approve",
+        comment: body.comment,
+        defaults: buildBlueprintImportDefaults(config),
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item, importedBlueprints: result.importedBlueprints });
     } catch (error) {
       next(error);
     }
@@ -684,7 +832,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/:itemId/reject", async (req, res, next) => {
     try {
       const body = normalizeRejectInboxItemRequest(req.body);
-      res.json({ item: await store.rejectInboxItem(readRouteParam(req.params.itemId, "itemId"), body.comment) });
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reject", "rejected", body.comment) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reject",
+        comment: body.comment,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -693,7 +856,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
   router.post("/api/inbox/:itemId/reply", async (req, res, next) => {
     try {
       const body = normalizeReplyInboxItemRequest(req.body);
-      res.json({ item: await store.replyToInboxItem(readRouteParam(req.params.itemId, "itemId"), body.message) });
+      const itemId = readRouteParam(req.params.itemId, "itemId");
+      const request = await findPendingInboxApprovalRequest(itemId);
+      const decision = request ? buildApprovalDecision(request, "reply", "pending", body.message) : undefined;
+      const result = await store.applyInboxDecision({
+        inboxItemId: itemId,
+        approvalRequestId: request?.id,
+        action: "reply",
+        comment: body.message,
+        approvalDecision: decision
+      });
+      if (result.status === "conflict") {
+        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
+        return;
+      }
+      await managerMailProjector.refresh();
+      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -883,7 +1061,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       res.status(502).json({
         error: {
           code: "chat_session_unavailable",
-          message: error instanceof Error ? error.message : "OpenClaw chat session creation is unavailable."
+          message: error instanceof Error ? error.message : "Native chat session creation is unavailable."
         }
       });
     }
@@ -909,7 +1087,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       res.status(502).json({
         error: {
           code: "chat_session_title_unavailable",
-          message: error instanceof Error ? error.message : "OpenClaw chat session title update is unavailable."
+          message: error instanceof Error ? error.message : "Native chat session title update is unavailable."
         }
       });
     }
@@ -921,7 +1099,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       res.status(400).json({
         error: {
           code: "chat_history_session_required",
-          message: "Chat history requires an OpenClaw sessionKey."
+          message: "Chat history requires a native sessionKey."
         }
       });
       return;
@@ -934,7 +1112,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       res.status(502).json({
         error: {
           code: "chat_history_unavailable",
-          message: error instanceof Error ? error.message : "OpenClaw chat history is unavailable."
+          message: error instanceof Error ? error.message : "Native chat history is unavailable."
         }
       });
     }
@@ -953,9 +1131,20 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeApproveBlueprintRunRequest(req.body);
-      const updated = await worker.approveRun(blueprint, run, body.nodeRunId, body.comment, body.selectedReplyId);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "approve", {
+        comment: body.comment,
+        selectedReplyId: body.selectedReplyId
+      });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -974,9 +1163,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeRejectBlueprintRunRequest(req.body);
-      const updated = await worker.rejectRun(blueprint, run, body.nodeRunId, body.comment);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reject", { comment: body.comment });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -995,9 +1192,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeReplyBlueprintRunApprovalRequest(req.body);
-      const updated = await worker.replyToApproval(blueprint, run, body.nodeRunId, body.message);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reply", { message: body.message });
+      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
     }
@@ -1016,6 +1221,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
         return;
       }
       const body = normalizeSelectBlueprintRunApprovalRequest(req.body);
+      if (isTerminalRunStatus(run.status)) {
+        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
+        return;
+      }
       const updated = await worker.selectApprovalReply(blueprint, run, body.nodeRunId, body.selectedReplyId);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
@@ -1039,6 +1248,116 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker }:
       next(error);
     }
   });
+
+  async function applyApprovalRequestRouteAction(
+    action: "approve" | "reject" | "reply" | "complete" | "terminate",
+    approvalRequestId: string,
+    rawBody: unknown
+  ): Promise<ApprovalRequestResponse> {
+    const approvalRequest = await store.getApprovalRequest(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`Approval request not found: ${approvalRequestId}`);
+    }
+    const body = isPlainRecord(rawBody) ? rawBody : {};
+    const run = await store.getBlueprintRun(approvalRequest.runId);
+    if (run) {
+      if (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled") {
+        throw new Error("Run is already finished.");
+      }
+      const blueprint = await store.getBlueprint(run.blueprintId);
+      if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
+        comment: readOptionalString(body.comment),
+        message: readOptionalString(body.message),
+        selectedReplyId: readOptionalString(body.selectedReplyId)
+      });
+      return buildApprovalRequestResponse(approvalRequestId, updated.id);
+    }
+
+    const result = action === "approve"
+      ? await approvalService.approve(approvalRequestId, readOptionalString(body.comment), readOptionalString(body.selectedReplyId))
+      : action === "reject"
+        ? await approvalService.reject(approvalRequestId, readOptionalString(body.comment))
+        : action === "reply"
+          ? await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "")
+          : action === "complete"
+            ? await approvalService.complete(approvalRequestId, readOptionalString(body.comment))
+            : await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+    await managerMailProjector.refresh();
+    return result;
+  }
+
+  async function buildApprovalRequestResponse(approvalRequestId: string, runId?: string): Promise<ApprovalRequestResponse> {
+    const approvalRequest = await store.getApprovalRequest(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`Approval request not found: ${approvalRequestId}`);
+    }
+    const decisions = await store.listApprovalDecisions(approvalRequestId);
+    const nextApprovalRequest = (await store.listApprovalRequests({ runId: approvalRequest.runId }))
+      .find((request) => request.replacesRequestId === approvalRequestId);
+    return {
+      approvalRequest,
+      decision: decisions.at(-1),
+      nextApprovalRequest,
+      run: runId ? await store.getRunView(runId) : undefined
+    };
+  }
+
+  async function findPendingRunApprovalRequest(runId: string, nodeRunId?: string): Promise<{ id: string } | undefined> {
+    const requests = await store.listApprovalRequests({ runId, status: "pending" });
+    return requests.find((request) => !nodeRunId || request.nodeRunId === nodeRunId || request.id === nodeRunId);
+  }
+
+  function isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
+    return status === "succeeded" || status === "failed" || status === "cancelled";
+  }
+
+  async function createInboxApprovalRequest(item: InboxItem, kind: "leader_delegation" | "blueprint_proposal"): Promise<void> {
+    const existing = await findPendingInboxApprovalRequest(item.id);
+    if (existing) return;
+    await approvalService.createRequest({
+      runId: item.id,
+      kind,
+      title: item.title,
+      body: item.summary,
+      payloadRef: item.id,
+      sourceRef: { type: "inbox_item", id: item.id },
+      requestedBy: {
+        type: "role",
+        label: item.createdByRoleId,
+        roleId: item.createdByRoleId
+      }
+    });
+    await managerMailProjector.refresh();
+  }
+
+  async function findPendingInboxApprovalRequest(itemId: string): Promise<ApprovalRequest | undefined> {
+    const requests = await store.listApprovalRequests({ status: "pending" });
+    return requests.find((request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === itemId);
+  }
+
+  function buildApprovalDecision(
+    request: ApprovalRequest,
+    action: ApprovalDecision["action"],
+    resultingStatus: ApprovalDecision["resultingStatus"],
+    comment?: string,
+    selectedReplyId?: string
+  ): ApprovalDecision {
+    return {
+      id: `decision-${nanoid(10)}`,
+      approvalRequestId: request.id,
+      action,
+      actor: "user",
+      comment: comment?.trim() || undefined,
+      selectedReplyId,
+      resultingStatus,
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  function sendConflict(res: Response, code: string, message: string): void {
+    res.status(409).json({ error: { code, message } });
+  }
 
   return router;
 }
@@ -1362,7 +1681,7 @@ function normalizeChatAttachments(value: unknown): ChatAttachment[] {
   });
 }
 
-async function buildChatRoleSkillPrompt(store: FileHivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
+async function buildChatRoleSkillPrompt(store: HivewardStore, scope: ChatRoleScope | undefined): Promise<string | undefined> {
   if (!scope) return undefined;
   try {
     const { roles } = await store.getRoleDirectory();
@@ -1500,11 +1819,11 @@ async function streamHivewardChatSession({
   const isClosed = () => res.writableEnded || res.destroyed;
   let doneEvent: ChatDoneEvent | undefined;
   let streamedOutput = "";
-  let openclawAcceptedAtMs: number | undefined;
-  let openclawFirstDeltaAtMs: number | undefined;
+  let runtimeAcceptedAtMs: number | undefined;
+  let runtimeFirstDeltaAtMs: number | undefined;
   let nativeSessionKey = requestBody.nativeSessionKey ?? "";
   const attemptedNativeResume = Boolean(nativeSessionKey) && !shouldRebuildFromHivewardHistory;
-  const openclawStartedAtMs = Date.now();
+  const runtimeStartedAtMs = Date.now();
 
   try {
     if (requestBody.harnessId === "openclaw" && !nativeSessionKey) {
@@ -1523,6 +1842,7 @@ async function streamHivewardChatSession({
         ? await buildSelectedBlueprintDraftingContext(store, resolvedRoleScope)
         : undefined;
     const prompt = buildChatPrompt(resolvedRequestBody, roleSkillPrompt, rebuildContext, selectedBlueprintContext);
+    const skillIds = await chatSkillIdsForRequest(requestBody.harnessId, resolvedRoleScope, requestBody.mode, openClawConfigStore);
     await adapter.streamChatMessage(
       {
         sessionKey: nativeSessionKey,
@@ -1533,19 +1853,19 @@ async function streamHivewardChatSession({
         thinking: requestBody.thinkingEffort,
         permissionMode: requestBody.permissionMode,
         idempotencyKey: userMessage.id,
-        timeoutMs: 600_000,
-        skillIds: chatSkillIdsForRequest(resolvedRoleScope, requestBody.mode)
+        timeoutMs: 3_600_000,
+        skillIds
       },
       (event) => {
         if (event.type === "started") {
-          openclawAcceptedAtMs ??= Date.now();
+          runtimeAcceptedAtMs ??= Date.now();
         }
         if (event.type === "done") {
           doneEvent = event;
           return;
         }
         if (event.type === "delta") {
-          openclawFirstDeltaAtMs ??= Date.now();
+          runtimeFirstDeltaAtMs ??= Date.now();
           streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
         }
         writeChatStreamEvent(res, event, isClosed);
@@ -1566,7 +1886,7 @@ async function streamHivewardChatSession({
     return;
   }
 
-  const openclawFinishedAtMs = Date.now();
+  const runtimeFinishedAtMs = Date.now();
   const postprocessStartedAtMs = Date.now();
   if (!doneEvent) {
     const message = "Chat request completed without a final runtime event.";
@@ -1619,12 +1939,12 @@ async function streamHivewardChatSession({
   const finalEventWithTimings = withChatStreamTimings(
     finalDoneEvent,
     requestStartedAtMs,
-    openclawStartedAtMs,
-    openclawFinishedAtMs,
+    runtimeStartedAtMs,
+    runtimeFinishedAtMs,
     postprocessStartedAtMs,
     inboxSubmissionMs,
-    openclawAcceptedAtMs,
-    openclawFirstDeltaAtMs
+    runtimeAcceptedAtMs,
+    runtimeFirstDeltaAtMs
   );
   const runtimeRef = toChatRuntimeRef(finalEventWithTimings);
   const nativeMissing = attemptedNativeResume && finalEventWithTimings.status === "failed" && isNativeResumeFailure(finalEventWithTimings.error);
@@ -1668,7 +1988,7 @@ function buildChatPrompt(
 }
 
 async function buildSelectedBlueprintDraftingContext(
-  store: FileHivewardStore,
+  store: HivewardStore,
   roleScope: ChatRoleScope | undefined
 ): Promise<string | undefined> {
   if (!roleScope?.blueprintId) return undefined;
@@ -1705,7 +2025,7 @@ async function buildSelectedBlueprintDraftingContext(
 }
 
 async function syncChatHistoryInboxSubmissions(
-  store: FileHivewardStore,
+  store: HivewardStore,
   messages: ChatHistoryMessage[]
 ): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
   let knownInboxItems: InboxItem[] | undefined;
@@ -1819,7 +2139,7 @@ function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefine
 }
 
 async function materializeChatInboxSubmission(
-  store: FileHivewardStore,
+  store: HivewardStore,
   chatRequest: ResolvedChatSessionMessage,
   output: string,
   block = extractChatInboxSubmissionBlock(output)
@@ -1984,8 +2304,8 @@ function buildChatInboxSubmissionFailureOutput(output: string, block: string, er
 const hivewardPlatformContext = [
   "System context:",
   "HiveWard is a local company operations console for building business workflows, company structure, blueprints, task cards, notes, runtime status views, and local UI metadata.",
-  "In Chat, HiveWard is only the user interface and dispatch channel. OpenClaw owns runtime execution, agents, tools, skills, sessions, transcripts, reasoning, and usage facts.",
-  "Use OpenClaw-native tools and skills when they are available. If the user asks to create or change HiveWard blueprints, workflows, company structure, or visual assets, help turn the request into concrete platform actions and use real runtime tools/APIs when required.",
+  "In Chat, HiveWard is only the user interface and dispatch channel. The selected harness owns runtime execution, agents, tools, skills, sessions, transcripts, reasoning, and usage facts.",
+  "Use harness-native tools and skills when they are available. If the user asks to create or change HiveWard blueprints, workflows, company structure, or visual assets, help turn the request into concrete platform actions and use real runtime tools/APIs when required.",
   "Do not claim stored HiveWard data, blueprints, files, or external deliveries changed unless an actual tool or API performed that change."
 ].join("\n");
 
@@ -2079,24 +2399,24 @@ function writeChatStreamEvent(
 function withChatStreamTimings<T extends ChatDoneEvent>(
   event: T,
   requestStartedAtMs: number,
-  openclawStartedAtMs: number,
-  openclawFinishedAtMs: number,
+  runtimeStartedAtMs: number,
+  runtimeFinishedAtMs: number,
   postprocessStartedAtMs: number,
   inboxSubmissionMs: number | undefined,
-  openclawAcceptedAtMs: number | undefined,
-  openclawFirstDeltaAtMs: number | undefined
+  runtimeAcceptedAtMs: number | undefined,
+  runtimeFirstDeltaAtMs: number | undefined
 ): T {
   const completedAtMs = Date.now();
   return {
     ...event,
     timings: {
       totalMs: Math.max(0, completedAtMs - requestStartedAtMs),
-      hivewardPreprocessMs: Math.max(0, openclawStartedAtMs - requestStartedAtMs),
-      openclawMs: Math.max(0, openclawFinishedAtMs - openclawStartedAtMs),
+      hivewardPreprocessMs: Math.max(0, runtimeStartedAtMs - requestStartedAtMs),
+      runtimeMs: Math.max(0, runtimeFinishedAtMs - runtimeStartedAtMs),
       hivewardPostprocessMs: Math.max(0, completedAtMs - postprocessStartedAtMs),
       inboxSubmissionMs,
-      openclawAcceptedMs: openclawAcceptedAtMs === undefined ? undefined : Math.max(0, openclawAcceptedAtMs - openclawStartedAtMs),
-      openclawFirstDeltaMs: openclawFirstDeltaAtMs === undefined ? undefined : Math.max(0, openclawFirstDeltaAtMs - openclawStartedAtMs)
+      runtimeAcceptedMs: runtimeAcceptedAtMs === undefined ? undefined : Math.max(0, runtimeAcceptedAtMs - runtimeStartedAtMs),
+      runtimeFirstDeltaMs: runtimeFirstDeltaAtMs === undefined ? undefined : Math.max(0, runtimeFirstDeltaAtMs - runtimeStartedAtMs)
     }
   };
 }
@@ -2144,7 +2464,7 @@ function isNativeResumeFailure(message: string | undefined): boolean {
   );
 }
 
-function sourceForChatHarness(harnessId: HarnessId): OpenClawObjectSource {
+function sourceForChatHarness(harnessId: HarnessId): RuntimeObjectSource {
   if (harnessId === "claudeCode") return "claude";
   return harnessId;
 }
@@ -2158,10 +2478,12 @@ function roleSkillIdForRole(role: ChatRoleScope["role"]): HarnessSkillId {
   return role === "leader" ? "hiveward-leader" : "hiveward-ceo";
 }
 
-function chatSkillIdsForRequest(
+async function chatSkillIdsForRequest(
+  harnessId: HarnessId,
   roleScope: ChatRoleScope | undefined,
-  mode: ChatMode | undefined
-): HarnessSkillId[] | undefined {
+  mode: ChatMode | undefined,
+  openClawConfigStore: OpenClawConfigStore
+): Promise<HarnessSkillId[] | undefined> {
   const skillIds: HarnessSkillId[] = [];
   if (roleScope) {
     skillIds.push(roleSkillIdForRole(roleScope.role));
@@ -2169,7 +2491,12 @@ function chatSkillIdsForRequest(
   if (mode === "skill_split") {
     skillIds.push("hiveward-skill-decomposer");
   }
-  return skillIds.length ? skillIds : undefined;
+  if (!skillIds.length) return undefined;
+
+  const config = await openClawConfigStore.getState();
+  const installRoot = resolveHarnessSkillInstallTarget(harnessId, config).root;
+  const installedSkillIds = skillIds.filter((skillId) => fileExists(join(installRoot, skillId, "SKILL.md")));
+  return installedSkillIds.length ? installedSkillIds : undefined;
 }
 
 function resolveChatModelId(
@@ -2971,7 +3298,8 @@ function buildHarnessStatuses(
       command: "hermes",
       checkedAt,
       defaultModelId: defaults.hermes,
-      models: defaults.hermesModels
+      models: defaults.hermesModels,
+      profiles: readHermesProfiles()
     })
   ];
 }
@@ -3153,7 +3481,8 @@ function buildCliHarnessStatus({
   command,
   checkedAt,
   defaultModelId,
-  models
+  models,
+  profiles
 }: {
   id: Extract<HarnessId, "google" | "cursor" | "opencode" | "hermes">;
   label: string;
@@ -3162,6 +3491,7 @@ function buildCliHarnessStatus({
   checkedAt: string;
   defaultModelId: string | undefined;
   models: HarnessModelOption[];
+  profiles?: HarnessProfileOption[];
 }): HarnessStatus {
   const version = detectCliVersion(command);
   const installed = version.installed;
@@ -3170,6 +3500,7 @@ function buildCliHarnessStatus({
     label,
     defaultModelId,
     models,
+    profiles,
     installed,
     environmentOk: installed && Boolean(defaultModelId),
     connectionState: installed ? "available" : "unavailable",
@@ -3199,17 +3530,276 @@ function buildCliHarnessStatus({
         detail: defaultModelId
           ? `${defaultModelId} (${models.length} model option${models.length === 1 ? "" : "s"} resolved).`
           : "No default model was resolved; HiveWard will let the CLI use its native default."
-      }
+      },
+      ...(profiles
+        ? [{
+            id: `${id}-profiles`,
+            label: "Profiles",
+            status: profiles.length > 0 ? "pass" as const : "warning" as const,
+            detail: profiles.length > 0
+              ? `${profiles.length} Hermes profile${profiles.length === 1 ? "" : "s"} detected. Create aliases with hermes profile alias <name> before using non-default profiles.`
+              : "No Hermes profiles were detected from hermes profile list."
+          }]
+        : [])
     ]
   };
 }
 
+function readHermesProfiles(): HarnessProfileOption[] {
+  try {
+    const result = runHermesCli(["profile", "list"], 2_000);
+    if (result.error || result.status !== 0) return [];
+    const homePath = resolveHermesHome();
+    const rootConfig = readHermesProfileConfig(homePath);
+    return parseHermesProfileList(result.stdout || result.stderr || "").map((profile) => {
+      const profilePath = resolveHermesProfilePath(homePath, profile.id);
+      const localConfig = {
+        ...rootConfig,
+        ...(profilePath ? readHermesProfileConfig(profilePath) : {})
+      };
+      return {
+        ...profile,
+        modelId: profile.modelId ?? localConfig.modelId,
+        provider: localConfig.provider,
+        path: profilePath,
+        workspace: localConfig.workspace
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function resolveHermesProfilePath(homePath: string, profileId: string): string | undefined {
+  const path = profileId === "default" ? join(homePath, "profiles", "default") : join(homePath, "profiles", profileId);
+  return fileExists(path) ? path : profileId === "default" ? homePath : undefined;
+}
+
+function readHermesProfileConfig(profilePath: string): { modelId?: string; provider?: string; workspace?: string } {
+  const configPath = join(profilePath, "config.yaml");
+  let content = "";
+  try {
+    content = readFileSync(configPath, "utf8");
+  } catch {
+    return {};
+  }
+  return {
+    modelId: readYamlSectionString(content, "model", "default"),
+    provider: readYamlSectionString(content, "model", "provider"),
+    workspace: readYamlSectionString(content, "terminal", "cwd")
+  };
+}
+
+function readHermesConfigResponse(): HermesConfigResponse {
+  const homePath = resolveHermesHome();
+  const channelDirectoryPath = join(homePath, "channel_directory.json");
+  return {
+    homePath,
+    configPath: join(homePath, "config.yaml"),
+    channelDirectoryPath,
+    profiles: readHermesProfiles(),
+    channels: readAllHermesChannels(homePath, channelDirectoryPath),
+    skills: readHermesSkills(homePath)
+  };
+}
+
+function createHermesProfile(input: CreateHermesProfileRequest): void {
+  const name = normalizeHermesProfileName(input?.name);
+  if (!name) {
+    throw new Error("Hermes profile name is required and must use lowercase letters, numbers, dashes, or underscores.");
+  }
+  const args = ["profile", "create", name];
+  const cloneFrom = normalizeHermesProfileName(input.cloneFrom);
+  if (cloneFrom) args.push("--clone-from", cloneFrom);
+  const description = readOptionalString(input.description);
+  if (description) args.push("--description", description);
+  const result = runHermesCli(args, 30_000);
+  if (result.error || result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || result.error?.message || "Hermes profile creation failed.").trim());
+  }
+  if (input.createAlias !== false) {
+    const aliasResult = runHermesCli(["profile", "alias", name, "--name", `hermes-${name}`], 10_000);
+    if (aliasResult.error || aliasResult.status !== 0) {
+      throw new Error((aliasResult.stderr || aliasResult.stdout || aliasResult.error?.message || "Hermes alias creation failed.").trim());
+    }
+  }
+}
+
+function runHermesCli(args: string[], timeout: number) {
+  if (process.platform === "win32") {
+    return spawnSync("cmd.exe", ["/d", "/v:off", "/c", "hermes", ...args], {
+      encoding: "utf8",
+      timeout,
+      windowsHide: true
+    });
+  }
+  return spawnSync("hermes", args, {
+    encoding: "utf8",
+    timeout
+  });
+}
+
+async function createHermesChannel(input: CreateHermesChannelRequest): Promise<void> {
+  const platform = normalizeHermesChannelKey(input?.platform);
+  const id = readOptionalString(input?.id);
+  if (!platform || !id) {
+    throw new Error("Hermes channel platform and id are required.");
+  }
+  const homePath = resolveHermesHome();
+  const channelDirectoryPath = join(homePath, "channel_directory.json");
+  const directory = readHermesChannelDirectory(channelDirectoryPath);
+  const platforms = isPlainRecord(directory.platforms) ? { ...directory.platforms } : {};
+  const entries = Array.isArray(platforms[platform]) ? [...platforms[platform] as unknown[]] : [];
+  const channel = {
+    id,
+    name: readOptionalString(input.name) ?? id,
+    type: readOptionalString(input.type) ?? "manual",
+    thread_id: readOptionalString(input.threadId) ?? null
+  };
+  const existingIndex = entries.findIndex((entry) => isPlainRecord(entry) && readOptionalString(entry.id) === id);
+  if (existingIndex >= 0) entries[existingIndex] = channel;
+  else entries.push(channel);
+  platforms[platform] = entries;
+  await mkdir(homePath, { recursive: true });
+  await writeJsonObjectFileAtomic(channelDirectoryPath, {
+    ...directory,
+    updated_at: new Date().toISOString(),
+    platforms
+  });
+}
+
+function readHermesChannels(path: string): HermesChannelOption[] {
+  const directory = readHermesChannelDirectory(path);
+  const platforms = isPlainRecord(directory.platforms) ? directory.platforms : {};
+  const channels: HermesChannelOption[] = [];
+  for (const [platform, entries] of Object.entries(platforms)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!isPlainRecord(entry)) continue;
+      const id = readOptionalString(entry.id);
+      if (!id) continue;
+      channels.push({
+        profileId: undefined,
+        platform,
+        id,
+        name: readOptionalString(entry.name) ?? id,
+        type: readOptionalString(entry.type),
+        threadId: readOptionalString(entry.thread_id)
+      });
+    }
+  }
+  return channels.sort((left, right) => `${left.platform}:${left.name}`.localeCompare(`${right.platform}:${right.name}`));
+}
+
+function readAllHermesChannels(homePath: string, rootChannelDirectoryPath: string): HermesChannelOption[] {
+  const channels = readHermesChannels(rootChannelDirectoryPath).map((channel) => ({ ...channel, profileId: "default" }));
+  const profilesRoot = join(homePath, "profiles");
+  try {
+    for (const profileId of readdirSyncSafe(profilesRoot)) {
+      const directoryPath = join(profilesRoot, profileId, "channel_directory.json");
+      if (!fileExists(directoryPath)) continue;
+      channels.push(...readHermesChannels(directoryPath).map((channel) => ({ ...channel, profileId })));
+    }
+  } catch {
+    return channels;
+  }
+  const seen = new Set<string>();
+  return channels.filter((channel) => {
+    const key = `${channel.profileId ?? ""}:${channel.platform}:${channel.id}:${channel.threadId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function readHermesSkills(homePath: string): HermesSkillOption[] {
+  const skills: HermesSkillOption[] = [
+    ...readHermesSkillsFromDirectory(join(homePath, "skills")),
+  ];
+  const profilesRoot = join(homePath, "profiles");
+  for (const profileId of readdirSyncSafe(profilesRoot)) {
+    skills.push(...readHermesSkillsFromDirectory(join(profilesRoot, profileId, "skills"), profileId));
+  }
+  const seen = new Set<string>();
+  return skills.filter((skill) => {
+    const key = `${skill.profileId ?? "default"}:${skill.id}:${skill.path}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => `${left.profileId ?? "default"}:${left.label}`.localeCompare(`${right.profileId ?? "default"}:${right.label}`));
+}
+
+function readHermesSkillsFromDirectory(skillsPath: string, profileId?: string): HermesSkillOption[] {
+  return readdirSyncSafe(skillsPath).flatMap((id) => {
+    const skillPath = join(skillsPath, id, "SKILL.md");
+    if (!fileExists(skillPath)) return [];
+    return [{
+      id,
+      label: id,
+      path: skillPath,
+      profileId
+    }];
+  });
+}
+
+function readHermesChannelDirectory(path: string): Record<string, unknown> {
+  const value = readJsonFile(path);
+  return isPlainRecord(value) ? { ...value } : { platforms: {} };
+}
+
+function resolveHermesHome(env: NodeJS.ProcessEnv = process.env): string {
+  return resolve(readEnvString(env, "HERMES_HOME") ?? join(homedir(), ".hermes"));
+}
+
+function normalizeHermesProfileName(value: unknown): string | undefined {
+  const name = readOptionalString(value)?.toLowerCase();
+  return name && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) ? name : undefined;
+}
+
+function normalizeHermesChannelKey(value: unknown): string | undefined {
+  const key = readOptionalString(value)?.toLowerCase();
+  return key && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(key) ? key : undefined;
+}
+
+function parseHermesProfileList(output: string): HarnessProfileOption[] {
+  const profiles: HarnessProfileOption[] = [];
+  const seen = new Set<string>();
+  for (const rawLine of output.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("Profile") || line.startsWith("─")) continue;
+    const isDefault = line.startsWith("◆");
+    const normalized = line.replace(/^◆\s*/, "").trim();
+    const [id, modelId, _gateway, alias] = normalized.split(/\s+/);
+    if (!id || id === "Profile" || seen.has(id)) continue;
+    seen.add(id);
+    profiles.push({
+      id,
+      label: id,
+      modelId: modelId && !isMissingHermesProfileCell(modelId) ? modelId : undefined,
+      alias: alias && !isMissingHermesProfileCell(alias) ? alias : undefined,
+      isDefault: isDefault || undefined
+    });
+  }
+  return profiles;
+}
+
+function isMissingHermesProfileCell(value: string): boolean {
+  return value === "-" || value === "—";
+}
+
 function detectCliVersion(command: string): { installed: boolean; version?: string; error?: string } {
   try {
-    const result = spawnSync(command, ["--version"], {
-      encoding: "utf8",
-      timeout: 2_000
-    });
+    const result = process.platform === "win32"
+      ? spawnSync(`${command} --version`, {
+          encoding: "utf8",
+          shell: true,
+          timeout: 2_000,
+          windowsHide: true
+        })
+      : spawnSync(command, ["--version"], {
+          encoding: "utf8",
+          timeout: 2_000
+        });
     if (result.error) {
       return { installed: false, error: result.error.message };
     }
@@ -3222,6 +3812,87 @@ function detectCliVersion(command: string): { installed: boolean; version?: stri
   } catch (error) {
     return { installed: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function readdirSyncSafe(path: string): string[] {
+  try {
+    return readdirSync(path).filter((entry) => !entry.startsWith("."));
+  } catch {
+    return [];
+  }
+}
+
+function readYamlSectionString(content: string, sectionName: string, key: string): string | undefined {
+  let inSection = false;
+  const keyPattern = new RegExp(`^\\s{2}${escapeRegExp(key)}\\s*:\\s*(.+?)\\s*$`);
+  for (const rawLine of content.split(/\r?\n/)) {
+    if (!rawLine.trim() || rawLine.trim().startsWith("#")) continue;
+    if (/^\S[^:]*:\s*$/.test(rawLine)) {
+      inSection = rawLine.trim() === `${sectionName}:`;
+      continue;
+    }
+    if (!inSection) continue;
+    const match = keyPattern.exec(rawLine);
+    if (!match?.[1]) continue;
+    return unquoteYamlScalar(match[1]);
+  }
+  return undefined;
+}
+
+function readHermesConfiguredModelsFromFiles(env: NodeJS.ProcessEnv = process.env): HarnessModelOption[] {
+  const homePath = resolveHermesHome(env);
+  const options: HarnessModelOption[] = [];
+  for (const configPath of [
+    join(homePath, "config.yaml"),
+    ...readdirSyncSafe(join(homePath, "profiles")).map((profileId) => join(homePath, "profiles", profileId, "config.yaml"))
+  ]) {
+    try {
+      const content = readFileSync(configPath, "utf8");
+      const provider = readYamlSectionString(content, "model", "provider") ?? "hermes";
+      const defaultModel = readYamlSectionString(content, "model", "default");
+      if (defaultModel) options.push({ id: defaultModel, label: defaultModel, provider, thinkingLevels: cliHarnessDefaultThinkingLevels });
+      for (const fallback of readHermesFallbackModels(content)) {
+        options.push({ id: fallback.modelId, label: fallback.modelId, provider: fallback.provider ?? provider, thinkingLevels: cliHarnessDefaultThinkingLevels });
+      }
+    } catch {
+      continue;
+    }
+  }
+  return mergeHarnessModelOptions(options);
+}
+
+function readHermesFallbackModels(content: string): Array<{ modelId: string; provider?: string }> {
+  const models: Array<{ modelId: string; provider?: string }> = [];
+  let inFallbacks = false;
+  let currentProvider: string | undefined;
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (/^\S[^:]*:\s*$/.test(rawLine)) {
+      inFallbacks = line === "fallback_providers:";
+      currentProvider = undefined;
+      continue;
+    }
+    if (!inFallbacks) continue;
+    const providerMatch = /^-\s*provider:\s*(.+)$/.exec(line);
+    if (providerMatch?.[1]) {
+      currentProvider = unquoteYamlScalar(providerMatch[1]);
+      continue;
+    }
+    const modelMatch = /^model:\s*(.+)$/.exec(line);
+    if (modelMatch?.[1]) {
+      models.push({ modelId: unquoteYamlScalar(modelMatch[1]), provider: currentProvider });
+    }
+  }
+  return models;
+}
+
+function unquoteYamlScalar(value: string): string {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
 }
 
 function resolveConfigFile({
@@ -3399,9 +4070,11 @@ function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): Harn
     readEnvString(env, "HIVEWARD_OPENCODE_DEFAULT_MODEL") ??
     readEnvString(env, "OPENCODE_DEFAULT_MODEL") ??
     fallbackCliDefaultModel;
+  const hermesConfiguredModels = readHermesConfiguredModelsFromFiles(env);
   const hermesDefaultModelId =
     readEnvString(env, "HIVEWARD_HERMES_DEFAULT_MODEL") ??
     readEnvString(env, "HERMES_DEFAULT_MODEL") ??
+    hermesConfiguredModels[0]?.id ??
     fallbackCliDefaultModel;
 
   return {
@@ -3437,7 +4110,10 @@ function resolveHarnessModelDefaults(env: NodeJS.ProcessEnv = process.env): Harn
       cliHarnessDefaultThinkingLevels
     ),
     hermesModels: prepareHarnessModelOptions(
-      readEnvModelOptions(env, ["HIVEWARD_HERMES_MODELS", "HERMES_MODELS"], "hermes", cliHarnessDefaultThinkingLevels),
+      [
+        ...hermesConfiguredModels,
+        ...readEnvModelOptions(env, ["HIVEWARD_HERMES_MODELS", "HERMES_MODELS"], "hermes", cliHarnessDefaultThinkingLevels)
+      ],
       hermesDefaultModelId,
       "hermes",
       cliHarnessDefaultThinkingLevels
@@ -3707,7 +4383,7 @@ const maxChatMessageChars = 40_000;
 const maxChatAttachments = 6;
 const maxChatAttachmentTextChars = 24_000;
 
-async function refreshCatalog(adapter: RuntimeAdapter, store: FileHivewardStore): Promise<CatalogSnapshot> {
+async function refreshCatalog(adapter: RuntimeAdapter, store: HivewardStore): Promise<CatalogSnapshot> {
   const now = new Date();
   const snapshot: CatalogSnapshot = {
     id: `catalog-${nanoid(8)}`,

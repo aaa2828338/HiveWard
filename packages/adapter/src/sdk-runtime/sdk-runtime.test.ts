@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -10,6 +10,7 @@ import { CodexAgentSdkRuntime, type CodexClientLike, type CodexThreadLike } from
 import { mapClaudePermission, mapClaudeTools, mapCodexSandbox } from "./permissions";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { AgentSdkTaskRegistry } from "./task-registry";
+import { readAgentSdkRuntimeOptions } from "./types";
 
 describe("agent SDK runtime", () => {
   it("builds a stable prompt envelope without secret values", () => {
@@ -46,6 +47,7 @@ describe("agent SDK runtime", () => {
       required: ["status"],
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"] },
         nextSlot: { type: "integer" },
         reason: { type: "string" }
       }
@@ -53,15 +55,16 @@ describe("agent SDK runtime", () => {
 
     expect(toCodexOutputSchema(schema)).toEqual({
       type: "object",
-      required: ["status", "nextSlot", "reason"],
+      required: ["status", "handoffJson", "nextSlot", "reason"],
       additionalProperties: false,
       properties: {
         status: { type: "string" },
+        handoffJson: { type: ["object", "null"], additionalProperties: false, properties: {}, required: [] },
         nextSlot: { type: ["integer", "null"] },
         reason: { type: ["string", "null"] }
       }
     });
-    expect(validateOutputSchema('{"status":"complete","nextSlot":null,"reason":null}', schema)).toBe(true);
+    expect(validateOutputSchema('{"status":"complete","handoffJson":{},"nextSlot":null,"reason":null}', schema)).toBe(true);
   });
 
   it("maps permission profiles to provider SDK settings", () => {
@@ -70,6 +73,90 @@ describe("agent SDK runtime", () => {
     expect(mapClaudeTools("workspace_write", ["repo.test"])).toContain("Bash(npm test:*)");
     expect(mapCodexSandbox("read_only")).toBe("read-only");
     expect(mapCodexSandbox("workspace_write")).toBe("workspace-write");
+  });
+
+  it("defaults SDK task timeout to one hour", () => {
+    const options = readAgentSdkRuntimeOptions(createWorkspace(), { HIVEWARD_AGENT_SDK_MAX_CONCURRENCY: "2" });
+    expect(options.defaultTimeoutMs).toBe(3_600_000);
+  });
+
+  it("fails Claude tasks that request unsupported network or web search policy changes", async () => {
+    const workspace = createWorkspace();
+    let claudeCalled = false;
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => {
+        claudeCalled = true;
+        return fakeClaudeQuery([])({ prompt: "" });
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "claude",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "read_only",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "claude"
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("does not support requested access policy axes: network, webSearch");
+    expect(claudeCalled).toBe(false);
+  });
+
+  it("maps Codex runtime access policy axes into native thread options", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-policy-thread",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        finalResponse: "policy ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        runtimeAccessPolicy: {
+          filesystem: "workspace_write",
+          network: "disabled",
+          webSearch: "live"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(threadOptions).toMatchObject({
+      sandboxMode: "workspace-write",
+      networkAccessEnabled: false,
+      webSearchMode: "live"
+    });
   });
 
   it("starts Claude through the SDK without a platform auth precheck", async () => {
@@ -1020,7 +1107,7 @@ describe("agent SDK runtime", () => {
         sessionKey: "hermes-session-existing",
         message: "Hello",
         attachments: [],
-        modelId: "nous/hermes-4",
+        modelId: "hermes-env-default",
         permissionMode: "full_access",
         idempotencyKey: "chat-hermes-1",
         skillIds: ["hiveward-leader"]
@@ -1037,7 +1124,7 @@ describe("agent SDK runtime", () => {
       "hermes-session-existing",
       "chat",
       "--model",
-      "nous/hermes-4",
+      "hermes-env-default",
       "--yolo",
       "-s",
       "hiveward-leader",
@@ -1055,6 +1142,165 @@ describe("agent SDK runtime", () => {
         output: "hello from hermes"
       })
     ]);
+  });
+
+  it("resolves stable Hermes profile ids to aliases inside the runtime layer", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "hermes",
+      async (input) => {
+        calls.push(input);
+        if (input.command === "hermes" && input.args.join(" ") === "profile list") {
+          return {
+            stdout: [
+              " Profile          Model                        Gateway      Alias        Distribution",
+              " architect       hermes-profile-model-test     stopped      hermes-architect   -"
+            ].join("\n"),
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        input.onStdout?.("{\"ok\":true}\n");
+        return { stdout: "{\"ok\":true}\n", stderr: "", exitCode: 0 };
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "hermes",
+        workingDirectory: workspace,
+        modelId: "inherit",
+        profileId: "architect",
+        permissionProfile: "workspace_write",
+        skillIds: ["hiveward-leader"],
+        outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "hermes"
+    });
+
+    expect(calls[0]).toMatchObject({
+      command: "hermes",
+      args: ["profile", "list"],
+      cwd: workspace
+    });
+    expect(calls[1]).toMatchObject({
+      command: "hermes-architect",
+      cwd: workspace
+    });
+    expect(calls[1]?.args.slice(0, 4)).toEqual(["chat", "--yolo", "-s", "hiveward-leader"]);
+    expect(calls[1]?.args.at(-2)).toBe("-q");
+    expect(calls[1]?.args.at(-1)).toContain("You are executing one Hiveward blueprint node.");
+    expect(result.status).toBe("succeeded");
+    expect(result.source).toBe("hermes");
+    expect(result.output).toBe("{\"ok\":true}");
+  });
+
+  it("does not infer Hermes profile aliases from local wrapper commands", async () => {
+    const workspace = createWorkspace();
+    const binDir = path.join(workspace, "bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "hermes-architect"), "#!/bin/sh\nexit 0\n", "utf8");
+    chmodSync(path.join(binDir, "hermes-architect"), 0o755);
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "hermes",
+      async (input) => {
+        calls.push(input);
+        if (input.command === "hermes" && input.args.join(" ") === "profile list") {
+          return {
+            stdout: [
+              " Profile          Model                        Gateway      Alias        Distribution",
+              " architect       hermes-profile-model-test     stopped      -              -"
+            ].join("\n"),
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        input.onStdout?.("{\"ok\":true}\n");
+        return { stdout: "{\"ok\":true}\n", stderr: "", exitCode: 0 };
+      },
+      { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ""}` }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "hermes",
+        workingDirectory: workspace,
+        modelId: "inherit",
+        profileId: "architect",
+        permissionProfile: "workspace_write",
+        outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "hermes"
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("does not have an executable alias");
+  });
+
+  it("does not accept Hermes aliases as platform profile ids", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "hermes",
+      async (input) => {
+        calls.push(input);
+        if (input.command === "hermes" && input.args.join(" ") === "profile list") {
+          return {
+            stdout: [
+              " Profile          Model                        Gateway      Alias        Distribution",
+              " architect       hermes-profile-model-test     stopped      hermes-architect   -"
+            ].join("\n"),
+            stderr: "",
+            exitCode: 0
+          };
+        }
+        input.onStdout?.("{\"ok\":true}\n");
+        return { stdout: "{\"ok\":true}\n", stderr: "", exitCode: 0 };
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "hermes",
+        workingDirectory: workspace,
+        modelId: "inherit",
+        profileId: "hermes-architect",
+        permissionProfile: "workspace_write",
+        outputSchema: { type: "object", required: ["ok"], properties: { ok: { type: "boolean" } } }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "hermes"
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain('Hermes profile "hermes-architect" was not found');
   });
 });
 

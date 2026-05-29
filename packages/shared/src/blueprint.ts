@@ -1,4 +1,21 @@
-import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
+import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, RuntimeUsageFact } from "./runtime";
+import { normalizeRuntimeAccessPolicy } from "./lifecycle";
+import type {
+  ApprovalDecision,
+  ApprovalRequest,
+  AgentHandoff,
+  AgentHumanReport,
+  Artifact,
+  IterationRound,
+  IterationSession,
+  ManagerContextSnapshot,
+  ManagerDispatchMode,
+  ManagerLifecycleMode,
+  ManagerMail,
+  ReleaseReport,
+  RunTimelineItem,
+  RuntimeAccessPolicy
+} from "./lifecycle";
 
 export type AgentRuntimeId = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 
@@ -35,6 +52,12 @@ export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
 
 export type ManagerSlotExecutionMode = "manual" | "parallel";
 
+export type CrossRoundContextMode =
+  | "off"
+  | "node_history"
+  | "node_history_with_upstream"
+  | "node_history_with_upstream_and_manager_memory";
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -49,6 +72,7 @@ export interface BlueprintNodeBaseConfig {
   label: string;
   description?: string;
   resultRole?: BlueprintNodeResultRole;
+  crossRoundContextMode?: CrossRoundContextMode;
 }
 
 export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
@@ -60,6 +84,7 @@ export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
   skillIds?: string[];
   modelId?: string;
   permissionProfile?: AgentPermissionProfile;
+  runtimeAccessPolicy?: RuntimeAccessPolicy;
   workingDirectory?: string;
   timeoutMs?: number;
   outputSchema?: Record<string, unknown>;
@@ -84,10 +109,20 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   maxHandoffs: number;
   instructions?: string;
   openclawAgentId?: string;
+  profileId?: string;
   agentName?: string;
   modelId?: string;
   skillIds?: string[];
   permissionProfile?: AgentPermissionProfile;
+  runtimeAccessPolicy?: RuntimeAccessPolicy;
+  lifecycleMode?: ManagerLifecycleMode;
+  dispatchMode?: ManagerDispatchMode;
+  maxRounds?: number;
+  researchAgentNodeId?: string;
+  requirementAgentNodeId?: string;
+  maxPreparationAttempts?: number;
+  autoApproveRequirements?: boolean;
+  autoApproveReleaseReports?: boolean;
   workingDirectory?: string;
   timeoutMs?: number;
   tools?: string[];
@@ -111,8 +146,10 @@ export interface ConditionNodeConfig extends BlueprintNodeBaseConfig {
 export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
   mode: "structured_merge" | "harness_summary";
   runtimeId?: AgentRuntimeId;
+  profileId?: string;
   prompt?: string;
   modelId?: string;
+  runtimeAccessPolicy?: RuntimeAccessPolicy;
 }
 
 export interface NoteNodeConfig extends BlueprintNodeBaseConfig {
@@ -145,7 +182,7 @@ export function isAgentBlueprintNode(node: BlueprintNode): node is BlueprintNode
   return node.type === "agent";
 }
 
-export function resolveAgentRuntimeSource(runtimeId: AgentRuntimeId): OpenClawObjectSource {
+export function resolveAgentRuntimeSource(runtimeId: AgentRuntimeId): RuntimeObjectSource {
   return runtimeId;
 }
 
@@ -225,6 +262,12 @@ const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>
 
 const blueprintNodeResultRoles = new Set<BlueprintNodeResultRole>(["auto", "final", "ignore"]);
 const managerSlotExecutionModes = new Set<ManagerSlotExecutionMode>(["manual", "parallel"]);
+const crossRoundContextModes = new Set<CrossRoundContextMode>([
+  "off",
+  "node_history",
+  "node_history_with_upstream",
+  "node_history_with_upstream_and_manager_memory"
+]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
@@ -248,6 +291,12 @@ export function resolveManagerSlotParallelLaneCount(
 ): number {
   if (typeof config.parallelLaneCount !== "number" || !Number.isFinite(config.parallelLaneCount)) return 1;
   return Math.min(maxManagerSlotParallelLaneCount, Math.max(1, Math.round(config.parallelLaneCount)));
+}
+
+export function resolveCrossRoundContextMode(
+  config: Pick<BlueprintNodeBaseConfig, "crossRoundContextMode">
+): CrossRoundContextMode {
+  return config.crossRoundContextMode ?? "off";
 }
 
 export function managerSlotInnerOutHandleId(lane: number): string {
@@ -297,7 +346,7 @@ export interface BlueprintRun {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
-  openclawRefs: OpenClawObjectRef[];
+  runtimeRefs: RuntimeObjectRef[];
 }
 
 export interface BlueprintNodeRun {
@@ -307,6 +356,7 @@ export interface BlueprintNodeRun {
   nodeId: string;
   nodeLabel: string;
   nodeType: BlueprintNodeType;
+  iterationRoundId?: string;
   status: BlueprintNodeRunStatus;
   queuedAt: string;
   startedAt?: string;
@@ -314,8 +364,8 @@ export interface BlueprintNodeRun {
   input?: unknown;
   output?: unknown;
   error?: string;
-  usage?: OpenClawUsageFact;
-  openclawRef?: OpenClawObjectRef;
+  usage?: RuntimeUsageFact;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface BlueprintNodeEvent {
@@ -335,7 +385,7 @@ export interface BlueprintNodeEvent {
     | "blueprint.run.failed";
   message: string;
   createdAt: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface BlueprintRunView {
@@ -343,6 +393,17 @@ export interface BlueprintRunView {
   nodeRuns: BlueprintNodeRun[];
   events: BlueprintNodeEvent[];
   finalResult?: FinalRunResult | null;
+  iterationSessions?: IterationSession[];
+  iterationRounds?: IterationRound[];
+  approvalRequests?: ApprovalRequest[];
+  approvalDecisions?: ApprovalDecision[];
+  artifacts?: Artifact[];
+  releaseReports?: ReleaseReport[];
+  agentHumanReports?: AgentHumanReport[];
+  agentHandoffs?: AgentHandoff[];
+  managerContextSnapshots?: ManagerContextSnapshot[];
+  runTimeline?: RunTimelineItem[];
+  managerMail?: ManagerMail[];
 }
 
 export interface BlueprintRunSummary extends BlueprintRun {
@@ -358,6 +419,16 @@ export interface BlueprintRunArchive {
   nodeRuns: BlueprintNodeRun[];
   events: BlueprintNodeEvent[];
   finalResult: FinalRunResult | null;
+  iterationSessions?: IterationSession[];
+  iterationRounds?: IterationRound[];
+  approvalRequests?: ApprovalRequest[];
+  approvalDecisions?: ApprovalDecision[];
+  artifacts?: Artifact[];
+  releaseReports?: ReleaseReport[];
+  agentHumanReports?: AgentHumanReport[];
+  agentHandoffs?: AgentHandoff[];
+  managerContextSnapshots?: ManagerContextSnapshot[];
+  runTimeline?: RunTimelineItem[];
 }
 
 export type FinalRunResultState = "available" | "failed" | "waiting_approval" | "empty";
@@ -378,7 +449,7 @@ export interface FinalRunResultCandidate {
   selectionReason: FinalRunResultSelectionReason;
   output: unknown;
   endedAt?: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface FinalRunNodeContext {
@@ -393,7 +464,7 @@ export interface FinalRunNodeContext {
   output?: unknown;
   error?: string;
   endedAt?: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface FinalRunResult {
@@ -562,7 +633,7 @@ function toFinalRunResultCandidate(
     selectionReason,
     output: candidate.nodeRun.output,
     endedAt: candidate.nodeRun.endedAt,
-    openclawRef: candidate.nodeRun.openclawRef
+    runtimeRef: readBlueprintNodeRunRuntimeRef(candidate.nodeRun)
   };
 }
 
@@ -579,8 +650,20 @@ function toFinalRunNodeContext(nodeRun: BlueprintNodeRun): FinalRunNodeContext {
     output: nodeRun.output,
     error: nodeRun.error,
     endedAt: nodeRun.endedAt,
-    openclawRef: nodeRun.openclawRef
+    runtimeRef: readBlueprintNodeRunRuntimeRef(nodeRun)
   };
+}
+
+export function readBlueprintNodeRunRuntimeRef(nodeRun: Pick<BlueprintNodeRun, "runtimeRef">): RuntimeObjectRef | undefined {
+  return nodeRun.runtimeRef;
+}
+
+export function readBlueprintNodeEventRuntimeRef(event: Pick<BlueprintNodeEvent, "runtimeRef">): RuntimeObjectRef | undefined {
+  return event.runtimeRef;
+}
+
+export function readBlueprintRunRuntimeRefs(run: Pick<BlueprintRun, "runtimeRefs">): RuntimeObjectRef[] {
+  return run.runtimeRefs;
 }
 
 function resolveFinalRunResultState(
@@ -800,7 +883,7 @@ export function createMultiAgentCompatibilityBlueprint(
           prompt:
             "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be codex.",
           permissionProfile: "read_only",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           outputSchema: {
             type: "object",
             required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
@@ -826,7 +909,7 @@ export function createMultiAgentCompatibilityBlueprint(
           prompt:
             "Read the upstream compatibility brief. Return only JSON with keys: runtime, upstreamReceived, contractAccepted, notes. runtime must be claude_code.",
           permissionProfile: "read_only",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           outputSchema: {
             type: "object",
             required: ["runtime", "upstreamReceived", "contractAccepted", "notes"],
@@ -898,11 +981,12 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
         position: { x: 80, y: 420 },
         config: {
           label: "HTML Delivery Manager",
+          dispatchMode: "self_dispatch",
           portCount: 2,
           maxHandoffs: 8,
           openclawAgentId: "main",
           agentName: "html-delivery-manager",
-          timeoutMs: 600000,
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             "先运行 Slot 1。Slot 1 中，Agent 1 收集具体新闻简报，Agent 2 把新闻简报整理成可执行的 HTML 页面制作说明。然后把 Slot 1 的输出交给 Slot 2。Slot 2 中，Agent 1 根据制作说明写出完整、可直接运行的独立 HTML 页面。Slot 2 完成后即可结束流程。"
@@ -1080,7 +1164,8 @@ export function createActiveManagerNewsHtmlChaosBlueprint(
           maxHandoffs: 10,
           openclawAgentId: "main",
           agentName: "active-dispatch-manager",
-          timeoutMs: 600000,
+          dispatchMode: "self_dispatch",
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             [
@@ -1285,7 +1370,8 @@ export function createActiveManagerRemotionVideoChaosBlueprint(
           maxHandoffs: 14,
           openclawAgentId: "main",
           agentName: "remotion-dispatch-manager",
-          timeoutMs: 600000,
+          dispatchMode: "self_dispatch",
+          timeoutMs: 3600000,
           tools: [],
           instructions:
             [
@@ -1865,11 +1951,14 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       label: agentConfig.label,
       description: agentConfig.description,
       resultRole: agentConfig.resultRole,
+      crossRoundContextMode: agentConfig.crossRoundContextMode,
+      profileId: agentConfig.profileId,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
       userPrompt: agentConfig.userPrompt,
       skillIds: agentConfig.skillIds ?? [],
       permissionProfile: agentConfig.permissionProfile,
+      runtimeAccessPolicy: agentConfig.runtimeAccessPolicy ? { ...agentConfig.runtimeAccessPolicy } : undefined,
       timeoutMs: agentConfig.timeoutMs,
       outputSchema: cloneJsonObject(agentConfig.outputSchema),
       approval: agentConfig.approval ? { ...agentConfig.approval } : undefined,
@@ -1889,10 +1978,13 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       label: summaryConfig.label,
       description: summaryConfig.description,
       resultRole: summaryConfig.resultRole,
+      crossRoundContextMode: summaryConfig.crossRoundContextMode,
       mode: summaryConfig.mode,
       runtimeId: summaryConfig.runtimeId,
+      profileId: summaryConfig.profileId,
       prompt: summaryConfig.prompt,
-      modelId: summaryConfig.modelId
+      modelId: summaryConfig.modelId,
+      runtimeAccessPolicy: summaryConfig.runtimeAccessPolicy ? { ...summaryConfig.runtimeAccessPolicy } : undefined
     };
   }
   return { ...config };
@@ -2035,7 +2127,8 @@ function readPortableBlueprintNodeConfig(
   const base = {
     label: readRequiredString(config.label, `${fieldName}.label`),
     description: readOptionalString(config.description),
-    resultRole: readOptionalResultRole(config.resultRole, `${fieldName}.resultRole`)
+    resultRole: readOptionalResultRole(config.resultRole, `${fieldName}.resultRole`),
+    crossRoundContextMode: readCrossRoundContextMode(config.crossRoundContextMode, `${fieldName}.crossRoundContextMode`)
   };
 
   if (type === "agent") {
@@ -2050,8 +2143,10 @@ function readPortableBlueprintNodeConfig(
         mode === "harness_summary"
           ? readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`) ?? "openclaw"
           : readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`),
+      profileId: readOptionalString(config.profileId),
       modelId: readOptionalString(config.modelId),
-      prompt: readOptionalString(config.prompt)
+      prompt: readOptionalString(config.prompt),
+      runtimeAccessPolicy: readRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile)
     } as SummaryNodeConfig;
   }
   if (type === "manager") {
@@ -2061,10 +2156,20 @@ function readPortableBlueprintNodeConfig(
       maxHandoffs: readBoundedInteger(config.maxHandoffs, 1, 50, 12),
       instructions: readOptionalString(config.instructions),
       openclawAgentId: readOptionalString(config.openclawAgentId),
+      profileId: readOptionalString(config.profileId),
       agentName: readOptionalString(config.agentName),
       modelId: readOptionalString(config.modelId),
       skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
-      permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
+      permissionProfile: readOptionalPermissionProfile(config.permissionProfile),
+      runtimeAccessPolicy: readRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile),
+      lifecycleMode: readManagerLifecycleMode(config.lifecycleMode, `${fieldName}.lifecycleMode`),
+      dispatchMode: readManagerDispatchMode(config.dispatchMode, `${fieldName}.dispatchMode`),
+      maxRounds: readBoundedInteger(config.maxRounds, 1, 50, 3),
+      researchAgentNodeId: readOptionalString(config.researchAgentNodeId),
+      requirementAgentNodeId: readOptionalString(config.requirementAgentNodeId),
+      maxPreparationAttempts: readBoundedInteger(config.maxPreparationAttempts, 1, 10, 3),
+      autoApproveRequirements: config.autoApproveRequirements === true ? true : undefined,
+      autoApproveReleaseReports: config.autoApproveReleaseReports === true ? true : undefined,
       workingDirectory: readOptionalString(config.workingDirectory),
       timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
       tools: Array.isArray(config.tools) ? readStringArray(config.tools, `${fieldName}.tools`) : []
@@ -2089,7 +2194,7 @@ function readPortableBlueprintNodeConfig(
 function readAgentNodeConfig(
   config: Record<string, unknown>,
   fieldName: string,
-  base: Pick<BlueprintNodeBaseConfig, "label" | "description" | "resultRole">
+  base: Pick<BlueprintNodeBaseConfig, "label" | "description" | "resultRole" | "crossRoundContextMode">
 ): AgentNodeConfig {
   return {
     ...base,
@@ -2100,7 +2205,8 @@ function readAgentNodeConfig(
     userPrompt: readOptionalString(config.userPrompt),
     skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
     modelId: readOptionalString(config.modelId),
-    permissionProfile: isRecord(config.permissionProfile) ? config.permissionProfile as unknown as AgentPermissionProfile : undefined,
+    permissionProfile: readOptionalPermissionProfile(config.permissionProfile),
+    runtimeAccessPolicy: readRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile),
     workingDirectory: readOptionalString(config.workingDirectory),
     timeoutMs: typeof config.timeoutMs === "number" && Number.isFinite(config.timeoutMs) ? Math.max(0, config.timeoutMs) : undefined,
     outputSchema: isRecord(config.outputSchema) ? config.outputSchema : undefined,
@@ -2610,12 +2716,40 @@ function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNod
   throw new Error(`${fieldName} must be auto, final, or ignore.`);
 }
 
+function readCrossRoundContextMode(value: unknown, fieldName: string): CrossRoundContextMode | undefined {
+  if (value === undefined || value === null || value === "" || value === "off") return undefined;
+  if (typeof value === "string" && crossRoundContextModes.has(value as CrossRoundContextMode)) {
+    return value as CrossRoundContextMode;
+  }
+  throw new Error(`${fieldName} must be off, node_history, node_history_with_upstream, or node_history_with_upstream_and_manager_memory.`);
+}
+
 function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {
   if (value === undefined || value === null || value === "") return "parallel";
   if (typeof value === "string" && managerSlotExecutionModes.has(value as ManagerSlotExecutionMode)) {
     return value as ManagerSlotExecutionMode;
   }
   throw new Error(`${fieldName} must be manual or parallel.`);
+}
+
+function readManagerLifecycleMode(value: unknown, fieldName: string): ManagerLifecycleMode {
+  if (value === undefined || value === null || value === "") return "none";
+  if (value === "none" || value === "self_iteration") return value;
+  throw new Error(`${fieldName} must be none or self_iteration.`);
+}
+
+function readManagerDispatchMode(value: unknown, fieldName: string): ManagerDispatchMode {
+  if (value === undefined || value === null || value === "") return "sequential";
+  if (value === "sequential" || value === "self_dispatch") return value;
+  throw new Error(`${fieldName} must be sequential or self_dispatch.`);
+}
+
+function readOptionalPermissionProfile(value: unknown): AgentPermissionProfile | undefined {
+  return value === "read_only" || value === "workspace_write" ? value : undefined;
+}
+
+function readRuntimeAccessPolicy(value: unknown, legacyPermissionProfile?: unknown): RuntimeAccessPolicy {
+  return normalizeRuntimeAccessPolicy(isRecord(value) ? value as Partial<RuntimeAccessPolicy> : undefined, legacyPermissionProfile);
 }
 
 function readSummaryNodeMode(value: unknown): SummaryNodeConfig["mode"] {
