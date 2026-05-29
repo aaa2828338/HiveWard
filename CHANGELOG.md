@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.1 - 2026-05-29
+
+Blueprint Manager UI polish and Harness permission inheritance release.
+
+### 中文
+
+- 优化 Blueprint Studio 节点详情面板：Manager 面板对齐参考 UI 的样式、宽度和字段顺序，把系统提示词放回标准配置区。
+- 将 Agent、Manager 和 Harness Summary 的前置字段统一为 Harness、模型、权限模式和系统提示词的顺序；Manager 额外保留管理器模式三段切换。
+- 新增跨轮上下文配置，并在蓝图运行时把节点历史、上游输出和可选 Manager 记忆注入 Agent / Summary 执行上下文。
+- 让节点权限模式继承 Harness 配置页的安全模式 / 完全访问模式；保存或运行蓝图前同步 `permissionProfile` 和 `runtimeAccessPolicy`，避免节点单独重复设置。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.1`。
+
+### English
+
+- Polished Blueprint Studio node detail panels: the Manager panel now follows the referenced UI style, width, and field order, with the system prompt back in the standard section.
+- Aligned Agent, Manager, and Harness Summary front-matter ordering around Harness, model, permission mode, and system prompt; Managers keep the three-way manager mode switch.
+- Added cross-round context configuration and runtime injection for node history, upstream outputs, and optional Manager memory in Agent / Summary execution.
+- Made node permission mode inherit the Harness configuration page's Safe mode / Full access setting; blueprint save/run now syncs both `permissionProfile` and `runtimeAccessPolicy`.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.1`.
+
 ## v0.5.0 - 2026-05-29
 
 SQLite-backed Manager self-iteration runtime release.

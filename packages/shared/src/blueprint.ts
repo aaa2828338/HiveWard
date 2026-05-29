@@ -52,6 +52,12 @@ export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
 
 export type ManagerSlotExecutionMode = "manual" | "parallel";
 
+export type CrossRoundContextMode =
+  | "off"
+  | "node_history"
+  | "node_history_with_upstream"
+  | "node_history_with_upstream_and_manager_memory";
+
 export interface CanvasPosition {
   x: number;
   y: number;
@@ -66,6 +72,7 @@ export interface BlueprintNodeBaseConfig {
   label: string;
   description?: string;
   resultRole?: BlueprintNodeResultRole;
+  crossRoundContextMode?: CrossRoundContextMode;
 }
 
 export interface AgentNodeConfig extends BlueprintNodeBaseConfig {
@@ -253,6 +260,12 @@ const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>
 
 const blueprintNodeResultRoles = new Set<BlueprintNodeResultRole>(["auto", "final", "ignore"]);
 const managerSlotExecutionModes = new Set<ManagerSlotExecutionMode>(["manual", "parallel"]);
+const crossRoundContextModes = new Set<CrossRoundContextMode>([
+  "off",
+  "node_history",
+  "node_history_with_upstream",
+  "node_history_with_upstream_and_manager_memory"
+]);
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const managerSlotInHandle = "manager-slot-in";
@@ -276,6 +289,12 @@ export function resolveManagerSlotParallelLaneCount(
 ): number {
   if (typeof config.parallelLaneCount !== "number" || !Number.isFinite(config.parallelLaneCount)) return 1;
   return Math.min(maxManagerSlotParallelLaneCount, Math.max(1, Math.round(config.parallelLaneCount)));
+}
+
+export function resolveCrossRoundContextMode(
+  config: Pick<BlueprintNodeBaseConfig, "crossRoundContextMode">
+): CrossRoundContextMode {
+  return config.crossRoundContextMode ?? "off";
 }
 
 export function managerSlotInnerOutHandleId(lane: number): string {
@@ -1918,6 +1937,7 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       label: agentConfig.label,
       description: agentConfig.description,
       resultRole: agentConfig.resultRole,
+      crossRoundContextMode: agentConfig.crossRoundContextMode,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
       userPrompt: agentConfig.userPrompt,
@@ -1943,6 +1963,7 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       label: summaryConfig.label,
       description: summaryConfig.description,
       resultRole: summaryConfig.resultRole,
+      crossRoundContextMode: summaryConfig.crossRoundContextMode,
       mode: summaryConfig.mode,
       runtimeId: summaryConfig.runtimeId,
       prompt: summaryConfig.prompt,
@@ -2090,7 +2111,8 @@ function readPortableBlueprintNodeConfig(
   const base = {
     label: readRequiredString(config.label, `${fieldName}.label`),
     description: readOptionalString(config.description),
-    resultRole: readOptionalResultRole(config.resultRole, `${fieldName}.resultRole`)
+    resultRole: readOptionalResultRole(config.resultRole, `${fieldName}.resultRole`),
+    crossRoundContextMode: readCrossRoundContextMode(config.crossRoundContextMode, `${fieldName}.crossRoundContextMode`)
   };
 
   if (type === "agent") {
@@ -2154,7 +2176,7 @@ function readPortableBlueprintNodeConfig(
 function readAgentNodeConfig(
   config: Record<string, unknown>,
   fieldName: string,
-  base: Pick<BlueprintNodeBaseConfig, "label" | "description" | "resultRole">
+  base: Pick<BlueprintNodeBaseConfig, "label" | "description" | "resultRole" | "crossRoundContextMode">
 ): AgentNodeConfig {
   return {
     ...base,
@@ -2674,6 +2696,14 @@ function readOptionalResultRole(value: unknown, fieldName: string): BlueprintNod
     return value as BlueprintNodeResultRole;
   }
   throw new Error(`${fieldName} must be auto, final, or ignore.`);
+}
+
+function readCrossRoundContextMode(value: unknown, fieldName: string): CrossRoundContextMode | undefined {
+  if (value === undefined || value === null || value === "" || value === "off") return undefined;
+  if (typeof value === "string" && crossRoundContextModes.has(value as CrossRoundContextMode)) {
+    return value as CrossRoundContextMode;
+  }
+  throw new Error(`${fieldName} must be off, node_history, node_history_with_upstream, or node_history_with_upstream_and_manager_memory.`);
 }
 
 function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {

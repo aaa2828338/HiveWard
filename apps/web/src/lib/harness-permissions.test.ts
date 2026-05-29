@@ -59,6 +59,16 @@ describe("harness permissions", () => {
             permissionProfile: "read_only",
             tools: []
           }
+        },
+        {
+          id: "codex-summary",
+          type: "summary",
+          position: { x: 300, y: 0 },
+          config: {
+            label: "Codex summary",
+            mode: "harness_summary",
+            runtimeId: "codex"
+          }
         }
       ],
       edges: []
@@ -69,8 +79,31 @@ describe("harness permissions", () => {
       claudeCode: "safe"
     });
 
-    expect(next.nodes[0]?.config).toMatchObject({ permissionProfile: "workspace_write" });
-    expect(next.nodes[1]?.config).toMatchObject({ permissionProfile: "read_only" });
-    expect(next.nodes[2]?.config).toMatchObject({ permissionProfile: "read_only" });
+    const nextConfigById = Object.fromEntries(next.nodes.map((node) => [node.id, node.config]));
+
+    expect(nextConfigById["codex-agent"]).toMatchObject({
+      permissionProfile: "workspace_write",
+      runtimeAccessPolicy: {
+        filesystem: "workspace_write",
+        network: "enabled",
+        webSearch: "live"
+      }
+    });
+    expect(nextConfigById["claude-manager"]).toMatchObject({
+      permissionProfile: "read_only",
+      runtimeAccessPolicy: {
+        filesystem: "read_only",
+        network: "enabled",
+        webSearch: "disabled"
+      }
+    });
+    expect(nextConfigById["openclaw-agent"]).toMatchObject({ permissionProfile: "read_only" });
+    expect(nextConfigById["codex-summary"]).toMatchObject({
+      runtimeAccessPolicy: {
+        filesystem: "workspace_write",
+        network: "enabled",
+        webSearch: "live"
+      }
+    });
   });
 });
