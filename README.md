@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.5.8-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.5.9-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
   <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
@@ -118,8 +118,8 @@ hiveward start
 也可以不全局安装，直接通过 npx 启动：
 
 ```bash
-npx @hiveward/cli@beta setup
-npx @hiveward/cli@beta start
+npx @hiveward/cli setup
+npx @hiveward/cli start
 ```
 
 启动后访问：

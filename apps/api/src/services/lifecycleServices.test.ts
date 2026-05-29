@@ -36,7 +36,7 @@ describe("ApprovalService", () => {
     expect(source.split(/\r?\n/).length).toBeLessThan(40);
   });
 
-  it("can reply by revising the pending request in place", async () => {
+  it("replies by closing the old request once and creating a revised request", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -54,31 +54,24 @@ describe("ApprovalService", () => {
       }
     });
 
-    const result = await service.reply(request.id, "Clarify the acceptance criteria.", {
-      title: "Round 1 requirement v2",
-      body: "Revised plan",
-      replacePendingRequest: true
-    });
-    const revised = await store.getApprovalRequest(request.id);
+    const result = await service.reply(request.id, "Clarify the acceptance criteria.");
+    const original = await store.getApprovalRequest(request.id);
     const decisions = await store.listApprovalDecisions(request.id);
 
-    expect(result.nextApprovalRequest).toBeUndefined();
-    expect(result.approvalRequest.id).toBe(request.id);
-    expect(revised).toMatchObject({
-      id: request.id,
-      status: "pending",
+    expect(original).toMatchObject({
+      status: "replied",
+      supersededByRequestId: result.nextApprovalRequest?.id
+    });
+    expect(decisions.map((decision) => decision.action)).toEqual(["reply"]);
+    expect(result.nextApprovalRequest).toMatchObject({
       title: "Round 1 requirement v2",
-      body: "Revised plan",
+      status: "pending",
       revision: 2,
+      replacesRequestId: request.id,
       threadId: request.threadId
     });
-    expect(revised?.replacesRequestId).toBeUndefined();
-    expect(revised?.supersededByRequestId).toBeUndefined();
-    expect(decisions.map((decision) => decision.action)).toEqual(["reply"]);
-    expect(decisions[0]).toMatchObject({
-      resultingStatus: "pending",
-      comment: "Clarify the acceptance criteria."
-    });
+    expect(result.nextApprovalRequest?.body).toContain("Revision feedback:");
+    expect(result.nextApprovalRequest?.body).not.toContain("User reply:");
   });
 
   it("freezes all pending approvals for a terminal run", async () => {

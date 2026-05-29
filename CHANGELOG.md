@@ -1,21 +1,37 @@
 # Changelog
 
+## v0.5.9 - 2026-05-30
+
+Public repository cleanup release.
+
+### 中文
+
+- 清理 README 公开介绍：CLI harness 不再标记 Beta，当前版本徽章推进到 `v0.5.9`，删除 SQLite 迁移门禁和权限提示段落，新增首次配置 Harness Skill 的注意事项，并新增 Star 趋势图。
+- 将本地计划稿、施工文档和准备材料移出公开 Git 跟踪，只保留正式文档、截图资产和公开 Skill 文档。
+- 调整 SQLite 迁移 CLI 测试，让它只验证 CLI 参数行为，不再要求 README 保留迁移说明。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本保持在 `0.5.9`。
+
+### English
+
+- Cleaned public README copy: CLI harnesses are no longer labeled Beta, the version badge now points to `v0.5.9`, the SQLite migration gate and permission notice sections were removed, first-run Harness Skill guidance was added, and a Star history chart was added.
+- Removed local planning, implementation, and preparation notes from public Git tracking while keeping official docs, screenshot assets, and public Skill docs.
+- Updated the SQLite migration CLI test so it validates CLI argument behavior without requiring migration instructions to remain in the README.
+- Kept root, workspace package, lockfile metadata, and internal dependency versions at `0.5.9`.
+
 ## v0.5.8 - 2026-05-30
 
-Manager dispatch handoff rules and public repository copy cleanup release.
+Manager dispatch handoff rules release.
 
 ### 中文
 
 - 新增 Manager 调度交接规则：Manager 可以把明确的下一步任务、上下文和产物位置交给后续 Agent，蓝图运行记录会保存这类 handoff 证据。
 - 将 Agent workspace 产物、交接 JSON 和审批回复路径整理进同一套运行流，降低人工批准后信息丢失或重复分派的风险。
-- 清理 README 公开介绍：CLI harness 不再标记 Beta，当前版本徽章推进到 `v0.5.8`，删除 SQLite 迁移门禁和权限提示段落，新增首次配置 Harness Skill 的注意事项，并新增 Star 趋势图。
 - 将 root、workspace package、lockfile 元数据和内部依赖版本保持在 `0.5.8`。
 
 ### English
 
 - Added Manager dispatch handoff rules so Managers can pass explicit next-step tasks, context, and artifact locations to downstream Agents, with handoff evidence preserved in run records.
 - Folded Agent workspace artifacts, machine handoff JSON, and approval replies into the same execution flow to reduce lost context or duplicate dispatch after human review.
-- Cleaned public README copy: CLI harnesses are no longer labeled Beta, the version badge now points to `v0.5.8`, the SQLite migration gate and permission notice sections were removed, first-run Harness Skill guidance was added, and a Star history chart was added.
 - Kept root, workspace package, lockfile metadata, and internal dependency versions at `0.5.8`.
 
 ## v0.5.7 - 2026-05-30

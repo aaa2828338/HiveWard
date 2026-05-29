@@ -1218,18 +1218,12 @@ export function ApprovalsPage({
       : undefined;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
-  const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
-  const selectedApprovalReplying = Boolean(
-    selectedApproval &&
-    (selectedApproval.status === "replying" || (selectedThreadKey && pendingHarnessReplies[selectedThreadKey]))
-  );
-  const canReplyToSelection = Boolean((selectedApproval?.canReply && !selectedApprovalReplying) || selectedInboxOperable);
+  const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
   const canApproveSelection = Boolean(
-    selectedApproval
-      ? !selectedApprovalReplying && (selectedApproval.canApprove !== false || selectedApproval.canComplete === true)
-      : selectedInboxOperable
+    selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable
   );
-  const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject && !selectedApprovalReplying) || selectedInboxOperable);
+  const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
+  const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
   const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
   const selectedMessages = useMemo(
     () =>
@@ -1298,10 +1292,7 @@ export function ApprovalsPage({
       createdAt: new Date().toISOString()
     };
     if (selectedApproval?.canReply) {
-      const shouldWaitForHarnessReply =
-        !selectedApproval.approvalRequestId ||
-        selectedApproval.kind === "agent_proposal" ||
-        selectedApproval.kind === "iteration_requirement_plan";
+      const shouldWaitForHarnessReply = !selectedApproval.approvalRequestId || selectedApproval.kind === "agent_proposal";
       const pendingHarnessReply = shouldWaitForHarnessReply
         ? {
             id: `${reply.id}:pending`,
@@ -1378,7 +1369,7 @@ export function ApprovalsPage({
   };
 
   const selectApprovalSolution = (solutionId: string) => {
-    if (!selectedApproval || !canApproveSelection) return;
+    if (!selectedApproval || selectedApproval.canApprove === false) return;
     onSelectApprovalReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, solutionId);
   };
 
@@ -2202,7 +2193,7 @@ function buildInboxConversationMessages({
             ? {
                 solutionId: reply.id,
                 selectedSolution: approval?.selectedReplyId === reply.id || reply.selected === true,
-                canUseAsSolution: !approval || !isApprovalRevisionReply(approval, reply.id) || reply.selected === true
+                canUseAsSolution: true
               }
             : {})
         }))
@@ -2215,40 +2206,16 @@ function buildInboxConversationMessages({
       : (inboxItem?.replies ?? []).map((reply) => reply.body.trim())
   );
   const visibleLocalReplies = replies.filter((reply) => !serverUserReplyBodies.has(reply.body.trim()));
-  const latestServerUserReply =
-    selection.kind === "approval"
-      ? (approval?.replies ?? [])
-          .filter((reply) => reply.role === "user")
-          .sort((left, right) => toSafeTimestamp(right.createdAt) - toSafeTimestamp(left.createdAt))[0]
-      : undefined;
-  const hasServerAssistantAfterLatestUser = Boolean(
-    selection.kind === "approval" &&
-    approval &&
-    latestServerUserReply &&
-    hasAssistantReplyAfter(approval, latestServerUserReply.createdAt)
-  );
-  const serverPendingHarnessReply =
-    selection.kind === "approval" &&
-    approval?.status === "replying" &&
-    latestServerUserReply &&
-    !hasServerAssistantAfterLatestUser
-      ? {
-          id: `${latestServerUserReply.id}:pending`,
-          harnessLabel: formatInboxHarnessLabel(approval.harnessId),
-          createdAt: latestServerUserReply.createdAt
-        }
-      : undefined;
-  const visiblePendingHarnessReply = pendingHarnessReply ?? serverPendingHarnessReply;
   const pendingMessages =
-    visiblePendingHarnessReply && selection.kind === "approval"
+    pendingHarnessReply && selection.kind === "approval"
       ? [
           {
-            id: visiblePendingHarnessReply.id,
+            id: pendingHarnessReply.id,
             role: "assistant" as const,
-            speaker: visiblePendingHarnessReply.harnessLabel,
+            speaker: pendingHarnessReply.harnessLabel,
             body: "",
-            createdAt: visiblePendingHarnessReply.createdAt,
-            progressText: copy.waitingHarness(visiblePendingHarnessReply.harnessLabel),
+            createdAt: pendingHarnessReply.createdAt,
+            progressText: copy.waitingHarness(pendingHarnessReply.harnessLabel),
             pending: true
           }
         ]
@@ -2317,7 +2284,6 @@ function buildApprovalConversation(
   copy: InboxCopy,
   t: Messages
 ): InboxConversationMessage[] {
-  if ((approval.replies ?? []).some((reply) => reply.role === "assistant")) return [];
   const selectedReplyId = approval.selectedReplyId ?? approvalReviewOutputSolutionId;
   return approvalContentBlocks(approval, copy, t).map((block) => ({
     id: block.key,
@@ -2329,10 +2295,6 @@ function buildApprovalConversation(
     selectedSolution: selectedReplyId === approvalReviewOutputSolutionId,
     canUseAsSolution: true
   }));
-}
-
-function isApprovalRevisionReply(approval: PendingApprovalItem, replyId: string): boolean {
-  return Boolean(approval.approvalRequestId && replyId.startsWith(`${approval.approvalRequestId}:revision-`));
 }
 
 function formatInboxPayload(payload: Record<string, unknown> | undefined, copy: InboxCopy): string {

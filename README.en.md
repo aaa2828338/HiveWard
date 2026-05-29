@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.5.8-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.5.9-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
   <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
@@ -128,7 +128,7 @@ For the best first-run experience, open the configuration page for each harness 
 
 ## Current status
 
-Current version: `v0.5.8`. Core product surfaces are ready for local demos and early use. Google CLI, Cursor CLI, OpenCode, and Hermes are available as CLI harnesses, while APIs and interaction details may still evolve.
+Current version: `v0.5.9`. Core product surfaces are ready for local demos and early use. Google CLI, Cursor CLI, OpenCode, and Hermes are available as CLI harnesses, while APIs and interaction details may still evolve.
 
 ## Quick start
 
@@ -145,8 +145,8 @@ hiveward start
 You can also run it without a global install:
 
 ```bash
-npx @hiveward/cli@beta setup
-npx @hiveward/cli@beta start
+npx @hiveward/cli setup
+npx @hiveward/cli start
 ```
 
 See [npm CLI Installation](docs/npm-cli-install.md) for `hiveward doctor`, `hiveward update`, and install directory options.
