@@ -28,7 +28,7 @@ type ModelMethodDefinition = OpenClawModelAuthMethodOption & {
 };
 
 const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
-  anthropic: "claude-sonnet-4-5",
+  anthropic: "claude-sonnet-4-6",
   arcee: "spotlight",
   byteplus: "doubao-seed-1-6",
   cerebras: "llama-3.3-70b",
@@ -37,7 +37,7 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   codex: "gpt-5.5",
   "codex-cli": "gpt-5.5",
   deepinfra: "deepseek-ai/DeepSeek-V3.1",
-  deepseek: "deepseek-chat",
+  deepseek: "deepseek-v4-pro",
   fireworks: "accounts/fireworks/models/deepseek-v3",
   google: "gemini-2.5-pro",
   "google-vertex": "gemini-2.5-pro",
@@ -47,10 +47,10 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   litellm: "gpt-4.1-mini",
   lmstudio: "local-model",
   "microsoft-foundry": "deployment-name",
-  minimax: "MiniMax-Text-01",
-  "minimax-portal": "MiniMax-Text-01",
-  mistral: "mistral-large-latest",
-  moonshot: "kimi-k2-0905-preview",
+  minimax: "MiniMax-M2.7",
+  "minimax-portal": "MiniMax-M2.7",
+  mistral: "mistral-medium-3-5",
+  moonshot: "kimi-k2.6",
   nvidia: "meta/llama-3.1-70b-instruct",
   ollama: "llama3.2",
   openai: "gpt-5.5",
@@ -60,8 +60,8 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   qianfan: "ernie-4.5-turbo",
   qwen: "qwen3-coder-plus",
   sglang: "local-model",
-  stepfun: "step-2-mini",
-  "stepfun-plan": "step-2-mini",
+  stepfun: "step-3.5-flash",
+  "stepfun-plan": "step-3.5-flash",
   synthetic: "claude-sonnet-4-5",
   "tencent-tokenhub": "hunyuan-t1-latest",
   together: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
@@ -69,9 +69,173 @@ const DEFAULT_MODEL_BY_PROVIDER: Record<string, string> = {
   "vercel-ai-gateway": "openai/gpt-5.5",
   vllm: "local-model",
   volcengine: "doubao-seed-1-6",
-  xai: "grok-4",
-  xiaomi: "mi-milab",
-  zai: "glm-4.5"
+  xai: "grok-4.3",
+  xiaomi: "mimo-v2.5-pro",
+  zai: "glm-5.1"
+};
+
+const OPENAI_MODEL_OPTIONS = [
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano"
+];
+
+const GEMINI_MODEL_OPTIONS = [
+  "gemini-3.1-pro-preview",
+  "gemini-3.1-pro-preview-customtools",
+  "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite"
+];
+
+const CLAUDE_MODEL_OPTIONS = [
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-opus-4-5",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
+  "claude-haiku-4-5-20251001"
+];
+
+const QWEN_MODEL_OPTIONS = [
+  "qwen3.7-max",
+  "qwen3.7-max-preview",
+  "qwen3.6-plus",
+  "qwen3.6-flash",
+  "qwen3.5-plus",
+  "qwen3.5-flash",
+  "qwen3-coder-next",
+  "qwen3-coder-plus",
+  "qwen3-coder-flash",
+  "qwen3-coder-480b-a35b-instruct",
+  "qwen3-max",
+  "qwen3-max-preview",
+  "qwen3-235b-a22b",
+  "qwen3-next-80b-a3b-instruct",
+  "qwen3-next-80b-a3b-thinking"
+];
+
+// Curated from provider-published model IDs; the UI still merges OpenClaw's runtime catalog for account-specific models.
+const MODEL_OPTIONS_BY_PROVIDER: Record<string, string[]> = {
+  anthropic: CLAUDE_MODEL_OPTIONS,
+  codex: OPENAI_MODEL_OPTIONS,
+  "codex-cli": OPENAI_MODEL_OPTIONS,
+  cerebras: [
+    "qwen-3-235b-a22b-instruct-2507",
+    "qwen-3-32b",
+    "llama3.3-70b",
+    "llama3.1-8b"
+  ],
+  deepseek: [
+    "deepseek-v4-pro",
+    "deepseek-v4-flash"
+  ],
+  google: GEMINI_MODEL_OPTIONS,
+  "google-vertex": GEMINI_MODEL_OPTIONS,
+  groq: [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
+    "groq/compound",
+    "groq/compound-mini"
+  ],
+  minimax: [
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
+    "M2-her"
+  ],
+  "minimax-portal": [
+    "MiniMax-M2.7",
+    "MiniMax-M2.7-highspeed",
+    "MiniMax-M2.5",
+    "MiniMax-M2.5-highspeed",
+    "MiniMax-M2.1",
+    "MiniMax-M2.1-highspeed",
+    "MiniMax-M2",
+    "M2-her"
+  ],
+  moonshot: [
+    "kimi-k2.6",
+    "kimi-k2.5",
+    "moonshot-v1-8k",
+    "moonshot-v1-32k",
+    "moonshot-v1-128k",
+    "moonshot-v1-8k-vision-preview",
+    "moonshot-v1-32k-vision-preview",
+    "moonshot-v1-128k-vision-preview"
+  ],
+  openai: OPENAI_MODEL_OPTIONS,
+  "openai-codex": OPENAI_MODEL_OPTIONS,
+  mistral: [
+    "mistral-medium-3-5",
+    "mistral-large-3",
+    "mistral-medium-3-1",
+    "mistral-small-4",
+    "ministral-14b-latest",
+    "ministral-8b-latest",
+    "magistral-medium-latest",
+    "magistral-small-latest",
+    "devstral-medium-latest",
+    "devstral-small-latest",
+    "codestral-latest",
+    "mistral-nemo-latest"
+  ],
+  qwen: QWEN_MODEL_OPTIONS,
+  stepfun: [
+    "step-3.5-flash-2603",
+    "step-3.5-flash",
+    "step-2-mini",
+    "step-2",
+    "step-2-16k-exp",
+    "step-1"
+  ],
+  "stepfun-plan": [
+    "step-3.5-flash-2603",
+    "step-3.5-flash"
+  ],
+  synthetic: CLAUDE_MODEL_OPTIONS,
+  xai: [
+    "grok-4.3",
+    "grok-4-0709",
+    "grok-3",
+    "grok-3-mini",
+    "grok-2-vision-1212"
+  ],
+  xiaomi: [
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
+    "mimo-v2-pro",
+    "mimo-v2-omni",
+    "mimo-v2-flash"
+  ],
+  zai: [
+    "glm-5.1",
+    "glm-5-turbo",
+    "glm-5",
+    "glm-4.7",
+    "glm-4.7-flash",
+    "glm-4.7-flashx",
+    "glm-4.6",
+    "glm-4.5-air",
+    "glm-4.5-airx",
+    "glm-4.5-flash",
+    "glm-4-flash-250414",
+    "glm-4-flashx-250414"
+  ]
 };
 
 const MODEL_API_OPENAI = "openai-responses";
@@ -92,26 +256,28 @@ const apiKeyField: OpenClawWizardField = {
   placeholder: "sk-..."
 };
 
-const modelBaseFields = (modelId = "default"): OpenClawWizardField[] => [
-  {
+const modelBaseFields = (modelId = "default", providerId?: string): OpenClawWizardField[] => {
+  const options = modelOptionsForProvider(providerId, modelId);
+  return [{
     id: "modelId",
     label: "Model",
     type: "select",
     required: true,
-    defaultValue: modelId,
-    options: [{ value: modelId, label: modelId }]
-  }
-];
+    defaultValue: options.some((option) => option.value === modelId) ? modelId : options[0]?.value ?? modelId,
+    options
+  }];
+};
 
-const apiKeyFields = (_defaultEnv: string, modelId?: string, _extraFields: OpenClawWizardField[] = []): OpenClawWizardField[] => [
-  ...modelBaseFields(modelId),
-  apiKeyField
+const apiKeyFields = (_defaultEnv: string, modelId?: string, extraFields: OpenClawWizardField[] = [], providerId?: string): OpenClawWizardField[] => [
+  ...modelBaseFields(modelId, providerId),
+  apiKeyField,
+  ...extraFields
 ];
 
 const localFields = (_baseUrl: string, modelPlaceholder?: string): OpenClawWizardField[] => modelBaseFields(modelPlaceholder);
 
-const tokenFields = (tokenLabel: string, modelPlaceholder?: string): OpenClawWizardField[] => [
-  ...modelBaseFields(modelPlaceholder),
+const tokenFields = (tokenLabel: string, modelPlaceholder?: string, providerId?: string): OpenClawWizardField[] => [
+  ...modelBaseFields(modelPlaceholder, providerId),
   {
     id: "apiKey",
     label: tokenLabel,
@@ -120,7 +286,16 @@ const tokenFields = (tokenLabel: string, modelPlaceholder?: string): OpenClawWiz
   }
 ];
 
-const markerFields = (modelPlaceholder?: string): OpenClawWizardField[] => modelBaseFields(modelPlaceholder);
+const markerFields = (modelPlaceholder?: string, providerId?: string): OpenClawWizardField[] => modelBaseFields(modelPlaceholder, providerId);
+
+function modelOptionsForProvider(providerId: string | undefined, fallbackModelId: string): NonNullable<OpenClawWizardField["options"]> {
+  const values = providerId ? MODEL_OPTIONS_BY_PROVIDER[providerId] : undefined;
+  const options = (values ?? []).map((value) => ({ value, label: value }));
+  if (fallbackModelId && !options.some((option) => option.value === fallbackModelId)) {
+    options.unshift({ value: fallbackModelId, label: fallbackModelId });
+  }
+  return options.length ? options : [{ value: fallbackModelId, label: fallbackModelId }];
+}
 
 function apiProvider(params: {
   id: string;
@@ -145,7 +320,7 @@ function apiProvider(params: {
         hint: params.methodHint ?? "Direct API key",
         kind: "api_key",
         choiceId: params.choiceId,
-        fields: apiKeyFields(params.env, params.modelPlaceholder ?? DEFAULT_MODEL_BY_PROVIDER[params.id]),
+        fields: apiKeyFields(params.env, params.modelPlaceholder ?? DEFAULT_MODEL_BY_PROVIDER[params.id], [], params.id),
         write: {
           api: params.api ?? MODEL_API_OPENAI,
           baseUrl: params.baseUrl,
@@ -168,7 +343,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Reuse a local Claude CLI login on this host",
         kind: "custom",
         choiceId: "anthropic-cli",
-        fields: markerFields("claude-sonnet-4-5"),
+        fields: markerFields(DEFAULT_MODEL_BY_PROVIDER.anthropic, "anthropic"),
         write: {
           providerId: "claude-cli",
           api: MODEL_API_ANTHROPIC,
@@ -181,7 +356,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Direct Anthropic API key",
         kind: "api_key",
         choiceId: "apiKey",
-        fields: apiKeyFields("ANTHROPIC_API_KEY", "claude-sonnet-4-5"),
+        fields: apiKeyFields("ANTHROPIC_API_KEY", DEFAULT_MODEL_BY_PROVIDER.anthropic, [], "anthropic"),
         write: {
           api: MODEL_API_ANTHROPIC,
           defaultEnv: "ANTHROPIC_API_KEY"
@@ -193,7 +368,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Paste a setup token generated by the Anthropic provider flow",
         kind: "token",
         choiceId: "setup-token",
-        fields: tokenFields("Setup token", "claude-sonnet-4-5"),
+        fields: tokenFields("Setup token", DEFAULT_MODEL_BY_PROVIDER.anthropic, "anthropic"),
         write: {
           api: MODEL_API_ANTHROPIC
         }
@@ -270,7 +445,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
             type: "text",
             required: true
           }
-        ]),
+        ], "openai"),
         write: {
           api: MODEL_API_OPENAI,
           defaultEnv: "CLOUDFLARE_API_TOKEN",
@@ -295,7 +470,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Use an existing Codex CLI auth profile on this host",
         kind: "custom",
         choiceId: "codex-cli",
-        fields: markerFields("gpt-5.5"),
+        fields: markerFields("gpt-5.5", "codex"),
         write: {
           providerId: "codex-cli",
           api: MODEL_API_OPENAI_CODEX,
@@ -428,7 +603,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "CN endpoint - api.minimaxi.com",
         kind: "api_key",
         choiceId: "minimax-cn-api",
-        fields: apiKeyFields("MINIMAX_API_KEY", "MiniMax-Text-01"),
+        fields: apiKeyFields("MINIMAX_API_KEY", DEFAULT_MODEL_BY_PROVIDER.minimax, [], "minimax"),
         write: {
           api: MODEL_API_OPENAI,
           baseUrl: "https://api.minimaxi.com/v1",
@@ -441,7 +616,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Global endpoint - api.minimax.io",
         kind: "api_key",
         choiceId: "minimax-global-api",
-        fields: apiKeyFields("MINIMAX_API_KEY", "MiniMax-Text-01"),
+        fields: apiKeyFields("MINIMAX_API_KEY", DEFAULT_MODEL_BY_PROVIDER.minimax, [], "minimax"),
         write: {
           api: MODEL_API_OPENAI,
           baseUrl: "https://api.minimax.io/v1",
@@ -454,7 +629,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "CN endpoint - api.minimaxi.com",
         kind: "device_code",
         choiceId: "minimax-cn-oauth",
-        fields: markerFields("MiniMax-Text-01"),
+        fields: markerFields(DEFAULT_MODEL_BY_PROVIDER.minimax, "minimax"),
         write: {
           providerId: "minimax-portal",
           api: MODEL_API_OPENAI,
@@ -468,7 +643,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Global endpoint - api.minimax.io",
         kind: "device_code",
         choiceId: "minimax-global-oauth",
-        fields: markerFields("MiniMax-Text-01"),
+        fields: markerFields(DEFAULT_MODEL_BY_PROVIDER.minimax, "minimax"),
         write: {
           providerId: "minimax-portal",
           api: MODEL_API_OPENAI,
@@ -489,7 +664,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Kimi K2.6 + Kimi",
         kind: "api_key",
         choiceId: "moonshot-api-key",
-        fields: apiKeyFields("MOONSHOT_API_KEY", "kimi-k2-0905-preview"),
+        fields: apiKeyFields("MOONSHOT_API_KEY", DEFAULT_MODEL_BY_PROVIDER.moonshot, [], "moonshot"),
         write: {
           api: MODEL_API_OPENAI,
           defaultEnv: "MOONSHOT_API_KEY"
@@ -501,7 +676,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Kimi K2.6 + Kimi",
         kind: "api_key",
         choiceId: "moonshot-api-key-cn",
-        fields: apiKeyFields("MOONSHOT_API_KEY", "kimi-k2-0905-preview"),
+        fields: apiKeyFields("MOONSHOT_API_KEY", DEFAULT_MODEL_BY_PROVIDER.moonshot, [], "moonshot"),
         write: {
           api: MODEL_API_OPENAI,
           defaultEnv: "MOONSHOT_API_KEY"
@@ -539,7 +714,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Sign in with your ChatGPT or Codex subscription",
         kind: "oauth",
         choiceId: "openai",
-        fields: markerFields("gpt-5.5"),
+        fields: markerFields("gpt-5.5", "openai"),
         write: {
           api: MODEL_API_OPENAI,
           baseUrl: OPENAI_RESPONSES_BASE_URL,
@@ -552,7 +727,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Pair your ChatGPT account in browser with a device code",
         kind: "device_code",
         choiceId: "openai-device-code",
-        fields: markerFields("gpt-5.5"),
+        fields: markerFields("gpt-5.5", "openai"),
         write: {
           api: MODEL_API_OPENAI,
           baseUrl: OPENAI_RESPONSES_BASE_URL,
@@ -565,7 +740,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Use your OpenAI API key directly",
         kind: "api_key",
         choiceId: "openai-api-key",
-        fields: apiKeyFields("OPENAI_API_KEY", "gpt-5.5"),
+        fields: apiKeyFields("OPENAI_API_KEY", "gpt-5.5", [], "openai"),
         write: {
           api: MODEL_API_OPENAI,
           baseUrl: OPENAI_RESPONSES_BASE_URL,
@@ -585,7 +760,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Sign in with OpenAI in your browser",
         kind: "oauth",
         choiceId: "openai-codex",
-        fields: markerFields("gpt-5.5"),
+        fields: markerFields("gpt-5.5", "openai-codex"),
         write: {
           api: MODEL_API_OPENAI_CODEX,
           baseUrl: OPENAI_CODEX_RESPONSES_BASE_URL,
@@ -598,7 +773,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Pair in browser with a device code",
         kind: "device_code",
         choiceId: "openai-codex-device-code",
-        fields: markerFields("gpt-5.5"),
+        fields: markerFields("gpt-5.5", "openai-codex"),
         write: {
           api: MODEL_API_OPENAI_CODEX,
           baseUrl: OPENAI_CODEX_RESPONSES_BASE_URL,
@@ -611,7 +786,7 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
         hint: "Use an OpenAI API key when your Codex subscription is unavailable",
         kind: "api_key",
         choiceId: "openai-codex-api-key",
-        fields: apiKeyFields("OPENAI_API_KEY", "gpt-5.5"),
+        fields: apiKeyFields("OPENAI_API_KEY", "gpt-5.5", [], "openai"),
         write: {
           providerId: "openai",
           api: MODEL_API_OPENAI,
@@ -662,16 +837,16 @@ const MODEL_PROVIDER_DEFINITIONS: ModelProviderDefinition[] = [
     id: "stepfun",
     label: "Stepfun",
     methods: [
-      stepfunMethod("standard-api-key-cn", "StepFun Standard API key (China)", "stepfun-standard-api-key-cn", "https://api.stepfun.com/v1"),
-      stepfunMethod("standard-api-key-intl", "StepFun Standard API key (Global/Intl)", "stepfun-standard-api-key-intl", "https://api.stepfun.ai/v1")
+      stepfunMethod("standard-api-key-cn", "StepFun Standard API key (China)", "stepfun-standard-api-key-cn", "https://api.stepfun.com/v1", "stepfun"),
+      stepfunMethod("standard-api-key-intl", "StepFun Standard API key (Global/Intl)", "stepfun-standard-api-key-intl", "https://api.stepfun.ai/v1", "stepfun")
     ]
   },
   {
     id: "stepfun-plan",
     label: "Stepfun Plan",
     methods: [
-      stepfunMethod("plan-api-key-cn", "StepFun Step Plan API key (China)", "stepfun-plan-api-key-cn", "https://api.stepfun.com/step_plan/v1"),
-      stepfunMethod("plan-api-key-intl", "StepFun Step Plan API key (Global/Intl)", "stepfun-plan-api-key-intl", "https://api.stepfun.ai/step_plan/v1")
+      stepfunMethod("plan-api-key-cn", "StepFun Step Plan API key (China)", "stepfun-plan-api-key-cn", "https://api.stepfun.com/step_plan/v1", "stepfun-plan"),
+      stepfunMethod("plan-api-key-intl", "StepFun Step Plan API key (Global/Intl)", "stepfun-plan-api-key-intl", "https://api.stepfun.ai/step_plan/v1", "stepfun-plan")
     ]
   },
   apiProvider({
@@ -780,7 +955,7 @@ function qwenMethod(id: string, label: string, choiceId: string, endpoint: strin
     hint: `Endpoint: ${endpoint}`,
     kind: "api_key",
     choiceId,
-    fields: apiKeyFields(id.includes("cn") ? "DASHSCOPE_API_KEY" : "DASHSCOPE_API_KEY", "qwen3-coder-plus"),
+    fields: apiKeyFields(id.includes("cn") ? "DASHSCOPE_API_KEY" : "DASHSCOPE_API_KEY", "qwen3-coder-plus", [], "qwen"),
     write: {
       api: MODEL_API_OPENAI,
       baseUrl: `https://${endpoint}/compatible-mode/v1`,
@@ -789,14 +964,14 @@ function qwenMethod(id: string, label: string, choiceId: string, endpoint: strin
   };
 }
 
-function stepfunMethod(id: string, label: string, choiceId: string, baseUrl: string): ModelMethodDefinition {
+function stepfunMethod(id: string, label: string, choiceId: string, baseUrl: string, providerId: "stepfun" | "stepfun-plan"): ModelMethodDefinition {
   return {
     id,
     label,
     hint: `Endpoint: ${baseUrl.replace(/^https?:\/\//, "")}`,
     kind: "api_key",
     choiceId,
-    fields: apiKeyFields("STEPFUN_API_KEY", "step-2-mini"),
+    fields: apiKeyFields("STEPFUN_API_KEY", DEFAULT_MODEL_BY_PROVIDER[providerId], [], providerId),
     write: {
       api: MODEL_API_OPENAI,
       baseUrl,
@@ -811,7 +986,7 @@ function zaiMethod(id: string, label: string, choiceId: string, baseUrl?: string
     label,
     kind: "api_key",
     choiceId,
-    fields: apiKeyFields("ZAI_API_KEY", "glm-4.5"),
+    fields: apiKeyFields("ZAI_API_KEY", DEFAULT_MODEL_BY_PROVIDER.zai, [], "zai"),
     write: {
       api: MODEL_API_OPENAI,
       baseUrl,
