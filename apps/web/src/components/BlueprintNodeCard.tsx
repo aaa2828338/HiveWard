@@ -244,13 +244,17 @@ export const BlueprintNodeCard = memo(function BlueprintNodeCard({ data, id, sel
       )}
       {nodeData.type === "manager" && (
         <div className="manager-port-list" aria-hidden="true">
-          {managerSlots.map((slot) => (
-            <div key={slot} className={`manager-port-row ${managerPreflightSlotRowClass(slot, managerPreflightSlotLabels, nodeData.managerPreflightSlotsActive)}`}>
-              <span className="manager-port-index">{slot}</span>
-              <span className="manager-port-rule" />
-              <span className="manager-port-guide" />
-            </div>
-          ))}
+          {managerSlots.map((slot) => {
+            const preflightSlotLabel = managerPreflightSlotLabels[slot];
+            return (
+              <div key={slot} className={`manager-port-row ${managerPreflightSlotRowClass(slot, managerPreflightSlotLabels, nodeData.managerPreflightSlotsActive)}`}>
+                <span className="manager-port-index">{slot}</span>
+                {preflightSlotLabel && <span className="manager-port-title">{preflightSlotLabel}</span>}
+                <span className="manager-port-rule" />
+                <span className="manager-port-guide" />
+              </div>
+            );
+          })}
         </div>
       )}
       {nodeData.type === "manager_slot" ? null : nodeData.type === "manager" ? (

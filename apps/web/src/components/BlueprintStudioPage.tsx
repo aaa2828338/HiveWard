@@ -2413,8 +2413,8 @@ function ManagerPreflightSlotSummary({
   const researchAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 1);
   const requirementAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 2);
   const rows = [
-    { slot: 1, label: t.fields.researchAgent, agentLabel: researchAgentLabel },
-    { slot: 2, label: t.fields.requirementAgent, agentLabel: requirementAgentLabel }
+    { slot: 1, label: t.fields.researchInterface, agentLabel: researchAgentLabel },
+    { slot: 2, label: t.fields.requirementInterface, agentLabel: requirementAgentLabel }
   ];
 
   return (
@@ -3945,8 +3945,8 @@ function buildFlowNodes(
         managerPreflightSlotsActive: node.type === "manager" ? isSelfIterationManager : undefined,
         managerPreflightSlotLabels: node.type === "manager"
           ? {
-              1: t.fields.researchAgent,
-              2: t.fields.requirementAgent
+              1: t.fields.researchInterface,
+              2: t.fields.requirementInterface
             }
           : undefined,
         managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,

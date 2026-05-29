@@ -2868,12 +2868,27 @@ dd {
   min-width: 0;
 }
 
+.manager-port-preflight {
+  grid-template-columns: 22px max-content minmax(0, 1fr) 16px;
+}
+
 .manager-port-index {
   color: #526976;
   font-size: 12px;
   font-weight: 780;
   line-height: 1;
   text-align: center;
+}
+
+.manager-port-title {
+  color: #718491;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .manager-port-rule {
@@ -2900,6 +2915,10 @@ dd {
 
 .manager-port-preflight-active .manager-port-index {
   color: var(--accent-strong);
+}
+
+.manager-port-preflight-active .manager-port-title {
+  color: #f7b34d;
 }
 
 .manager-port-preflight-active .manager-port-rule {
