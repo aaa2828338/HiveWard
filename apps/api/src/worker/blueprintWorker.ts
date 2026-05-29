@@ -452,56 +452,13 @@ export class BlueprintWorker {
     }
 
     if (request.kind === "agent_proposal" && request.nodeRunId && action === "reply") {
-      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "", { lockActions: true });
-      await this.managerMailProjector.refresh(run.id);
+      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "");
       return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
     }
 
-    if (request.kind === "iteration_requirement_plan" && action === "reply") {
-      const recorded = await this.approvalService.recordPendingReply(
-        approvalRequestId,
-        input.message ?? "",
-        { lockActions: true }
-      );
-      await this.managerMailProjector.refresh(run.id);
-      const requirementRevision = await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "");
-      const revisedRequest = await this.approvalService.revisePendingRequest(
-        approvalRequestId,
-        input.message ?? "",
-        requirementRevision
-      );
-      const result = { ...recorded, approvalRequest: revisedRequest };
-      const lifecycle = await this.iterationService.handleApprovalResult(result);
-      await this.managerMailProjector.refresh(run.id);
-
-      if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
-        if (lifecycle.prepareNextRound) {
-          await this.prepareNextRoundFromIntent(blueprint, currentRun, lifecycle.prepareNextRound);
-          await this.managerMailProjector.refresh(run.id);
-        }
-        const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun);
-        if (autoAdvanced) {
-          return autoAdvanced.run;
-        }
-      }
-
-      if (lifecycle.completeRun) {
-        const completed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "succeeded");
-        await this.store.updateBlueprintRun(completed);
-        return completed;
-      }
-
-      if (lifecycle.resumeExecution) {
-        const runningRun = { ...currentRun, status: "running" as const };
-        await this.store.updateBlueprintRun(runningRun);
-        this.scheduleRun(blueprint, runningRun);
-        return runningRun;
-      }
-
-      const waiting = { ...currentRun, status: "waiting_approval" as const };
-      await this.store.updateBlueprintRun(waiting);
-      return waiting;
-    }
+    const requirementRevision = request.kind === "iteration_requirement_plan" && action === "reply"
+      ? await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "")
+      : undefined;
 
     let result;
     if (action === "approve") {
@@ -509,7 +466,7 @@ export class BlueprintWorker {
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "reply") {
-      result = await this.approvalService.reply(approvalRequestId, input.message ?? "");
+      result = await this.approvalService.reply(approvalRequestId, input.message ?? "", requirementRevision);
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
     } else {
@@ -2127,41 +2084,10 @@ export class BlueprintWorker {
     return {
       result,
       decision: result.status === "succeeded"
-        ? this.preventPrematureManagerCompletion(
-            this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot }),
-            context,
-            Math.max(fallbackSlot, minSlot),
-            portCount
-          )
+        ? this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot })
         : { status: "complete", reason: result.error ?? "manager_decision_failed" },
       runtimeRef
     };
-  }
-
-  private preventPrematureManagerCompletion(
-    decision: ManagerDecision,
-    context: ManagerSlotContext,
-    fallbackSlot: number,
-    portCount: number
-  ): ManagerDecision {
-    if (
-      decision.status === "complete" &&
-      !context.previousResults.some((result) => this.isValidManagerPreviousResult(result)) &&
-      fallbackSlot >= 1 &&
-      fallbackSlot <= portCount
-    ) {
-      return {
-        status: "continue",
-        nextSlot: fallbackSlot,
-        reason: decision.reason ?? "manager_completion_requires_slot_delegation"
-      };
-    }
-    return decision;
-  }
-
-  private isValidManagerPreviousResult(result: ManagerSlotContext["previousResults"][number]): boolean {
-    if (result.status !== "succeeded") return false;
-    return Boolean(result.receipt?.valid);
   }
 
   private async publishManagerDecisionReport(input: {

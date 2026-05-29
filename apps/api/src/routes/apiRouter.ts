@@ -1125,7 +1125,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await getRunBlueprint(run);
+      const blueprint = await store.getBlueprint(run.blueprintId);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1157,7 +1157,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await getRunBlueprint(run);
+      const blueprint = await store.getBlueprint(run.blueprintId);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1186,7 +1186,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await getRunBlueprint(run);
+      const blueprint = await store.getBlueprint(run.blueprintId);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1215,7 +1215,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await getRunBlueprint(run);
+      const blueprint = await store.getBlueprint(run.blueprintId);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1249,27 +1249,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  async function getRunBlueprint(run: BlueprintRun): Promise<BlueprintDefinition | undefined> {
-    const archive = (await store.listRunArchives()).find((candidate) => candidate.run.id === run.id);
-    const blueprint = archive?.blueprintSnapshot ?? await store.getBlueprint(run.blueprintId);
-    if (!blueprint) return undefined;
-    return withRunDefaults(blueprint, await resolveCurrentRunModelDefaults());
-  }
-
-  async function resolveCurrentRunModelDefaults(): Promise<RunModelDefaults> {
-    const config = await openClawConfigStore.getState();
-    const harnessDefaults = resolveHarnessModelDefaults();
-    return {
-      openclaw: config.defaultModelId,
-      codex: harnessDefaults.codex,
-      claude: harnessDefaults.claude,
-      google: harnessDefaults.google,
-      cursor: harnessDefaults.cursor,
-      opencode: harnessDefaults.opencode,
-      hermes: harnessDefaults.hermes
-    };
-  }
-
   async function applyApprovalRequestRouteAction(
     action: "approve" | "reject" | "reply" | "complete" | "terminate",
     approvalRequestId: string,
@@ -1285,7 +1264,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       if (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled") {
         throw new Error("Run is already finished.");
       }
-      const blueprint = await getRunBlueprint(run);
+      const blueprint = await store.getBlueprint(run.blueprintId);
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
       const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
         comment: readOptionalString(body.comment),
@@ -3845,12 +3824,17 @@ function isMissingHermesProfileCell(value: string): boolean {
 
 function detectCliVersion(command: string): { installed: boolean; version?: string; error?: string } {
   try {
-    const result = spawnSync(`${command} --version`, {
-      encoding: "utf8",
-      shell: true,
-      timeout: 2_000,
-      windowsHide: true
-    });
+    const result = process.platform === "win32"
+      ? spawnSync(`${command} --version`, {
+          encoding: "utf8",
+          shell: true,
+          timeout: 2_000,
+          windowsHide: true
+        })
+      : spawnSync(command, ["--version"], {
+          encoding: "utf8",
+          timeout: 2_000
+        });
     if (result.error) {
       return { installed: false, error: result.error.message };
     }

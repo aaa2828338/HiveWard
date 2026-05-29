@@ -1112,27 +1112,13 @@ export class SqliteHivewardStore implements HivewardStore {
       const result = this.driver.db.prepare(
         `UPDATE approval_requests
          SET status = ?,
-             title = ?,
-             body = ?,
-             payload_ref = ?,
-             thread_id = ?,
-             revision = ?,
-             replaces_request_id = ?,
              capabilities_json = ?,
-             requested_by_json = ?,
              superseded_by_request_id = ?,
              updated_at = ?
          WHERE id = ? AND status = 'pending'`
       ).run(
         input.nextRequest.status,
-        input.nextRequest.title,
-        input.nextRequest.body,
-        input.nextRequest.payloadRef,
-        input.nextRequest.threadId,
-        input.nextRequest.revision,
-        input.nextRequest.replacesRequestId,
         stringifyJson(input.nextRequest.capabilities),
-        stringifyJson(input.nextRequest.requestedBy),
         input.nextRequest.supersededByRequestId,
         input.nextRequest.updatedAt,
         input.approvalRequestId

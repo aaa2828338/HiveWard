@@ -267,13 +267,6 @@ export class IterationService {
         requirementRequestId: result.nextApprovalRequest.id
       });
       await this.appendLifecycleRevisionTimeline(result.nextApprovalRequest, "requirement_published");
-    } else if (result.decision.action === "reply" && result.approvalRequest.status === "pending") {
-      await this.store.upsertIterationRound({
-        ...round,
-        status: "requirement_pending",
-        requirementRequestId: result.approvalRequest.id
-      });
-      await this.appendLifecycleRevisionTimeline(result.approvalRequest, "requirement_published");
     }
     return { resumeExecution: false, completeRun: false };
   }
