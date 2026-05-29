@@ -2214,6 +2214,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement1.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
     const report1 = report1View.approvalRequests?.find((request) =>
@@ -2264,6 +2265,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun3, requirement2.id, "approve");
 
     const report2View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 2 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -2298,6 +2300,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun5, requirement3.id, "approve");
 
     const report3View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 3 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -2780,6 +2783,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 1 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -2794,6 +2798,7 @@ describe("BlueprintWorker", () => {
       store,
       run.id,
       (view) =>
+        view.run.status === "waiting_approval" &&
         (view.releaseReports ?? []).length === 2 &&
         (view.approvalRequests ?? []).filter((request) => request.kind === "manager_release_report" && request.status === "pending").length === 1,
       60_000
@@ -2892,6 +2897,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
     const report1 = report1View.approvalRequests?.find((request) =>
