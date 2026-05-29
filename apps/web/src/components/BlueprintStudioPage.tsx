@@ -2338,9 +2338,13 @@ function resolveManagerPanelMode(config: ManagerNodeConfig): ManagerPanelMode {
 }
 
 function managerModePatch(mode: ManagerPanelMode): Partial<ManagerNodeConfig> {
-  if (mode === "self_iteration") return { lifecycleMode: "self_iteration", dispatchMode: "self_dispatch" };
-  if (mode === "self_dispatch") return { lifecycleMode: "none", dispatchMode: "self_dispatch" };
-  return { lifecycleMode: "none", dispatchMode: "sequential" };
+  const legacyPreflightFields = {
+    researchAgentNodeId: undefined,
+    requirementAgentNodeId: undefined
+  };
+  if (mode === "self_iteration") return { ...legacyPreflightFields, lifecycleMode: "self_iteration", dispatchMode: "self_dispatch" };
+  if (mode === "self_dispatch") return { ...legacyPreflightFields, lifecycleMode: "none", dispatchMode: "self_dispatch" };
+  return { ...legacyPreflightFields, lifecycleMode: "none", dispatchMode: "sequential" };
 }
 
 function accessModeLabel(mode: RuntimeAccessMode, t: Messages): string {
@@ -2411,6 +2415,53 @@ function CrossRoundContextField({
       <small>{t.fields.crossRoundContextHint}</small>
     </label>
   );
+}
+
+function ManagerPreflightSlotSummary({
+  managerId,
+  nodes,
+  t
+}: {
+  managerId: string;
+  nodes: BlueprintNode[];
+  t: Messages;
+}) {
+  const researchAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 1);
+  const requirementAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 2);
+  const rows = [
+    { slot: 1, label: t.fields.researchInterface, agentLabel: researchAgentLabel },
+    { slot: 2, label: t.fields.requirementInterface, agentLabel: requirementAgentLabel }
+  ];
+
+  return (
+    <div className="manager-preflight-slots field-span-full">
+      {rows.map((row) => (
+        <div
+          key={row.slot}
+          className={`manager-preflight-slot-row ${row.agentLabel ? "connected" : "fallback"}`}
+        >
+          <span>{t.fields.slot} {row.slot} · {row.label}</span>
+          <strong>{row.agentLabel ?? t.options.managerFallback}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function resolveManagerFixedSlotAgentLabel(
+  nodes: BlueprintNode[],
+  managerId: string,
+  slot: number
+): string | undefined {
+  const slotNode = nodes.find((node) => {
+    if (node.type !== "manager_slot") return false;
+    const config = node.config as ManagerSlotNodeConfig;
+    return config.managerNodeId === managerId && config.slot === slot && !node.disabled;
+  });
+  if (!slotNode) return undefined;
+
+  const childAgent = nodes.find((node) => node.parentId === slotNode.id && node.type === "agent" && !node.disabled);
+  return childAgent?.config.label;
 }
 
 function BatchAgentSettingsModal({
@@ -2755,12 +2806,6 @@ function NodeConfigForm({
       { value: "no", label: t.common.no },
       { value: "yes", label: t.common.yes }
     ];
-    const preflightAgentOptions: BlueprintSelectOption[] = [
-      { value: "", label: t.options.managerFallback },
-      ...allNodes
-        .filter((candidate) => candidate.type === "agent")
-        .map((candidate) => ({ value: candidate.id, label: candidate.config.label }))
-    ];
     const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
     const inheritedPermissionMode = resolveRuntimeHarnessPermissionMode(runtimeId, harnessPermissionModes);
     const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
@@ -2784,7 +2829,10 @@ function NodeConfigForm({
           value={managerMode}
           options={managerModeOptions}
           t={t}
-          onChange={(mode) => onPatchConfig(managerModePatch(mode))}
+          onChange={(mode) => onPatchConfig({
+            ...managerModePatch(mode),
+            ...(mode === "self_iteration" ? { portCount: Math.max(2, config.portCount) } : {})
+          })}
         />
         <label>
           <span>{t.fields.harness}</span>
@@ -2856,24 +2904,11 @@ function NodeConfigForm({
           <div className="config-form manager-advanced-grid">
             {isSelfIterationManager && (
               <>
-                <label>
-                  <span>{t.fields.researchAgent}</span>
-                  <BlueprintSelect
-                    value={config.researchAgentNodeId ?? ""}
-                    options={preflightAgentOptions}
-                    ariaLabel={t.fields.researchAgent}
-                    onChange={(value) => onPatchConfig({ researchAgentNodeId: value || undefined })}
-                  />
-                </label>
-                <label>
-                  <span>{t.fields.requirementAgent}</span>
-                  <BlueprintSelect
-                    value={config.requirementAgentNodeId ?? ""}
-                    options={preflightAgentOptions}
-                    ariaLabel={t.fields.requirementAgent}
-                    onChange={(value) => onPatchConfig({ requirementAgentNodeId: value || undefined })}
-                  />
-                </label>
+                <ManagerPreflightSlotSummary
+                  managerId={node.id}
+                  nodes={allNodes}
+                  t={t}
+                />
                 <label>
                   <span>{t.fields.autoApproveRequirements}</span>
                   <BlueprintSelect
@@ -3960,6 +3995,11 @@ function buildFlowNodes(
     const managerSlotSize = node.type === "manager_slot" ? normalizeManagerSlotSize(node.size) : undefined;
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
+    const managerConfig = node.type === "manager" ? node.config as ManagerNodeConfig : undefined;
+    const isSelfIterationManager = managerConfig?.lifecycleMode === "self_iteration";
+    const managerPortCount = managerConfig
+      ? Math.max(isSelfIterationManager ? 2 : 1, managerConfig.portCount)
+      : undefined;
     return {
       id: node.id,
       type: "blueprintNode",
@@ -3977,8 +4017,14 @@ function buildFlowNodes(
         statusLabel: t.status[status ?? "idle"],
         disabled: node.disabled,
         isStartNode: isBlueprintStartNode(blueprint, node, nodesById),
-        managerPortCount:
-          node.type === "manager" ? (node.config as ManagerNodeConfig).portCount : undefined,
+        managerPortCount,
+        managerPreflightSlotsActive: node.type === "manager" ? isSelfIterationManager : undefined,
+        managerPreflightSlotLabels: node.type === "manager"
+          ? {
+              1: t.fields.researchInterface,
+              2: t.fields.requirementInterface
+            }
+          : undefined,
         managerSlotLaneCount: node.type === "manager_slot" ? resolveManagerSlotLaneCount(blueprint, node) : undefined,
         managerSlotSize
       }

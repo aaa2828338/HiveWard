@@ -7,17 +7,86 @@ type ModelSlotDefaults = Pick<
   ClaudeCodeModelPreset,
   "fallbackModelId" | "haikuModelId" | "sonnetModelId" | "opusModelId"
 >;
+type ModelDefaults = ModelSlotDefaults & Pick<ClaudeCodeModelPreset, "modelOptions">;
 
-function sameModel(modelId: string): ModelSlotDefaults {
+const CLAUDE_MODEL_OPTIONS = [
+  "claude-opus-4-8",
+  "claude-opus-4-7",
+  "claude-opus-4-6",
+  "claude-sonnet-4-6",
+  "claude-opus-4-5",
+  "claude-sonnet-4-5",
+  "claude-haiku-4-5",
+  "claude-haiku-4-5-20251001"
+];
+
+const ANTHROPIC_ROUTE_MODEL_OPTIONS = [
+  "anthropic/claude-opus-4.7",
+  "anthropic/claude-sonnet-4.6",
+  "anthropic/claude-opus-4.5",
+  "anthropic/claude-sonnet-4.5",
+  "anthropic/claude-haiku-4.5"
+];
+
+const GLM_MODEL_OPTIONS = [
+  "glm-5.1",
+  "glm-5-turbo",
+  "glm-5",
+  "glm-4.7",
+  "glm-4.7-flash",
+  "glm-4.7-flashx",
+  "glm-4.6",
+  "glm-4.5-air",
+  "glm-4.5-airx",
+  "glm-4.5-flash"
+];
+
+const KIMI_MODEL_OPTIONS = [
+  "kimi-k2.6",
+  "kimi-k2.5",
+  "moonshot-v1-8k",
+  "moonshot-v1-32k",
+  "moonshot-v1-128k",
+  "moonshot-v1-8k-vision-preview",
+  "moonshot-v1-32k-vision-preview",
+  "moonshot-v1-128k-vision-preview"
+];
+
+const MINIMAX_MODEL_OPTIONS = [
+  "MiniMax-M2.7",
+  "MiniMax-M2.7-highspeed",
+  "MiniMax-M2.5",
+  "MiniMax-M2.5-highspeed",
+  "MiniMax-M2.1",
+  "MiniMax-M2.1-highspeed",
+  "MiniMax-M2",
+  "M2-her"
+];
+
+const STEPFUN_MODEL_OPTIONS = [
+  "step-3.5-flash-2603",
+  "step-3.5-flash"
+];
+
+const XIAOMI_MIMO_MODEL_OPTIONS = [
+  "mimo-v2.5-pro",
+  "mimo-v2.5",
+  "mimo-v2-pro",
+  "mimo-v2-omni",
+  "mimo-v2-flash"
+];
+
+function sameModel(modelId: string, modelOptions?: string[]): ModelDefaults {
   return {
     fallbackModelId: modelId,
     haikuModelId: modelId,
     sonnetModelId: modelId,
-    opusModelId: modelId
+    opusModelId: modelId,
+    modelOptions
   };
 }
 
-function modelSlots(input: ModelSlotDefaults): ModelSlotDefaults {
+function modelSlots(input: ModelDefaults): ModelDefaults {
   return input;
 }
 
@@ -103,7 +172,8 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
       fallbackModelId: "deepseek-v4-pro",
       haikuModelId: "deepseek-v4-flash",
       sonnetModelId: "deepseek-v4-pro",
-      opusModelId: "deepseek-v4-pro"
+      opusModelId: "deepseek-v4-pro",
+      modelOptions: ["deepseek-v4-pro", "deepseek-v4-flash"]
     })
   }),
   preset({
@@ -113,7 +183,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://open.bigmodel.cn",
     apiKeyUrl: "https://www.bigmodel.cn/claude-code",
     baseUrl: "https://open.bigmodel.cn/api/anthropic",
-    ...sameModel("glm-5")
+    ...sameModel("glm-5", GLM_MODEL_OPTIONS)
   }),
   preset({
     id: "zhipu-glm-global",
@@ -122,7 +192,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://z.ai",
     apiKeyUrl: "https://z.ai/subscribe",
     baseUrl: "https://api.z.ai/api/anthropic",
-    ...sameModel("glm-5")
+    ...sameModel("glm-5", GLM_MODEL_OPTIONS)
   }),
   preset({
     id: "baidu-qianfan-coding",
@@ -153,14 +223,15 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     category: "cn_official",
     websiteUrl: "https://platform.moonshot.cn/console",
     baseUrl: "https://api.moonshot.cn/anthropic",
-    ...sameModel("kimi-k2.6")
+    ...sameModel("kimi-k2.6", KIMI_MODEL_OPTIONS)
   }),
   preset({
     id: "kimi-coding",
     name: "Kimi For Coding",
     category: "cn_official",
     websiteUrl: "https://www.kimi.com/code/docs/",
-    baseUrl: "https://api.kimi.com/coding/"
+    baseUrl: "https://api.kimi.com/coding/",
+    modelOptions: KIMI_MODEL_OPTIONS
   }),
   preset({
     id: "stepfun",
@@ -169,7 +240,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.stepfun.com/step-plan",
     apiKeyUrl: "https://platform.stepfun.com/interface-key",
     baseUrl: "https://api.stepfun.com/step_plan",
-    ...sameModel("step-3.5-flash-2603")
+    ...sameModel("step-3.5-flash-2603", STEPFUN_MODEL_OPTIONS)
   }),
   preset({
     id: "stepfun-global",
@@ -178,7 +249,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.stepfun.ai/step-plan",
     apiKeyUrl: "https://platform.stepfun.ai/interface-key",
     baseUrl: "https://api.stepfun.ai/step_plan",
-    ...sameModel("step-3.5-flash-2603")
+    ...sameModel("step-3.5-flash-2603", STEPFUN_MODEL_OPTIONS)
   }),
   preset({
     id: "modelscope",
@@ -208,7 +279,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.minimaxi.com",
     apiKeyUrl: "https://platform.minimaxi.com/subscribe/coding-plan",
     baseUrl: "https://api.minimaxi.com/anthropic",
-    ...sameModel("MiniMax-M2.7"),
+    ...sameModel("MiniMax-M2.7", MINIMAX_MODEL_OPTIONS),
     extraEnv: {
       API_TIMEOUT_MS: "3000000",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1
@@ -221,7 +292,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.minimax.io",
     apiKeyUrl: "https://platform.minimax.io/subscribe/coding-plan",
     baseUrl: "https://api.minimax.io/anthropic",
-    ...sameModel("MiniMax-M2.7"),
+    ...sameModel("MiniMax-M2.7", MINIMAX_MODEL_OPTIONS),
     extraEnv: {
       API_TIMEOUT_MS: "3000000",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1
@@ -401,7 +472,8 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
       fallbackModelId: "anthropic/claude-sonnet-4.6",
       haikuModelId: "anthropic/claude-haiku-4.5",
       sonnetModelId: "anthropic/claude-sonnet-4.6",
-      opusModelId: "anthropic/claude-opus-4.7"
+      opusModelId: "anthropic/claude-opus-4.7",
+      modelOptions: ANTHROPIC_ROUTE_MODEL_OPTIONS
     })
   }),
   preset({
@@ -415,7 +487,8 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
       fallbackModelId: "anthropic/claude-sonnet-4.6",
       haikuModelId: "anthropic/claude-haiku-4.5",
       sonnetModelId: "anthropic/claude-sonnet-4.6",
-      opusModelId: "anthropic/claude-opus-4.7"
+      opusModelId: "anthropic/claude-opus-4.7",
+      modelOptions: ANTHROPIC_ROUTE_MODEL_OPTIONS
     })
   }),
   preset({
@@ -447,7 +520,8 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
       fallbackModelId: "claude-opus-4-7",
       haikuModelId: "claude-haiku-4-5-20251001",
       sonnetModelId: "claude-sonnet-4-6",
-      opusModelId: "claude-opus-4-7"
+      opusModelId: "claude-opus-4-7",
+      modelOptions: CLAUDE_MODEL_OPTIONS
     })
   }),
   preset({
@@ -457,7 +531,7 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.xiaomimimo.com",
     apiKeyUrl: "https://platform.xiaomimimo.com/#/console/api-keys",
     baseUrl: "https://api.xiaomimimo.com/anthropic",
-    ...sameModel("mimo-v2.5-pro")
+    ...sameModel("mimo-v2.5-pro", XIAOMI_MIMO_MODEL_OPTIONS)
   }),
   preset({
     id: "xiaomi-mimo-token-plan-cn",
@@ -466,6 +540,6 @@ export const claudeCodeModelPresets: ClaudeCodeModelPreset[] = [
     websiteUrl: "https://platform.xiaomimimo.com/#/token-plan",
     apiKeyUrl: "https://platform.xiaomimimo.com/#/console/plan-manage",
     baseUrl: "https://token-plan-cn.xiaomimimo.com/anthropic",
-    ...sameModel("mimo-v2.5-pro")
+    ...sameModel("mimo-v2.5-pro", XIAOMI_MIMO_MODEL_OPTIONS)
   })
 ];

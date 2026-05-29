@@ -1727,11 +1727,11 @@ describe("BlueprintWorker", () => {
       ]
     );
     const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-alpha"),
-      createStartedAgentTask("task-beta")
+      createStartedAgentTask("task-1"),
+      createStartedAgentTask("task-2")
     ], [
-      createCompletedAgentTask("task-alpha", "succeeded", "alpha done"),
-      createCompletedAgentTask("task-beta", "succeeded", "beta done")
+      createCompletedAgentTask("task-1", "succeeded", "done"),
+      createCompletedAgentTask("task-2", "succeeded", "done")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1740,14 +1740,15 @@ describe("BlueprintWorker", () => {
     const slotOutput = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "parallel-slot")?.output;
 
     expect(view?.run.status).toBe("succeeded");
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["alpha", "beta"]);
+    expect(adapter.calls.map((call) => call.agentName).sort()).toEqual(["alpha", "beta"]);
     expect(adapter.calls.every((call) => (call.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId === "parallel-slot")).toBe(true);
-    expect(slotOutput).toEqual(JSON.stringify({
-      outputs: [
-        { nodeId: "alpha", nodeLabel: "Alpha", output: "alpha done" },
-        { nodeId: "beta", nodeLabel: "Beta", output: "beta done" }
-      ]
-    }));
+    expect(typeof slotOutput).toBe("string");
+    const parsedSlotOutput = JSON.parse(String(slotOutput)) as { outputs?: unknown[] };
+    expect(parsedSlotOutput.outputs).toHaveLength(2);
+    expect(parsedSlotOutput.outputs).toEqual(expect.arrayContaining([
+      { nodeId: "alpha", nodeLabel: "Alpha", output: "done" },
+      { nodeId: "beta", nodeLabel: "Beta", output: "done" }
+    ]));
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.output).toMatchObject({
       status: "completed"
     });
@@ -2450,6 +2451,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement1.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
     const report1 = report1View.approvalRequests?.find((request) =>
@@ -2500,6 +2502,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun3, requirement2.id, "approve");
 
     const report2View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 2 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -2534,6 +2537,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun5, requirement3.id, "approve");
 
     const report3View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 3 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -2824,7 +2828,7 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-context-research", "succeeded", "context research"),
       createCompletedAgentTask("task-context-plan", "succeeded", "context plan"),
-      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"nextSlot\":1,\"reason\":\"dispatch\"}"),
+      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"nextSlot\":3,\"reason\":\"dispatch\"}"),
       createCompletedAgentTask("task-context-builder", "succeeded", "worker output"),
       createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"reason\":\"done\"}")
     ]);
@@ -3019,6 +3023,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.releaseReports ?? []).length === 1 &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
@@ -3033,6 +3038,7 @@ describe("BlueprintWorker", () => {
       store,
       run.id,
       (view) =>
+        view.run.status === "waiting_approval" &&
         (view.releaseReports ?? []).length === 2 &&
         (view.approvalRequests ?? []).filter((request) => request.kind === "manager_release_report" && request.status === "pending").length === 1,
       60_000
@@ -3131,6 +3137,7 @@ describe("BlueprintWorker", () => {
     await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
 
     const report1View = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
       (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
     );
     const report1 = report1View.approvalRequests?.find((request) =>
@@ -3830,16 +3837,42 @@ function createSelfIterationBlueprint(config: {
     ...createAgentNode("builder", "Builder", { x: 520, y: 180 }),
     parentId: "slot-1"
   };
+  const researchSlot = config.researchAgent
+    ? {
+        id: "research-slot",
+        type: "manager_slot" as const,
+        position: { x: 300, y: -180 },
+        config: {
+          label: "Research Slot",
+          managerNodeId: "top-manager",
+          slot: 1,
+          executionMode: "manual" as const
+        }
+      }
+    : undefined;
+  const requirementSlot = config.requirementAgent
+    ? {
+        id: "requirement-slot",
+        type: "manager_slot" as const,
+        position: { x: 300, y: -20 },
+        config: {
+          label: "Requirement Slot",
+          managerNodeId: "top-manager",
+          slot: 2,
+          executionMode: "manual" as const
+        }
+      }
+    : undefined;
   const requirementAgent = config.requirementAgent
     ? {
         ...createAgentNode("requirements", "Requirements", { x: 80, y: 360 }),
-        parentId: "top-manager"
+        parentId: "requirement-slot"
       }
     : undefined;
   const researchAgent = config.researchAgent
     ? {
         ...createAgentNode("research", "Research", { x: 80, y: 460 }),
-        parentId: "top-manager"
+        parentId: "research-slot"
       }
     : undefined;
   return createBlueprint(
@@ -3853,17 +3886,19 @@ function createSelfIterationBlueprint(config: {
           label: "Top Manager",
           lifecycleMode: "self_iteration",
           dispatchMode: "sequential",
-          portCount: 1,
+          portCount: 3,
           maxHandoffs: 3,
           maxRounds: config.maxRounds,
           maxPreparationAttempts: config.maxPreparationAttempts ?? 1,
           autoApproveRequirements: config.autoApproveRequirements,
           autoApproveReleaseReports: config.autoApproveReleaseReports,
-          researchAgentNodeId: researchAgent?.id,
-          requirementAgentNodeId: requirementAgent?.id,
           instructions: "Coordinate self-iteration rounds."
         }
       },
+      ...(researchSlot ? [researchSlot] : []),
+      ...(researchAgent ? [researchAgent] : []),
+      ...(requirementSlot ? [requirementSlot] : []),
+      ...(requirementAgent ? [requirementAgent] : []),
       {
         id: "slot-1",
         type: "manager_slot",
@@ -3871,19 +3906,77 @@ function createSelfIterationBlueprint(config: {
         config: {
           label: "Build Slot",
           managerNodeId: "top-manager",
-          slot: 1,
+          slot: 3,
           executionMode: "manual"
         }
       },
-      builder,
-      ...(researchAgent ? [researchAgent] : []),
-      ...(requirementAgent ? [requirementAgent] : [])
+      builder
     ],
     [
+      ...(researchSlot && researchAgent
+        ? [
+            {
+              id: "edge-top-manager-research-slot",
+              source: "top-manager",
+              sourceHandle: "manager-out-1",
+              target: "research-slot",
+              targetHandle: "manager-slot-in"
+            },
+            {
+              id: "edge-research-slot-top-manager",
+              source: "research-slot",
+              sourceHandle: "manager-slot-out",
+              target: "top-manager",
+              targetHandle: "manager-in-1"
+            },
+            {
+              id: "edge-research-slot-agent",
+              source: "research-slot",
+              sourceHandle: "manager-slot-inner-out",
+              target: "research"
+            },
+            {
+              id: "edge-research-agent-slot",
+              source: "research",
+              target: "research-slot",
+              targetHandle: "manager-slot-inner-in"
+            }
+          ]
+        : []),
+      ...(requirementSlot && requirementAgent
+        ? [
+            {
+              id: "edge-top-manager-requirement-slot",
+              source: "top-manager",
+              sourceHandle: "manager-out-2",
+              target: "requirement-slot",
+              targetHandle: "manager-slot-in"
+            },
+            {
+              id: "edge-requirement-slot-top-manager",
+              source: "requirement-slot",
+              sourceHandle: "manager-slot-out",
+              target: "top-manager",
+              targetHandle: "manager-in-2"
+            },
+            {
+              id: "edge-requirement-slot-agent",
+              source: "requirement-slot",
+              sourceHandle: "manager-slot-inner-out",
+              target: "requirements"
+            },
+            {
+              id: "edge-requirement-agent-slot",
+              source: "requirements",
+              target: "requirement-slot",
+              targetHandle: "manager-slot-inner-in"
+            }
+          ]
+        : []),
       {
         id: "edge-top-manager-slot-1",
         source: "top-manager",
-        sourceHandle: "manager-out-1",
+        sourceHandle: "manager-out-3",
         target: "slot-1",
         targetHandle: "manager-slot-in"
       },
@@ -3892,7 +3985,7 @@ function createSelfIterationBlueprint(config: {
         source: "slot-1",
         sourceHandle: "manager-slot-out",
         target: "top-manager",
-        targetHandle: "manager-in-1"
+        targetHandle: "manager-in-3"
       },
       {
         id: "edge-slot-1-builder",
