@@ -30,7 +30,8 @@ import type {
   HivewardChatMessage,
   HivewardChatSession,
   UpdateHivewardChatSessionRequest,
-  RoleDriverBinding
+  RoleDriverBinding,
+  RuntimeObjectRef
 } from "@hiveward/shared";
 import {
   blueprintRunArchiveSchema,
@@ -41,6 +42,9 @@ import {
   defaultCompanyId,
   hydrateImportedBlueprint,
   normalizeWorkspaceDashboard,
+  readBlueprintNodeEventRuntimeRef,
+  readBlueprintNodeRunRuntimeRef,
+  readBlueprintRunRuntimeRefs,
   readPortableBlueprintPackage,
   resolveFinalRunResult
 } from "@hiveward/shared";
@@ -708,7 +712,7 @@ export class FileHivewardStore {
         totalInputTokens: 0,
         totalOutputTokens: 0,
         totalCostUsd: 0,
-        openclawRefs: []
+        runtimeRefs: []
       };
       const summary = toBlueprintRunSummary(run, runnableBlueprint);
       const archive: BlueprintRunArchive = {
@@ -1096,7 +1100,7 @@ export class FileHivewardStore {
 
   private async readRunArchiveUnlocked(id: string): Promise<BlueprintRunArchive> {
     const rawArchive = JSON.parse(await readFile(this.runArchivePath(id), "utf8")) as Partial<BlueprintRunArchive>;
-    const archive = rawArchive as BlueprintRunArchive;
+    const archive = normalizeRunArchiveRuntimeRefs(rawArchive as BlueprintRunArchive);
     return stripRemovedBlueprintRunArchive({
       schema: blueprintRunArchiveSchema,
       run: archive.run,
@@ -1108,7 +1112,7 @@ export class FileHivewardStore {
   }
 
   private async writeRunArchiveUnlocked(archive: BlueprintRunArchive): Promise<void> {
-    await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(archive));
+    await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(normalizeRunArchiveRuntimeRefs(archive)));
   }
 
   private async importBlueprintPackageUnlocked(
@@ -1378,14 +1382,14 @@ export class FileHivewardStore {
     for (const run of index.runIndex) {
       const blueprint = normalizedBlueprints.find((candidate) => candidate.id === run.blueprintId) ?? createArchivePlaceholderBlueprint(run, now);
       const archiveNodeRuns = nodeRuns.filter((nodeRun) => nodeRun.blueprintRunId === run.id);
-      const archive: BlueprintRunArchive = {
+      const archive = normalizeRunArchiveRuntimeRefs({
         schema: blueprintRunArchiveSchema,
         run,
         blueprintSnapshot: blueprint,
         nodeRuns: archiveNodeRuns,
         events: events.filter((event) => event.blueprintRunId === run.id),
         finalResult: resolveFinalRunResult(blueprint, archiveNodeRuns, run.status)
-      };
+      });
       await this.writeRunArchiveUnlocked(archive);
     }
     return index;
@@ -1464,6 +1468,59 @@ function stripRemovedBlueprintRunArchive(archive: BlueprintRunArchive): Blueprin
     events,
     finalResult: resolveFinalRunResult(blueprintSnapshot, nodeRuns, archive.run.status)
   };
+}
+
+function normalizeRunArchiveRuntimeRefs(archive: BlueprintRunArchive): BlueprintRunArchive {
+  const runWithLegacyRefs = archive.run;
+  const { openclawRefs: _legacyRunRefs, ...runWithoutLegacyRefs } = runWithLegacyRefs;
+  const nodeRuns = Array.isArray(archive.nodeRuns)
+    ? archive.nodeRuns.map((nodeRun) => {
+        const { openclawRef: _legacyRuntimeRef, ...nodeRunWithoutLegacyRef } = nodeRun;
+        const runtimeRef = readBlueprintNodeRunRuntimeRef(nodeRun);
+        return runtimeRef ? { ...nodeRunWithoutLegacyRef, runtimeRef } : nodeRunWithoutLegacyRef;
+      })
+    : [];
+  const events = Array.isArray(archive.events)
+    ? archive.events.map((event) => {
+        const { openclawRef: _legacyRuntimeRef, ...eventWithoutLegacyRef } = event;
+        const runtimeRef = readBlueprintNodeEventRuntimeRef(event);
+        return runtimeRef ? { ...eventWithoutLegacyRef, runtimeRef } : eventWithoutLegacyRef;
+      })
+    : [];
+  const runtimeRefs = mergeRuntimeRefs(
+    readBlueprintRunRuntimeRefs(runWithLegacyRefs),
+    nodeRuns.flatMap((nodeRun) => {
+      const runtimeRef = readBlueprintNodeRunRuntimeRef(nodeRun);
+      return runtimeRef ? [runtimeRef] : [];
+    })
+  );
+  return {
+    ...archive,
+    run: {
+      ...runWithoutLegacyRefs,
+      runtimeRefs
+    },
+    nodeRuns,
+    events
+  };
+}
+
+function mergeRuntimeRefs(...groups: RuntimeObjectRef[][]): RuntimeObjectRef[] {
+  const refs = new Map<string, RuntimeObjectRef>();
+  for (const runtimeRef of groups.flat()) {
+    refs.set(runtimeRefKey(runtimeRef), runtimeRef);
+  }
+  return [...refs.values()];
+}
+
+function runtimeRefKey(runtimeRef: RuntimeObjectRef): string {
+  return [
+    runtimeRef.source,
+    runtimeRef.sourceId,
+    runtimeRef.taskId ?? "",
+    runtimeRef.runId ?? "",
+    runtimeRef.sessionKey ?? ""
+  ].join(":");
 }
 
 function isRemovedStandaloneBlueprintNodeType(type: unknown): boolean {
@@ -1880,10 +1937,12 @@ function normalizeBlueprintIndexEntry(
 }
 
 function normalizeRunSummary(run: BlueprintRunSummary, fallbackCompanyId: string): BlueprintRunSummary {
+  const { openclawRefs: _legacyRefs, ...runWithoutLegacyRefs } = run;
   return {
-    ...run,
+    ...runWithoutLegacyRefs,
     companyId: readScopedCompanyId(run.companyId, fallbackCompanyId),
-    blueprintName: run.blueprintName || run.blueprintId
+    blueprintName: run.blueprintName || run.blueprintId,
+    runtimeRefs: readBlueprintRunRuntimeRefs(run)
   };
 }
 
@@ -1908,13 +1967,16 @@ function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDefinitio
 
 function applyNodeRunFactsToRun(run: BlueprintRunSummary, nodeRuns: BlueprintNodeRun[]): BlueprintRunSummary {
   const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
-  const openclawRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.openclawRef ? [nodeRun.openclawRef] : []));
+  const runtimeRefs = nodeRuns.flatMap((nodeRun) => {
+    const runtimeRef = readBlueprintNodeRunRuntimeRef(nodeRun);
+    return runtimeRef ? [runtimeRef] : [];
+  });
   return {
     ...run,
     totalInputTokens: usage.reduce((sum, item) => sum + item.inputTokens, 0),
     totalOutputTokens: usage.reduce((sum, item) => sum + item.outputTokens, 0),
     totalCostUsd: Number(usage.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6)),
-    openclawRefs
+    runtimeRefs
   };
 }
 
