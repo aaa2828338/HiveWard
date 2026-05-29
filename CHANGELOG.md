@@ -1,5 +1,129 @@
 # Changelog
 
+## v0.5.8 - 2026-05-30
+
+Manager dispatch handoff rules and public repository copy cleanup release.
+
+### 中文
+
+- 新增 Manager 调度交接规则：Manager 可以把明确的下一步任务、上下文和产物位置交给后续 Agent，蓝图运行记录会保存这类 handoff 证据。
+- 将 Agent workspace 产物、交接 JSON 和审批回复路径整理进同一套运行流，降低人工批准后信息丢失或重复分派的风险。
+- 清理 README 公开介绍：CLI harness 不再标记 Beta，当前版本徽章推进到 `v0.5.8`，删除 SQLite 迁移门禁和权限提示段落，新增首次配置 Harness Skill 的注意事项，并新增 Star 趋势图。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本保持在 `0.5.8`。
+
+### English
+
+- Added Manager dispatch handoff rules so Managers can pass explicit next-step tasks, context, and artifact locations to downstream Agents, with handoff evidence preserved in run records.
+- Folded Agent workspace artifacts, machine handoff JSON, and approval replies into the same execution flow to reduce lost context or duplicate dispatch after human review.
+- Cleaned public README copy: CLI harnesses are no longer labeled Beta, the version badge now points to `v0.5.8`, the SQLite migration gate and permission notice sections were removed, first-run Harness Skill guidance was added, and a Star history chart was added.
+- Kept root, workspace package, lockfile metadata, and internal dependency versions at `0.5.8`.
+
+## v0.5.7 - 2026-05-30
+
+Manager preflight Slots release.
+
+### 中文
+
+- 新增 Manager 自迭代预检 Slot，让 Manager 在正式分派前可以并行收集需求、研究、风险和执行建议。
+- 将预检 Slot 与普通业务 Slot 分开处理，避免预检任务被正常 dispatch 流程重复消耗。
+- 补强聊天、蓝图和存储测试，覆盖预检 Slot 的运行状态、角色技能断言和默认模型复用。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.7`。
+
+### English
+
+- Added Manager self-iteration preflight Slots so Managers can gather requirements, research, risks, and execution suggestions before formal dispatch.
+- Kept preflight Slots separate from normal business Slots so normal dispatch does not consume reserved preflight work twice.
+- Strengthened chat, blueprint, and storage tests around preflight Slot run state, role skill assertions, and default model reuse.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.7`.
+
+## v0.5.6 - 2026-05-30
+
+Official model options release.
+
+### 中文
+
+- 扩展 OpenClaw 配置向导中的官方模型选项，覆盖更多 Claude、OpenAI 和 Gemini 常用模型。
+- 扩展 Claude Code 预设模型映射，同时保留本地运行时发现的模型目录合并能力。
+- 稳定 release-report 审批相关测试，减少默认模型和审批回复路径的回归风险。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.6`。
+
+### English
+
+- Expanded official model options in the OpenClaw configuration wizard across common Claude, OpenAI, and Gemini models.
+- Expanded Claude Code preset model mappings while preserving the ability to merge runtime-discovered local catalogs.
+- Stabilized release-report approval tests to reduce regression risk around default models and approval replies.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.6`.
+
+## v0.5.5 - 2026-05-30
+
+Runtime reference decoupling release.
+
+### 中文
+
+- 将蓝图、运行和存储中的运行时引用收敛到 `runtimeRef` / `runtimeRefs` 等中性字段，减少对 OpenClaw 命名的耦合。
+- 保留旧字段兼容路径，确保已有运行记录和 SQLite / JSON 数据在升级后仍能读取。
+- 更新 adapter、worker、run state 和 catalog 映射，让 OpenClaw、Codex、Claude Code 与 CLI harness 使用同一套运行时边界。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.5`。
+
+### English
+
+- Moved blueprint, run, and storage runtime references toward neutral `runtimeRef` / `runtimeRefs` fields to reduce OpenClaw-specific coupling.
+- Preserved compatibility readers for legacy fields so existing SQLite / JSON data and run records continue to load after upgrade.
+- Updated adapter, worker, run state, and catalog mapping so OpenClaw, Codex, Claude Code, and CLI harnesses share one runtime boundary.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.5`.
+
+## v0.5.4 - 2026-05-30
+
+Hermes compatibility release.
+
+### 中文
+
+- 新增 Hermes CLI harness 配置、状态检测、模型默认值、Profile 读取和聊天/蓝图运行入口。
+- 将 Hermes 加入主导航、模型页、Agent/Profile 页、技能页和 channel 页，保持与 OpenClaw 风格一致的操作面。
+- 扩展 API、adapter、Blueprint Studio 和 SDK runtime 测试，覆盖 Hermes profile、环境默认模型和 CLI 参数映射。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.4`。
+
+### English
+
+- Added Hermes CLI harness configuration, status checks, model defaults, profile loading, and chat / blueprint execution entry points.
+- Added Hermes to navigation, model pages, Agent/Profile pages, skills, and channels with an operation surface aligned to OpenClaw.
+- Expanded API, adapter, Blueprint Studio, and SDK runtime tests around Hermes profiles, environment default models, and CLI argument mapping.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.4`.
+
+## v0.5.3 - 2026-05-30
+
+Blueprint canvas contrast release.
+
+### 中文
+
+- 优化 Blueprint Studio 画布对比度，让节点、连线、小地图和选中状态在浅色背景下更清晰。
+- 增加画布样式测试，锁住关键颜色、边框和状态样式，降低后续主题调整的回归风险。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.3`。
+
+### English
+
+- Improved Blueprint Studio canvas contrast so nodes, edges, minimap elements, and selected states are clearer on the light surface.
+- Added canvas style tests to lock key colors, borders, and state styling against future theme regressions.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.3`.
+
+## v0.5.2 - 2026-05-30
+
+Blueprint edit preservation release.
+
+### 中文
+
+- 修复 Blueprint Studio 未保存编辑被远端刷新或运行状态覆盖的问题，保存前会保留本地改动。
+- 新增蓝图编辑状态辅助模块和测试，覆盖脏状态、远端快照协调和保存后重置。
+- 微调编辑中提示和画布状态样式，让用户更容易判断哪些改动仍未保存。
+- 将 root、workspace package、lockfile 元数据和内部依赖版本推进到 `0.5.2`。
+
+### English
+
+- Fixed Blueprint Studio unsaved edits being replaced by remote refreshes or run-state updates before save.
+- Added blueprint edit-state helpers and tests for dirty state, remote snapshot coordination, and reset after save.
+- Polished in-progress edit hints and canvas state styling so users can see which changes are still unsaved.
+- Bumped root, workspace package, lockfile metadata, and internal dependency versions to `0.5.2`.
+
 ## v0.5.1 - 2026-05-29
 
 Blueprint Manager UI polish and Harness permission inheritance release.
@@ -62,19 +186,19 @@ Small Harness permission clarity release.
 
 ## v0.4.0 - 2026-05-28
 
-Multi-CLI harness beta release.
+Multi-CLI harness release.
 
 ### 中文
 
-- 新增 Google CLI Beta、Cursor CLI Beta、OpenCode Beta、Hermes Beta harness。
-- 这些新增 CLI harness 目前标记为 Beta：代码路径已接入并覆盖本地测试，但真实 CLI 安装、订阅、认证和上游输出格式仍可能因用户环境而变化。
+- 新增 Google CLI、Cursor CLI、OpenCode、Hermes harness。
+- 这些新增 CLI harness 的代码路径已接入并覆盖本地测试，真实 CLI 安装、订阅、认证和上游输出格式仍可能因用户环境而变化。
 - 新增 harness 已接入配置页、聊天入口、蓝图运行入口、模型默认值与状态检测、权限模式，以及技能安装入口。
 - 将仓库、workspace 包和内部依赖版本推进到 `0.4.0`。
 
 ### English
 
-- Added Google CLI Beta, Cursor CLI Beta, OpenCode Beta, and Hermes Beta harnesses.
-- These new CLI harnesses are currently marked Beta: the local code paths are wired and tested, while real CLI installs, subscriptions, authentication, and upstream output formats may still vary by environment.
+- Added Google CLI, Cursor CLI, OpenCode, and Hermes harnesses.
+- The local code paths for these new CLI harnesses are wired and tested, while real CLI installs, subscriptions, authentication, and upstream output formats may still vary by environment.
 - The new harnesses are available through configuration pages, chat and blueprint run entry points, model default/status detection, permission modes, and skill installation entry points.
 - Bumped repository, workspace package, and internal dependency versions to `0.4.0`.
 

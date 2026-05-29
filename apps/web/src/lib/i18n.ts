@@ -535,19 +535,19 @@ export const messages: Record<Language, Messages> = {
         description: "Check whether the local Codex harness is installed and ready."
       },
       googleConfig: {
-        title: "Google CLI Beta Config",
+        title: "Google CLI Config",
         description: "Check whether the local Gemini CLI harness is installed and ready."
       },
       cursorConfig: {
-        title: "Cursor CLI Beta Config",
+        title: "Cursor CLI Config",
         description: "Check whether the local Cursor CLI harness is installed and ready."
       },
       opencodeConfig: {
-        title: "OpenCode Beta Config",
+        title: "OpenCode Config",
         description: "Check whether the local OpenCode CLI harness is installed and ready."
       },
       hermesConfig: {
-        title: "Hermes Beta Config",
+        title: "Hermes Config",
         description: "Check whether the local Hermes CLI harness is installed and ready."
       },
       hermesModels: {
@@ -930,19 +930,19 @@ export const messages: Record<Language, Messages> = {
         description: "\u68c0\u67e5\u672c\u673a Codex harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       },
       googleConfig: {
-        title: "Google CLI Beta \u914d\u7f6e",
+        title: "Google CLI \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Gemini CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       },
       cursorConfig: {
-        title: "Cursor CLI Beta \u914d\u7f6e",
+        title: "Cursor CLI \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Cursor CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       },
       opencodeConfig: {
-        title: "OpenCode Beta \u914d\u7f6e",
+        title: "OpenCode \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a OpenCode CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       },
       hermesConfig: {
-        title: "Hermes Beta \u914d\u7f6e",
+        title: "Hermes \u914d\u7f6e",
         description: "\u68c0\u67e5\u672c\u673a Hermes CLI harness \u662f\u5426\u5df2\u5b89\u88c5\u5e76\u53ef\u7528\u3002"
       },
       hermesModels: {
