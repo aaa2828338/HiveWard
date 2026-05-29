@@ -295,6 +295,96 @@ describe("RunsPage", () => {
     expect(html).not.toContain('href="D:/HiveWard/raw-only.html"');
   });
 
+  it("does not add a duplicate Chinese delivery section when the report already has one", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-existing-delivery",
+      companyId: "company-1",
+      name: "交付区识别",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-existing-delivery",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "succeeded",
+        startedBy: "user-1",
+        startedAt: now,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [
+        {
+          id: "node-run-existing-delivery",
+          blueprintRunId: "run-existing-delivery",
+          blueprintId: blueprint.id,
+          nodeId: "agent-existing-delivery",
+          nodeLabel: "交付 Agent",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: now,
+          startedAt: now,
+          endedAt: now,
+          output: { status: "complete" }
+        }
+      ],
+      events: [],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [
+        {
+          id: "human-report-existing-delivery",
+          runId: "run-existing-delivery",
+          nodeRunId: "node-run-existing-delivery",
+          nodeId: "agent-existing-delivery",
+          nodeLabel: "交付 Agent",
+          title: "交付 Agent report",
+          bodyMd: "## 交付位置\n\n最终单文件 HTML 已交付在 artifacts[0].content。",
+          source: "agent",
+          createdAt: now
+        }
+      ],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="zh-CN"
+        t={messages["zh-CN"]}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toContain("交付位置");
+    expect(html).toContain("最终单文件 HTML 已交付在 artifacts[0].content");
+    expect(html).not.toContain("本步骤没有产生新的交付物");
+    expect(html).not.toContain("浜や粯浣嶇疆");
+  });
+
   it("localizes common agent report chrome and shows Windows artifact paths in Chinese runs", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
@@ -428,6 +518,97 @@ describe("RunsPage", () => {
     expect(html).toContain("政治新闻 HTML 自迭代 Manager · 调度 3");
     expect(html).toContain("D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact-final.html");
     expect(html).toContain("/artifacts/runs/run-zh/artifact-final.html");
+  });
+
+  it("falls back to run events and artifacts when timeline projection rows are missing", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint: BlueprintDefinition = {
+      id: "blueprint-event-fallback",
+      companyId: "company-1",
+      name: "Event fallback blueprint",
+      version: 1,
+      nodes: [],
+      edges: [],
+      variables: {},
+      display: { viewport: { x: 0, y: 0, zoom: 1 } },
+      createdAt: now,
+      updatedAt: now
+    };
+    const runView: BlueprintRunView = {
+      run: {
+        id: "run-event-fallback",
+        companyId: "company-1",
+        blueprintId: blueprint.id,
+        blueprintName: blueprint.name,
+        blueprintVersion: 1,
+        status: "succeeded",
+        startedBy: "user-1",
+        startedAt: now,
+        endedAt: "2026-05-28T00:00:05.000Z",
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        totalCostUsd: 0,
+        openclawRefs: []
+      },
+      nodeRuns: [],
+      events: [
+        {
+          id: "event-run-started",
+          blueprintRunId: "run-event-fallback",
+          type: "blueprint.run.started",
+          message: "Run started.",
+          createdAt: now
+        },
+        {
+          id: "event-run-completed",
+          blueprintRunId: "run-event-fallback",
+          type: "blueprint.run.completed",
+          message: "Run completed.",
+          createdAt: "2026-05-28T00:00:05.000Z"
+        }
+      ],
+      finalResult: null,
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalRequests: [],
+      approvalDecisions: [],
+      artifacts: [
+        {
+          id: "artifact-final-html",
+          runId: "run-event-fallback",
+          title: "Final HTML",
+          kind: "html",
+          downloadUrl: "/artifacts/runs/run-event-fallback/final.html",
+          previewPolicy: "sandboxed_iframe",
+          trusted: false,
+          createdAt: "2026-05-28T00:00:04.000Z"
+        }
+      ],
+      releaseReports: [],
+      agentHumanReports: [],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: []
+    };
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="en"
+        t={messages.en}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Run completed");
+    expect(html).toContain("The run has completed.");
+    expect(html).toContain("An artifact was published.");
+    expect(html).toContain("/artifacts/runs/run-event-fallback/final.html");
   });
 
   it("renders run steps from actual chronological node runs without slot boundary cards", () => {

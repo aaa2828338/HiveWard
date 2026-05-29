@@ -58,6 +58,7 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { resolveApiResourceUrl } from "../lib/api";
 import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -811,7 +812,7 @@ export function RunsPage({
                         <span>{artifact.kind}{artifact.format ? ` · ${artifact.format}` : ""}</span>
                       </div>
                       {artifact.downloadUrl ? (
-                        <a href={artifact.downloadUrl} rel="noreferrer" target="_blank">
+                        <a href={resolveArtifactDownloadUrl(artifact.downloadUrl)} rel="noreferrer" target="_blank">
                           {reportLayerCopy.openArtifact}
                         </a>
                       ) : (
@@ -1084,6 +1085,10 @@ function buildMarkdownCodeSection(title: string, value: unknown, language = ""):
 
 function formatArtifactLocation(artifact: RunArtifact): string {
   return artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath ?? artifact.id;
+}
+
+function resolveArtifactDownloadUrl(downloadUrl: string): string {
+  return resolveApiResourceUrl(downloadUrl);
 }
 
 export function ApprovalsPage({
@@ -3713,7 +3718,94 @@ function buildRunTimelineTraceItems(
     .filter((item) => isVisibleRunTimelineKind(item.kind))
     .filter((item) => item.kind !== "node_output" || !item.payloadRef || !humanReportIds.has(item.payloadRef))
     .filter((item) => item.kind !== "node_started" || !item.payloadRef || !nodeRunIds.has(item.payloadRef));
-  return [...visible, ...buildSyntheticPreflightTimelineItems(activeRun, visible, language)];
+  const eventFallback = visible.length === 0
+    ? buildRunEventTimelineFallbackItems(activeRun, nodeRunIds, language)
+    : [];
+  const artifactFallback = visible.some((item) => item.kind === "artifact_published")
+    ? []
+    : buildArtifactTimelineFallbackItems(activeRun);
+  const projected = [...visible, ...eventFallback, ...artifactFallback];
+  return [...projected, ...buildSyntheticPreflightTimelineItems(activeRun, projected, language)];
+}
+
+function buildRunEventTimelineFallbackItems(
+  activeRun: BlueprintRunView,
+  nodeRunIds: Set<string>,
+  language: Language
+): RunTimelineTraceItem[] {
+  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
+  return activeRun.events.flatMap((event, index) => {
+    const kind = runEventTimelineKind(event.type);
+    if (!kind) return [];
+    if (event.nodeRunId && nodeRunIds.has(event.nodeRunId)) return [];
+    const nodeRun = event.nodeRunId ? nodeRunsById.get(event.nodeRunId) : undefined;
+    return [{
+      id: `event-timeline-${event.id}`,
+      runId: event.blueprintRunId,
+      sequence: index + 1,
+      createdAt: event.createdAt,
+      actorNodeId: event.nodeRunId,
+      actorLabel: nodeRun?.nodeLabel ?? runEventActorLabel(event, language),
+      kind,
+      title: runEventTimelineTitle(event, nodeRun, language),
+      body: event.message,
+      payloadRef: event.nodeRunId
+    }];
+  });
+}
+
+function runEventTimelineKind(type: BlueprintNodeEvent["type"]): RunTimelineTraceItem["kind"] | undefined {
+  if (type === "blueprint.run.started") return "round_started";
+  if (type === "blueprint.run.completed") return "run_completed";
+  if (type === "blueprint.run.failed") return "run_failed";
+  if (type === "blueprint.run.cancelled") return "run_cancelled";
+  if (type === "node.run.queued" || type === "node.run.started" || type === "node.run.waiting_approval") return "node_started";
+  if (type === "node.run.completed" || type === "node.run.failed" || type === "node.run.cancelled") return "node_output";
+  return undefined;
+}
+
+function runEventActorLabel(event: BlueprintNodeEvent, language: Language): string {
+  if (event.nodeRunId) return language === "zh-CN" ? "运行节点" : "Run node";
+  return language === "zh-CN" ? "运行" : "Run";
+}
+
+function runEventTimelineTitle(
+  event: BlueprintNodeEvent,
+  nodeRun: BlueprintNodeRun | undefined,
+  language: Language
+): string {
+  const zh = language === "zh-CN";
+  const nodeLabel = nodeRun?.nodeLabel ?? (zh ? "运行节点" : "Run node");
+  if (event.type === "blueprint.run.started") return zh ? "运行已开始" : "Run started";
+  if (event.type === "blueprint.run.completed") return zh ? "运行已完成" : "Run completed";
+  if (event.type === "blueprint.run.failed") return zh ? "运行失败" : "Run failed";
+  if (event.type === "blueprint.run.cancelled") return zh ? "运行已取消" : "Run cancelled";
+  if (event.type === "node.run.queued") return zh ? `${nodeLabel} 已排队` : `${nodeLabel} queued`;
+  if (event.type === "node.run.started") return zh ? `${nodeLabel} 已开始` : `${nodeLabel} started`;
+  if (event.type === "node.run.waiting_approval") return zh ? `${nodeLabel} 等待审批` : `${nodeLabel} waiting for approval`;
+  if (event.type === "node.run.completed") return zh ? `${nodeLabel} 已完成` : `${nodeLabel} completed`;
+  if (event.type === "node.run.failed") return zh ? `${nodeLabel} 失败` : `${nodeLabel} failed`;
+  if (event.type === "node.run.cancelled") return zh ? `${nodeLabel} 已取消` : `${nodeLabel} cancelled`;
+  return event.message;
+}
+
+function buildArtifactTimelineFallbackItems(activeRun: BlueprintRunView): RunTimelineTraceItem[] {
+  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
+  return (activeRun.artifacts ?? []).map((artifact, index) => {
+    const nodeRun = artifact.nodeRunId ? nodeRunsById.get(artifact.nodeRunId) : undefined;
+    return {
+      id: `artifact-timeline-${artifact.id}`,
+      runId: artifact.runId,
+      sequence: index + 1,
+      createdAt: artifact.createdAt,
+      actorNodeId: artifact.nodeRunId,
+      actorLabel: nodeRun?.nodeLabel ?? artifact.title ?? artifact.kind,
+      kind: "artifact_published",
+      title: artifact.title ?? artifact.kind,
+      body: artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath,
+      payloadRef: artifact.id
+    };
+  });
 }
 
 function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {

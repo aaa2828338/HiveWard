@@ -120,8 +120,19 @@ async function fetchApi(path: string, init?: RequestInit): Promise<Response> {
   }
 }
 
-function buildApiUrl(path: string): string {
-  return apiBaseUrl ? `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}` : path;
+function buildApiUrl(path: string, baseUrl = apiBaseUrl): string {
+  if (isAbsoluteResourceUrl(path)) return path;
+  return baseUrl ? `${baseUrl}${path.startsWith("/") ? path : `/${path}`}` : path;
+}
+
+export function resolveApiResourceUrl(path: string, baseUrl = apiBaseUrl): string {
+  const trimmed = path.trim();
+  if (!trimmed) return trimmed;
+  return buildApiUrl(trimmed, baseUrl);
+}
+
+function isAbsoluteResourceUrl(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith("//");
 }
 
 function isAbortError(error: unknown): boolean {
