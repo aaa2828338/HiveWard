@@ -68,6 +68,7 @@ type IdentityKind = "model" | "agent" | "channel" | "provider";
 type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
 type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
+type RunOutputTabKey = "current" | "plan" | "agentReports" | "release" | "artifacts" | "advanced";
 
 type IdentitySpec = {
   key: string;
@@ -496,6 +497,7 @@ export function RunsPage({
   );
   const activeRun = selectedRunId ? blueprintRuns.find((runView) => runView.run.id === selectedRunId) : undefined;
   const [activeIssueKey, setActiveIssueKey] = useState<string | undefined>();
+  const [activeOutputTab, setActiveOutputTab] = useState<RunOutputTabKey>("current");
   const [blueprintPickerOpen, setBlueprintPickerOpen] = useState(false);
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
   const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() =>
@@ -551,11 +553,24 @@ export function RunsPage({
   const latestReleaseReport = activeRun?.releaseReports?.at(-1);
   const artifacts = activeRun?.artifacts ?? [];
   const advancedDetailsBody = activeRun ? buildRunAdvancedDetailsBody(activeRun, approvedPlan) : "";
+  const outputTabAriaLabel = language === "zh-CN" ? "运行输出标签" : "Run output tabs";
+  const outputTabs: Array<{ key: RunOutputTabKey; label: string; badge?: string }> = [
+    { key: "current", label: t.trace.modelOutput },
+    { key: "plan", label: reportLayerCopy.planTitle, badge: activeRun ? t.status[activeRun.run.status] : undefined },
+    { key: "agentReports", label: reportLayerCopy.agentReportsTitle, badge: reportLayerCopy.count(agentHumanReports.length) },
+    { key: "release", label: reportLayerCopy.releaseTitle, badge: latestReleaseReport ? `v${latestReleaseReport.version}` : undefined },
+    { key: "artifacts", label: reportLayerCopy.artifactsTitle, badge: reportLayerCopy.count(artifacts.length) },
+    { key: "advanced", label: reportLayerCopy.runAdvancedDetails }
+  ];
 
   useEffect(() => {
     if (!activeIssueKey || issues.some((issue) => issue.key === activeIssueKey)) return;
     setActiveIssueKey(undefined);
   }, [activeIssueKey, issues]);
+
+  useEffect(() => {
+    setActiveOutputTab("current");
+  }, [activeRun?.run.id]);
 
   useEffect(() => {
     if (!activeRun || activeIssueKey || issues.length === 0) return;
@@ -618,7 +633,7 @@ export function RunsPage({
   };
 
   return (
-    <section className="page-grid trace-page-grid">
+    <section className="page-grid trace-page-grid runs-page-grid">
       <div className="trace-page-title">
         <h2>{t.navigation.runs}</h2>
         <div className="run-top-actions">
@@ -709,131 +724,6 @@ export function RunsPage({
         </div>
       </div>
 
-      <section className="run-report-layer" aria-label={reportLayerCopy.layerLabel}>
-        {!blueprint ? (
-          <div className="content-card stack-card run-report-section">
-            <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-          </div>
-        ) : !activeRun ? (
-          <div className="content-card stack-card run-report-section">
-            <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-          </div>
-        ) : (
-          <>
-            <article className="content-card stack-card run-report-section">
-              <div className="card-toolbar">
-                <div className="card-title-block">
-                  <h3>{reportLayerCopy.planTitle}</h3>
-                  <p>{activeRound ? reportLayerCopy.roundLabel(activeRound.roundNumber) : reportLayerCopy.noRound}</p>
-                </div>
-                <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>
-              </div>
-              {approvedPlan ? (
-                <MarkdownRenderer value={approvedPlan.body} className="run-report-body" />
-              ) : (
-                <div className="empty-state compact-empty-state">{reportLayerCopy.noPlan}</div>
-              )}
-            </article>
-
-            <article className="content-card stack-card run-report-section">
-              <div className="card-toolbar">
-                <div className="card-title-block">
-                  <h3>{reportLayerCopy.agentReportsTitle}</h3>
-                  <p>{reportLayerCopy.agentReportsHint}</p>
-                </div>
-                <span className="status-pill status-default">{reportLayerCopy.count(agentHumanReports.length)}</span>
-              </div>
-              {agentHumanReports.length === 0 ? (
-                <div className="empty-state compact-empty-state">{reportLayerCopy.noAgentReports}</div>
-              ) : (
-                <div className="run-agent-report-list">
-                  {agentHumanReports.map((report) => {
-                    const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
-                    const handoff = agentHandoffs.find((candidate) => candidate.nodeRunId === report.nodeRunId);
-                    const reportArtifacts = artifacts.filter((artifact) => artifact.nodeRunId === report.nodeRunId);
-                    const reportBody = buildHumanReportDisplayBody(report.bodyMd, reportArtifacts, language);
-                    const reportAdvancedBody = buildAgentReportAdvancedBody(nodeRun, handoff);
-                    return (
-                      <section className="run-agent-report" key={report.id}>
-                        <div className="run-agent-report-header">
-                          <div>
-                            <strong>{report.nodeLabel}</strong>
-                            <span>{report.title}</span>
-                          </div>
-                          <span className={`status-pill ${report.source === "fallback" ? "status-empty" : "status-succeeded"}`}>
-                            {reportLayerCopy.source(report.source)}
-                          </span>
-                        </div>
-                        <MarkdownRenderer value={reportBody} className="run-report-body" />
-                        {reportAdvancedBody && (
-                          <details className="run-report-advanced">
-                            <summary>{reportLayerCopy.advancedDetails}</summary>
-                            <MarkdownRenderer value={reportAdvancedBody} className="run-report-body" />
-                          </details>
-                        )}
-                      </section>
-                    );
-                  })}
-                </div>
-              )}
-            </article>
-
-            <article className="content-card stack-card run-report-section">
-              <div className="card-toolbar">
-                <div className="card-title-block">
-                  <h3>{reportLayerCopy.releaseTitle}</h3>
-                  <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
-                </div>
-                {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
-              </div>
-              {latestReleaseReport ? (
-                <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
-              ) : (
-                <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
-              )}
-            </article>
-
-            <article className="content-card stack-card run-report-section">
-              <div className="card-toolbar">
-                <div className="card-title-block">
-                  <h3>{reportLayerCopy.artifactsTitle}</h3>
-                  <p>{reportLayerCopy.artifactsHint}</p>
-                </div>
-                <span className="status-pill status-default">{reportLayerCopy.count(artifacts.length)}</span>
-              </div>
-              {artifacts.length === 0 ? (
-                <div className="empty-state compact-empty-state">{reportLayerCopy.noArtifacts}</div>
-              ) : (
-                <div className="run-artifact-list">
-                  {artifacts.map((artifact) => (
-                    <div className="run-artifact-row" key={artifact.id}>
-                      <div>
-                        <strong>{artifact.title ?? artifact.kind}</strong>
-                        <span>{artifact.kind}{artifact.format ? ` · ${artifact.format}` : ""}</span>
-                      </div>
-                      {artifact.downloadUrl ? (
-                        <a href={resolveArtifactDownloadUrl(artifact.downloadUrl)} rel="noreferrer" target="_blank">
-                          {reportLayerCopy.openArtifact}
-                        </a>
-                      ) : (
-                        <span>{formatArtifactLocation(artifact)}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            {advancedDetailsBody && (
-              <details className="content-card stack-card run-report-section run-report-advanced-section">
-                <summary>{reportLayerCopy.runAdvancedDetails}</summary>
-                <MarkdownRenderer value={advancedDetailsBody} className="run-report-body" />
-              </details>
-            )}
-          </>
-        )}
-      </section>
-
       <section className="trace-layout">
         <div className="trace-column-shell">
           <div className="trace-column-header">
@@ -851,7 +741,10 @@ export function RunsPage({
                     key={issue.key}
                     type="button"
                     className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
-                    onClick={() => setActiveIssueKey(issue.key)}
+                    onClick={() => {
+                      setActiveIssueKey(issue.key);
+                      setActiveOutputTab("current");
+                    }}
                   >
                     <div className="trace-issue-index">{issue.index}</div>
                     <div className="trace-issue-main">
@@ -872,23 +765,192 @@ export function RunsPage({
           <div className="trace-column-header">
             <h3>{t.trace.modelOutput}</h3>
           </div>
-          <div className="content-card stack-card trace-output-column">
-            {activeIssue ? (
-              activeIssueOutput !== undefined ? (
-                <MarkdownRenderer
-                  value={activeIssueOutput}
-                  className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
-                />
-              ) : (
-                <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
-              )
-            ) : !blueprint ? (
-              <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-            ) : activeRun ? (
-              <div className="empty-state page-empty">{t.empty.selectNode}</div>
-            ) : (
-              <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-            )}
+          <div className="content-card stack-card trace-output-column run-output-column">
+            <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
+              {outputTabs.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={activeOutputTab === tab.key}
+                  className={`run-output-tab${activeOutputTab === tab.key ? " selected" : ""}`}
+                  onClick={() => setActiveOutputTab(tab.key)}
+                  disabled={!activeRun && tab.key !== "current"}
+                >
+                  <span>{tab.label}</span>
+                  {tab.badge && <small>{tab.badge}</small>}
+                </button>
+              ))}
+            </div>
+
+            <div className="run-output-panel-stack">
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "current"}>
+                {activeIssue ? (
+                  activeIssueOutput !== undefined ? (
+                    <MarkdownRenderer
+                      value={activeIssueOutput}
+                      className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
+                    />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+                  )
+                ) : !blueprint ? (
+                  <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                ) : activeRun ? (
+                  <div className="empty-state page-empty">{t.empty.selectNode}</div>
+                ) : (
+                  <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                )}
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "plan"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.planTitle}</h4>
+                      <p>{activeRound ? reportLayerCopy.roundLabel(activeRound.roundNumber) : reportLayerCopy.noRound}</p>
+                    </div>
+                    {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : approvedPlan ? (
+                    <MarkdownRenderer value={approvedPlan.body} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noPlan}</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "agentReports"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.agentReportsTitle}</h4>
+                      <p>{reportLayerCopy.agentReportsHint}</p>
+                    </div>
+                    <span className="status-pill status-default">{reportLayerCopy.count(agentHumanReports.length)}</span>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : agentHumanReports.length === 0 ? (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noAgentReports}</div>
+                  ) : (
+                    <div className="run-agent-report-list">
+                      {agentHumanReports.map((report) => {
+                        const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
+                        const handoff = agentHandoffs.find((candidate) => candidate.nodeRunId === report.nodeRunId);
+                        const reportArtifacts = artifacts.filter((artifact) => artifact.nodeRunId === report.nodeRunId);
+                        const reportBody = buildHumanReportDisplayBody(report.bodyMd, reportArtifacts, language);
+                        const reportAdvancedBody = buildAgentReportAdvancedBody(nodeRun, handoff);
+                        return (
+                          <section className="run-agent-report" key={report.id}>
+                            <div className="run-agent-report-header">
+                              <div>
+                                <strong>{report.nodeLabel}</strong>
+                                <span>{report.title}</span>
+                              </div>
+                              <span className={`status-pill ${report.source === "fallback" ? "status-empty" : "status-succeeded"}`}>
+                                {reportLayerCopy.source(report.source)}
+                              </span>
+                            </div>
+                            <MarkdownRenderer value={reportBody} className="run-report-body" />
+                            {reportAdvancedBody && (
+                              <details className="run-report-advanced">
+                                <summary>{reportLayerCopy.advancedDetails}</summary>
+                                <MarkdownRenderer value={reportAdvancedBody} className="run-report-body" />
+                              </details>
+                            )}
+                          </section>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "release"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.releaseTitle}</h4>
+                      <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
+                    </div>
+                    {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : latestReleaseReport ? (
+                    <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "artifacts"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.artifactsTitle}</h4>
+                      <p>{reportLayerCopy.artifactsHint}</p>
+                    </div>
+                    <span className="status-pill status-default">{reportLayerCopy.count(artifacts.length)}</span>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : artifacts.length === 0 ? (
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noArtifacts}</div>
+                  ) : (
+                    <div className="run-artifact-list">
+                      {artifacts.map((artifact) => (
+                        <div className="run-artifact-row" key={artifact.id}>
+                          <div>
+                            <strong>{artifact.title ?? artifact.kind}</strong>
+                            <span>{artifact.kind}{artifact.format ? ` · ${artifact.format}` : ""}</span>
+                          </div>
+                          {artifact.downloadUrl ? (
+                            <a href={resolveArtifactDownloadUrl(artifact.downloadUrl)} rel="noreferrer" target="_blank">
+                              {reportLayerCopy.openArtifact}
+                            </a>
+                          ) : (
+                            <span>{formatArtifactLocation(artifact)}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "advanced"}>
+                <div className="run-output-section">
+                  <div className="run-output-section-header">
+                    <div>
+                      <h4>{reportLayerCopy.runAdvancedDetails}</h4>
+                      <p>{reportLayerCopy.layerLabel}</p>
+                    </div>
+                  </div>
+                  {!blueprint ? (
+                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  ) : !activeRun ? (
+                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  ) : advancedDetailsBody ? (
+                    <MarkdownRenderer value={advancedDetailsBody} className="run-report-body" />
+                  ) : (
+                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+                  )}
+                </div>
+              </section>
+            </div>
           </div>
         </div>
       </section>

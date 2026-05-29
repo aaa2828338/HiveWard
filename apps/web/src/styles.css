@@ -7881,6 +7881,10 @@ html[data-theme="light"] .inbox-row.processed:hover {
   overflow: hidden;
 }
 
+.runs-page-grid {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
 .trace-page-title {
   --blueprint-selector-width: clamp(200px, 22vw, 320px);
   min-width: 0;
@@ -8186,6 +8190,110 @@ html[data-theme="light"] .inbox-row.processed:hover {
   overflow: auto;
   padding: 12px 4px 12px 12px;
   scrollbar-gutter: stable;
+}
+
+.trace-output-column.run-output-column {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+  padding: 12px;
+}
+
+.run-output-tabs {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0 0 10px;
+  border-bottom: 1px solid var(--line);
+  scrollbar-gutter: stable;
+}
+
+.run-output-tab {
+  min-width: max-content;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(17 23 34 / 0.72);
+  color: var(--muted-strong);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1;
+  padding: 0 10px;
+}
+
+.run-output-tab:hover:not(:disabled) {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+.run-output-tab.selected {
+  border-color: var(--accent);
+  background: rgb(245 154 11 / 0.14);
+  color: var(--text);
+}
+
+.run-output-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.run-output-tab small {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.run-output-panel-stack {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.run-output-panel {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 2px 4px 0;
+  scrollbar-gutter: stable;
+}
+
+.run-output-panel[hidden] {
+  display: none;
+}
+
+.run-output-section {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.run-output-section-header {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.run-output-section-header h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.run-output-section-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .trace-issue-list,
