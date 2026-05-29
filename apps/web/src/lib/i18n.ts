@@ -104,6 +104,7 @@ export interface Messages {
   fields: {
     advancedSettings: string;
     advancedSettingsHint: string;
+    accessMode: string;
     body: string;
     category: string;
     channels: string;
@@ -114,6 +115,7 @@ export interface Messages {
     instructions: string;
     label: string;
     manager: string;
+    managerMode: string;
     maxHandoffs: string;
     maxIterations: string;
     maxPreparationAttempts: string;
@@ -133,7 +135,11 @@ export interface Messages {
     relatedBlueprint: string;
     researchAgent: string;
     runLabel: string;
+    safeMode: string;
     section: string;
+    selfDispatch: string;
+    selfIteration: string;
+    sequentialDispatch: string;
     settings: string;
     skills: string;
     slot: string;
@@ -143,6 +149,7 @@ export interface Messages {
     tagColor: string;
     tagLabel: string;
     title: string;
+    fullAccessMode: string;
     updatedAt: string;
     systemPrompt: string;
     userPrompt: string;
@@ -334,7 +341,8 @@ export const messages: Record<Language, Messages> = {
     },
     fields: {
       advancedSettings: "Advanced settings",
-      advancedSettingsHint: "Model, identity, permission, workspace, timeout, output",
+      advancedSettingsHint: "Model, identity, access mode, workspace, timeout, output",
+      accessMode: "Access mode",
       body: "Body",
       category: "Category",
       channels: "Channels",
@@ -345,6 +353,7 @@ export const messages: Record<Language, Messages> = {
       instructions: "Instructions",
       label: "Label",
       manager: "Manager",
+      managerMode: "Manager mode",
       maxHandoffs: "Max handoffs",
       maxIterations: "Max iterations",
       maxPreparationAttempts: "Preparation attempts",
@@ -364,7 +373,11 @@ export const messages: Record<Language, Messages> = {
       relatedBlueprint: "Related blueprint",
       researchAgent: "Research agent",
       runLabel: "Run label",
+      safeMode: "Safe mode",
       section: "Section",
+      selfDispatch: "Self dispatch",
+      selfIteration: "Self iteration",
+      sequentialDispatch: "Sequential dispatch",
       settings: "Settings",
       skills: "Skills",
       slot: "Slot",
@@ -374,6 +387,7 @@ export const messages: Record<Language, Messages> = {
       tagColor: "Tag color",
       tagLabel: "Tag label",
       title: "Title",
+      fullAccessMode: "Full access mode",
       updatedAt: "Updated",
       systemPrompt: "System prompt",
       userPrompt: "User prompt",
@@ -682,7 +696,8 @@ export const messages: Record<Language, Messages> = {
     },
     fields: {
       advancedSettings: "\u9ad8\u7ea7\u8bbe\u7f6e",
-      advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u6743\u9650\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
+      advancedSettingsHint: "\u6a21\u578b\u3001\u8eab\u4efd\u3001\u8bbf\u95ee\u6a21\u5f0f\u3001\u5de5\u4f5c\u533a\u3001\u8d85\u65f6\u3001\u8f93\u51fa",
+      accessMode: "\u8bbf\u95ee\u6a21\u5f0f",
       harness: "Harness",
       systemPrompt: "\u7cfb\u7edf\u63d0\u793a\u8bcd",
       userPrompt: "\u7528\u6237\u63d0\u793a\u8bcd",
@@ -695,6 +710,7 @@ export const messages: Record<Language, Messages> = {
       instructions: "说明",
       label: "标签",
       manager: "管理器",
+      managerMode: "\u7ba1\u7406\u5668\u6a21\u5f0f",
       maxHandoffs: "最大交接次数",
       maxIterations: "最大迭代次数",
       maxPreparationAttempts: "准备尝试次数",
@@ -714,7 +730,11 @@ export const messages: Record<Language, Messages> = {
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
       researchAgent: "调研 agent",
       runLabel: "运行标签",
+      safeMode: "\u5b89\u5168\u6a21\u5f0f",
       section: "页面",
+      selfDispatch: "\u81ea\u5206\u53d1",
+      selfIteration: "\u81ea\u8fed\u4ee3",
+      sequentialDispatch: "\u987a\u5e8f\u5206\u53d1",
       settings: "设置",
       skills: "Skills",
       slot: "槽位",
@@ -724,6 +744,7 @@ export const messages: Record<Language, Messages> = {
       tagColor: "标签颜色",
       tagLabel: "标签名称",
       title: "标题",
+      fullAccessMode: "\u5b8c\u5168\u8bbf\u95ee\u6a21\u5f0f",
       updatedAt: "更新时间",
       waitFor: "等待条件",
       blueprint: "\u84dd\u56fe",

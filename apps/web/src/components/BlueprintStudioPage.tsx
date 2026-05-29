@@ -95,8 +95,7 @@ import type {
   BlueprintNodeType,
   BlueprintRunSummary,
   BlueprintRunView,
-  RuntimeAccessPolicy,
-  RuntimeAccessPolicyAxisSupport
+  RuntimeAccessPolicy
 } from "@hiveward/shared";
 import {
   MANAGER_SLOT_DEFAULT_SIZE,
@@ -2190,16 +2189,25 @@ function BlueprintSelect({
 function RuntimeAccessPolicyFields({
   runtimeId,
   config,
+  t,
   onPatchConfig
 }: {
   runtimeId: AgentRuntimeId;
   config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">;
+  t: Messages;
   onPatchConfig: (patch: Partial<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig>) => void;
 }) {
   const policy = normalizePolicyForRuntime(config, runtimeId);
-  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
-  const patchPolicy = (patch: Partial<RuntimeAccessPolicy>) => {
-    const nextPolicy = normalizePolicyForRuntime({ ...config, runtimeAccessPolicy: { ...policy, ...patch } }, runtimeId);
+  const accessMode = resolveRuntimeAccessMode(policy, runtimeId);
+  const patchAccessMode = (mode: RuntimeAccessMode) => {
+    const nextPolicy = normalizePolicyForRuntime(
+      {
+        ...config,
+        permissionProfile: mode === "full" ? "workspace_write" : "read_only",
+        runtimeAccessPolicy: runtimeAccessPolicyForMode(mode, runtimeId)
+      },
+      runtimeId
+    );
     onPatchConfig({
       runtimeAccessPolicy: nextPolicy,
       permissionProfile: nextPolicy.filesystem
@@ -2207,46 +2215,18 @@ function RuntimeAccessPolicyFields({
   };
 
   return (
-    <>
-      <label>
-        <span>{policyAxisLabel("Filesystem", support.filesystem)}</span>
-        <BlueprintSelect
-          value={policy.filesystem}
-          options={[
-            { value: "read_only", label: "Read only" },
-            { value: "workspace_write", label: "Workspace write" }
-          ]}
-          ariaLabel="Filesystem access"
-          onChange={(value) => patchPolicy({ filesystem: value as RuntimeAccessPolicy["filesystem"] })}
-        />
-      </label>
-      <label>
-        <span>{policyAxisLabel("Network", support.network)}</span>
-        <BlueprintSelect
-          value={policy.network}
-          options={[
-            { value: "enabled", label: "Enabled" },
-            { value: "disabled", label: "Disabled", disabled: support.network === "unsupported" }
-          ]}
-          ariaLabel="Network access"
-          disabled={support.network === "unsupported"}
-          onChange={(value) => patchPolicy({ network: value as RuntimeAccessPolicy["network"] })}
-        />
-      </label>
-      <label>
-        <span>{policyAxisLabel("Web search", support.webSearch)}</span>
-        <BlueprintSelect
-          value={policy.webSearch}
-          options={[
-            { value: "disabled", label: "Disabled" },
-            { value: "live", label: "Live", disabled: support.webSearch === "unsupported" }
-          ]}
-          ariaLabel="Web search access"
-          disabled={support.webSearch === "unsupported"}
-          onChange={(value) => patchPolicy({ webSearch: value as RuntimeAccessPolicy["webSearch"] })}
-        />
-      </label>
-    </>
+    <label>
+      <span>{t.fields.accessMode}</span>
+      <BlueprintSelect
+        value={accessMode}
+        options={[
+          { value: "safe", label: t.fields.safeMode },
+          { value: "full", label: t.fields.fullAccessMode }
+        ]}
+        ariaLabel={t.fields.accessMode}
+        onChange={(value) => patchAccessMode(value as RuntimeAccessMode)}
+      />
+    </label>
   );
 }
 
@@ -2254,23 +2234,56 @@ function normalizePolicyForRuntime(
   config: Pick<AgentNodeConfig & ManagerNodeConfig & SummaryNodeConfig, "permissionProfile" | "runtimeAccessPolicy">,
   runtimeId: AgentRuntimeId
 ): RuntimeAccessPolicy {
-  const defaults: RuntimeAccessPolicy = {
-    filesystem: "read_only",
-    network: "enabled",
-    webSearch: "disabled"
-  };
   const support = runtimeAccessPolicySupportByRuntime[runtimeId];
-  const policy = normalizeRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile);
+  const defaultPolicy = runtimeAccessPolicyForMode(
+    config.permissionProfile === "workspace_write" ? "full" : "safe",
+    runtimeId
+  );
+  const policy = normalizeRuntimeAccessPolicy(
+    { ...defaultPolicy, ...config.runtimeAccessPolicy },
+    config.permissionProfile
+  );
   return {
     filesystem: policy.filesystem,
-    network: support.network === "unsupported" ? defaults.network : policy.network,
-    webSearch: support.webSearch === "unsupported" ? defaults.webSearch : policy.webSearch
+    network: support.network === "unsupported" ? "enabled" : policy.network,
+    webSearch: support.webSearch === "unsupported" ? "disabled" : policy.webSearch
   };
 }
 
-function policyAxisLabel(label: string, support: RuntimeAccessPolicyAxisSupport): string {
-  if (support === "enforced") return label;
-  return `${label} (${support})`;
+function runtimeAccessPolicyForMode(mode: RuntimeAccessMode, runtimeId: AgentRuntimeId): RuntimeAccessPolicy {
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  if (mode === "full") {
+    return {
+      filesystem: "workspace_write",
+      network: "enabled",
+      webSearch: support.webSearch === "unsupported" ? "disabled" : "live"
+    };
+  }
+  return {
+    filesystem: "read_only",
+    network: support.network === "unsupported" ? "enabled" : "disabled",
+    webSearch: "disabled"
+  };
+}
+
+function resolveRuntimeAccessMode(policy: RuntimeAccessPolicy, runtimeId: AgentRuntimeId): RuntimeAccessMode {
+  const support = runtimeAccessPolicySupportByRuntime[runtimeId];
+  const hasElevatedAccess = policy.filesystem === "workspace_write" ||
+    (support.network !== "unsupported" && policy.network === "enabled") ||
+    (support.webSearch !== "unsupported" && policy.webSearch === "live");
+  return hasElevatedAccess ? "full" : "safe";
+}
+
+function resolveManagerPanelMode(config: ManagerNodeConfig): ManagerPanelMode {
+  if (config.lifecycleMode === "self_iteration") return "self_iteration";
+  if (config.dispatchMode === "self_dispatch") return "self_dispatch";
+  return "sequential";
+}
+
+function managerModePatch(mode: ManagerPanelMode): Partial<ManagerNodeConfig> {
+  if (mode === "self_iteration") return { lifecycleMode: "self_iteration", dispatchMode: "self_dispatch" };
+  if (mode === "self_dispatch") return { lifecycleMode: "none", dispatchMode: "self_dispatch" };
+  return { lifecycleMode: "none", dispatchMode: "sequential" };
 }
 
 function BatchAgentSettingsModal({
@@ -2464,6 +2477,7 @@ function NodeConfigForm({
           <RuntimeAccessPolicyFields
             runtimeId={runtimeId}
             config={config}
+            t={t}
             onPatchConfig={onPatchConfig}
           />
           <label className="field-span-full">
@@ -2605,6 +2619,12 @@ function NodeConfigForm({
       defaultLabel: t.common.defaultOption,
       defaultBadgeLabel: t.common.defaultOption
     });
+    const managerMode = resolveManagerPanelMode(config);
+    const managerModeOptions: BlueprintSelectOption[] = [
+      { value: "sequential", label: t.fields.sequentialDispatch },
+      { value: "self_dispatch", label: t.fields.selfDispatch },
+      { value: "self_iteration", label: t.fields.selfIteration }
+    ];
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
@@ -2637,9 +2657,19 @@ function NodeConfigForm({
             />
           )}
         </label>
+        <label>
+          <span>{t.fields.managerMode}</span>
+          <BlueprintSelect
+            value={managerMode}
+            options={managerModeOptions}
+            ariaLabel={t.fields.managerMode}
+            onChange={(value) => onPatchConfig(managerModePatch(value as ManagerPanelMode))}
+          />
+        </label>
         <RuntimeAccessPolicyFields
           runtimeId={runtimeId}
           config={config}
+          t={t}
           onPatchConfig={onPatchConfig}
         />
         <label>
@@ -3003,6 +3033,9 @@ type BlueprintRuntimeModelOption = {
   label: string;
   isDefault?: boolean;
 };
+
+type RuntimeAccessMode = "safe" | "full";
+type ManagerPanelMode = "sequential" | "self_dispatch" | "self_iteration";
 
 type BlueprintSkillOption = {
   id: string;
