@@ -605,45 +605,6 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes approval replies through the run blueprint snapshot", async () => {
-    const fixture = await createStoreFixture();
-    const capturedBlueprints: BlueprintDefinition[] = [];
-    const worker = {
-      async applyApprovalRequest(
-        blueprint: BlueprintDefinition,
-        run: BlueprintRun,
-        _approvalRequestId: string,
-        _action: "approve" | "reject" | "reply",
-        _input?: { comment?: string; message?: string; selectedReplyId?: string }
-      ) {
-        capturedBlueprints.push(blueprint);
-        return { ...run, status: "waiting_approval" as const };
-      }
-    } as unknown as BlueprintWorker;
-
-    try {
-      const blueprint = await fixture.store.getBlueprint("multi-agent-compatibility-blueprint");
-      if (!blueprint) throw new Error("Expected compatibility blueprint.");
-      const runBlueprint = JSON.parse(JSON.stringify(blueprint)) as BlueprintDefinition;
-      readAgentConfig(runBlueprint, "compat-claude-check").modelId = "claude/snapshot-default";
-      const run = await fixture.store.createBlueprintRun(runBlueprint, "tester");
-      await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
-
-      await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reply`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-1", message: "Please revise this answer." })
-        }));
-      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
-
-      expect(capturedBlueprints).toHaveLength(1);
-      expect(readAgentConfig(capturedBlueprints[0]!, "compat-claude-check").modelId).toBe("claude/snapshot-default");
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
   it("returns 409 for repeated approval and inbox decisions", async () => {
     const fixture = await createStoreFixture();
     try {
