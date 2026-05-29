@@ -259,12 +259,18 @@ describe("BlueprintWorker", () => {
     expect(run.status).toBe("running");
     expect(view?.run.status).toBe("failed");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("succeeded");
-    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.input).toEqual({ upstream: [] });
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.input).toMatchObject({
+      upstream: [],
+      agentWorkspace: expect.objectContaining({
+        path: expect.stringContaining(path.join("blueprint-workspaces", blueprint.id, "agents"))
+      })
+    });
     const failedPlanRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "plan");
     expect(failedPlanRun?.status).toBe("failed");
-    expect(failedPlanRun?.input).toEqual({
-      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "1. Brief", status: "succeeded", output: "brief ok" })]
+    expect(failedPlanRun?.input).toMatchObject({
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "1. Brief", status: "succeeded", humanReportMd: "brief ok" })]
     });
+    expect((failedPlanRun?.input as { upstream?: Array<Record<string, unknown>> } | undefined)?.upstream?.[0]).not.toHaveProperty("output");
     expect((failedPlanRun?.input as { upstream?: Array<{ nodeRunId?: string; runtimeRef?: { runId?: string } }> } | undefined)?.upstream?.[0])
       .toMatchObject({
         nodeRunId: expect.any(String),
@@ -312,12 +318,30 @@ describe("BlueprintWorker", () => {
     const archiveWhileRunning = JSON.parse(readFileSync(path.join(tempDir, "runs", `${run.id}.json`), "utf8")) as {
       nodeRuns: Array<{ nodeId: string; status: string; input?: unknown; runtimeRef?: { taskId?: string; runId?: string } }>;
     };
+    const agentWorkspace = (runningNode.input as {
+      agentWorkspace?: { path?: string; artifactsPath?: string; tmpPath?: string };
+    }).agentWorkspace;
 
-    expect(runningNode.input).toEqual({ upstream: [] });
+    expect(runningNode.input).toMatchObject({
+      upstream: [],
+      agentWorkspace: {
+        path: expect.stringContaining(path.join("blueprint-workspaces", blueprint.id, "agents")),
+        artifactsPath: expect.stringContaining("artifacts"),
+        tmpPath: expect.stringContaining("tmp")
+      }
+    });
+    expect(existsSync(agentWorkspace?.path ?? "")).toBe(true);
+    expect(existsSync(agentWorkspace?.artifactsPath ?? "")).toBe(true);
+    expect(existsSync(agentWorkspace?.tmpPath ?? "")).toBe(true);
     expect(runningNode.runtimeRef).toMatchObject({ taskId: "task-1", runId: "task-1-run" });
     expect(archiveWhileRunning.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")).toMatchObject({
       status: "running",
-      input: { upstream: [] },
+      input: expect.objectContaining({
+        upstream: [],
+        agentWorkspace: expect.objectContaining({
+          path: expect.stringContaining(path.join("blueprint-workspaces", blueprint.id, "agents"))
+        })
+      }),
       runtimeRef: expect.objectContaining({ taskId: "task-1", runId: "task-1-run" })
     });
 
@@ -613,7 +637,7 @@ describe("BlueprintWorker", () => {
       modelId: "gpt-5-codex",
       prompt: expect.stringContaining("structured merge")
     });
-    expect((adapter.calls[1]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ humanReportMd?: string }> }).upstream?.[0]?.humanReportMd).toBe("brief ready");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "summary")?.output).toBe("merged brief");
   });
 
@@ -654,6 +678,8 @@ describe("BlueprintWorker", () => {
       prompt: expect.stringContaining("Return an executive summary.")
     });
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd");
+    expect(adapter.calls[0]?.prompt).toContain("AgentOutputEnvelope is a transport wrapper");
+    expect(adapter.calls[0]?.prompt).toContain("humanReportMd is your free-form human answer");
   });
 
   it("lets Agent approval replies revise output before approval sends the final answer", async () => {
@@ -1069,11 +1095,12 @@ describe("BlueprintWorker", () => {
         upstream: [
           expect.objectContaining({
             nodeId: "slot-1",
-            output: "slot output"
+            humanReportMd: "slot output"
           })
         ]
       }
     });
+    expect((followUpRun?.input as { upstream?: Array<Record<string, unknown>> } | undefined)?.upstream?.[0]).not.toHaveProperty("output");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["slot-agent", "follow-up"]);
   });
 
@@ -1194,8 +1221,8 @@ describe("BlueprintWorker", () => {
 
     expect(run.status).toBe("running");
     expect(view?.run.status).toBe("succeeded");
-    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "gate")?.input).toEqual({
-      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", output: "brief ready" })]
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "gate")?.input).toMatchObject({
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", humanReportMd: "brief ready" })]
     });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "gate")?.output).toEqual({ result: true });
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "yes")?.status).toBe("succeeded");
@@ -1237,8 +1264,8 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "alpha")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "beta")?.status).toBe("succeeded");
     expect(adapter.calls.slice(1).every((call) => Array.isArray((call.input as { upstream?: unknown[] }).upstream))).toBe(true);
-    expect((adapter.calls[1]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
-    expect((adapter.calls[2]?.input as { upstream?: Array<{ output: unknown }> }).upstream?.[0]?.output).toBe("brief ready");
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ humanReportMd?: string }> }).upstream?.[0]?.humanReportMd).toBe("brief ready");
+    expect((adapter.calls[2]?.input as { upstream?: Array<{ humanReportMd?: string }> }).upstream?.[0]?.humanReportMd).toBe("brief ready");
   });
 
   it("approves the requested Agent approval when multiple approvals are waiting", async () => {
@@ -1373,11 +1400,13 @@ describe("BlueprintWorker", () => {
         {
           id: "manager",
           type: "manager",
+          runtimeId: "openclaw",
           position: { x: 80, y: 180 },
           config: {
             label: "Manager",
+            dispatchMode: "self_dispatch",
             portCount: 3,
-            maxHandoffs: 6,
+            maxHandoffs: 8,
             instructions: "Route product, developer, and test slots."
           }
         },
@@ -1395,20 +1424,32 @@ describe("BlueprintWorker", () => {
       ]
     );
     const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-1"),
-      createStartedAgentTask("task-2"),
-      createStartedAgentTask("task-3"),
-      createStartedAgentTask("task-4"),
-      createStartedAgentTask("task-5")
+      createStartedAgentTask("task-manager-1"),
+      createStartedAgentTask("task-product"),
+      createStartedAgentTask("task-manager-2"),
+      createStartedAgentTask("task-dev-1"),
+      createStartedAgentTask("task-manager-3"),
+      createStartedAgentTask("task-test-1"),
+      createStartedAgentTask("task-manager-4"),
+      createStartedAgentTask("task-dev-2"),
+      createStartedAgentTask("task-manager-5"),
+      createStartedAgentTask("task-test-2"),
+      createStartedAgentTask("task-manager-6")
     ], [
-      createCompletedAgentTask("task-1", "succeeded", "prd ready"),
-      createCompletedAgentTask("task-2", "succeeded", "app draft"),
-      createCompletedAgentTask("task-3", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
-      createCompletedAgentTask("task-4", "succeeded", "app fixed"),
-      createCompletedAgentTask("task-5", "succeeded", {
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with product requirements" })),
+      createCompletedAgentTask("task-product", "succeeded", "prd ready"),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the draft from the product receipt" })),
+      createCompletedAgentTask("task-dev-1", "succeeded", "app draft"),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "send the draft to QA" })),
+      createCompletedAgentTask("task-test-1", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "QA receipt asks for a loading-state fix" })),
+      createCompletedAgentTask("task-dev-2", "succeeded", "app fixed"),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "retest the fixed build" })),
+      createCompletedAgentTask("task-test-2", "succeeded", {
         humanReportMd: "## QA report\n\n## Delivery location\n\n- No new deliverable produced in this step.",
         result: { status: "pass" }
-      })
+      }),
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "complete", reason: "QA passed after the fix" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1419,7 +1460,19 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "dev" && nodeRun.status === "succeeded")).toHaveLength(2);
     expect(view?.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "test" && nodeRun.status === "succeeded")).toHaveLength(2);
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.status).toBe("succeeded");
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["product", "dev", "test", "dev", "test"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual([
+      "manager",
+      "product",
+      "manager",
+      "dev",
+      "manager",
+      "test",
+      "manager",
+      "dev",
+      "manager",
+      "test",
+      "manager"
+    ]);
   });
 
   it("lets a manager route work to a nested manager", async () => {
@@ -1561,7 +1614,7 @@ describe("BlueprintWorker", () => {
     expect((adapter.calls[0]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("manager-slot-1");
     expect(
       (
-        (adapter.calls[0]?.input as { upstream?: Array<{ output?: { manager?: { slot?: number } } }> }).upstream?.[0]?.output
+        (adapter.calls[0]?.input as { upstream?: Array<{ context?: { manager?: { slot?: number } } }> }).upstream?.[0]?.context
       )?.manager?.slot
     ).toBe(1);
   });
@@ -1763,9 +1816,9 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("succeeded");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["alpha", "beta"]);
     expect((adapter.calls[0]?.input as { upstream?: Array<{ nodeId: string }> }).upstream?.[0]?.nodeId).toBe("single-slot");
-    expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string; output?: unknown }> }).upstream?.[0]).toMatchObject({
+    expect((adapter.calls[1]?.input as { upstream?: Array<{ nodeId: string; humanReportMd?: string }> }).upstream?.[0]).toMatchObject({
       nodeId: "alpha",
-      output: "alpha done"
+      humanReportMd: "alpha done"
     });
     expect(slotOutput).toBe("beta done");
   });
@@ -1868,6 +1921,134 @@ describe("BlueprintWorker", () => {
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "implementer")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.output).toMatchObject({
       status: "completed"
+    });
+  });
+
+  it("runs sequential manager slots in port order without treating slot output as a routing decision", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          runtimeId: "openclaw",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            dispatchMode: "sequential",
+            portCount: 2,
+            maxHandoffs: 4,
+            instructions: "Run both connected slots in order."
+          }
+        },
+        createAgentNode("first", "First", { x: 420, y: 120 }),
+        createAgentNode("second", "Second", { x: 420, y: 280 })
+      ],
+      [
+        { id: "manager-first", source: "manager", sourceHandle: "manager-out-1", target: "first", condition: "success" },
+        { id: "first-manager", source: "first", target: "manager", targetHandle: "manager-in-1", condition: "success" },
+        { id: "manager-second", source: "manager", sourceHandle: "manager-out-2", target: "second", condition: "success" },
+        { id: "second-manager", source: "second", target: "manager", targetHandle: "manager-in-2", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-first"),
+      createStartedAgentTask("task-second")
+    ], [
+      createCompletedAgentTask("task-first", "succeeded", JSON.stringify({ status: "complete", reason: "first slot is done" })),
+      createCompletedAgentTask("task-second", "succeeded", "second slot receipt")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const managerOutput = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager")?.output;
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["first", "second"]);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "first")?.status).toBe("succeeded");
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "second")?.status).toBe("succeeded");
+    expect(managerOutput).toMatchObject({
+      status: "completed",
+      reason: "manager_reached_final_connected_slot"
+    });
+  });
+
+  it("passes structured slot receipts to an agent-driven manager before the next dispatch decision", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          runtimeId: "openclaw",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            dispatchMode: "self_dispatch",
+            portCount: 1,
+            maxHandoffs: 3,
+            instructions: "Dispatch the worker, then complete after reading the receipt."
+          }
+        },
+        createAgentNode("worker", "Worker", { x: 420, y: 180 })
+      ],
+      [
+        { id: "manager-worker", source: "manager", sourceHandle: "manager-out-1", target: "worker", condition: "success" },
+        { id: "worker-manager", source: "worker", target: "manager", targetHandle: "manager-in-1", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-1"),
+      createStartedAgentTask("task-worker"),
+      createStartedAgentTask("task-manager-2")
+    ], [
+      createCompletedAgentTask("task-manager-1", "succeeded", {
+        humanReportMd: "## Dispatch\n\n## Delivery location\n\nNo new deliverable produced in this step.",
+        result: { status: "continue", nextSlot: 1, reason: "Need the worker receipt first." }
+      }),
+      createCompletedAgentTask("task-worker", "succeeded", {
+        humanReportMd: "## Worker report\n\n## Delivery location\n\nNo new deliverable produced in this step.",
+        handoffJson: { summary: "worker finished", next: "manager" },
+        result: { status: "complete", summary: "worker output should not be the only receipt" }
+      }),
+      createCompletedAgentTask("task-manager-2", "succeeded", {
+        humanReportMd: "## Complete\n\n## Delivery location\n\nNo new deliverable produced in this step.",
+        result: { status: "complete", reason: "Worker receipt is present." }
+      })
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const secondManagerInput = adapter.calls.find((call) => call.nodeRunId.includes("manager-decision-2"))?.input;
+    const previousResults = isRecord(secondManagerInput) && Array.isArray(secondManagerInput.previousResults)
+      ? secondManagerInput.previousResults
+      : [];
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(previousResults).toHaveLength(1);
+    expect(previousResults[0]).not.toHaveProperty("output");
+    expect(previousResults[0]).toMatchObject({
+      nodeId: "worker",
+      status: "succeeded",
+      receipt: {
+        valid: true,
+        roleContexts: [expect.objectContaining({
+          nodeId: "worker",
+          nodeLabel: "Worker",
+          type: "agent",
+          systemPrompt: "Run worker"
+        })],
+        humanReportMd: expect.stringContaining("Worker report"),
+        handoffJson: { summary: "worker finished", next: "manager" }
+      }
     });
   });
 
@@ -2677,10 +2858,11 @@ describe("BlueprintWorker", () => {
         humanReportMd: { type: "string" },
         result: {
           type: "object",
-          required: ["status"],
+          required: ["status", "reason"],
           properties: expect.objectContaining({
             status: { type: "string" },
-            nextSlot: { type: "integer" }
+            nextSlot: { type: "integer" },
+            reason: { type: "string" }
           })
         }
       }
@@ -2784,6 +2966,8 @@ describe("BlueprintWorker", () => {
         })
       })
     });
+    const waitingRun = await store.getBlueprintRun(run.id);
+    if (waitingRun) await worker.cancelRun(waitingRun);
   });
 
   it("reruns the current self-iteration round after a release report rejection", async () => {
@@ -3302,7 +3486,7 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("plain text execution plan");
   });
 
-  it("stores agent human reports and handoffs separately and passes handoffJson downstream", async () => {
+  it("stores agent reports and passes report handoff and artifact refs downstream without raw output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -3322,7 +3506,15 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-producer", "succeeded", {
         humanReportMd: "## Producer report\n\nThe producer made structured facts for the next agent.",
         handoffJson: { facts: ["handoff fact"], next: "consumer" },
-        result: { ok: true }
+        result: {
+          ok: true,
+          rawHtml: "<!doctype html><html><body>large deliverable should stay behind an artifact ref</body></html>"
+        },
+        artifacts: [{
+          kind: "html",
+          title: "Producer preview",
+          content: "<!doctype html><html><body>preview</body></html>"
+        }]
       }),
       createCompletedAgentTask("task-consumer", "succeeded", {
         summary: "Consumer used the handoff.",
@@ -3365,14 +3557,19 @@ describe("BlueprintWorker", () => {
       })
     ]);
     expect(upstream[0]).toMatchObject({
-      output: expect.objectContaining({
-        humanReportMd: expect.stringContaining("Producer report")
-      }),
       handoffJson: { facts: ["handoff fact"], next: "consumer" },
-      humanReportMd: expect.stringContaining("Producer report")
+      humanReportMd: expect.stringContaining("Producer report"),
+      artifacts: [
+        expect.objectContaining({
+          title: "Producer preview",
+          kind: "html",
+          downloadUrl: expect.stringContaining("/artifacts/")
+        })
+      ]
     });
+    expect(upstream[0]).not.toHaveProperty("output");
     expect(producerRun?.output).toMatchObject({
-      result: { ok: true }
+      result: expect.objectContaining({ ok: true })
     });
   });
 
@@ -3424,7 +3621,7 @@ describe("BlueprintWorker", () => {
       iteration: 2,
       maxIterations: 2,
       rerunTargets: [{ nodeId: "brief", nodeLabel: "Brief" }],
-      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", output: "brief ready again" })]
+      upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", humanReportMd: "brief ready again" })]
     });
   });
 });

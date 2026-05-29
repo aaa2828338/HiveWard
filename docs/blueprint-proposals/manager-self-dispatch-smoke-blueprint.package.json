@@ -1,0 +1,437 @@
+{
+  "schema": "hiveward.blueprint-package/v1",
+  "exportedAt": "2026-05-29T17:37:59.000Z",
+  "blueprints": [
+    {
+      "id": "manager-self-dispatch-smoke-blueprint",
+      "name": "Manager 自分发烟测：需求-HTML-QA",
+      "description": "一个最小 Manager 自分发测试蓝图：Manager 必须根据真实 Agent 回执依次派发需求分析、HTML 页面制作和 QA 验收，不能只看槽位菜单宣布完成。",
+      "version": 1,
+      "nodes": [
+        {
+          "id": "self-dispatch-manager",
+          "type": "manager",
+          "runtimeId": "codex",
+          "position": {
+            "x": 80,
+            "y": 300
+          },
+          "config": {
+            "label": "自分发测试 Manager",
+            "description": "根据 previousResults 中真实回执逐步派发任务；只有 QA 明确通过后才能 complete。",
+            "portCount": 3,
+            "maxHandoffs": 6,
+            "agentName": "manager-self-dispatch-smoke",
+            "dispatchMode": "self_dispatch",
+            "timeoutMs": 600000,
+            "tools": [],
+            "instructions": "你是 HiveWard 的 Manager 自分发测试调度员。你的职责是根据 upstream、previousResults 和 delegationRoster 选择下一个 slot，不要自己写需求、HTML 或 QA 报告。\n\n槽位职责：\nSlot 1 = 需求分析 Agent：阅读用户输入，整理简短需求说明，只输出报告，不生成文件。\nSlot 2 = 页面制作 Agent：必须基于 Slot 1 需求报告生成一个单文件 HTML 产物，并在 artifacts 和报告的 Delivery location / 交付位置中声明可点击或可打开的位置。\nSlot 3 = QA 验收 Agent：读取 Slot 1 需求报告和 Slot 2 HTML 产物链接，输出验收报告，不生成文件。\n\n调度规则：\n1. 如果 previousResults 中还没有需求分析 Agent 的真实回执，返回 continue 到 nextSlot 1。\n2. 只有看到 Slot 1 的需求分析报告后，才能返回 continue 到 nextSlot 2。\n3. 只有看到 Slot 2 的 HTML 产物链接或 artifacts 条目后，才能返回 continue 到 nextSlot 3。\n4. 只有看到 Slot 3 的 QA 报告明确写出通过、passed=true、status=pass/complete/approved，且 QA 报告检查了 HTML 产物链接后，才能返回 complete。\n5. 如果某个槽位回执缺少必要内容，返回 retry 到对应 nextSlot，并在 reason 中说明缺失内容。\n6. delegationRoster 只是可派发菜单，不是完成证据；previousResults 才是成绩单。不能只根据槽位说明宣布完成。\n\n每次 Manager 决策必须只返回 JSON，不要 markdown。格式只能是：\n{\"status\":\"continue\",\"nextSlot\":1,\"reason\":\"我看到了...，所以派给...\"}\n{\"status\":\"retry\",\"nextSlot\":2,\"reason\":\"我看到了...，但缺少...，所以打回...\"}\n{\"status\":\"complete\",\"reason\":\"我看到了 QA 对具体 HTML 产物链接的通过验收，所以完成\"}\n\nreason 必须说明：看到了哪个真实回执或产物链接，以及为什么派给下一个 slot 或完成。"
+          }
+        },
+        {
+          "id": "slot-requirements",
+          "type": "manager_slot",
+          "position": {
+            "x": 520,
+            "y": 40
+          },
+          "size": {
+            "width": 640,
+            "height": 300
+          },
+          "config": {
+            "label": "Slot 1 - 需求分析",
+            "description": "阅读用户输入，整理一个简短需求说明；只输出报告，不生成文件。",
+            "managerNodeId": "self-dispatch-manager",
+            "slot": 1
+          }
+        },
+        {
+          "id": "requirements-agent",
+          "type": "agent",
+          "runtimeId": "codex",
+          "parentId": "slot-requirements",
+          "position": {
+            "x": 150,
+            "y": 120
+          },
+          "config": {
+            "label": "需求分析 Agent",
+            "resultRole": "ignore",
+            "agentName": "self-dispatch-requirements-agent",
+            "description": "阅读用户输入并整理简短需求说明。只输出报告，不生成文件。",
+            "permissionProfile": "read_only",
+            "timeoutMs": 300000,
+            "prompt": "你是需求分析 Agent。请阅读 upstream 中的用户输入，整理一个简短需求说明，供后续 HTML 页面制作使用。\n\n产物要求：只输出报告，不生成任何文件，不声明 artifact。\n\n报告必须包含：\n- 需求摘要\n- 页面标题，必须是“自分发测试页面”\n- 页面需要包含的一段说明文字\n- 页面需要包含的彩色状态卡片及其文案\n- 验收要点\n- Delivery location / 交付位置：明确写“无新文件产物；本节点只交付需求报告”。\n\n请返回 HiveWard AgentOutputEnvelope JSON：\n- contractVersion: 2\n- humanReportMd: 上述报告 Markdown\n- handoffJson: 包含 requirementBrief、pageTitle、descriptionText、statusCardText、acceptanceCriteria\n- artifacts: []",
+            "outputSchema": {
+              "type": "object",
+              "required": [
+                "contractVersion",
+                "humanReportMd",
+                "handoffJson",
+                "artifacts"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "integer"
+                },
+                "humanReportMd": {
+                  "type": "string"
+                },
+                "handoffJson": {
+                  "type": "object",
+                  "required": [
+                    "requirementBrief",
+                    "pageTitle",
+                    "descriptionText",
+                    "statusCardText",
+                    "acceptanceCriteria"
+                  ],
+                  "properties": {
+                    "requirementBrief": {
+                      "type": "string"
+                    },
+                    "pageTitle": {
+                      "type": "string"
+                    },
+                    "descriptionText": {
+                      "type": "string"
+                    },
+                    "statusCardText": {
+                      "type": "string"
+                    },
+                    "acceptanceCriteria": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "artifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            "tools": []
+          }
+        },
+        {
+          "id": "slot-html-build",
+          "type": "manager_slot",
+          "position": {
+            "x": 520,
+            "y": 400
+          },
+          "size": {
+            "width": 640,
+            "height": 300
+          },
+          "config": {
+            "label": "Slot 2 - 页面制作",
+            "description": "根据需求分析报告生成一个非常简单但明显可见的 HTML 页面，并声明 HTML artifact。",
+            "managerNodeId": "self-dispatch-manager",
+            "slot": 2
+          }
+        },
+        {
+          "id": "html-build-agent",
+          "type": "agent",
+          "runtimeId": "codex",
+          "parentId": "slot-html-build",
+          "position": {
+            "x": 150,
+            "y": 120
+          },
+          "config": {
+            "label": "页面制作 Agent",
+            "resultRole": "final",
+            "agentName": "self-dispatch-html-build-agent",
+            "description": "根据需求分析 Agent 的报告生成单文件 HTML 产物，并在 artifacts 中显式声明。",
+            "permissionProfile": "workspace_write",
+            "timeoutMs": 300000,
+            "prompt": "你是页面制作 Agent。请读取 previousResults 中需求分析 Agent 的报告，制作一个非常简单但明显可见的单文件 HTML 页面。\n\n硬性页面要求：\n- 页面标题必须包含“自分发测试页面”。\n- 页面必须包含一段说明文字，说明这是用于展示 Manager 根据真实 Agent 回执逐步自分发的测试结果。\n- 页面必须包含一个彩色状态卡片，卡片文案应明确表示“等待 QA 验收”或“自分发链路已生成页面”。\n- 使用内联 CSS，不依赖外部资源。\n- HTML 必须以 <!doctype html> 开头。\n\n产物要求：\n- 必须生成 HTML artifact，不要只把 HTML 当成普通报告文字。\n- artifacts 数组必须包含 1 个条目：kind=html、format=text/html、previewPolicy=sandboxed_iframe、trusted=true、title=自分发测试页面、body=完整 HTML 字符串。\n- humanReportMd 必须包含 Delivery location / 交付位置 小节，列出 artifacts 中的 HTML 产物标题，并说明运行界面应能点击打开该 HTML artifact。\n\n请返回 HiveWard AgentOutputEnvelope JSON：\n- contractVersion: 2\n- humanReportMd: 简短制作报告，包含 Delivery location / 交付位置\n- handoffJson: 包含 artifactTitle、artifactKind、expectedPreviewPolicy、pageTitle、qaChecklist\n- artifacts: 包含上述 HTML artifact",
+            "outputSchema": {
+              "type": "object",
+              "required": [
+                "contractVersion",
+                "humanReportMd",
+                "handoffJson",
+                "artifacts"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "integer"
+                },
+                "humanReportMd": {
+                  "type": "string"
+                },
+                "handoffJson": {
+                  "type": "object",
+                  "required": [
+                    "artifactTitle",
+                    "artifactKind",
+                    "expectedPreviewPolicy",
+                    "pageTitle",
+                    "qaChecklist"
+                  ],
+                  "properties": {
+                    "artifactTitle": {
+                      "type": "string"
+                    },
+                    "artifactKind": {
+                      "type": "string"
+                    },
+                    "expectedPreviewPolicy": {
+                      "type": "string"
+                    },
+                    "pageTitle": {
+                      "type": "string"
+                    },
+                    "qaChecklist": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "artifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "title",
+                      "kind",
+                      "format",
+                      "previewPolicy",
+                      "trusted",
+                      "body"
+                    ],
+                    "properties": {
+                      "title": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "format": {
+                        "type": "string"
+                      },
+                      "previewPolicy": {
+                        "type": "string"
+                      },
+                      "trusted": {
+                        "type": "boolean"
+                      },
+                      "body": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "tools": []
+          }
+        },
+        {
+          "id": "slot-qa",
+          "type": "manager_slot",
+          "position": {
+            "x": 1220,
+            "y": 220
+          },
+          "size": {
+            "width": 640,
+            "height": 300
+          },
+          "config": {
+            "label": "Slot 3 - QA 验收",
+            "description": "读取需求分析报告和 HTML artifact 链接，判断页面是否满足需求；只输出验收报告，不生成文件。",
+            "managerNodeId": "self-dispatch-manager",
+            "slot": 3
+          }
+        },
+        {
+          "id": "qa-agent",
+          "type": "agent",
+          "runtimeId": "codex",
+          "parentId": "slot-qa",
+          "position": {
+            "x": 150,
+            "y": 120
+          },
+          "config": {
+            "label": "QA 验收 Agent",
+            "resultRole": "ignore",
+            "agentName": "self-dispatch-qa-agent",
+            "description": "读取需求分析报告和 HTML 产物链接，输出是否通过、检查链接和原因；不生成文件。",
+            "permissionProfile": "read_only",
+            "timeoutMs": 300000,
+            "prompt": "你是 QA 验收 Agent。请读取 previousResults 中的需求分析报告，以及页面制作 Agent 的 HTML artifact 链接或 artifact 索引，判断页面是否满足需求。\n\n验收要求：\n- 报告里必须明确写：是否通过。\n- 报告里必须明确写：检查了哪个 HTML 产物链接、downloadUrl、storagePath、relativePath 或 artifact 标题。如果运行上下文只提供 artifact 索引而没有最终 URL，也要写明你检查的是哪个 artifact 条目。\n- 报告里必须写：发现的问题，或通过原因。\n- 不生成文件，不声明 artifact。\n\n通过条件：\n- 找到了 HTML artifact 或明确的 HTML 产物链接/索引。\n- 页面内容包含标题“自分发测试页面”。\n- 页面包含说明文字。\n- 页面包含彩色状态卡片。\n\n如果通过，handoffJson.status 必须是 pass，passed 必须是 true。如果不通过，status 必须是 fail，passed 必须是 false，并列出 issues。\n\n请返回 HiveWard AgentOutputEnvelope JSON：\n- contractVersion: 2\n- humanReportMd: 验收报告 Markdown，包含“是否通过”“检查的产物链接”“问题或通过原因”“Delivery location / 交付位置：无新文件产物；本节点只交付验收报告”\n- handoffJson: 包含 status、passed、checkedArtifact、issues、reason\n- artifacts: []",
+            "outputSchema": {
+              "type": "object",
+              "required": [
+                "contractVersion",
+                "humanReportMd",
+                "handoffJson",
+                "artifacts"
+              ],
+              "properties": {
+                "contractVersion": {
+                  "type": "integer"
+                },
+                "humanReportMd": {
+                  "type": "string"
+                },
+                "handoffJson": {
+                  "type": "object",
+                  "required": [
+                    "status",
+                    "passed",
+                    "checkedArtifact",
+                    "issues",
+                    "reason"
+                  ],
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "passed": {
+                      "type": "boolean"
+                    },
+                    "checkedArtifact": {
+                      "type": "string"
+                    },
+                    "issues": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "artifacts": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            },
+            "tools": []
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "manager-to-requirements",
+          "source": "self-dispatch-manager",
+          "sourceHandle": "manager-out-1",
+          "target": "slot-requirements",
+          "targetHandle": "manager-slot-in",
+          "condition": "success"
+        },
+        {
+          "id": "requirements-to-manager",
+          "source": "slot-requirements",
+          "sourceHandle": "manager-slot-out",
+          "target": "self-dispatch-manager",
+          "targetHandle": "manager-in-1",
+          "condition": "success"
+        },
+        {
+          "id": "manager-to-html-build",
+          "source": "self-dispatch-manager",
+          "sourceHandle": "manager-out-2",
+          "target": "slot-html-build",
+          "targetHandle": "manager-slot-in",
+          "condition": "success"
+        },
+        {
+          "id": "html-build-to-manager",
+          "source": "slot-html-build",
+          "sourceHandle": "manager-slot-out",
+          "target": "self-dispatch-manager",
+          "targetHandle": "manager-in-2",
+          "condition": "success"
+        },
+        {
+          "id": "manager-to-qa",
+          "source": "self-dispatch-manager",
+          "sourceHandle": "manager-out-3",
+          "target": "slot-qa",
+          "targetHandle": "manager-slot-in",
+          "condition": "success"
+        },
+        {
+          "id": "qa-to-manager",
+          "source": "slot-qa",
+          "sourceHandle": "manager-slot-out",
+          "target": "self-dispatch-manager",
+          "targetHandle": "manager-in-3",
+          "condition": "success"
+        },
+        {
+          "id": "requirements-start",
+          "source": "slot-requirements",
+          "sourceHandle": "manager-slot-inner-out",
+          "target": "requirements-agent",
+          "condition": "success"
+        },
+        {
+          "id": "requirements-finish",
+          "source": "requirements-agent",
+          "target": "slot-requirements",
+          "targetHandle": "manager-slot-inner-in",
+          "condition": "success"
+        },
+        {
+          "id": "html-build-start",
+          "source": "slot-html-build",
+          "sourceHandle": "manager-slot-inner-out",
+          "target": "html-build-agent",
+          "condition": "success"
+        },
+        {
+          "id": "html-build-finish",
+          "source": "html-build-agent",
+          "target": "slot-html-build",
+          "targetHandle": "manager-slot-inner-in",
+          "condition": "success"
+        },
+        {
+          "id": "qa-start",
+          "source": "slot-qa",
+          "sourceHandle": "manager-slot-inner-out",
+          "target": "qa-agent",
+          "condition": "success"
+        },
+        {
+          "id": "qa-finish",
+          "source": "qa-agent",
+          "target": "slot-qa",
+          "targetHandle": "manager-slot-inner-in",
+          "condition": "success"
+        }
+      ],
+      "variables": {
+        "sampleInput": "请做一个用于展示自分发测试结果的简单网页。"
+      },
+      "display": {
+        "viewport": {
+          "x": -20,
+          "y": 0,
+          "zoom": 0.72
+        }
+      }
+    }
+  ]
+}

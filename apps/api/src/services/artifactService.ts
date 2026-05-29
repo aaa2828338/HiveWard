@@ -292,7 +292,7 @@ function normalizeArtifactPayload(value: unknown): AgentArtifactPayload[] {
 }
 
 function serializeArtifactBody(payload: AgentArtifactPayload): string {
-  const body = Object.hasOwn(payload, "content") ? payload.content : payload.body;
+  const body = payload.content ?? payload.body;
   if (payload.kind === "json") {
     return typeof body === "string" ? body : JSON.stringify(body ?? {}, null, 2);
   }

@@ -74,6 +74,8 @@ export const hivewardInboxSubmissionContract = [
   "",
   "Manager and manager_slot nodes are special control structures, not normal worker-chain nodes.",
   "- A manager dispatches work through numbered slots. It must use type \"manager\" with config.portCount and config.maxHandoffs.",
+  "- A self_dispatch manager is itself a runnable decision node and must include node.runtimeId. Use the current chat harness runtime, such as \"codex\" in Codex chat, unless the user explicitly asks for another runtime.",
+  "- Do not set a self_dispatch manager to runtimeId \"openclaw\" merely because older examples do; if OpenClaw is not the selected real decision runtime, the Manager will not make real routing decisions.",
   "- A manager_slot is a container for subordinate nodes. It must use type \"manager_slot\" with config.managerNodeId and config.slot.",
   "- Subordinate nodes inside a slot set parentId to the manager_slot node id.",
   "- A manager_slot may be empty when it is intentionally a planning placeholder or a phase container for later editing.",

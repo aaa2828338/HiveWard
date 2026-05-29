@@ -2633,6 +2633,64 @@ describe("apiRouter", () => {
     }
   });
 
+  it("includes the inbox submission contract for Chinese blueprint creation requests", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "请帮我创建一个用于测试 Manager 自分发能力的蓝图。",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+        expect(adapter.lastChatStreamInput?.message).toContain("end the response with one hiveward-inbox fenced block");
+        expect(adapter.lastChatStreamInput?.message).toContain("A self_dispatch manager is itself a runnable decision node");
+        expect(adapter.lastChatStreamInput?.message).toContain("Use the current chat harness runtime");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not include the inbox submission contract when the user asks for a draft only", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "请生成一个测试蓝图，但只要草稿，不要提交到收件箱。",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.message).not.toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).not.toContain(hivewardInboxSubmissionSchema);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("turns formal chat inbox submission blocks into pending inbox items", async () => {
     const fixture = await createStoreFixture();
     const blueprint = (await fixture.store.listBlueprints())[0]!;

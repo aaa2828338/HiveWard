@@ -2332,13 +2332,13 @@ const hivewardPlatformContext = [
 
 const hivewardBlueprintDraftingGuidance = [
   "Blueprint drafting mode:",
-  "When the user asks for a blueprint change, first align on direction in chat. For final approval, produce a concrete importable content package with proposal text, JSON or patch details, preview, and diff summary.",
+  "When the user asks for a blueprint change, first align on direction in chat. When they ask to create, generate, build, import, or submit a blueprint, produce a concrete importable content package with proposal text, JSON or patch details, preview, and diff summary for Hiveward inbox approval unless they explicitly ask for a draft only.",
   "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed."
 ].join("\n");
 
 const hivewardBlueprintSubmissionContext = [
   hivewardBlueprintDraftingGuidance,
-  "If the user explicitly asks to submit the proposal for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
+  "If the user asks to create, generate, build, import, or submit a blueprint proposal/package for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
   "",
   hivewardInboxSubmissionContract
 ].join("\n");
@@ -2390,7 +2390,42 @@ function buildSkillSplitContext(message: string): string {
 
 function shouldIncludeBlueprintSubmissionContract(message: string): boolean {
   const normalized = message.toLowerCase();
+  const asksDraftOnly =
+    normalized.includes("draft only") ||
+    normalized.includes("do not submit") ||
+    normalized.includes("don't submit") ||
+    normalized.includes("without submitting") ||
+    message.includes("只要草稿") ||
+    message.includes("只生成草稿") ||
+    message.includes("先别提交") ||
+    message.includes("不要提交") ||
+    message.includes("不用提交") ||
+    message.includes("别放收件箱") ||
+    message.includes("不要放收件箱");
+  if (asksDraftOnly) return false;
+
+  const asksBlueprintCreation =
+    normalized.includes("create blueprint") ||
+    normalized.includes("generate blueprint") ||
+    normalized.includes("build blueprint") ||
+    normalized.includes("design blueprint") ||
+    normalized.includes("new blueprint") ||
+    normalized.includes("blueprint package") ||
+    (
+      message.includes("蓝图") &&
+      (
+        message.includes("创建") ||
+        message.includes("生成") ||
+        message.includes("新建") ||
+        message.includes("设计") ||
+        message.includes("搭建") ||
+        message.includes("做一个") ||
+        message.includes("建一个")
+      )
+    );
+
   return (
+    asksBlueprintCreation ||
     normalized.includes("submit") ||
     normalized.includes("approval") ||
     normalized.includes("approve") ||
