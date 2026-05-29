@@ -16,7 +16,7 @@ import {
   type IterationSession,
   type ManagerNodeConfig,
   type ManagerSlotNodeConfig,
-  type OpenClawObjectRef,
+  type RuntimeObjectRef,
   type StartAgentTaskInput,
   type ApprovalRequest,
   type ReleaseReport,
@@ -263,7 +263,7 @@ interface UpstreamOutputItem {
   handoffJson?: unknown;
   humanReportId?: string;
   humanReportMd?: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 type UpstreamOutput = UpstreamOutputItem[];
@@ -623,6 +623,7 @@ export class BlueprintWorker {
         nodeRunId,
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: runtimeId === "hermes" ? config.profileId : undefined,
         agentName: config.agentName,
         prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
         modelId: config.modelId,
@@ -637,12 +638,12 @@ export class BlueprintWorker {
         },
         skillIds: config.skillIds,
         tools: config.tools
-      }, async (openclawRef) => {
+      }, async (runtimeRef) => {
         await this.store.startNodeRun({
           nodeRunId,
           owner: preflightNode.claim.owner,
           workerEpoch: preflightNode.claim.workerEpoch,
-          openclawRef
+          runtimeRef
         });
       }));
     } catch (error) {
@@ -685,6 +686,7 @@ export class BlueprintWorker {
         nodeRunId,
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: runtimeId === "hermes" ? config.profileId : undefined,
         agentName: config.agentName?.trim() || defaultManagerAgentName,
         prompt: this.resolveManagerPreflightPrompt(config, mode),
         modelId: config.modelId,
@@ -699,12 +701,12 @@ export class BlueprintWorker {
         },
         skillIds: config.skillIds,
         tools: config.tools ?? []
-      }, async (openclawRef) => {
+      }, async (runtimeRef) => {
         await this.store.startNodeRun({
           nodeRunId,
           owner: preflightNode.claim.owner,
           workerEpoch: preflightNode.claim.workerEpoch,
-          openclawRef
+          runtimeRef
         });
       }));
     } catch (error) {
@@ -840,7 +842,7 @@ export class BlueprintWorker {
       endedAt: now,
       output: result.output,
       usage: result.usage,
-      openclawRef: result.taskId
+      runtimeRef: result.taskId
         ? {
           source: result.source,
           sourceId: result.taskId,
@@ -850,7 +852,7 @@ export class BlueprintWorker {
           sessionKey: result.sessionKey,
           usageRef: result.usage?.id
         }
-        : preflightNode.nodeRun.openclawRef
+        : preflightNode.nodeRun.runtimeRef
     };
     const artifacts = mode === "research_resolution" ? await this.artifactService.prepareFromNodeRun({
       runId: run.id,
@@ -907,7 +909,7 @@ export class BlueprintWorker {
         nodeRunId: completed.id,
         type: "node.run.completed",
         message: `${node.config.label} ${this.preflightModeLabel(mode)} completed.`,
-        openclawRef: completed.openclawRef,
+        runtimeRef: completed.runtimeRef,
         createdAt: now
       },
       timelineItems
@@ -1008,7 +1010,7 @@ export class BlueprintWorker {
     }
 
     const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId);
-    await this.completeNode(waiting, approvedOutput, waiting.openclawRef);
+    await this.completeNode(waiting, approvedOutput, waiting.runtimeRef);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
     this.scheduleRun(blueprint, running);
@@ -1132,11 +1134,12 @@ export class BlueprintWorker {
       const config = node.config as AgentNodeConfig;
       const runtimeId = node.runtimeId ?? "openclaw";
       let nodeRunWithRef = runningNodeRun;
-      const { result, openclawRef } = await this.runAgentTask({
+      const { result, runtimeRef } = await this.runAgentTask({
         blueprintRunId: run.id,
         nodeRunId: waiting.id,
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: runtimeId === "hermes" ? config.profileId : undefined,
         agentName: config.agentName,
         prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
         modelId: config.modelId,
@@ -1149,13 +1152,13 @@ export class BlueprintWorker {
         skillIds: config.skillIds,
         tools: config.tools
       }, async (startedRef) => {
-        nodeRunWithRef = await this.recordNodeOpenClawRef(nodeRunWithRef, startedRef);
+        nodeRunWithRef = await this.recordNodeRuntimeRef(nodeRunWithRef, startedRef);
       });
 
       if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRunWithRef, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
+        await this.failNode({ ...nodeRunWithRef, runtimeRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
       } else if (!hasVisibleAgentOutput(result.output)) {
-        await this.failNode({ ...nodeRunWithRef, openclawRef, usage: result.usage }, this.missingAgentOutputError(openclawRef));
+        await this.failNode({ ...nodeRunWithRef, runtimeRef, usage: result.usage }, this.missingAgentOutputError(runtimeRef));
       } else {
         const assistantReply: AgentApprovalReply = {
           id: `approval-reply-${nanoid(10)}`,
@@ -1168,7 +1171,7 @@ export class BlueprintWorker {
           ? waiting.output.selectedReplyId
           : undefined;
         await this.waitForAgentApproval(
-          { ...nodeRunWithRef, openclawRef, usage: result.usage },
+          { ...nodeRunWithRef, runtimeRef, usage: result.usage },
           result.output,
           nextReplies,
           selectedReplyId,
@@ -1615,8 +1618,8 @@ export class BlueprintWorker {
     node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun
   ): Promise<boolean> {
-    const openclawRef = this.resolveAgentOpenClawRef(node, nodeRun);
-    if (!openclawRef?.sessionKey) return false;
+    const runtimeRef = this.resolveAgentRuntimeRef(node, nodeRun);
+    if (!runtimeRef?.sessionKey) return false;
     const runtimeId = node.runtimeId ?? "openclaw";
     const claim = await this.ensureNodeRunClaim(nodeRun);
     if (!claim) {
@@ -1628,30 +1631,30 @@ export class BlueprintWorker {
     try {
       result = await this.adapter.waitForAgentTask({
         nodeRunId: nodeRun.id,
-        taskId: openclawRef.taskId ?? openclawRef.sourceId,
-        runId: openclawRef.runId ?? openclawRef.sourceId,
-        sessionKey: openclawRef.sessionKey,
-        source: openclawRef.source,
+        taskId: runtimeRef.taskId ?? runtimeRef.sourceId,
+        runId: runtimeRef.runId ?? runtimeRef.sourceId,
+        sessionKey: runtimeRef.sessionKey,
+        source: runtimeRef.source,
         agentId: runtimeId === "openclaw" ? (node.config as AgentNodeConfig).openclawAgentId ?? "main" : undefined,
         modelId: (node.config as AgentNodeConfig).modelId
       });
     } catch (error) {
-      if (this.isRecoverableSdkTaskLookupMiss(error, openclawRef)) {
+      if (this.isRecoverableSdkTaskLookupMiss(error, runtimeRef)) {
         const message = error instanceof Error ? error.message : String(error);
         await this.event(
           run.id,
           "node.run.started",
-          `${nodeRun.nodeLabel} is still running; ${formatRuntimeSource(openclawRef.source)} task ${openclawRef.taskId ?? openclawRef.sourceId} is not ready to reconcile yet: ${message}`,
+          `${nodeRun.nodeLabel} is still running; ${formatRuntimeSource(runtimeRef.source)} task ${runtimeRef.taskId ?? runtimeRef.sourceId} is not ready to reconcile yet: ${message}`,
           nodeRun.id,
-          openclawRef
+          runtimeRef
         );
         await this.keepRunActive(run, "running");
         return false;
       }
       throw error;
     }
-    const finalRef: OpenClawObjectRef = {
-      ...openclawRef,
+    const finalRef: RuntimeObjectRef = {
+      ...runtimeRef,
       sourceId: result.taskId,
       sourceUpdatedAt: result.updatedAt,
       taskId: result.taskId,
@@ -1659,7 +1662,7 @@ export class BlueprintWorker {
       sessionKey: result.sessionKey,
       usageRef: result.usage?.id
     };
-    await this.applyAgentTaskResult(blueprint, run, node, { ...nodeRun, openclawRef: finalRef }, result, finalRef);
+    await this.applyAgentTaskResult(blueprint, run, node, { ...nodeRun, runtimeRef: finalRef }, result, finalRef);
     return true;
   }
 
@@ -1982,15 +1985,16 @@ export class BlueprintWorker {
     fallbackSlot: number,
     portCount: number,
     minSlot = 1
-  ): Promise<{ result: AgentTaskResult; decision: ManagerDecision; openclawRef: OpenClawObjectRef }> {
+  ): Promise<{ result: AgentTaskResult; decision: ManagerDecision; runtimeRef: RuntimeObjectRef }> {
     const config = node.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(node);
     const managerDecisionNodeRunId = `${nodeRun.id}-manager-decision-${context.manager.handoff}`;
-    const { result, openclawRef } = await this.runAgentTask({
+    const { result, runtimeRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: managerDecisionNodeRunId,
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      profileId: runtimeId === "hermes" ? config.profileId : undefined,
       agentName: config.agentName?.trim() || defaultManagerAgentName,
       prompt: this.resolveManagerPrompt(config),
       modelId: config.modelId,
@@ -2028,7 +2032,7 @@ export class BlueprintWorker {
       decision: result.status === "succeeded"
         ? this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot })
         : { status: "complete", reason: result.error ?? "manager_decision_failed" },
-      openclawRef
+      runtimeRef
     };
   }
 
@@ -2230,11 +2234,11 @@ export class BlueprintWorker {
     };
   }
 
-  private resolveAgentOpenClawRef(
+  private resolveAgentRuntimeRef(
     node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun
-  ): OpenClawObjectRef | undefined {
-    const existing = nodeRun.openclawRef;
+  ): RuntimeObjectRef | undefined {
+    const existing = nodeRun.runtimeRef;
     const source = existing?.source ?? resolveAgentRuntimeSource(node.runtimeId);
     const sourceId = existing?.sourceId ?? existing?.taskId ?? existing?.runId ?? nodeRun.id;
     const sessionKey = existing?.sessionKey ?? (source === "openclaw" ? buildAgentSessionKey(node.config.openclawAgentId ?? "main") : undefined);
@@ -2287,18 +2291,18 @@ export class BlueprintWorker {
   }
 
   private nodeRunToAgentTaskResult(nodeRun: BlueprintNodeRun): AgentTaskResult {
-    const openclawRef = nodeRun.openclawRef;
-    const sourceId = openclawRef?.sourceId ?? nodeRun.id;
+    const runtimeRef = nodeRun.runtimeRef;
+    const sourceId = runtimeRef?.sourceId ?? nodeRun.id;
     const status: AgentTaskResult["status"] = nodeRun.status === "succeeded"
       ? "succeeded"
       : nodeRun.status === "cancelled"
         ? "cancelled"
         : "failed";
     return {
-      taskId: openclawRef?.taskId ?? sourceId,
-      runId: openclawRef?.runId ?? sourceId,
-      sessionKey: openclawRef?.sessionKey ?? "",
-      source: openclawRef?.source ?? "openclaw",
+      taskId: runtimeRef?.taskId ?? sourceId,
+      runId: runtimeRef?.runId ?? sourceId,
+      sessionKey: runtimeRef?.sessionKey ?? "",
+      source: runtimeRef?.source ?? "openclaw",
       status,
       output: nodeRun.output === undefined ? undefined : stringifyManagerSlotOutput(nodeRun.output),
       error: nodeRun.error,
@@ -2438,11 +2442,12 @@ export class BlueprintWorker {
       prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) })
     });
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, crossRoundInput.input);
-    const { result, openclawRef } = await this.runAgentTask({
+    const { result, runtimeRef } = await this.runAgentTask({
       blueprintRunId: run.id,
       nodeRunId: nodeRun.id,
       source: resolveAgentRuntimeSource(runtimeId),
       agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      profileId: runtimeId === "hermes" ? config.profileId : undefined,
       agentName: config.agentName,
       prompt: crossRoundInput.prompt,
       modelId: config.modelId,
@@ -2455,9 +2460,9 @@ export class BlueprintWorker {
       skillIds: config.skillIds,
       tools: config.tools
     }, async (startedRef) => {
-      nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
+      nodeRunWithInput = await this.recordNodeRuntimeRef(nodeRunWithInput, startedRef);
     });
-    return this.applyAgentTaskResult(blueprint, run, node, nodeRunWithInput, result, openclawRef);
+    return this.applyAgentTaskResult(blueprint, run, node, nodeRunWithInput, result, runtimeRef);
   }
 
   private async withNodeCrossRoundContext(input: {
@@ -2498,21 +2503,21 @@ export class BlueprintWorker {
     node: BlueprintNode & { type: "agent"; runtimeId: AgentRuntimeId; config: AgentNodeConfig },
     nodeRun: BlueprintNodeRun,
     result: AgentTaskResult,
-    openclawRef: OpenClawObjectRef
+    runtimeRef: RuntimeObjectRef
   ): Promise<AgentTaskResult> {
     if (result.status !== "succeeded") {
-      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
       return result;
     }
     if (!hasVisibleAgentOutput(result.output)) {
-      const error = this.missingAgentOutputError(openclawRef);
-      await this.failNode({ ...nodeRun, openclawRef, usage: result.usage }, error);
+      const error = this.missingAgentOutputError(runtimeRef);
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, error);
       return { ...result, status: "failed", error, output: undefined };
     }
 
     const config = node.config as AgentNodeConfig;
     if (config.approval?.enabled) {
-      await this.waitForAgentApproval({ ...nodeRun, openclawRef, usage: result.usage }, result.output);
+      await this.waitForAgentApproval({ ...nodeRun, runtimeRef, usage: result.usage }, result.output);
       return result;
     }
 
@@ -2521,9 +2526,9 @@ export class BlueprintWorker {
     }
 
     await this.completeNode(
-      { ...nodeRun, openclawRef, usage: result.usage },
+      { ...nodeRun, runtimeRef, usage: result.usage },
       result.output,
-      openclawRef
+      runtimeRef
     );
     return result;
   }
@@ -3067,11 +3072,12 @@ export class BlueprintWorker {
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, summaryInput);
     if (isHarnessSummaryMode(config)) {
       const runtimeId = resolveSummaryRuntimeId(config);
-      const { result, openclawRef } = await this.runAgentTask({
+      const { result, runtimeRef } = await this.runAgentTask({
         blueprintRunId: run.id,
         nodeRunId: nodeRun.id,
         source: resolveAgentRuntimeSource(runtimeId),
         agentId: runtimeId === "openclaw" ? "main" : undefined,
+        profileId: runtimeId === "hermes" ? config.profileId : undefined,
         agentName: "summary-agent",
         prompt: [
           input.prompt,
@@ -3084,17 +3090,17 @@ export class BlueprintWorker {
         input: summaryInput,
         tools: []
       }, async (startedRef) => {
-        nodeRunWithInput = await this.recordNodeOpenClawRef(nodeRunWithInput, startedRef);
+        nodeRunWithInput = await this.recordNodeRuntimeRef(nodeRunWithInput, startedRef);
       });
       if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
+        await this.failNode({ ...nodeRunWithInput, runtimeRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
         return;
       }
       if (!hasVisibleAgentOutput(result.output)) {
-        await this.failNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, this.missingAgentOutputError(openclawRef));
+        await this.failNode({ ...nodeRunWithInput, runtimeRef, usage: result.usage }, this.missingAgentOutputError(runtimeRef));
         return;
       }
-      await this.completeNode({ ...nodeRunWithInput, openclawRef, usage: result.usage }, result.output, openclawRef);
+      await this.completeNode({ ...nodeRunWithInput, runtimeRef, usage: result.usage }, result.output, runtimeRef);
       return;
     }
 
@@ -3402,13 +3408,13 @@ export class BlueprintWorker {
       output,
       ...(context.handoff ? { handoffJson: context.handoff.payload } : {}),
       ...(context.humanReport ? { humanReportId: context.humanReport.id, humanReportMd: context.humanReport.bodyMd } : {}),
-      openclawRef: nodeRun.openclawRef
+      runtimeRef: nodeRun.runtimeRef
     };
   }
 
-  private async completeNode(nodeRun: BlueprintNodeRun, output: unknown, openclawRef?: OpenClawObjectRef): Promise<void> {
+  private async completeNode(nodeRun: BlueprintNodeRun, output: unknown, runtimeRef?: RuntimeObjectRef): Promise<void> {
     if (this.cancelledRunIds.has(nodeRun.blueprintRunId)) {
-      await this.cancelNodeRun(nodeRun, "Run stopped by user.", openclawRef);
+      await this.cancelNodeRun(nodeRun, "Run stopped by user.", runtimeRef);
       return;
     }
 
@@ -3418,7 +3424,7 @@ export class BlueprintWorker {
       status: "succeeded",
       endedAt: completedAt,
       output,
-      openclawRef: openclawRef ?? nodeRun.openclawRef
+      runtimeRef: runtimeRef ?? nodeRun.runtimeRef
     };
     const artifacts = completed.nodeType === "agent" || completed.nodeType === "summary"
       ? await this.artifactService.prepareFromNodeRun({
@@ -3458,7 +3464,7 @@ export class BlueprintWorker {
         nodeRunId: nodeRun.id,
         type: "node.run.completed",
         message: `${nodeRun.nodeLabel} completed.`,
-        openclawRef,
+        runtimeRef,
         createdAt: completedAt
       }
     });
@@ -3514,11 +3520,11 @@ export class BlueprintWorker {
     return token;
   }
 
-  private async recordNodeOpenClawRef(nodeRun: BlueprintNodeRun, openclawRef: OpenClawObjectRef): Promise<BlueprintNodeRun> {
+  private async recordNodeRuntimeRef(nodeRun: BlueprintNodeRun, runtimeRef: RuntimeObjectRef): Promise<BlueprintNodeRun> {
     const currentNodeRun = (await this.store.listNodeRuns(nodeRun.blueprintRunId)).find((candidate) => candidate.id === nodeRun.id);
     const nodeRunWithRef: BlueprintNodeRun = {
       ...(currentNodeRun ?? nodeRun),
-      openclawRef
+      runtimeRef
     };
     const claim = await this.ensureNodeRunClaim(nodeRun);
     if (claim) {
@@ -3526,7 +3532,7 @@ export class BlueprintWorker {
         nodeRunId: nodeRun.id,
         owner: claim.owner,
         workerEpoch: claim.workerEpoch,
-        openclawRef
+        runtimeRef
       });
     } else {
       await this.store.upsertNodeRun(nodeRunWithRef);
@@ -3595,7 +3601,7 @@ export class BlueprintWorker {
     return nodeRuns.some((nodeRun) => this.isOpenNodeRunStatus(nodeRun.status));
   }
 
-  private async cancelNodeRun(nodeRun: BlueprintNodeRun, reason: string, openclawRef?: OpenClawObjectRef): Promise<void> {
+  private async cancelNodeRun(nodeRun: BlueprintNodeRun, reason: string, runtimeRef?: RuntimeObjectRef): Promise<void> {
     const currentNodeRun = (await this.store.listNodeRuns(nodeRun.blueprintRunId)).find((candidate) => candidate.id === nodeRun.id);
     if (currentNodeRun?.status === "cancelled") return;
 
@@ -3604,7 +3610,7 @@ export class BlueprintWorker {
       status: "cancelled",
       endedAt: currentNodeRun?.endedAt ?? nodeRun.endedAt ?? new Date().toISOString(),
       error: reason,
-      openclawRef: openclawRef ?? currentNodeRun?.openclawRef ?? nodeRun.openclawRef
+      runtimeRef: runtimeRef ?? currentNodeRun?.runtimeRef ?? nodeRun.runtimeRef
     };
     const claim = await this.ensureNodeRunClaim(currentNodeRun ?? nodeRun);
     const cancelledOk = claim
@@ -3614,12 +3620,12 @@ export class BlueprintWorker {
           workerEpoch: claim.workerEpoch,
           endedAt: cancelled.endedAt,
           reason,
-          openclawRef: cancelled.openclawRef
+          runtimeRef: cancelled.runtimeRef
         })
       : false;
     if (cancelledOk) {
       this.nodeRunClaims.delete(nodeRun.id);
-      await this.event(nodeRun.blueprintRunId, "node.run.cancelled", `${nodeRun.nodeLabel} cancelled: ${reason}`, nodeRun.id, cancelled.openclawRef);
+      await this.event(nodeRun.blueprintRunId, "node.run.cancelled", `${nodeRun.nodeLabel} cancelled: ${reason}`, nodeRun.id, cancelled.runtimeRef);
     }
   }
 
@@ -3630,7 +3636,7 @@ export class BlueprintWorker {
     await this.managerMailProjector.refresh(run.id);
     const nodeRuns = await this.store.listNodeRuns(run.id);
     const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
-    const openclawRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.openclawRef ? [nodeRun.openclawRef] : []));
+    const runtimeRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.runtimeRef ? [nodeRun.runtimeRef] : []));
     return {
       ...run,
       status,
@@ -3639,7 +3645,7 @@ export class BlueprintWorker {
       totalInputTokens: usage.reduce((sum, item) => sum + item.inputTokens, 0),
       totalOutputTokens: usage.reduce((sum, item) => sum + item.outputTokens, 0),
       totalCostUsd: Number(usage.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6)),
-      openclawRefs
+      runtimeRefs
     };
   }
 
@@ -3652,14 +3658,14 @@ export class BlueprintWorker {
     });
   }
 
-  private isRecoverableSdkTaskLookupMiss(error: unknown, openclawRef: OpenClawObjectRef): boolean {
+  private isRecoverableSdkTaskLookupMiss(error: unknown, runtimeRef: RuntimeObjectRef): boolean {
     if (
-      openclawRef.source !== "codex" &&
-      openclawRef.source !== "claude" &&
-      openclawRef.source !== "google" &&
-      openclawRef.source !== "cursor" &&
-      openclawRef.source !== "opencode" &&
-      openclawRef.source !== "hermes"
+      runtimeRef.source !== "codex" &&
+      runtimeRef.source !== "claude" &&
+      runtimeRef.source !== "google" &&
+      runtimeRef.source !== "cursor" &&
+      runtimeRef.source !== "opencode" &&
+      runtimeRef.source !== "hermes"
     ) return false;
     return error instanceof Error && error.message.startsWith("SDK task not found:");
   }
@@ -3861,21 +3867,21 @@ export class BlueprintWorker {
     return typeof result === "boolean" ? result : undefined;
   }
 
-  private missingAgentOutputError(openclawRef: OpenClawObjectRef): string {
+  private missingAgentOutputError(runtimeRef: RuntimeObjectRef): string {
     const location = [
-      openclawRef.runId ? `runId ${openclawRef.runId}` : undefined,
-      openclawRef.sessionKey ? `session ${openclawRef.sessionKey}` : undefined
+      runtimeRef.runId ? `runId ${runtimeRef.runId}` : undefined,
+      runtimeRef.sessionKey ? `session ${runtimeRef.sessionKey}` : undefined
     ].filter(Boolean).join(", ");
     return `Agent run finished without visible output${location ? ` (${location})` : ""}.`;
   }
 
   private async runAgentTask(
     input: StartAgentTaskInput,
-    onStarted?: (openclawRef: OpenClawObjectRef) => Promise<void>
-  ): Promise<{ result: AgentTaskResult; openclawRef: OpenClawObjectRef }> {
+    onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
+  ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
     const started = await this.adapter.startAgentTask(input);
     const source = started.source;
-    const openclawRef: OpenClawObjectRef = {
+    const runtimeRef: RuntimeObjectRef = {
       source,
       sourceId: started.taskId,
       sourceUpdatedAt: started.updatedAt,
@@ -3884,7 +3890,7 @@ export class BlueprintWorker {
       sessionKey: started.sessionKey,
       usageRef: undefined
     };
-    await onStarted?.(openclawRef);
+    await onStarted?.(runtimeRef);
 
     if (started.status === "failed" || started.status === "cancelled") {
       return {
@@ -3893,7 +3899,7 @@ export class BlueprintWorker {
           output: undefined,
           usage: undefined
         },
-        openclawRef
+        runtimeRef
       };
     }
 
@@ -3909,8 +3915,8 @@ export class BlueprintWorker {
 
     return {
       result,
-      openclawRef: {
-        ...openclawRef,
+      runtimeRef: {
+        ...runtimeRef,
         sourceId: result.taskId,
         sourceUpdatedAt: result.updatedAt,
         taskId: result.taskId,
@@ -3926,7 +3932,7 @@ export class BlueprintWorker {
     type: BlueprintNodeEvent["type"],
     message: string,
     nodeRunId?: string,
-    openclawRef?: OpenClawObjectRef
+    runtimeRef?: RuntimeObjectRef
   ): Promise<void> {
     await this.store.appendEvent({
       id: `event-${nanoid(10)}`,
@@ -3935,7 +3941,7 @@ export class BlueprintWorker {
       type,
       message,
       createdAt: new Date().toISOString(),
-      openclawRef
+      runtimeRef
     });
   }
 }
@@ -4231,9 +4237,13 @@ function stringifyManagerSlotOutput(output: unknown): string {
   return typeof output === "string" ? output : JSON.stringify(output);
 }
 
-function formatRuntimeSource(source: OpenClawObjectRef["source"]): string {
+function formatRuntimeSource(source: RuntimeObjectRef["source"]): string {
   if (source === "codex") return "Codex";
   if (source === "claude") return "Claude";
+  if (source === "google") return "Google CLI";
+  if (source === "cursor") return "Cursor CLI";
+  if (source === "opencode") return "OpenCode";
+  if (source === "hermes") return "Hermes";
   return "OpenClaw";
 }
 

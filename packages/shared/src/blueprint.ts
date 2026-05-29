@@ -1,4 +1,4 @@
-import type { AgentPermissionProfile, OpenClawObjectRef, OpenClawObjectSource, OpenClawUsageFact } from "./openclaw";
+import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, RuntimeUsageFact } from "./runtime";
 import { normalizeRuntimeAccessPolicy } from "./lifecycle";
 import type {
   ApprovalDecision,
@@ -109,6 +109,7 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   maxHandoffs: number;
   instructions?: string;
   openclawAgentId?: string;
+  profileId?: string;
   agentName?: string;
   modelId?: string;
   skillIds?: string[];
@@ -145,6 +146,7 @@ export interface ConditionNodeConfig extends BlueprintNodeBaseConfig {
 export interface SummaryNodeConfig extends BlueprintNodeBaseConfig {
   mode: "structured_merge" | "harness_summary";
   runtimeId?: AgentRuntimeId;
+  profileId?: string;
   prompt?: string;
   modelId?: string;
   runtimeAccessPolicy?: RuntimeAccessPolicy;
@@ -180,7 +182,7 @@ export function isAgentBlueprintNode(node: BlueprintNode): node is BlueprintNode
   return node.type === "agent";
 }
 
-export function resolveAgentRuntimeSource(runtimeId: AgentRuntimeId): OpenClawObjectSource {
+export function resolveAgentRuntimeSource(runtimeId: AgentRuntimeId): RuntimeObjectSource {
   return runtimeId;
 }
 
@@ -344,7 +346,7 @@ export interface BlueprintRun {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCostUsd: number;
-  openclawRefs: OpenClawObjectRef[];
+  runtimeRefs: RuntimeObjectRef[];
 }
 
 export interface BlueprintNodeRun {
@@ -362,8 +364,8 @@ export interface BlueprintNodeRun {
   input?: unknown;
   output?: unknown;
   error?: string;
-  usage?: OpenClawUsageFact;
-  openclawRef?: OpenClawObjectRef;
+  usage?: RuntimeUsageFact;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface BlueprintNodeEvent {
@@ -383,7 +385,7 @@ export interface BlueprintNodeEvent {
     | "blueprint.run.failed";
   message: string;
   createdAt: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface BlueprintRunView {
@@ -447,7 +449,7 @@ export interface FinalRunResultCandidate {
   selectionReason: FinalRunResultSelectionReason;
   output: unknown;
   endedAt?: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface FinalRunNodeContext {
@@ -462,7 +464,7 @@ export interface FinalRunNodeContext {
   output?: unknown;
   error?: string;
   endedAt?: string;
-  openclawRef?: OpenClawObjectRef;
+  runtimeRef?: RuntimeObjectRef;
 }
 
 export interface FinalRunResult {
@@ -631,7 +633,7 @@ function toFinalRunResultCandidate(
     selectionReason,
     output: candidate.nodeRun.output,
     endedAt: candidate.nodeRun.endedAt,
-    openclawRef: candidate.nodeRun.openclawRef
+    runtimeRef: readBlueprintNodeRunRuntimeRef(candidate.nodeRun)
   };
 }
 
@@ -648,8 +650,20 @@ function toFinalRunNodeContext(nodeRun: BlueprintNodeRun): FinalRunNodeContext {
     output: nodeRun.output,
     error: nodeRun.error,
     endedAt: nodeRun.endedAt,
-    openclawRef: nodeRun.openclawRef
+    runtimeRef: readBlueprintNodeRunRuntimeRef(nodeRun)
   };
+}
+
+export function readBlueprintNodeRunRuntimeRef(nodeRun: Pick<BlueprintNodeRun, "runtimeRef">): RuntimeObjectRef | undefined {
+  return nodeRun.runtimeRef;
+}
+
+export function readBlueprintNodeEventRuntimeRef(event: Pick<BlueprintNodeEvent, "runtimeRef">): RuntimeObjectRef | undefined {
+  return event.runtimeRef;
+}
+
+export function readBlueprintRunRuntimeRefs(run: Pick<BlueprintRun, "runtimeRefs">): RuntimeObjectRef[] {
+  return run.runtimeRefs;
 }
 
 function resolveFinalRunResultState(
@@ -1938,6 +1952,7 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       description: agentConfig.description,
       resultRole: agentConfig.resultRole,
       crossRoundContextMode: agentConfig.crossRoundContextMode,
+      profileId: agentConfig.profileId,
       agentName: agentConfig.agentName,
       prompt: agentConfig.prompt,
       userPrompt: agentConfig.userPrompt,
@@ -1966,6 +1981,7 @@ function toPortableBlueprintNodeConfig(type: BlueprintNodeType, config: Blueprin
       crossRoundContextMode: summaryConfig.crossRoundContextMode,
       mode: summaryConfig.mode,
       runtimeId: summaryConfig.runtimeId,
+      profileId: summaryConfig.profileId,
       prompt: summaryConfig.prompt,
       modelId: summaryConfig.modelId,
       runtimeAccessPolicy: summaryConfig.runtimeAccessPolicy ? { ...summaryConfig.runtimeAccessPolicy } : undefined
@@ -2127,6 +2143,7 @@ function readPortableBlueprintNodeConfig(
         mode === "harness_summary"
           ? readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`) ?? "openclaw"
           : readOptionalAgentRuntimeId(config.runtimeId, `${fieldName}.runtimeId`),
+      profileId: readOptionalString(config.profileId),
       modelId: readOptionalString(config.modelId),
       prompt: readOptionalString(config.prompt),
       runtimeAccessPolicy: readRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile)
@@ -2139,6 +2156,7 @@ function readPortableBlueprintNodeConfig(
       maxHandoffs: readBoundedInteger(config.maxHandoffs, 1, 50, 12),
       instructions: readOptionalString(config.instructions),
       openclawAgentId: readOptionalString(config.openclawAgentId),
+      profileId: readOptionalString(config.profileId),
       agentName: readOptionalString(config.agentName),
       modelId: readOptionalString(config.modelId),
       skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
