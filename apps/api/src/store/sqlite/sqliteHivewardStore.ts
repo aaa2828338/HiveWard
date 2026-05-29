@@ -52,6 +52,9 @@ import {
   defaultCompanyId,
   hydrateImportedBlueprint,
   normalizeWorkspaceDashboard,
+  readBlueprintNodeEventRuntimeRef,
+  readBlueprintNodeRunRuntimeRef,
+  readBlueprintRunRuntimeRefs,
   readPortableBlueprintPackage,
   resolveFinalRunResult
 } from "@hiveward/shared";
@@ -808,7 +811,7 @@ export class SqliteHivewardStore implements HivewardStore {
         totalInputTokens: 0,
         totalOutputTokens: 0,
         totalCostUsd: 0,
-        openclawRefs: []
+        runtimeRefs: []
       };
       this.upsertRun(toBlueprintRunSummary(run, runnableBlueprint));
       this.driver.db.prepare(
@@ -871,7 +874,7 @@ export class SqliteHivewardStore implements HivewardStore {
         nodeRun.endedAt,
         nodeRun.error,
         optionalJson(nodeRun.usage),
-        optionalJson(nodeRun.openclawRef),
+        optionalJson(readBlueprintNodeRunRuntimeRef(nodeRun)),
         now
       );
       this.driver.db.prepare(
@@ -1680,7 +1683,7 @@ export class SqliteHivewardStore implements HivewardStore {
     });
   }
 
-  async startNodeRun(input: { nodeRunId: string; owner: string; workerEpoch: number; startedAt?: string; input?: unknown; openclawRef?: BlueprintNodeRun["openclawRef"] }): Promise<boolean> {
+  async startNodeRun(input: { nodeRunId: string; owner: string; workerEpoch: number; startedAt?: string; input?: unknown; runtimeRef?: BlueprintNodeRun["runtimeRef"] }): Promise<boolean> {
     return this.driver.transaction(() => {
       const now = new Date().toISOString();
       const result = this.driver.db.prepare(
@@ -1694,7 +1697,7 @@ export class SqliteHivewardStore implements HivewardStore {
            AND lease_owner = ?
            AND worker_epoch = ?
            AND lease_expires_at > ?`
-      ).run(input.startedAt ?? now, optionalJson(input.openclawRef), now, input.nodeRunId, input.owner, input.workerEpoch, now);
+      ).run(input.startedAt ?? now, optionalJson(input.runtimeRef), now, input.nodeRunId, input.owner, input.workerEpoch, now);
       if (result.changes !== 1) return false;
       if (input.input !== undefined) {
         this.driver.db.prepare(
@@ -1734,7 +1737,7 @@ export class SqliteHivewardStore implements HivewardStore {
       ).run(
         completed.endedAt,
         optionalJson(completed.usage),
-        optionalJson(completed.openclawRef),
+        optionalJson(readBlueprintNodeRunRuntimeRef(completed)),
         now,
         input.nodeRunId,
         input.owner,
@@ -1796,7 +1799,7 @@ export class SqliteHivewardStore implements HivewardStore {
            AND lease_owner = ?
            AND worker_epoch = ?
            AND lease_expires_at > ?`
-      ).run(input.endedAt ?? now, input.reason, optionalJson(input.openclawRef), now, input.nodeRunId, input.owner, input.workerEpoch, now);
+      ).run(input.endedAt ?? now, input.reason, optionalJson(input.runtimeRef), now, input.nodeRunId, input.owner, input.workerEpoch, now);
       if (result.changes !== 1) return false;
       const row = this.driver.db.prepare("SELECT run_id FROM node_runs WHERE id = ?").get(input.nodeRunId) as Row | undefined;
       if (row) this.refreshRunFacts(requireString(row.run_id));
@@ -1812,7 +1815,7 @@ export class SqliteHivewardStore implements HivewardStore {
         endedAt: input.nodeRun.endedAt ?? new Date().toISOString(),
         output: input.output,
         usage: input.nodeRun.usage,
-        openclawRef: input.nodeRun.openclawRef
+        runtimeRef: readBlueprintNodeRunRuntimeRef(input.nodeRun)
       };
       const completed = this.completeNodeRunSync({
         nodeRunId: input.nodeRunId,
@@ -1856,7 +1859,7 @@ export class SqliteHivewardStore implements HivewardStore {
     ).run(
       completed.endedAt,
       optionalJson(completed.usage),
-      optionalJson(completed.openclawRef),
+      optionalJson(readBlueprintNodeRunRuntimeRef(completed)),
       now,
       input.nodeRunId,
       input.owner,
@@ -2283,7 +2286,7 @@ export class SqliteHivewardStore implements HivewardStore {
       run.totalInputTokens,
       run.totalOutputTokens,
       run.totalCostUsd,
-      stringifyJson(run.openclawRefs ?? []),
+      stringifyJson(readBlueprintRunRuntimeRefs(run)),
       null,
       now
     );
@@ -2365,7 +2368,7 @@ export class SqliteHivewardStore implements HivewardStore {
         nodeRun.endedAt,
         nodeRun.error,
         optionalJson(nodeRun.usage),
-        optionalJson(nodeRun.openclawRef),
+        optionalJson(readBlueprintNodeRunRuntimeRef(nodeRun)),
         now
       );
       this.driver.db.prepare(
@@ -2395,7 +2398,7 @@ export class SqliteHivewardStore implements HivewardStore {
         this.nextEventSequence(event.blueprintRunId),
         event.type,
         event.message,
-        optionalJson(event.openclawRef),
+        optionalJson(readBlueprintNodeEventRuntimeRef(event)),
         event.createdAt
       );
     }
@@ -2497,7 +2500,7 @@ export class SqliteHivewardStore implements HivewardStore {
       sequence,
       event.type,
       event.message,
-      optionalJson(event.openclawRef),
+      optionalJson(readBlueprintNodeEventRuntimeRef(event)),
       event.createdAt
     );
   }
@@ -2713,7 +2716,7 @@ function runFromRow(row: Row): BlueprintRun {
     totalInputTokens: readNumber(row.total_input_tokens, 0),
     totalOutputTokens: readNumber(row.total_output_tokens, 0),
     totalCostUsd: readNumber(row.total_cost_usd, 0),
-    openclawRefs: readJsonArray(row.openclaw_refs_json)
+    runtimeRefs: readJsonArray(row.openclaw_refs_json)
   };
 }
 
@@ -2741,7 +2744,7 @@ function nodeRunFromRow(row: Row): BlueprintNodeRun {
     output: parseOptionalJson(row.output_json),
     error: readString(row.error),
     usage: parseOptionalJson(row.usage_json) as BlueprintNodeRun["usage"],
-    openclawRef: parseOptionalJson(row.openclaw_ref_json) as BlueprintNodeRun["openclawRef"]
+    runtimeRef: parseOptionalJson(row.openclaw_ref_json) as BlueprintNodeRun["runtimeRef"]
   };
 }
 
@@ -2753,7 +2756,7 @@ function eventFromRow(row: Row): BlueprintNodeEvent {
     type: requireString(row.type) as BlueprintNodeEvent["type"],
     message: requireString(row.message),
     createdAt: requireString(row.created_at),
-    openclawRef: parseOptionalJson(row.openclaw_ref_json) as BlueprintNodeEvent["openclawRef"]
+    runtimeRef: parseOptionalJson(row.openclaw_ref_json) as BlueprintNodeEvent["runtimeRef"]
   };
 }
 

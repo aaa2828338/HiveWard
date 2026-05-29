@@ -465,7 +465,7 @@ function createRunView(
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCostUsd: 0,
-    openclawRefs: []
+    runtimeRefs: []
   };
 
   return {

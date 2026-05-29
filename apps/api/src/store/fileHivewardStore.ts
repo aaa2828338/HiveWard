@@ -41,7 +41,8 @@ import type {
   ReleaseReport,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
-  RoleDriverBinding
+  RoleDriverBinding,
+  RuntimeObjectRef
 } from "@hiveward/shared";
 import {
   blueprintRunArchiveSchema,
@@ -52,6 +53,9 @@ import {
   defaultCompanyId,
   hydrateImportedBlueprint,
   normalizeWorkspaceDashboard,
+  readBlueprintNodeEventRuntimeRef,
+  readBlueprintNodeRunRuntimeRef,
+  readBlueprintRunRuntimeRefs,
   readPortableBlueprintPackage,
   resolveApprovalCapabilities,
   resolveFinalRunResult
@@ -73,6 +77,20 @@ import type {
 import { isFileNotFoundError, safeWriteJson } from "./jsonFile";
 
 const storeIndexSchema = "hiveward.store-index/v1";
+
+type LegacyRuntimeRefFields = {
+  openclawRef?: RuntimeObjectRef;
+};
+
+type LegacyRuntimeRefsField = {
+  openclawRefs?: RuntimeObjectRef[];
+};
+
+type RunArchiveWithLegacyRuntimeRefs = Omit<BlueprintRunArchive, "run" | "nodeRuns" | "events"> & {
+  run: BlueprintRunSummary & LegacyRuntimeRefsField;
+  nodeRuns: Array<BlueprintNodeRun & LegacyRuntimeRefFields>;
+  events: Array<BlueprintNodeEvent & LegacyRuntimeRefFields>;
+};
 
 export interface BlueprintIndexEntry {
   id: string;
@@ -853,7 +871,7 @@ export class FileHivewardStore implements HivewardStore {
         totalInputTokens: 0,
         totalOutputTokens: 0,
         totalCostUsd: 0,
-        openclawRefs: []
+        runtimeRefs: []
       };
       const summary = toBlueprintRunSummary(run, runnableBlueprint);
       const archive: BlueprintRunArchive = {
@@ -973,7 +991,7 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async startNodeRun(input: { nodeRunId: string; owner: string; workerEpoch: number; startedAt?: string; input?: unknown; openclawRef?: BlueprintNodeRun["openclawRef"] }): Promise<boolean> {
+  async startNodeRun(input: { nodeRunId: string; owner: string; workerEpoch: number; startedAt?: string; input?: unknown; runtimeRef?: BlueprintNodeRun["runtimeRef"] }): Promise<boolean> {
     return this.enqueue(async () => {
       const located = await this.findNodeRunUnlocked(input.nodeRunId);
       if (!located || located.nodeRun.status !== "running" || !this.matchesLease(input)) return false;
@@ -981,7 +999,7 @@ export class FileHivewardStore implements HivewardStore {
         ...located.nodeRun,
         startedAt: input.startedAt ?? located.nodeRun.startedAt ?? new Date().toISOString(),
         ...(input.input === undefined ? {} : { input: input.input }),
-        ...(input.openclawRef === undefined ? {} : { openclawRef: input.openclawRef })
+        ...(input.runtimeRef === undefined ? {} : { runtimeRef: input.runtimeRef })
       };
       await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
       return true;
@@ -1028,7 +1046,7 @@ export class FileHivewardStore implements HivewardStore {
         status: "cancelled",
         endedAt: input.endedAt ?? new Date().toISOString(),
         error: input.reason,
-        openclawRef: input.openclawRef ?? located.nodeRun.openclawRef
+        runtimeRef: input.runtimeRef ?? located.nodeRun.runtimeRef
       };
       await this.persistNodeRunArchiveAndIndexUnlocked(located.archive);
       return true;
@@ -1049,7 +1067,7 @@ export class FileHivewardStore implements HivewardStore {
         endedAt: input.nodeRun.endedAt ?? new Date().toISOString(),
         output: input.output,
         usage: input.nodeRun.usage,
-        openclawRef: input.nodeRun.openclawRef,
+        runtimeRef: input.nodeRun.runtimeRef,
         error: undefined
       };
       archive.nodeRuns[nodeIndex] = completed;
@@ -1659,7 +1677,7 @@ export class FileHivewardStore implements HivewardStore {
 
   private async readRunArchiveUnlocked(id: string): Promise<BlueprintRunArchive> {
     const rawArchive = JSON.parse(await readFile(this.runArchivePath(id), "utf8")) as Partial<BlueprintRunArchive>;
-    const archive = rawArchive as BlueprintRunArchive;
+    const archive = normalizeRunArchiveRuntimeRefs(rawArchive as BlueprintRunArchive);
     return stripRemovedBlueprintRunArchive({
       schema: blueprintRunArchiveSchema,
       run: archive.run,
@@ -1671,7 +1689,7 @@ export class FileHivewardStore implements HivewardStore {
   }
 
   private async writeRunArchiveUnlocked(archive: BlueprintRunArchive): Promise<void> {
-    await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(archive));
+    await safeWriteJson(this.runArchivePath(archive.run.id), stripRemovedBlueprintRunArchive(normalizeRunArchiveRuntimeRefs(archive)));
   }
 
   private async findNodeRunUnlocked(nodeRunId: string): Promise<{
@@ -2009,14 +2027,14 @@ export class FileHivewardStore implements HivewardStore {
     for (const run of index.runIndex) {
       const blueprint = normalizedBlueprints.find((candidate) => candidate.id === run.blueprintId) ?? createArchivePlaceholderBlueprint(run, now);
       const archiveNodeRuns = nodeRuns.filter((nodeRun) => nodeRun.blueprintRunId === run.id);
-      const archive: BlueprintRunArchive = {
+      const archive = normalizeRunArchiveRuntimeRefs({
         schema: blueprintRunArchiveSchema,
         run,
         blueprintSnapshot: blueprint,
         nodeRuns: archiveNodeRuns,
         events: events.filter((event) => event.blueprintRunId === run.id),
         finalResult: resolveFinalRunResult(blueprint, archiveNodeRuns, run.status)
-      };
+      });
       await this.writeRunArchiveUnlocked(archive);
     }
     return index;
@@ -2111,6 +2129,72 @@ export function stripRemovedBlueprintRunArchive(archive: BlueprintRunArchive): B
     events,
     finalResult: resolveFinalRunResult(blueprintSnapshot, nodeRuns, archive.run.status)
   };
+}
+
+function normalizeRunArchiveRuntimeRefs(archive: BlueprintRunArchive): BlueprintRunArchive {
+  const legacyArchive = archive as RunArchiveWithLegacyRuntimeRefs;
+  const runWithLegacyRefs = legacyArchive.run;
+  const { openclawRefs: _legacyRunRefs, ...runWithoutLegacyRefs } = runWithLegacyRefs;
+  const nodeRuns = Array.isArray(legacyArchive.nodeRuns)
+    ? legacyArchive.nodeRuns.map((nodeRun) => {
+        const { openclawRef: _legacyRuntimeRef, ...nodeRunWithoutLegacyRef } = nodeRun;
+        const runtimeRef = readLegacyNodeRunRuntimeRef(nodeRun);
+        return runtimeRef ? { ...nodeRunWithoutLegacyRef, runtimeRef } : nodeRunWithoutLegacyRef;
+      })
+    : [];
+  const events = Array.isArray(legacyArchive.events)
+    ? legacyArchive.events.map((event) => {
+        const { openclawRef: _legacyRuntimeRef, ...eventWithoutLegacyRef } = event;
+        const runtimeRef = readLegacyNodeEventRuntimeRef(event);
+        return runtimeRef ? { ...eventWithoutLegacyRef, runtimeRef } : eventWithoutLegacyRef;
+      })
+    : [];
+  const runtimeRefs = mergeRuntimeRefs(
+    readLegacyRunRuntimeRefs(runWithLegacyRefs),
+    nodeRuns.flatMap((nodeRun) => {
+      const runtimeRef = readBlueprintNodeRunRuntimeRef(nodeRun);
+      return runtimeRef ? [runtimeRef] : [];
+    })
+  );
+  return {
+    ...archive,
+    run: {
+      ...runWithoutLegacyRefs,
+      runtimeRefs
+    },
+    nodeRuns,
+    events
+  };
+}
+
+function readLegacyNodeRunRuntimeRef(nodeRun: BlueprintNodeRun & LegacyRuntimeRefFields): RuntimeObjectRef | undefined {
+  return nodeRun.runtimeRef ?? nodeRun.openclawRef;
+}
+
+function readLegacyNodeEventRuntimeRef(event: BlueprintNodeEvent & LegacyRuntimeRefFields): RuntimeObjectRef | undefined {
+  return event.runtimeRef ?? event.openclawRef;
+}
+
+function readLegacyRunRuntimeRefs(run: BlueprintRunSummary & LegacyRuntimeRefsField): RuntimeObjectRef[] {
+  return run.runtimeRefs ?? run.openclawRefs ?? [];
+}
+
+function mergeRuntimeRefs(...groups: RuntimeObjectRef[][]): RuntimeObjectRef[] {
+  const refs = new Map<string, RuntimeObjectRef>();
+  for (const runtimeRef of groups.flat()) {
+    refs.set(runtimeRefKey(runtimeRef), runtimeRef);
+  }
+  return [...refs.values()];
+}
+
+function runtimeRefKey(runtimeRef: RuntimeObjectRef): string {
+  return [
+    runtimeRef.source,
+    runtimeRef.sourceId,
+    runtimeRef.taskId ?? "",
+    runtimeRef.runId ?? "",
+    runtimeRef.sessionKey ?? ""
+  ].join(":");
 }
 
 function isRemovedStandaloneBlueprintNodeType(type: unknown): boolean {
@@ -2545,10 +2629,13 @@ function normalizeBlueprintIndexEntry(
 }
 
 function normalizeRunSummary(run: BlueprintRunSummary, fallbackCompanyId: string): BlueprintRunSummary {
+  const runWithLegacyRefs = run as BlueprintRunSummary & LegacyRuntimeRefsField;
+  const { openclawRefs: _legacyRefs, ...runWithoutLegacyRefs } = runWithLegacyRefs;
   return {
-    ...run,
+    ...runWithoutLegacyRefs,
     companyId: readScopedCompanyId(run.companyId, fallbackCompanyId),
-    blueprintName: run.blueprintName || run.blueprintId
+    blueprintName: run.blueprintName || run.blueprintId,
+    runtimeRefs: readLegacyRunRuntimeRefs(runWithLegacyRefs)
   };
 }
 
@@ -2573,13 +2660,16 @@ export function toBlueprintRunSummary(run: BlueprintRun, blueprint?: BlueprintDe
 
 export function applyNodeRunFactsToRun(run: BlueprintRunSummary, nodeRuns: BlueprintNodeRun[]): BlueprintRunSummary {
   const usage = nodeRuns.flatMap((nodeRun) => (nodeRun.usage ? [nodeRun.usage] : []));
-  const openclawRefs = nodeRuns.flatMap((nodeRun) => (nodeRun.openclawRef ? [nodeRun.openclawRef] : []));
+  const runtimeRefs = nodeRuns.flatMap((nodeRun) => {
+    const runtimeRef = readBlueprintNodeRunRuntimeRef(nodeRun);
+    return runtimeRef ? [runtimeRef] : [];
+  });
   return {
     ...run,
     totalInputTokens: usage.reduce((sum, item) => sum + item.inputTokens, 0),
     totalOutputTokens: usage.reduce((sum, item) => sum + item.outputTokens, 0),
     totalCostUsd: Number(usage.reduce((sum, item) => sum + item.costUsd, 0).toFixed(6)),
-    openclawRefs
+    runtimeRefs
   };
 }
 

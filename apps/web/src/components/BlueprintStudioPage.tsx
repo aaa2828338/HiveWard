@@ -49,6 +49,7 @@ import {
   Play,
   Plus,
   Repeat2,
+  Save,
   Search,
   ShieldCheck,
   Settings2,
@@ -122,6 +123,7 @@ import {
   buildAgentHarnessOptions,
   buildArchitectureRoleDetailRows,
   buildBlueprintModelSelectOptions,
+  buildHermesProfileSelectOptions,
   buildSummaryHarnessOptions,
   createBlueprintCanvasWorld,
   getBlueprintSelectOutsidePointerListenerOptions,
@@ -229,11 +231,13 @@ export function BlueprintStudioPage({
   selectedCompanyId,
   busy,
   busyAction,
+  blueprintDirty,
   onSelectBlueprint,
   onCreateBlueprint,
   onOpenBlueprintImport,
   onExportBlueprint,
   onDeleteBlueprint,
+  onSaveBlueprint,
   onRunBlueprint,
   onCancelBlueprintRun,
   onSelectNode,
@@ -257,6 +261,7 @@ export function BlueprintStudioPage({
   selectedCompanyId?: string;
   busy: boolean;
   busyAction?: string;
+  blueprintDirty: boolean;
   onSelectBlueprint: (blueprintId: string) => void;
   onCreateBlueprint: () => void;
   onOpenBlueprintImport: () => void;
@@ -518,6 +523,7 @@ export function BlueprintStudioPage({
   const isRunButtonStopMode = isBlueprintInteractionLocked || busyAction === "cancelBlueprintRun";
   const runButtonTitle = isRunButtonStopMode ? t.actions.stopRun : t.actions.runBlueprint;
   const runButtonLabel = isRunButtonStopMode ? t.actions.stopRun : t.actions.run;
+  const isSaveButtonBusy = busyAction === "saveBlueprint";
   const blueprintCanvasContentBounds = useMemo(
     () => buildBlueprintCanvasContentBounds(blueprintBoard === "architecture" ? architectureFlowNodes : localNodes),
     [architectureFlowNodes, blueprintBoard, localNodes]
@@ -1499,6 +1505,16 @@ export function BlueprintStudioPage({
             >
               {isRunButtonBusy ? <Loader2 className="spin" size={16} /> : isRunButtonStopMode ? <Square size={16} /> : <Play size={16} />}
               {runButtonLabel}
+            </button>
+            <button
+              type="button"
+              className={`blueprint-dock-save${blueprintDirty ? " dirty" : ""}`}
+              title={t.actions.saveBlueprint}
+              onClick={onSaveBlueprint}
+              disabled={!blueprint || busy || isBlueprintInteractionLocked || !blueprintDirty}
+            >
+              {isSaveButtonBusy ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
+              <span>{t.actions.save}</span>
             </button>
             <button
               ref={nodeMenuButtonRef}
@@ -2527,6 +2543,7 @@ function NodeConfigForm({
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const profileOptions = buildHermesProfileOptions(runtimeId, harnessStatuses, t);
     const agentOptions = configuredAgents ?? [];
     const approvalEnabled = config.approval?.enabled === true;
     const sendEnabled = runtimeId === "openclaw" && config.send?.enabled === true;
@@ -2594,6 +2611,17 @@ function NodeConfigForm({
             inheritedPermissionMode={inheritedPermissionMode}
             onPatchConfig={onPatchConfig}
           />
+          {runtimeId === "hermes" && (
+            <label>
+              <span>{t.fields.profile}</span>
+              <BlueprintSelect
+                value={config.profileId ?? ""}
+                options={profileOptions}
+                ariaLabel={t.fields.profile}
+                onChange={(value) => onPatchConfig({ profileId: value || undefined })}
+              />
+            </label>
+          )}
           <label className="field-span-full">
             <span>{t.fields.systemPrompt}</span>
             <textarea
@@ -2719,6 +2747,7 @@ function NodeConfigForm({
     const isSdkProvider = runtimeId === "claude" || runtimeId === "codex";
     const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const profileOptions = buildHermesProfileOptions(runtimeId, harnessStatuses, t);
     const agentOptions = configuredAgents ?? [];
     const managerMode = resolveManagerPanelMode(config);
     const isSelfIterationManager = managerMode === "self_iteration";
@@ -2790,6 +2819,24 @@ function NodeConfigForm({
           variant="toggle"
           inheritedPermissionMode={inheritedPermissionMode}
           onPatchConfig={onPatchConfig}
+        />
+        {runtimeId === "hermes" && (
+          <label>
+            <span>{t.fields.profile}</span>
+            <BlueprintSelect
+              value={config.profileId ?? ""}
+              options={profileOptions}
+              ariaLabel={t.fields.profile}
+              onChange={(value) => onPatchConfig({ profileId: value || undefined })}
+            />
+          </label>
+        )}
+        <AgentSkillField
+          className="field-span-full"
+          selectedSkills={config.skillIds ?? []}
+          skills={skills}
+          t={t}
+          onChange={(skillIds) => onPatchConfig({ skillIds })}
         />
         <label className="field-span-full">
           <span>{t.fields.systemPrompt}</span>
@@ -2954,6 +3001,7 @@ function NodeConfigForm({
     const runtimeId = config.runtimeId ?? "openclaw";
     const modelSelectValue = resolveBlueprintModelSelectValue(config.modelId);
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
+    const profileOptions = buildHermesProfileOptions(runtimeId, harnessStatuses, t);
     const modeOptions: BlueprintSelectOption[] = [
       { value: "structured_merge", label: t.options.structuredMerge },
       { value: "harness_summary", label: t.options.harnessSummary }
@@ -2983,7 +3031,8 @@ function NodeConfigForm({
       onPatchConfig({
         runtimeId: nextRuntimeId,
         modelId: undefined,
-        runtimeAccessPolicy: buildHarnessRuntimeAccessPolicy(config, nextRuntimeId, harnessPermissionModes)
+        runtimeAccessPolicy: buildHarnessRuntimeAccessPolicy(config, nextRuntimeId, harnessPermissionModes),
+        profileId: nextRuntimeId === "hermes" ? config.profileId : undefined
       });
     };
     return (
@@ -3033,6 +3082,17 @@ function NodeConfigForm({
               inheritedPermissionMode={inheritedPermissionMode}
               onPatchConfig={onPatchConfig}
             />
+            {runtimeId === "hermes" && (
+              <label>
+                <span>{t.fields.profile}</span>
+                <BlueprintSelect
+                  value={config.profileId ?? ""}
+                  options={profileOptions}
+                  ariaLabel={t.fields.profile}
+                  onChange={(value) => onPatchConfig({ profileId: value || undefined })}
+                />
+              </label>
+            )}
             <label className="field-span-full">
               <span>{t.fields.systemPrompt}</span>
               <textarea
@@ -3234,7 +3294,8 @@ function buildRuntimeConfigPatch(
       ...patch,
       openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main",
       runtimeAccessPolicy: permissionPatch.runtimeAccessPolicy,
-      permissionProfile: permissionPatch.permissionProfile
+      permissionProfile: permissionPatch.permissionProfile,
+      profileId: undefined
     };
   }
   return {
@@ -3243,6 +3304,7 @@ function buildRuntimeConfigPatch(
     send: undefined,
     runtimeAccessPolicy: permissionPatch.runtimeAccessPolicy,
     permissionProfile: permissionPatch.permissionProfile,
+    profileId: runtimeId === "hermes" ? config.profileId : undefined,
     timeoutMs: config.timeoutMs ?? 3600000
   };
 }
@@ -3275,6 +3337,20 @@ function buildHarnessRuntimeAccessPolicy(
   return inheritedPermissionMode
     ? runtimeAccessPolicyForMode(accessModeForHarnessPermissionMode(inheritedPermissionMode), runtimeId)
     : normalizePolicyForRuntime(config, runtimeId);
+}
+
+function buildHermesProfileOptions(
+  runtimeId: AgentRuntimeId,
+  harnessStatuses: HarnessStatus[] | undefined,
+  t: Messages
+): BlueprintSelectOption[] {
+  const profiles = harnessStatuses?.find((status) => status.id === "hermes")?.profiles ?? [];
+  return buildHermesProfileSelectOptions({
+    runtimeId,
+    profiles,
+    defaultLabel: t.common.defaultOption,
+    defaultBadgeLabel: t.common.defaultOption
+  });
 }
 
 function buildBlueprintRuntimeModelOptions(

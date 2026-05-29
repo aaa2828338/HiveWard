@@ -1040,6 +1040,7 @@ describe("apiRouter", () => {
   it("reports Google, Cursor, OpenCode, and Hermes CLI harness status and model defaults", async () => {
     const fixture = await createStoreFixture();
     const binDir = join(fixture.dir, "bin");
+    const hermesHome = join(fixture.dir, "hermes-home");
     const previousPath = process.env.PATH;
     const previousGoogleDefault = process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL;
     const previousGoogleModels = process.env.HIVEWARD_GOOGLE_CLI_MODELS;
@@ -1049,11 +1050,14 @@ describe("apiRouter", () => {
     const previousOpenCodeModels = process.env.HIVEWARD_OPENCODE_MODELS;
     const previousHermesDefault = process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
     const previousHermesModels = process.env.HIVEWARD_HERMES_MODELS;
+    const previousHermesHome = process.env.HERMES_HOME;
     mkdirSync(binDir, { recursive: true });
+    mkdirSync(hermesHome, { recursive: true });
     writeFakeExecutable(join(binDir, "gemini"), "gemini 0.38.1");
     writeFakeExecutable(join(binDir, "cursor-agent"), "cursor-agent 2026.1.0");
     writeFakeExecutable(join(binDir, "opencode"), "opencode 1.2.3");
-    writeFakeExecutable(join(binDir, "hermes"), "hermes 0.9.0");
+    writeFakeExecutable(join(binDir, "hermes-architect"), "hermes profile architect wrapper");
+    writeFakeHermesExecutable(join(binDir, "hermes"));
     process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
     process.env.HIVEWARD_GOOGLE_CLI_DEFAULT_MODEL = "gemini-2.5-pro";
     process.env.HIVEWARD_GOOGLE_CLI_MODELS = "gemini-2.5-pro,gemini-2.5-flash";
@@ -1061,8 +1065,9 @@ describe("apiRouter", () => {
     process.env.HIVEWARD_CURSOR_MODELS = "gpt-5,claude-4-sonnet";
     process.env.HIVEWARD_OPENCODE_DEFAULT_MODEL = "anthropic/claude-sonnet-4";
     process.env.HIVEWARD_OPENCODE_MODELS = "anthropic/claude-sonnet-4,openai/gpt-5.4";
-    process.env.HIVEWARD_HERMES_DEFAULT_MODEL = "nous/hermes-4";
-    process.env.HIVEWARD_HERMES_MODELS = "nous/hermes-4,openrouter/qwen3-coder";
+    process.env.HIVEWARD_HERMES_DEFAULT_MODEL = "hermes-env-default";
+    process.env.HIVEWARD_HERMES_MODELS = "hermes-env-default,hermes-env-fallback";
+    process.env.HERMES_HOME = hermesHome;
 
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -1076,6 +1081,7 @@ describe("apiRouter", () => {
             connectionState?: string;
             defaultModelId?: string;
             models?: Array<{ id: string; isDefault?: boolean }>;
+            profiles?: Array<{ id: string; label: string; alias?: string; isDefault?: boolean }>;
             checks?: Array<{ label: string }>;
           }>;
         }>(response);
@@ -1124,12 +1130,17 @@ describe("apiRouter", () => {
           label: "Hermes Beta",
           installed: true,
           connectionState: "available",
-          defaultModelId: "nous/hermes-4"
+          defaultModelId: "hermes-env-default"
         });
         expect(hermesStatus?.checks?.[0]?.label).toBe("Hermes CLI");
         expect(hermesStatus?.models?.map((model) => model.id)).toEqual([
-          "nous/hermes-4",
-          "openrouter/qwen3-coder"
+          "hermes-env-default",
+          "hermes-env-fallback"
+        ]);
+        expect(hermesStatus?.profiles).toEqual([
+          { id: "ceo", label: "ceo", alias: "hw-ceo", modelId: "hermes-primary-test", isDefault: true },
+          { id: "architect", label: "architect", modelId: "hermes-profile-model-test" },
+          { id: "researcher", label: "researcher", modelId: "hermes-research-model-test" }
         ]);
       });
     } finally {
@@ -1140,6 +1151,163 @@ describe("apiRouter", () => {
       restoreEnv("HIVEWARD_CURSOR_MODELS", previousCursorModels);
       restoreEnv("HIVEWARD_OPENCODE_DEFAULT_MODEL", previousOpenCodeDefault);
       restoreEnv("HIVEWARD_OPENCODE_MODELS", previousOpenCodeModels);
+      restoreEnv("HIVEWARD_HERMES_DEFAULT_MODEL", previousHermesDefault);
+      restoreEnv("HIVEWARD_HERMES_MODELS", previousHermesModels);
+      restoreEnv("HERMES_HOME", previousHermesHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Hermes agents and channels, then creates local entries", async () => {
+    const fixture = await createStoreFixture();
+    const binDir = join(fixture.dir, "bin");
+    const hermesHome = join(fixture.dir, "hermes-home");
+    const previousPath = process.env.PATH;
+    const previousHermesHome = process.env.HERMES_HOME;
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(hermesHome, { recursive: true });
+    mkdirSync(join(hermesHome, "skills", "hiveward-leader"), { recursive: true });
+    mkdirSync(join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(hermesHome, "profiles", "ceo"), { recursive: true });
+    writeFileSync(join(hermesHome, "config.yaml"), [
+      "model:",
+      "  default: hermes-primary-test",
+      "  provider: custom:test-primary",
+      "fallback_providers:",
+      "  - provider: custom:test-fallback",
+      "    model: hermes-fallback-test",
+      "terminal:",
+      "  cwd: ."
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "profiles", "ceo", "config.yaml"), [
+      "model:",
+      "  default: claude-sonnet-4",
+      "  provider: anthropic",
+      "terminal:",
+      `  cwd: ${join(fixture.dir, "ceo-workspace")}`
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
+    writeFileSync(join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(hermesHome, "channel_directory.json"), JSON.stringify({
+      updated_at: "2026-05-01T00:00:00.000Z",
+      platforms: {
+        feishu: [
+          { id: "channel_demo", name: "Demo Group", type: "group", thread_id: null }
+        ]
+      }
+    }));
+    writeFileSync(join(hermesHome, "profiles", "ceo", "channel_directory.json"), JSON.stringify({
+      updated_at: "2026-05-01T00:00:00.000Z",
+      platforms: {
+        feishu: [
+          { id: "profile_room", name: "CEO Room", type: "group", thread_id: "thread-1" }
+        ]
+      }
+    }));
+    writeFakeHermesExecutable(join(binDir, "hermes"), {
+      allowProfileWrites: true,
+      profileRows: [
+        " Profile          Model                        Gateway      Alias        Distribution",
+        "\u25c6ceo             hermes-primary-test            stopped      hermes-ceo   \u2014"
+      ]
+    });
+    process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
+    process.env.HERMES_HOME = hermesHome;
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const initialResponse = await fetch(`${baseUrl}/api/hermes-config`);
+        const initial = await readOkJson<{
+          profiles: Array<{ id: string; alias?: string; provider?: string; path?: string; workspace?: string; modelId?: string }>;
+          channels: Array<{ profileId?: string; platform: string; id: string; name: string; type?: string }>;
+          skills: Array<{ id: string; profileId?: string; path: string }>;
+          channelDirectoryPath: string;
+        }>(initialResponse);
+
+        expect(initial.profiles).toEqual([
+          expect.objectContaining({
+            id: "ceo",
+            alias: "hermes-ceo",
+            modelId: "hermes-primary-test",
+            provider: "anthropic",
+            path: join(hermesHome, "profiles", "ceo"),
+            workspace: join(fixture.dir, "ceo-workspace")
+          })
+        ]);
+        expect(initial.channels).toEqual(expect.arrayContaining([
+          expect.objectContaining({ profileId: "default", platform: "feishu", id: "channel_demo", name: "Demo Group", type: "group" }),
+          expect.objectContaining({ profileId: "ceo", platform: "feishu", id: "profile_room", name: "CEO Room", type: "group" })
+        ]));
+        expect(initial.skills).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: "hiveward-leader", path: join(hermesHome, "skills", "hiveward-leader", "SKILL.md") }),
+          expect.objectContaining({ id: "hiveward-ceo", profileId: "ceo", path: join(hermesHome, "profiles", "ceo", "skills", "hiveward-ceo", "SKILL.md") })
+        ]));
+        expect(initial.channelDirectoryPath).toBe(join(hermesHome, "channel_directory.json"));
+
+        const profileResponse = await fetch(`${baseUrl}/api/hermes-config/profiles`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "researcher", description: "Research tasks", cloneFrom: "ceo" })
+        });
+        expect(profileResponse.status).toBe(201);
+
+        const channelResponse = await fetch(`${baseUrl}/api/hermes-config/channels`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ platform: "slack", id: "C123", name: "ops", type: "group" })
+        });
+        const channelBody = await readOkJson<{ channels: Array<{ platform: string; id: string; name: string }> }>(channelResponse);
+        expect(channelResponse.status).toBe(201);
+        expect(channelBody.channels).toEqual(expect.arrayContaining([expect.objectContaining({ platform: "slack", id: "C123", name: "ops" })]));
+      });
+    } finally {
+      restoreEnv("PATH", previousPath);
+      restoreEnv("HERMES_HOME", previousHermesHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads Hermes configured models from local config files", async () => {
+    const fixture = await createStoreFixture();
+    const hermesHome = join(fixture.dir, "hermes-home");
+    const previousHermesHome = process.env.HERMES_HOME;
+    const previousHermesDefault = process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
+    const previousHermesModels = process.env.HIVEWARD_HERMES_MODELS;
+    mkdirSync(join(hermesHome, "profiles", "writer"), { recursive: true });
+    writeFileSync(join(hermesHome, "config.yaml"), [
+      "model:",
+      "  default: hermes-primary-test",
+      "  provider: custom:test-primary",
+      "fallback_providers:",
+      "  - provider: custom:test-fallback",
+      "    model: hermes-fallback-test"
+    ].join("\n"));
+    writeFileSync(join(hermesHome, "profiles", "writer", "config.yaml"), [
+      "model:",
+      "  default: hermes-profile-test",
+      "  provider: custom:test-profile"
+    ].join("\n"));
+    process.env.HERMES_HOME = hermesHome;
+    delete process.env.HIVEWARD_HERMES_DEFAULT_MODEL;
+    delete process.env.HIVEWARD_HERMES_MODELS;
+
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{ id: string; defaultModelId?: string; models?: Array<{ id: string; provider?: string; isDefault?: boolean }> }>;
+        }>(response);
+        const hermesStatus = body.statuses.find((status) => status.id === "hermes");
+
+        expect(hermesStatus?.defaultModelId).toBe("hermes-primary-test");
+        expect(hermesStatus?.models).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: "hermes-primary-test", provider: "custom:test-primary", isDefault: true }),
+          expect.objectContaining({ id: "hermes-fallback-test", provider: "custom:test-fallback" }),
+          expect.objectContaining({ id: "hermes-profile-test", provider: "custom:test-profile" })
+        ]));
+      });
+    } finally {
+      restoreEnv("HERMES_HOME", previousHermesHome);
       restoreEnv("HIVEWARD_HERMES_DEFAULT_MODEL", previousHermesDefault);
       restoreEnv("HIVEWARD_HERMES_MODELS", previousHermesModels);
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -2186,7 +2354,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("streams OpenClaw chat responses through the runtime adapter", async () => {
+  it("streams native chat responses through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -2211,11 +2379,14 @@ describe("apiRouter", () => {
         expect(text).toContain("event: started");
         expect(text).toContain("event: delta");
         expect(text).toContain("event: done");
-        expect(text).toContain("main completed through OpenClaw adapter");
+        expect(text).toContain("main completed through runtime adapter");
         expect(adapter.lastStartInput).toBeUndefined();
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("main");
         expect(adapter.lastChatStreamInput?.message).toContain("System context:");
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard is a local company operations console");
+        expect(adapter.lastChatStreamInput?.message).toContain("selected harness owns runtime execution");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("OpenClaw owns runtime execution");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("OpenClaw-native tools");
         expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
         expect(adapter.lastChatStreamInput?.message).toContain("Installed external skill:");
         expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
@@ -2228,6 +2399,39 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.thinking).toBe("medium");
       }, adapter);
     } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not pass native chat skills to a harness when those skills are not installed", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills"), { recursive: true });
+    process.env.CODEX_HOME = codexHome;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "Say hello from Codex chat.",
+          attachments: [],
+          modelId: "gpt-5.5",
+          thinkingEffort: "medium",
+          includePlatformContext: true,
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.skillIds).toBeUndefined();
+        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-ceo");
+      }, adapter);
+    } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2252,10 +2456,20 @@ describe("apiRouter", () => {
   it("streams Codex and Claude Code chat responses through the selected harness source", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const claudeHome = join(fixture.dir, "claude-home");
     const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
     const previousClaudeDefault = process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL;
+    const previousCodexHome = process.env.CODEX_HOME;
+    const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(claudeHome, "skills", "hiveward-leader"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(claudeHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
     process.env.HIVEWARD_CODEX_DEFAULT_MODEL = "codex/chat-default";
     process.env.HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL = "inherit";
+    process.env.CODEX_HOME = codexHome;
+    process.env.CLAUDE_CONFIG_DIR = claudeHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const codexResponse = await streamSessionChat(baseUrl, {
@@ -2310,6 +2524,8 @@ describe("apiRouter", () => {
     } finally {
       restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      restoreEnv("CLAUDE_CONFIG_DIR", previousClaudeConfigDir);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2317,6 +2533,13 @@ describe("apiRouter", () => {
   it("injects CEO skill decomposition guidance in skill split mode", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    mkdirSync(join(codexHome, "skills", "hiveward-skill-decomposer"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    writeFileSync(join(codexHome, "skills", "hiveward-skill-decomposer", "SKILL.md"), "# Decomposer\n");
+    process.env.CODEX_HOME = codexHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
@@ -2346,6 +2569,7 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo", "hiveward-skill-decomposer"]);
       }, adapter);
     } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2900,7 +3124,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("proxies OpenClaw native chat history by session key", async () => {
+  it("proxies native chat history by session key", async () => {
     const fixture = await createStoreFixture();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -2910,7 +3134,7 @@ describe("apiRouter", () => {
         expect(body.messages.length).toBeGreaterThan(0);
         expect(body.messages[0]).toMatchObject({
           role: "user",
-          content: "Mock OpenClaw session history."
+          content: "Mock runtime session history."
         });
       });
     } finally {
@@ -2930,7 +3154,7 @@ describe("apiRouter", () => {
         type: "blueprint_proposal",
         blueprintId: blueprint.id,
         title: "History synced blueprint package",
-        summary: "Created from a native OpenClaw history response.",
+        summary: "Created from a native runtime history response.",
         diffSummary: "Adds a history-synced blueprint package.",
         blueprintPackage: {
           schema: "hiveward.blueprint-package/v1",
@@ -3009,7 +3233,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("creates native OpenClaw chat sessions through the runtime adapter", async () => {
+  it("creates native chat sessions through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -3036,7 +3260,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("updates native OpenClaw chat session titles through the runtime adapter", async () => {
+  it("updates native chat session titles through the runtime adapter", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
@@ -3445,5 +3669,37 @@ function writeFakeExecutable(path: string, output: string): void {
     return;
   }
   writeFileSync(path, `#!/bin/sh\nprintf '%s\\n' '${output}'\n`, "utf8");
+  chmodSync(path, 0o755);
+}
+
+function writeFakeHermesExecutable(
+  path: string,
+  options: { allowProfileWrites?: boolean; profileRows?: string[] } = {}
+): void {
+  const profileRows = options.profileRows ?? [
+    " Profile          Model                        Gateway      Alias        Distribution",
+    "\u25c6ceo             hermes-primary-test            stopped      hw-ceo       \u2014",
+    " architect       hermes-profile-model-test                      stopped      \u2014            \u2014",
+    " researcher      hermes-research-model-test      stopped      -            \u2014"
+  ];
+  const scriptPath = `${path}.js`;
+  const script = [
+    "const args = process.argv.slice(2);",
+    "if (args[0] === \"--version\") { console.log(\"hermes 0.9.0\"); process.exit(0); }",
+    "if (args[0] === \"profile\" && args[1] === \"list\") {",
+    ...profileRows.map((row) => `  console.log(${JSON.stringify(row)});`),
+    "  process.exit(0);",
+    "}",
+    options.allowProfileWrites
+      ? "if (args[0] === \"profile\" && (args[1] === \"create\" || args[1] === \"alias\")) process.exit(0);"
+      : "",
+    "process.exit(1);"
+  ].filter(Boolean).join("\n");
+  writeFileSync(scriptPath, script, "utf8");
+  if (process.platform === "win32") {
+    writeFileSync(`${path}.cmd`, `@echo off\r\nnode "${scriptPath}" %*\r\n`, "utf8");
+    return;
+  }
+  writeFileSync(path, `#!/bin/sh\nnode '${scriptPath.replace(/'/g, "'\\''")}' "$@"\n`, "utf8");
   chmodSync(path, 0o755);
 }
