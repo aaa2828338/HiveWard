@@ -136,8 +136,10 @@ HiveWard vNext uses SQLite for runtime state, but startup is fail-closed when le
 Default runtime policy:
 
 - `sqlite` is the default and only normal writable runtime backend.
+- On upgrade, legacy JSON state is migrated to SQLite automatically after a dry-run and deep verification pass. Set `HIVEWARD_JSON_MIGRATION_MODE=off` only when you intentionally want fail-closed startup for migration debugging.
 - `json-readonly` is an explicit short-term read-only fallback for inspecting old JSON data; it does not seed defaults and rejects runtime writes.
 - `json` remains only as a development escape hatch and is not intended for production runtime use.
+- If startup detects an incompatible previously migrated SQLite schema checksum while legacy JSON is still available, HiveWard runs a one-time repair: dry-run migrate, verify, apply, verify, then starts from the repaired SQLite database. The previous SQLite files are copied into `data/migration-backups/<id>/`.
 
 Real-data migration rehearsal:
 
@@ -173,7 +175,7 @@ Relevant environment variables:
 
 - `HIVEWARD_STORE_BACKEND=sqlite|json-readonly|json`
 - `HIVEWARD_SQLITE_PATH=data/hiveward.sqlite`
-- `HIVEWARD_JSON_MIGRATION_MODE=off|dry-run|auto`
+- `HIVEWARD_JSON_MIGRATION_MODE=auto|dry-run|off`
 - `HIVEWARD_JSON_READONLY_FALLBACK=false`
 
 默认情况下，HiveWard 会优先连接本机可用的 OpenClaw Gateway；如果没有检测到真实配置，会进入 mock 模式，方便先体验界面和蓝图流转。

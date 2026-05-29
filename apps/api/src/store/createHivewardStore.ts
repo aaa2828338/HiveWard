@@ -30,18 +30,19 @@ export async function createHivewardStore(env: NodeJS.ProcessEnv = process.env):
 
   if (backend === "sqlite") {
     const readonlyFallback = readBoolean(env.HIVEWARD_JSON_READONLY_FALLBACK);
+    const migrationMode = readMigrationMode(env.HIVEWARD_JSON_MIGRATION_MODE);
     try {
       await enforceSqliteStartupGate({
         dataDir,
         sqlitePath,
-        migrationMode: readMigrationMode(env.HIVEWARD_JSON_MIGRATION_MODE),
+        migrationMode,
         readonlyFallback
       });
     } catch (error) {
       if (!readonlyFallback) throw error;
       return readonlyStore(new FileHivewardStore(join(dataDir, "hiveward-store.json"), { seedDefaults: false }));
     }
-    return new SqliteHivewardStore(sqlitePath);
+    return selfHealingSqliteStore({ dataDir, sqlitePath, migrationMode });
   }
 
   const fileStore = new FileHivewardStore(join(dataDir, "hiveward-store.json"), {
@@ -78,7 +79,8 @@ function readStoreBackend(value: string | undefined): HivewardStoreBackend {
 
 function readMigrationMode(value: string | undefined): JsonMigrationMode {
   const normalized = value?.trim();
-  if (normalized === undefined || normalized === "" || normalized === "off") return "off";
+  if (normalized === undefined || normalized === "") return "auto";
+  if (normalized === "off") return "off";
   if (normalized === "dry-run" || normalized === "auto") return normalized;
   throw new Error(`Unsupported HIVEWARD_JSON_MIGRATION_MODE "${normalized}". Use off, dry-run, or auto.`);
 }
@@ -100,13 +102,6 @@ async function enforceSqliteStartupGate(input: {
 
   if (state.hasSqliteDb && state.hasAppliedMigrationManifest) return;
 
-  if (state.hasSqliteDb && !state.hasAppliedMigrationManifest) {
-    throw migrationGateError(
-      state,
-      "Legacy JSON and SQLite both exist, but no applied migration manifest was found. Refusing to trust mixed runtime state."
-    );
-  }
-
   if (input.migrationMode === "dry-run") {
     const dryRun = await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: true });
     const verification = await verifySqliteMigration({ dataDir: input.dataDir, sqlitePath: dryRun.sqlitePath, checkArtifacts: true, listOrphanArtifacts: true });
@@ -117,17 +112,15 @@ async function enforceSqliteStartupGate(input: {
   }
 
   if (input.migrationMode === "auto") {
-    const dryRun = await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: true });
-    const dryRunVerification = await verifySqliteMigration({ dataDir: input.dataDir, sqlitePath: dryRun.sqlitePath, checkArtifacts: true, listOrphanArtifacts: true });
-    if (!dryRunVerification.ok) {
-      throw migrationGateError(state, `JSON to SQLite dry-run verification failed: ${dryRunVerification.mismatches.join(", ") || "unknown mismatch"}.`);
-    }
-    await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: false });
-    const verification = await verifySqliteMigration({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, checkArtifacts: true, listOrphanArtifacts: true });
-    if (!verification.ok) {
-      throw migrationGateError(state, `JSON to SQLite migration verification failed: ${verification.mismatches.join(", ") || "unknown mismatch"}.`);
-    }
+    await runVerifiedMigration(input, state, "JSON to SQLite");
     return;
+  }
+
+  if (state.hasSqliteDb && !state.hasAppliedMigrationManifest) {
+    throw migrationGateError(
+      state,
+      "Legacy JSON and SQLite both exist, but no applied migration manifest was found. Refusing to trust mixed runtime state."
+    );
   }
 
   if (input.readonlyFallback) {
@@ -151,6 +144,83 @@ function migrationGateError(state: RuntimeStoreState, reason: string): Error {
     "  node scripts/verify-sqlite-store.mjs --data-dir data --check-artifacts",
     `Detected state: ${JSON.stringify(state)}`
   ].join("\n"));
+}
+
+function selfHealingSqliteStore(input: {
+  dataDir: string;
+  sqlitePath: string;
+  migrationMode: JsonMigrationMode;
+}): HivewardStore {
+  let store = new SqliteHivewardStore(input.sqlitePath);
+  return new Proxy({} as HivewardStore, {
+    get(_target, property) {
+      if (property === "init") {
+        return async () => {
+          try {
+            await store.init();
+          } catch (error) {
+            if (!await shouldRepairSqliteStartupError(error, input)) throw error;
+            store.close();
+            await repairSqliteFromLegacyJson(input);
+            store = new SqliteHivewardStore(input.sqlitePath);
+            await store.init();
+          }
+        };
+      }
+      const value = Reflect.get(store, property);
+      return typeof value === "function" ? value.bind(store) : value;
+    }
+  });
+}
+
+async function shouldRepairSqliteStartupError(error: unknown, input: {
+  dataDir: string;
+  sqlitePath: string;
+  migrationMode: JsonMigrationMode;
+}): Promise<boolean> {
+  if (input.migrationMode !== "auto") return false;
+  if (!isRecoverableSqliteStartupError(error)) return false;
+  const state = await detectRuntimeStoreState(input.dataDir, input.sqlitePath);
+  return state.hasLegacyIndex || state.hasLegacyChat || state.hasLegacyRunArchive;
+}
+
+function isRecoverableSqliteStartupError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("SQLite schema migration checksum mismatch");
+}
+
+async function repairSqliteFromLegacyJson(input: {
+  dataDir: string;
+  sqlitePath: string;
+}): Promise<void> {
+  await runVerifiedMigration(input, await detectRuntimeStoreState(input.dataDir, input.sqlitePath), "SQLite startup repair");
+}
+
+async function runVerifiedMigration(input: {
+  dataDir: string;
+  sqlitePath: string;
+}, state: RuntimeStoreState, label: string): Promise<void> {
+  const dryRun = await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: true });
+  const dryRunVerification = await verifySqliteMigration({
+    dataDir: input.dataDir,
+    sqlitePath: dryRun.sqlitePath,
+    checkArtifacts: true,
+    listOrphanArtifacts: true
+  });
+  if (!dryRunVerification.ok) {
+    throw migrationGateError(state, `${label} dry-run verification failed: ${dryRunVerification.mismatches.join(", ") || "unknown mismatch"}.`);
+  }
+
+  await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: false });
+  const verification = await verifySqliteMigration({
+    dataDir: input.dataDir,
+    sqlitePath: input.sqlitePath,
+    checkArtifacts: true,
+    listOrphanArtifacts: true
+  });
+  if (!verification.ok) {
+    throw migrationGateError(state, `${label} verification failed: ${verification.mismatches.join(", ") || "unknown mismatch"}.`);
+  }
 }
 
 async function pathExists(path: string): Promise<boolean> {

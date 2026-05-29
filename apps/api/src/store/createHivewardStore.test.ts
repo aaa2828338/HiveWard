@@ -2,9 +2,11 @@ import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { createHivewardStore, detectRuntimeStoreState, resolveHivewardStorePath } from "./createHivewardStore";
 import { FileHivewardStore } from "./fileHivewardStore";
+import { migrateJsonToSqlite } from "./sqlite/jsonToSqliteMigration";
 import { SqliteHivewardStore } from "./sqlite/sqliteHivewardStore";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -28,12 +30,32 @@ describe("resolveHivewardStorePath", () => {
 });
 
 describe("createHivewardStore startup migration gate", () => {
-  it("fails closed when legacy JSON exists without SQLite", async () => {
+  it("auto-migrates legacy JSON by default when SQLite is missing", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-default-auto-"));
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await seedLegacyJson(dataDir);
+
+    const store = await createHivewardStore({
+      HIVEWARD_SQLITE_PATH: sqlitePath
+    } as NodeJS.ProcessEnv);
+    await store.init();
+    await expect(store.listCompanies()).resolves.toMatchObject({
+      companies: expect.arrayContaining([expect.objectContaining({ id: "company-hiveward-studio" })])
+    });
+    (store as SqliteHivewardStore).close?.();
+    expect(await detectRuntimeStoreState(dataDir, sqlitePath)).toMatchObject({
+      hasSqliteDb: true,
+      hasAppliedMigrationManifest: true
+    });
+  });
+
+  it("fails closed when legacy JSON exists without SQLite and auto migration is disabled", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-gate-"));
     await seedLegacyJson(dataDir);
 
     await expect(createHivewardStore({
-      HIVEWARD_SQLITE_PATH: join(dataDir, "hiveward.sqlite")
+      HIVEWARD_SQLITE_PATH: join(dataDir, "hiveward.sqlite"),
+      HIVEWARD_JSON_MIGRATION_MODE: "off"
     } as NodeJS.ProcessEnv)).rejects.toThrow(/Refusing to create an empty SQLite runtime store/);
     expect(existsSync(join(dataDir, "hiveward.sqlite"))).toBe(false);
   });
@@ -49,7 +71,7 @@ describe("createHivewardStore startup migration gate", () => {
     expect(existsSync(join(dataDir, "hiveward.sqlite"))).toBe(false);
   });
 
-  it("auto-migrates legacy JSON before returning a SQLite store", async () => {
+  it("auto-migrates legacy JSON before returning a SQLite store when explicitly requested", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-auto-"));
     const sqlitePath = join(dataDir, "hiveward.sqlite");
     await seedLegacyJson(dataDir);
@@ -66,6 +88,40 @@ describe("createHivewardStore startup migration gate", () => {
     (store as SqliteHivewardStore).close?.();
   });
 
+  it("repairs an incompatible migrated SQLite database from legacy JSON during init", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-repair-"));
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await seedLegacyJson(dataDir);
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+    const stale = new Database(sqlitePath);
+    try {
+      stale.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("stale-checksum");
+    } finally {
+      stale.close();
+    }
+
+    const store = await createHivewardStore({
+      HIVEWARD_SQLITE_PATH: sqlitePath
+    } as NodeJS.ProcessEnv);
+    await store.init();
+    await expect(store.listCompanies()).resolves.toMatchObject({
+      companies: expect.arrayContaining([expect.objectContaining({ id: "company-hiveward-studio" })])
+    });
+    (store as SqliteHivewardStore).close?.();
+
+    const repaired = new Database(sqlitePath, { readonly: true, fileMustExist: true });
+    try {
+      expect(repaired.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toMatchObject({ version: 2 });
+      expect(repaired.prepare("SELECT checksum FROM schema_migrations WHERE version = 1").get()).not.toMatchObject({ checksum: "stale-checksum" });
+    } finally {
+      repaired.close();
+    }
+    expect(await detectRuntimeStoreState(dataDir, sqlitePath)).toMatchObject({
+      hasSqliteDb: true,
+      hasAppliedMigrationManifest: true
+    });
+  });
+
   it("allows a fresh SQLite install to seed defaults when no legacy JSON exists", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-fresh-"));
     const sqlitePath = join(dataDir, "hiveward.sqlite");
@@ -79,7 +135,7 @@ describe("createHivewardStore startup migration gate", () => {
     (store as SqliteHivewardStore).close?.();
   });
 
-  it("fails when legacy JSON and SQLite exist without an applied migration manifest", async () => {
+  it("auto-rebuilds mixed legacy JSON and SQLite state when no applied migration manifest exists", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-mixed-"));
     const sqlitePath = join(dataDir, "hiveward.sqlite");
     await seedLegacyJson(dataDir);
@@ -87,9 +143,18 @@ describe("createHivewardStore startup migration gate", () => {
     await sqlite.init();
     sqlite.close();
 
-    await expect(createHivewardStore({
+    const store = await createHivewardStore({
       HIVEWARD_SQLITE_PATH: sqlitePath
-    } as NodeJS.ProcessEnv)).rejects.toThrow(/no applied migration manifest/);
+    } as NodeJS.ProcessEnv);
+    await store.init();
+    await expect(store.listCompanies()).resolves.toMatchObject({
+      companies: expect.arrayContaining([expect.objectContaining({ id: "company-hiveward-studio" })])
+    });
+    (store as SqliteHivewardStore).close?.();
+    expect(await detectRuntimeStoreState(dataDir, sqlitePath)).toMatchObject({
+      hasSqliteDb: true,
+      hasAppliedMigrationManifest: true
+    });
   });
 
   it("keeps json-readonly init from seeding missing JSON and rejects writes", async () => {
