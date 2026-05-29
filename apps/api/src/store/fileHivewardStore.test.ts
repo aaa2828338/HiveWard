@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -166,6 +166,36 @@ describe("FileHivewardStore blueprint workspaces", () => {
       id: blueprint.id,
       name: "Skill Decomposer Blueprint"
     });
+  });
+
+  it("syncs one workspace folder per active agent node", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = await store.createBlueprint({ name: "Agent Workspace Blueprint" });
+    await store.saveBlueprint({
+      ...blueprint,
+      nodes: [
+        createAgentNode("research-agent", "Research Agent"),
+        createAgentNode("writer-agent", "Writer Agent")
+      ],
+      edges: []
+    });
+
+    const workspacePath = join(dir, "blueprint-workspaces", blueprint.id);
+    expect(readAgentWorkspaceNodeIds(workspacePath).sort()).toEqual(["research-agent", "writer-agent"]);
+
+    await store.saveBlueprint({
+      ...blueprint,
+      nodes: [
+        createAgentNode("writer-agent", "Writer Agent"),
+        createAgentNode("reviewer-agent", "Reviewer Agent")
+      ],
+      edges: []
+    });
+
+    expect(readAgentWorkspaceNodeIds(workspacePath).sort()).toEqual(["reviewer-agent", "writer-agent"]);
   });
 
   it("creates bundle skeletons for imported blueprints without changing JSON-only package behavior", async () => {
@@ -730,6 +760,32 @@ function createDirtyBlueprint(now: string): BlueprintDefinition {
       { id: "edge-send-parallel", source: "send", target: "parallel" }
     ]
   };
+}
+
+function createAgentNode(id: string, label: string): BlueprintNode {
+  return {
+    id,
+    type: "agent",
+    runtimeId: "openclaw",
+    position: { x: 0, y: 0 },
+    config: {
+      label,
+      openclawAgentId: "main",
+      agentName: id,
+      prompt: `Run ${id}`,
+      tools: []
+    }
+  };
+}
+
+function readAgentWorkspaceNodeIds(workspacePath: string): string[] {
+  const agentRoot = join(workspacePath, "agents");
+  return readdirSync(agentRoot).map((entry) => {
+    const metadata = JSON.parse(readFileSync(join(agentRoot, entry, "agent-workspace.json"), "utf8")) as {
+      nodeId?: string;
+    };
+    return metadata.nodeId ?? entry;
+  });
 }
 
 function createValidSkillIr(name: string) {

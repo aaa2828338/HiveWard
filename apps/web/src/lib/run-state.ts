@@ -189,9 +189,12 @@ function buildApprovalItemFromRequest(
   const nodeRun = request.nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === request.nodeRunId) : undefined;
   const upstream = readPendingApprovalUpstream(nodeRun?.input);
   const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
-  const replies = readPendingApprovalReplies(output?.replies);
+  const outputReplies = readPendingApprovalReplies(output?.replies);
+  const requestReplyState = outputReplies ? undefined : readApprovalRequestReplyState(runView, request);
+  const replies = outputReplies ?? requestReplyState?.replies;
   const selectedReplyId = readOptionalString(output?.selectedReplyId);
   const isPending = request.status === "pending";
+  const isReplying = isPending && (nodeRun?.status === "running" || requestReplyState?.awaitingRevision === true);
   return {
     approvalRequestId: request.id,
     kind: request.kind,
@@ -205,18 +208,51 @@ function buildApprovalItemFromRequest(
     startedAt: runView.run.startedAt,
     requestedAt: request.requestedAt,
     status: isPending
-      ? nodeRun?.status === "running" ? "replying" : "pending"
+      ? isReplying ? "replying" : "pending"
       : request.status === "approved" || request.status === "completed" ? "approved" : "rejected",
     reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
     ...(replies ? { replies } : {}),
     ...(selectedReplyId ? { selectedReplyId } : {}),
-    canApprove: request.capabilities.approve,
-    canReject: request.capabilities.reject,
-    canReply: request.capabilities.reply,
+    canApprove: isReplying ? false : request.capabilities.approve,
+    canReject: isReplying ? false : request.capabilities.reject,
+    canReply: isReplying ? false : request.capabilities.reply,
     canComplete: request.capabilities.complete,
     canTerminate: request.capabilities.terminate,
     decidedAt: isPending ? undefined : request.updatedAt,
     ...(upstream ? { upstream } : {})
+  };
+}
+
+function readApprovalRequestReplyState(
+  runView: BlueprintRunView,
+  request: ApprovalRequest
+): { replies?: PendingApprovalItem["replies"]; awaitingRevision: boolean } {
+  const replyDecisions = (runView.approvalDecisions ?? [])
+    .filter((decision) => decision.approvalRequestId === request.id && decision.action === "reply" && decision.comment?.trim())
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+  if (!replyDecisions.length) return { awaitingRevision: false };
+
+  const replies: NonNullable<PendingApprovalItem["replies"]> = replyDecisions.map((decision) => ({
+    id: `${decision.id}:user`,
+    role: "user",
+    body: decision.comment?.trim() ?? "",
+    createdAt: decision.createdAt
+  }));
+
+  const hasAssistantRevision = request.status === "pending" && request.revision > replyDecisions.length;
+  if (hasAssistantRevision) {
+    replies.push({
+      id: `${request.id}:revision-${request.revision}`,
+      role: "assistant",
+      body: request.body,
+      createdAt: request.updatedAt ?? request.requestedAt,
+      selected: true
+    });
+  }
+
+  return {
+    replies,
+    awaitingRevision: request.status === "pending" && !hasAssistantRevision
   };
 }
 

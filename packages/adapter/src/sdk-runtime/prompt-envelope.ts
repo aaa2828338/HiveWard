@@ -12,7 +12,10 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
         "Output schema JSON:",
         stableStringify(input.outputSchema),
         "",
-        "Return JSON that matches the supplied schema. If the schema contains humanReportMd, that Markdown report is the human-facing output and must include delivery locations."
+        "Return JSON that matches the supplied schema.",
+        "The schema is a transport wrapper for Hiveward, not a limit on the substance of your answer.",
+        "If the schema contains humanReportMd, humanReportMd is your free-form human answer: keep the natural report, reasoning, recommendations, and caveats there, and include delivery locations.",
+        "Use structured fields such as result, handoffJson, and artifacts as add-ons for machine handoff and UI links."
       ].join("\n")
     : "";
 
@@ -31,7 +34,7 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
     stableStringify(redactSecrets(input.input)),
     schemaText,
     "",
-    "Return only the node result JSON."
+    "Return only the node result JSON object. Put any free-form human-facing prose inside humanReportMd when that field is available."
   ].join("\n");
 }
 

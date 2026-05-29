@@ -131,6 +131,7 @@ export class ApprovalService {
       payloadRef?: string;
       releaseReport?: ReleaseReport;
       capabilities?: ApprovalCapabilities;
+      replacePendingRequest?: boolean;
     } = {}
   ): Promise<ApprovalActionResult> {
     const trimmed = message.trim();
@@ -140,10 +141,38 @@ export class ApprovalService {
     const now = new Date().toISOString();
     const revision = current.revision + 1;
     const baseRevision = await this.buildReplyRevision(current, trimmed, revision);
+    const { replacePendingRequest, ...revisionFields } = revisionOverride;
     const revised = {
       ...baseRevision,
-      ...revisionOverride
+      ...revisionFields
     };
+    if (replacePendingRequest) {
+      const nextRequest: ApprovalRequest = {
+        ...current,
+        title: revised.title,
+        body: revised.body,
+        payloadRef: revised.payloadRef,
+        revision,
+        capabilities: revised.capabilities ?? resolveApprovalCapabilities(
+          current.kind,
+          "pending",
+          { finalRound: current.kind === "manager_release_report" && current.capabilities.complete && !current.capabilities.approve }
+        ),
+        updatedAt: now
+      };
+      const decision = this.buildDecision(current.id, "reply", "pending", "user", trimmed, now);
+      return this.applyDecisionOrThrow({
+        approvalRequest: nextRequest,
+        decision,
+        releaseReport: revised.releaseReport
+          ? {
+              ...revised.releaseReport,
+              approvalRequestId: nextRequest.id,
+              createdAt: nextRequest.updatedAt ?? now
+            }
+          : undefined
+      });
+    }
     const nextRequest: ApprovalRequest = {
       id: `approval-${nanoid(10)}`,
       runId: current.runId,
@@ -189,13 +218,70 @@ export class ApprovalService {
     });
   }
 
-  async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {
+  async revisePendingRequest(
+    id: string,
+    message: string,
+    revisionOverride: {
+      title?: string;
+      body?: string;
+      payloadRef?: string;
+      releaseReport?: ReleaseReport;
+      capabilities?: ApprovalCapabilities;
+    } = {}
+  ): Promise<ApprovalRequest> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval reply message is required.");
+
+    const current = await this.requireRequest(id);
+    if (current.status !== "pending") {
+      throw new ApprovalConflictError("Approval request is already closed.");
+    }
+    const now = new Date().toISOString();
+    const revision = current.revision + 1;
+    const baseRevision = await this.buildReplyRevision(current, trimmed, revision);
+    const revised = {
+      ...baseRevision,
+      ...revisionOverride
+    };
+    const nextRequest: ApprovalRequest = {
+      ...current,
+      title: revised.title,
+      body: revised.body,
+      payloadRef: revised.payloadRef,
+      revision,
+      capabilities: revised.capabilities ?? resolveApprovalCapabilities(
+        current.kind,
+        "pending",
+        { finalRound: current.kind === "manager_release_report" && current.capabilities.complete && !current.capabilities.approve }
+      ),
+      updatedAt: now
+    };
+    await this.store.upsertApprovalRequest(nextRequest);
+    if (revised.releaseReport) {
+      await this.store.upsertReleaseReport({
+        ...revised.releaseReport,
+        approvalRequestId: nextRequest.id,
+        createdAt: nextRequest.updatedAt ?? now
+      });
+    }
+    return nextRequest;
+  }
+
+  async recordPendingReply(
+    id: string,
+    message: string,
+    options: { lockActions?: boolean } = {}
+  ): Promise<ApprovalActionResult> {
     const trimmed = message.trim();
     if (!trimmed) throw new Error("Approval reply message is required.");
 
     const current = await this.requirePendingRequest(id, "reply");
     const now = new Date().toISOString();
-    const updated: ApprovalRequest = { ...current, updatedAt: now };
+    const updated: ApprovalRequest = {
+      ...current,
+      capabilities: options.lockActions ? { ...emptyApprovalCapabilities } : current.capabilities,
+      updatedAt: now
+    };
     const decision = this.buildDecision(current.id, "reply", "pending", "user", trimmed, now);
     return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
   }

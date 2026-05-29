@@ -937,11 +937,13 @@ pre {
 }
 
 .error-banner {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  margin-bottom: 16px;
-  max-width: 820px;
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 80;
+  width: min(560px, calc(100vw - 36px));
+  margin: 0;
+  box-shadow: var(--shadow-md);
   border: 1px solid #fecaca;
   background: #fff1f2;
   color: #991b1b;
@@ -3816,8 +3818,6 @@ textarea {
 }
 
 .error-banner {
-  top: 82px;
-  max-width: none;
   border-color: rgb(239 68 68 / 0.38);
   border-radius: var(--radius-sm);
   color: #fecdd3;

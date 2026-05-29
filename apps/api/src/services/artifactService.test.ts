@@ -123,6 +123,41 @@ describe("ArtifactService", () => {
     expect(readFileSync(artifact!.storagePath!, "utf8")).toBe("text body file");
   });
 
+  it("writes html artifact payloads when agents use the body alias", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-html-body-"));
+    const store = new FileHivewardStore(join(tempDir, "hiveward-store.json"));
+    await store.init();
+    const service = new ArtifactService(store, { rootDir: join(tempDir, "artifacts"), sourceRoot: tempDir });
+    const html = "<!doctype html><html><body>self dispatch page</body></html>";
+
+    const [artifact] = await service.publishFromNodeRun({
+      runId: "run-html-body",
+      nodeRun: createNodeRun({
+        id: "node-run-html-body",
+        output: {
+          artifacts: [{
+            kind: "html",
+            title: "Self dispatch page",
+            format: "text/html",
+            previewPolicy: "sandboxed_iframe",
+            trusted: true,
+            body: html
+          }]
+        }
+      })
+    });
+
+    expect(artifact).toMatchObject({
+      kind: "html",
+      format: "text/html",
+      previewPolicy: "sandboxed_iframe",
+      trusted: true,
+      relativePath: expect.stringMatching(/\.html$/),
+      bytes: Buffer.byteLength(html)
+    });
+    expect(readFileSync(artifact!.storagePath!, "utf8")).toBe(html);
+  });
+
   it("does not leave run-scoped published files when artifact metadata publish fails", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-orphan-"));
     const store = new FailingArtifactStore(join(tempDir, "hiveward-store.json"));

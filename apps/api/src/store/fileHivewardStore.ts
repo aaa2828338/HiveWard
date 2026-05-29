@@ -75,6 +75,11 @@ import type {
   PublishAgentOutputResult
 } from "./hivewardStore";
 import { isFileNotFoundError, safeWriteJson } from "./jsonFile";
+import {
+  agentWorkspaceMetadataFile,
+  agentWorkspaceRefsForBlueprint,
+  agentWorkspaceRootFolder
+} from "../services/agentWorkspaceService";
 
 const storeIndexSchema = "hiveward.store-index/v1";
 
@@ -1816,8 +1821,10 @@ export class FileHivewardStore implements HivewardStore {
       mkdir(join(workspacePath, "mcp"), { recursive: true }),
       mkdir(join(workspacePath, "scripts"), { recursive: true }),
       mkdir(join(workspacePath, "artifacts"), { recursive: true }),
-      mkdir(join(workspacePath, "tmp"), { recursive: true })
+      mkdir(join(workspacePath, "tmp"), { recursive: true }),
+      mkdir(join(workspacePath, agentWorkspaceRootFolder), { recursive: true })
     ]);
+    await syncBlueprintAgentWorkspaces(workspacePath, blueprint);
     const manifestPath = join(workspacePath, "manifest.json");
     const existingManifest = await readJsonIfExists(manifestPath);
     await Promise.all([
@@ -2755,6 +2762,42 @@ function buildBlueprintEntryMarkdown(blueprint: BlueprintDefinition): string {
     description,
     ""
   ].join("\n");
+}
+
+async function syncBlueprintAgentWorkspaces(
+  workspacePath: string,
+  blueprint: BlueprintDefinition
+): Promise<void> {
+  const agentRoot = join(workspacePath, agentWorkspaceRootFolder);
+  const refs = agentWorkspaceRefsForBlueprint(workspacePath, blueprint);
+  const desiredDirectories = new Set(refs.map((ref) => ref.directoryName));
+  const existingEntries = await readdir(agentRoot, { withFileTypes: true }).catch((error: unknown) => {
+    if (isFileNotFoundError(error)) return [];
+    throw error;
+  });
+
+  await Promise.all(refs.map(async (ref) => {
+    await Promise.all([
+      mkdir(ref.path, { recursive: true }),
+      mkdir(ref.artifactsPath, { recursive: true }),
+      mkdir(ref.tmpPath, { recursive: true })
+    ]);
+    await safeWriteJson(join(ref.path, agentWorkspaceMetadataFile), {
+      schema: "hiveward.agent-workspace/v1",
+      blueprintId: blueprint.id,
+      nodeId: ref.nodeId,
+      nodeLabel: ref.nodeLabel,
+      directoryName: ref.directoryName,
+      path: ref.path,
+      artifactsPath: ref.artifactsPath,
+      tmpPath: ref.tmpPath,
+      updatedAt: new Date().toISOString()
+    });
+  }));
+
+  await Promise.all(existingEntries
+    .filter((entry) => !desiredDirectories.has(entry.name))
+    .map((entry) => rm(join(agentRoot, entry.name), { recursive: true, force: true })));
 }
 
 function buildBlueprintWorkspaceManifest(blueprint: BlueprintDefinition): Record<string, unknown> {

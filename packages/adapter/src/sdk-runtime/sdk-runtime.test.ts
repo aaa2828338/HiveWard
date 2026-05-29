@@ -41,6 +41,29 @@ describe("agent SDK runtime", () => {
     expect(envelope.indexOf('"a"')).toBeLessThan(envelope.indexOf('"z"'));
   });
 
+  it("describes structured output as a wrapper around the free-form report", () => {
+    const envelope = buildPromptEnvelope({
+      blueprintRunId: "run-1",
+      nodeRunId: "node-run-1",
+      source: "claude",
+      agentName: "writer",
+      prompt: "Write the report.",
+      input: {},
+      outputSchema: {
+        type: "object",
+        required: ["humanReportMd"],
+        properties: {
+          humanReportMd: { type: "string" },
+          result: { type: "object" }
+        }
+      },
+      tools: []
+    });
+
+    expect(envelope).toContain("The schema is a transport wrapper");
+    expect(envelope).toContain("humanReportMd is your free-form human answer");
+  });
+
   it("converts optional Codex output schema properties to nullable required fields", () => {
     const schema = {
       type: "object",

@@ -605,6 +605,45 @@ describe("apiRouter", () => {
     }
   });
 
+  it("routes approval replies through the run blueprint snapshot", async () => {
+    const fixture = await createStoreFixture();
+    const capturedBlueprints: BlueprintDefinition[] = [];
+    const worker = {
+      async applyApprovalRequest(
+        blueprint: BlueprintDefinition,
+        run: BlueprintRun,
+        _approvalRequestId: string,
+        _action: "approve" | "reject" | "reply",
+        _input?: { comment?: string; message?: string; selectedReplyId?: string }
+      ) {
+        capturedBlueprints.push(blueprint);
+        return { ...run, status: "waiting_approval" as const };
+      }
+    } as unknown as BlueprintWorker;
+
+    try {
+      const blueprint = await fixture.store.getBlueprint("multi-agent-compatibility-blueprint");
+      if (!blueprint) throw new Error("Expected compatibility blueprint.");
+      const runBlueprint = JSON.parse(JSON.stringify(blueprint)) as BlueprintDefinition;
+      readAgentConfig(runBlueprint, "compat-claude-check").modelId = "claude/snapshot-default";
+      const run = await fixture.store.createBlueprintRun(runBlueprint, "tester");
+      await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", message: "Please revise this answer." })
+        }));
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+
+      expect(capturedBlueprints).toHaveLength(1);
+      expect(readAgentConfig(capturedBlueprints[0]!, "compat-claude-check").modelId).toBe("claude/snapshot-default");
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("returns 409 for repeated approval and inbox decisions", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -2574,6 +2613,11 @@ describe("apiRouter", () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-leader"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-leader", "SKILL.md"), "# Leader\n");
+    process.env.CODEX_HOME = codexHome;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
@@ -2593,8 +2637,74 @@ describe("apiRouter", () => {
 
         expect(response.status, text).toBe(200);
         expect(adapter.lastChatStreamInput?.source).toBe("codex");
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-leader"]);
         expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
         expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+      }, adapter);
+    } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the inbox submission contract for Chinese blueprint creation requests", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    const codexHome = join(fixture.dir, "codex-home");
+    const previousCodexHome = process.env.CODEX_HOME;
+    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
+    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
+    process.env.CODEX_HOME = codexHome;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "请帮我创建一个用于测试 Manager 自分发能力的蓝图。",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+        expect(adapter.lastChatStreamInput?.message).toContain("end the response with one hiveward-inbox fenced block");
+        expect(adapter.lastChatStreamInput?.message).toContain("A self_dispatch manager is itself a runnable decision node");
+        expect(adapter.lastChatStreamInput?.message).toContain("Use the current chat harness runtime");
+      }, adapter);
+    } finally {
+      restoreEnv("CODEX_HOME", previousCodexHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not include the inbox submission contract when the user asks for a draft only", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "请生成一个测试蓝图，但只要草稿，不要提交到收件箱。",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.message).not.toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).not.toContain(hivewardInboxSubmissionSchema);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

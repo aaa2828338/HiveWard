@@ -1,3 +1,4 @@
+import { mkdir } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
@@ -18,6 +19,7 @@ import {
   type ManagerSlotNodeConfig,
   type RuntimeObjectRef,
   type StartAgentTaskInput,
+  type Artifact,
   type ApprovalRequest,
   type ReleaseReport,
   type SummaryNodeConfig,
@@ -35,6 +37,7 @@ import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import { MigrationService } from "../services/runtimeAccessPolicyService";
 import { AgentReportService } from "../services/agentReportService";
+import { agentWorkspaceRefForNode, type AgentWorkspaceRef } from "../services/agentWorkspaceService";
 import { ManagerContextService, type ManagerInjectedContext, type ManagerSnapshotDraft } from "../services/managerContextService";
 import { RoundPreflightService, type RoundPreflightExecutionResult, type RoundPreflightMode } from "../services/roundPreflightService";
 import { SelfIterationOrchestrator } from "../services/selfIterationOrchestrator";
@@ -53,6 +56,7 @@ const defaultManagerAgentName = "manager";
 const selfIterationPreparationSlotCount = 2;
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
+const managerReceiptPromptBudget = 6000;
 const reviewOutputSelectionId = "reviewOutput";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
@@ -112,7 +116,7 @@ const agentArtifactPayloadSchema: Record<string, unknown> = {
 };
 const managerDecisionResultSchema: Record<string, unknown> = {
   type: "object",
-  required: ["status"],
+  required: ["status", "reason"],
   properties: {
     status: { type: "string" },
     nextSlot: { type: "integer" },
@@ -157,14 +161,18 @@ const preflightOutputSchema: Record<string, unknown> = {
 const agentOutputContractLines = [
   "Output contract:",
   "- Return an AgentOutputEnvelope JSON object when you produce a result. This platform contract overrides earlier task wording such as \"return only JSON\" or \"do not return markdown\".",
-  "- Include humanReportMd: a Markdown report written for a human reader. This field is required.",
+  "- AgentOutputEnvelope is a transport wrapper. It adds stable fields for Hiveward handoff, artifacts, and UI links; it must not flatten your answer into a rigid checklist.",
+  "- Include humanReportMd: a Markdown report written for a human reader. This field is required, and humanReportMd is your free-form human answer.",
+  "- Write humanReportMd in the natural style needed by the task. Keep useful narrative, judgment, reasoning, recommendations, and caveats instead of only filling fixed fields.",
   "- Write humanReportMd in the user's working language. If the user request, blueprint title, agent label, or runContext is Chinese, write Simplified Chinese. Do not default to English for human-facing reports.",
   "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
   "- humanReportMd must include a visible delivery-location section near the top. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\" and write \"\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002\" if this step created no new deliverable. For English reports, use \"## Delivery location\" and \"No new deliverable produced in this step.\"",
-  "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result.",
+  "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result while keeping humanReportMd readable.",
+  "- When the task schema allows it, include concise hard fields in result such as status, summary, artifacts, and handoff. Do not embed large file bodies there.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
   "- If you created a concrete deliverable file or preview, declare it in artifacts[]. Do not hide deliverables inside humanReportMd or result.",
   "- Each artifacts[] item must include kind (html, markdown, json, file, or link), title, and content/body for generated text artifacts, path for existing file artifacts, or url for link artifacts.",
+  "- If input.agentWorkspace is present, put durable files for this agent under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -180,6 +188,46 @@ const humanReportEnvelopeSchemaBase: Record<string, unknown> = {
 };
 type IncomingEdgeState = "pending" | "satisfied" | "blocked";
 
+interface ManagerReceiptArtifact {
+  artifactId: string;
+  title: string;
+  kind: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl?: string;
+  location?: string;
+}
+
+interface ManagerReceiptRoleContext {
+  nodeId: string;
+  nodeLabel: string;
+  type: BlueprintNode["type"];
+  description?: string;
+  runtimeId?: string;
+  openclawAgentId?: string;
+  agentName?: string;
+  systemPrompt?: string;
+  userPrompt?: string;
+  promptTruncated?: boolean;
+  promptVisibility: "ai_only";
+  agentWorkspace?: AgentWorkspaceRef;
+}
+
+interface ManagerResultReceipt {
+  nodeRunId: string;
+  nodeId: string;
+  nodeLabel: string;
+  status: BlueprintNodeRun["status"];
+  valid: boolean;
+  invalidReason?: string;
+  humanReportId?: string;
+  humanReportMd?: string;
+  handoffJson?: unknown;
+  artifacts: ManagerReceiptArtifact[];
+  roleContexts: ManagerReceiptRoleContext[];
+  outputSummary?: string;
+}
+
 interface ManagerTraceItem {
   handoff: number;
   slot: number;
@@ -191,6 +239,7 @@ interface ManagerTraceItem {
   returnEdgePresent: boolean;
   managerDecision?: ManagerDecision;
   decision?: ManagerDecision;
+  receipt?: ManagerResultReceipt;
 }
 
 interface ManagerDecision {
@@ -242,16 +291,34 @@ interface ManagerSlotContext {
     maxHandoffs: number;
   };
   upstream: UpstreamOutput;
+  managerDecision?: ManagerDecision;
   previousResults: Array<{
     handoff: number;
     slot: number;
     nodeId: string;
     nodeLabel: string;
     status: AgentTaskResult["status"];
-    output?: unknown;
     error?: string;
     decision?: ManagerDecision;
+    receipt?: ManagerResultReceipt;
   }>;
+}
+
+interface UpstreamArtifactRef {
+  artifactId: string;
+  title: string;
+  kind: string;
+  storagePath?: string;
+  relativePath?: string;
+  downloadUrl?: string;
+  location?: string;
+}
+
+interface UpstreamReportRef {
+  humanReportId: string;
+  title: string;
+  bodyMd: string;
+  source: string;
 }
 
 interface UpstreamOutputItem {
@@ -259,10 +326,14 @@ interface UpstreamOutputItem {
   nodeLabel: string;
   nodeRunId: string;
   status: BlueprintNodeRun["status"];
-  output: unknown;
+  output?: unknown;
   handoffJson?: unknown;
   humanReportId?: string;
   humanReportMd?: string;
+  report?: UpstreamReportRef;
+  artifacts?: UpstreamArtifactRef[];
+  outputSummary?: string;
+  context?: unknown;
   runtimeRef?: RuntimeObjectRef;
 }
 
@@ -381,13 +452,56 @@ export class BlueprintWorker {
     }
 
     if (request.kind === "agent_proposal" && request.nodeRunId && action === "reply") {
-      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "");
+      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "", { lockActions: true });
+      await this.managerMailProjector.refresh(run.id);
       return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
     }
 
-    const requirementRevision = request.kind === "iteration_requirement_plan" && action === "reply"
-      ? await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "")
-      : undefined;
+    if (request.kind === "iteration_requirement_plan" && action === "reply") {
+      const recorded = await this.approvalService.recordPendingReply(
+        approvalRequestId,
+        input.message ?? "",
+        { lockActions: true }
+      );
+      await this.managerMailProjector.refresh(run.id);
+      const requirementRevision = await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "");
+      const revisedRequest = await this.approvalService.revisePendingRequest(
+        approvalRequestId,
+        input.message ?? "",
+        requirementRevision
+      );
+      const result = { ...recorded, approvalRequest: revisedRequest };
+      const lifecycle = await this.iterationService.handleApprovalResult(result);
+      await this.managerMailProjector.refresh(run.id);
+
+      if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
+        if (lifecycle.prepareNextRound) {
+          await this.prepareNextRoundFromIntent(blueprint, currentRun, lifecycle.prepareNextRound);
+          await this.managerMailProjector.refresh(run.id);
+        }
+        const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun);
+        if (autoAdvanced) {
+          return autoAdvanced.run;
+        }
+      }
+
+      if (lifecycle.completeRun) {
+        const completed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "succeeded");
+        await this.store.updateBlueprintRun(completed);
+        return completed;
+      }
+
+      if (lifecycle.resumeExecution) {
+        const runningRun = { ...currentRun, status: "running" as const };
+        await this.store.updateBlueprintRun(runningRun);
+        this.scheduleRun(blueprint, runningRun);
+        return runningRun;
+      }
+
+      const waiting = { ...currentRun, status: "waiting_approval" as const };
+      await this.store.updateBlueprintRun(waiting);
+      return waiting;
+    }
 
     let result;
     if (action === "approve") {
@@ -395,7 +509,7 @@ export class BlueprintWorker {
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "reply") {
-      result = await this.approvalService.reply(approvalRequestId, input.message ?? "", requirementRevision);
+      result = await this.approvalService.reply(approvalRequestId, input.message ?? "");
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
     } else {
@@ -1769,16 +1883,8 @@ export class BlueprintWorker {
             maxHandoffs
           },
           upstream: managerUpstream,
-          previousResults: trace.map((item) => ({
-            handoff: item.handoff,
-            slot: item.slot,
-            nodeId: item.nodeId,
-            nodeLabel: item.nodeLabel,
-            status: item.status,
-            output: item.output,
-            error: item.error,
-            decision: item.decision
-          }))
+          ...(managerDecision ? { managerDecision } : {}),
+          previousResults: this.managerPreviousResultsFromTrace(trace)
         };
         const managerDecisionResult = await this.runManagerDecisionTask(blueprint, run, node, nodeRunWithInput, context, dispatchRunContext, slot, portCount, firstWorkSlot);
         if (managerDecisionResult.result.status !== "succeeded") {
@@ -1844,16 +1950,8 @@ export class BlueprintWorker {
             maxHandoffs
           },
           upstream: managerUpstream,
-          previousResults: trace.map((item) => ({
-            handoff: item.handoff,
-            slot: item.slot,
-            nodeId: item.nodeId,
-            nodeLabel: item.nodeLabel,
-            status: item.status,
-            output: item.output,
-            error: item.error,
-            decision: item.decision
-          }))
+          ...(managerDecision ? { managerDecision } : {}),
+          previousResults: this.managerPreviousResultsFromTrace(trace)
         };
         await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, context);
         return true;
@@ -1862,6 +1960,7 @@ export class BlueprintWorker {
       if (!this.isTerminalStatus(participant.nodeRun.status)) return false;
 
       const result = this.nodeRunToAgentTaskResult(participant.nodeRun);
+      const receipt = await this.buildManagerResultReceipt(blueprint, run.id, participant.nodeRun, result.output);
       const traceItem: ManagerTraceItem = {
         handoff,
         slot,
@@ -1871,7 +1970,8 @@ export class BlueprintWorker {
         output: result.output,
         error: result.error,
         returnEdgePresent: assignment.returnEdgePresent,
-        managerDecision
+        managerDecision,
+        receipt
       };
       trace.push(traceItem);
       searchAfterIndex = participant.index;
@@ -1891,15 +1991,12 @@ export class BlueprintWorker {
         continue;
       }
 
-      const decision = this.resolveManagerDecision(result.output, slot, portCount, {
-        minSlot: firstWorkSlot,
-        ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
-      });
+      const decision = this.resolveSequentialManagerDecision(blueprint, node, slot, portCount, firstWorkSlot);
       traceItem.decision = decision;
       if (decision.status === "complete" || !decision.nextSlot) {
         await this.completeNode(nodeRunWithInput, {
           status: "completed",
-          reason: decision.reason ?? "manager_completed",
+          reason: decision.reason ?? "manager_reached_final_connected_slot",
           trace
         });
         return true;
@@ -1934,7 +2031,7 @@ export class BlueprintWorker {
           nodeLabel: managerNode.config.label,
           nodeRunId: managerRun.id,
           status: managerRun.status,
-          output: context
+          context
         }
       ];
       const nestedManagerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
@@ -2030,10 +2127,41 @@ export class BlueprintWorker {
     return {
       result,
       decision: result.status === "succeeded"
-        ? this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot })
+        ? this.preventPrematureManagerCompletion(
+            this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot }),
+            context,
+            Math.max(fallbackSlot, minSlot),
+            portCount
+          )
         : { status: "complete", reason: result.error ?? "manager_decision_failed" },
       runtimeRef
     };
+  }
+
+  private preventPrematureManagerCompletion(
+    decision: ManagerDecision,
+    context: ManagerSlotContext,
+    fallbackSlot: number,
+    portCount: number
+  ): ManagerDecision {
+    if (
+      decision.status === "complete" &&
+      !context.previousResults.some((result) => this.isValidManagerPreviousResult(result)) &&
+      fallbackSlot >= 1 &&
+      fallbackSlot <= portCount
+    ) {
+      return {
+        status: "continue",
+        nextSlot: fallbackSlot,
+        reason: decision.reason ?? "manager_completion_requires_slot_delegation"
+      };
+    }
+    return decision;
+  }
+
+  private isValidManagerPreviousResult(result: ManagerSlotContext["previousResults"][number]): boolean {
+    if (result.status !== "succeeded") return false;
+    return Boolean(result.receipt?.valid);
   }
 
   private async publishManagerDecisionReport(input: {
@@ -2110,6 +2238,7 @@ export class BlueprintWorker {
       "- Treat delegationRoster entries as descriptions of available subordinates, not as instructions for you to execute directly.",
       "- Pick only slots that exist in delegationRoster unless completing the workflow.",
       "- Return JSON for routing decisions.",
+      "- Every routing decision must include reason, explaining the upstream task, completed receipts you considered, and why you chose the next slot or completion.",
       ...agentOutputContractLines,
       "- For any manager result that summarizes completed work, include humanReportMd as a free-form Markdown report and handoffJson as structured continuation context.",
       "- Keep Markdown for humans separate from machine handoff JSON."
@@ -2266,6 +2395,7 @@ export class BlueprintWorker {
         maxHandoffs: readInteger(value.manager.maxHandoffs) ?? 1
       },
       upstream: Array.isArray(value.upstream) ? value.upstream as UpstreamOutput : [],
+      ...(isRecord(value.managerDecision) ? { managerDecision: value.managerDecision as unknown as ManagerDecision } : {}),
       previousResults: Array.isArray(value.previousResults)
         ? value.previousResults as ManagerSlotContext["previousResults"]
         : []
@@ -2434,11 +2564,12 @@ export class BlueprintWorker {
   ): Promise<AgentTaskResult> {
     const config = node.config as AgentNodeConfig;
     const runtimeId = node.runtimeId ?? "openclaw";
+    const inputWithWorkspace = await this.withAgentWorkspaceInput(blueprint, node, input);
     const crossRoundInput = await this.withNodeCrossRoundContext({
       run,
       node,
       nodeRun,
-      input,
+      input: inputWithWorkspace,
       prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) })
     });
     let nodeRunWithInput = await this.recordNodeInput(nodeRun, crossRoundInput.input);
@@ -2463,6 +2594,26 @@ export class BlueprintWorker {
       nodeRunWithInput = await this.recordNodeRuntimeRef(nodeRunWithInput, startedRef);
     });
     return this.applyAgentTaskResult(blueprint, run, node, nodeRunWithInput, result, runtimeRef);
+  }
+
+  private async withAgentWorkspaceInput(
+    blueprint: BlueprintDefinition,
+    node: BlueprintNode & { type: "agent" },
+    input: unknown
+  ): Promise<unknown> {
+    const agentWorkspace = this.agentWorkspaceForNode(blueprint, node);
+    await Promise.all([
+      mkdir(agentWorkspace.path, { recursive: true }),
+      mkdir(agentWorkspace.artifactsPath, { recursive: true }),
+      mkdir(agentWorkspace.tmpPath, { recursive: true })
+    ]);
+    return isRecord(input)
+      ? { ...input, agentWorkspace }
+      : { value: input, agentWorkspace };
+  }
+
+  private agentWorkspaceForNode(blueprint: BlueprintDefinition, node: BlueprintNode & { type: "agent" }): AgentWorkspaceRef {
+    return agentWorkspaceRefForNode(this.store.getBlueprintWorkspacePath(blueprint.id), node);
   }
 
   private async withNodeCrossRoundContext(input: {
@@ -2575,16 +2726,7 @@ export class BlueprintWorker {
           maxHandoffs
         },
         upstream: managerUpstream,
-        previousResults: trace.map((item) => ({
-          handoff: item.handoff,
-          slot: item.slot,
-          nodeId: item.nodeId,
-          nodeLabel: item.nodeLabel,
-          status: item.status,
-          output: item.output,
-          error: item.error,
-          decision: item.decision
-        }))
+        previousResults: this.managerPreviousResultsFromTrace(trace)
       };
       let managerDecision: ManagerDecision | undefined;
       if (isAgentDriven) {
@@ -2596,6 +2738,7 @@ export class BlueprintWorker {
         }
 
         managerDecision = managerDecisionResult.decision;
+        managerContext.managerDecision = managerDecision;
         if (managerDecision.status === "complete" || managerDecision.nextSlot === undefined) {
           const output = {
             status: "completed",
@@ -2645,12 +2788,15 @@ export class BlueprintWorker {
       }
 
       let result: AgentTaskResult;
+      let participantNodeRun: BlueprintNodeRun | undefined;
 
       if (isAgentBlueprintNode(assignment.target)) {
         const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
+        participantNodeRun = participantRun;
         result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, managerContext);
       } else if (assignment.target.type === "manager_slot") {
         const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
+        participantNodeRun = slotRun;
         result = await this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, managerContext);
       } else if (assignment.target.type === "manager") {
         const managerUpstreamInput: UpstreamOutput = [
@@ -2659,10 +2805,11 @@ export class BlueprintWorker {
             nodeLabel: node.config.label,
             nodeRunId: nodeRun.id,
             status: nodeRun.status,
-            output: managerContext
+            context: managerContext
           }
         ];
         const managerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
+        participantNodeRun = managerRun;
         result = await this.executeManagerNode(blueprint, run, assignment.target, managerRun, managerUpstreamInput);
       } else {
         const error = `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`;
@@ -2670,6 +2817,12 @@ export class BlueprintWorker {
         return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
       }
 
+      const latestParticipantRun = participantNodeRun
+        ? await this.findNodeRunById(run.id, participantNodeRun.id)
+        : undefined;
+      const receipt = latestParticipantRun
+        ? await this.buildManagerResultReceipt(blueprint, run.id, latestParticipantRun, result.output)
+        : undefined;
       const traceItem: ManagerTraceItem = {
         handoff,
         slot,
@@ -2679,7 +2832,8 @@ export class BlueprintWorker {
         output: result.output,
         error: result.error,
         returnEdgePresent: assignment.returnEdgePresent,
-        managerDecision
+        managerDecision,
+        receipt
       };
       trace.push(traceItem);
 
@@ -2698,15 +2852,12 @@ export class BlueprintWorker {
         continue;
       }
 
-      const decision = this.resolveManagerDecision(result.output, slot, portCount, {
-        minSlot: firstWorkSlot,
-        ignoreCompletionStatus: assignment.target.type === "manager" && isManagerCompletionEnvelope(result.output)
-      });
+      const decision = this.resolveSequentialManagerDecision(blueprint, node, slot, portCount, firstWorkSlot);
       traceItem.decision = decision;
       if (decision.status === "complete" || !decision.nextSlot) {
         const output = {
           status: "completed",
-          reason: decision.reason ?? "manager_completed",
+          reason: decision.reason ?? "manager_reached_final_connected_slot",
           trace
         };
         await this.completeNode(nodeRunWithInput, output);
@@ -2895,23 +3046,22 @@ export class BlueprintWorker {
     boundaryOutput: unknown
   ): Promise<UpstreamOutput> {
     const incoming = this.getScopedIncomingEdges(blueprint, slotNode, node);
-    const [humanReports, handoffs] = await Promise.all([
+    const [humanReports, handoffs, artifacts] = await Promise.all([
       this.store.listAgentHumanReports(slotRun.blueprintRunId),
-      this.store.listAgentHandoffs(slotRun.blueprintRunId)
+      this.store.listAgentHandoffs(slotRun.blueprintRunId),
+      this.store.listArtifacts(slotRun.blueprintRunId)
     ]);
-    const reportContext = (nodeRun: BlueprintNodeRun) => ({
-      humanReport: humanReports.find((report) => report.nodeRunId === nodeRun.id),
-      handoff: handoffs.find((handoff) => handoff.nodeRunId === nodeRun.id)
-    });
+    const reportContext = (nodeRun: BlueprintNodeRun) =>
+      this.buildUpstreamReportContext(blueprint, nodeRun, nodeRuns, humanReports, handoffs, artifacts);
     if (incoming.length === 0) {
-      return [this.toUpstreamOutputItem(slotRun, boundaryOutput, reportContext(slotRun))];
+      return [this.toUpstreamOutputItem(slotRun, boundaryOutput, { ...reportContext(slotRun), context: boundaryOutput })];
     }
 
     const outputs: UpstreamOutput = [];
     for (const edge of incoming) {
       if (this.resolveScopedEdgeState(blueprint, slotNode, edge, nodeRuns, scopeStartIndex) !== "satisfied") continue;
       if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) {
-        outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput, reportContext(slotRun)));
+        outputs.push(this.toUpstreamOutputItem(slotRun, boundaryOutput, { ...reportContext(slotRun), context: boundaryOutput }));
         continue;
       }
 
@@ -3109,7 +3259,11 @@ export class BlueprintWorker {
       {
         merged: upstream.map((candidate) => ({
           node: candidate.nodeLabel,
-          output: candidate.output
+          ...(candidate.humanReportMd ? { humanReportMd: candidate.humanReportMd } : {}),
+          ...(candidate.handoffJson !== undefined ? { handoffJson: candidate.handoffJson } : {}),
+          ...(candidate.artifacts?.length ? { artifacts: candidate.artifacts } : {}),
+          ...(candidate.outputSummary ? { outputSummary: candidate.outputSummary } : {}),
+          ...(candidate.output !== undefined ? { output: candidate.output } : {})
         }))
       }
     );
@@ -3231,6 +3385,210 @@ export class BlueprintWorker {
     return { target, returnEdgePresent };
   }
 
+  private resolveSequentialManagerDecision(
+    blueprint: BlueprintDefinition,
+    managerNode: BlueprintNode,
+    currentSlot: number,
+    portCount: number,
+    minSlot = 1
+  ): ManagerDecision {
+    for (let nextSlot = Math.max(minSlot, currentSlot + 1); nextSlot <= portCount; nextSlot += 1) {
+      if (this.findManagerSlotAssignment(blueprint, managerNode, nextSlot)) {
+        return {
+          status: "continue",
+          nextSlot,
+          reason: `manager_sequential_next_slot_${nextSlot}`
+        };
+      }
+    }
+    return {
+      status: "complete",
+      reason: "manager_reached_final_connected_slot"
+    };
+  }
+
+  private managerPreviousResultsFromTrace(trace: ManagerTraceItem[]): ManagerSlotContext["previousResults"] {
+    return trace.map((item) => ({
+      handoff: item.handoff,
+      slot: item.slot,
+      nodeId: item.nodeId,
+      nodeLabel: item.nodeLabel,
+      status: item.status,
+      error: item.error,
+      decision: item.decision,
+      receipt: item.receipt
+    }));
+  }
+
+  private async findNodeRunById(runId: string, nodeRunId: string): Promise<BlueprintNodeRun | undefined> {
+    return (await this.store.listNodeRuns(runId)).find((candidate) => candidate.id === nodeRunId);
+  }
+
+  private async buildManagerResultReceipt(
+    blueprint: BlueprintDefinition,
+    runId: string,
+    nodeRun: BlueprintNodeRun,
+    output: unknown
+  ): Promise<ManagerResultReceipt> {
+    const [nodeRuns, humanReports, handoffs, artifacts] = await Promise.all([
+      this.store.listNodeRuns(runId),
+      this.store.listAgentHumanReports(runId),
+      this.store.listAgentHandoffs(runId),
+      this.store.listArtifacts(runId)
+    ]);
+    const relatedNodeRunIds = this.relatedReceiptNodeRunIds(blueprint, nodeRun, nodeRuns);
+    const relatedReports = humanReports.filter((report) => relatedNodeRunIds.has(report.nodeRunId));
+    const relatedHandoffs = handoffs.filter((handoff) => relatedNodeRunIds.has(handoff.nodeRunId));
+    const relatedArtifacts = artifacts.filter((artifact) =>
+      artifact.nodeRunId !== undefined && relatedNodeRunIds.has(artifact.nodeRunId)
+    );
+    const roleContexts = this.relatedReceiptRoleContexts(blueprint, relatedNodeRunIds, nodeRuns);
+    const humanReportMd = relatedReports.map((report) => report.bodyMd).filter(Boolean).join("\n\n") || undefined;
+    const handoffJson = relatedHandoffs.length === 1
+      ? relatedHandoffs[0]!.payload
+      : relatedHandoffs.length > 1
+        ? relatedHandoffs.map((handoff) => ({ nodeId: handoff.nodeId, payload: handoff.payload }))
+        : undefined;
+    const outputSummary = hasVisibleAgentOutput(output) ? formatNodeOutputSummary(output) : undefined;
+    const valid = nodeRun.status === "succeeded" && Boolean(humanReportMd || handoffJson !== undefined || relatedArtifacts.length > 0 || outputSummary);
+    return {
+      nodeRunId: nodeRun.id,
+      nodeId: nodeRun.nodeId,
+      nodeLabel: nodeRun.nodeLabel,
+      status: nodeRun.status,
+      valid,
+      ...(valid ? {} : { invalidReason: "manager_participant_returned_no_visible_receipt" }),
+      ...(relatedReports[0] ? { humanReportId: relatedReports[0].id } : {}),
+      ...(humanReportMd ? { humanReportMd } : {}),
+      ...(handoffJson !== undefined ? { handoffJson } : {}),
+      artifacts: relatedArtifacts.map((artifact) => this.toArtifactRef(artifact)),
+      roleContexts,
+      ...(outputSummary ? { outputSummary } : {})
+    };
+  }
+
+  private relatedReceiptRoleContexts(
+    blueprint: BlueprintDefinition,
+    relatedNodeRunIds: Set<string>,
+    nodeRuns: BlueprintNodeRun[]
+  ): ManagerReceiptRoleContext[] {
+    const nodesById = new Map(blueprint.nodes.map((node) => [node.id, node]));
+    const seen = new Set<string>();
+    const contexts: ManagerReceiptRoleContext[] = [];
+    for (const nodeRun of nodeRuns) {
+      if (!relatedNodeRunIds.has(nodeRun.id) || seen.has(nodeRun.nodeId)) continue;
+      const node = nodesById.get(nodeRun.nodeId);
+      if (!node) continue;
+      seen.add(node.id);
+      contexts.push(this.managerReceiptRoleContextForNode(blueprint, node));
+    }
+    return contexts;
+  }
+
+  private managerReceiptRoleContextForNode(
+    blueprint: BlueprintDefinition,
+    node: BlueprintNode
+  ): ManagerReceiptRoleContext {
+    const base = {
+      nodeId: node.id,
+      nodeLabel: node.config.label,
+      type: node.type,
+      ...(node.config.description ? { description: node.config.description } : {}),
+      promptVisibility: "ai_only" as const
+    };
+
+    if (isAgentBlueprintNode(node)) {
+      const config = node.config as AgentNodeConfig;
+      const systemPrompt = readPromptForReceiptRoleContext(config.prompt);
+      const userPrompt = readPromptForReceiptRoleContext(config.userPrompt);
+      return {
+        ...base,
+        ...(node.runtimeId ? { runtimeId: node.runtimeId } : {}),
+        ...(config.openclawAgentId ? { openclawAgentId: config.openclawAgentId } : {}),
+        ...(config.agentName ? { agentName: config.agentName } : {}),
+        ...(systemPrompt.value ? { systemPrompt: systemPrompt.value } : {}),
+        ...(userPrompt.value ? { userPrompt: userPrompt.value } : {}),
+        ...(systemPrompt.truncated || userPrompt.truncated ? { promptTruncated: true } : {}),
+        agentWorkspace: this.agentWorkspaceForNode(blueprint, node)
+      };
+    }
+
+    if (node.type === "manager") {
+      const config = node.config as ManagerNodeConfig;
+      const systemPrompt = readPromptForReceiptRoleContext(config.instructions);
+      return {
+        ...base,
+        runtimeId: this.resolveManagerRuntimeId(node),
+        ...(config.openclawAgentId ? { openclawAgentId: config.openclawAgentId } : {}),
+        ...(config.agentName ? { agentName: config.agentName } : {}),
+        ...(systemPrompt.value ? { systemPrompt: systemPrompt.value } : {}),
+        ...(systemPrompt.truncated ? { promptTruncated: true } : {})
+      };
+    }
+
+    return base;
+  }
+
+  private relatedReceiptNodeRunIds(
+    blueprint: BlueprintDefinition,
+    nodeRun: BlueprintNodeRun,
+    nodeRuns: BlueprintNodeRun[]
+  ): Set<string> {
+    const related = new Set<string>([nodeRun.id]);
+    if (nodeRun.nodeType !== "manager_slot") return related;
+
+    const childNodeIds = new Set(
+      blueprint.nodes
+        .filter((node) => node.parentId === nodeRun.nodeId)
+        .map((node) => node.id)
+    );
+    const slotStart = Date.parse(nodeRun.startedAt ?? nodeRun.queuedAt ?? "");
+    const slotEnd = Date.parse(nodeRun.endedAt ?? "");
+    for (const candidate of nodeRuns) {
+      if (!childNodeIds.has(candidate.nodeId)) continue;
+      const candidateStart = Date.parse(candidate.startedAt ?? candidate.queuedAt ?? "");
+      const afterSlotStart = !Number.isFinite(slotStart) || !Number.isFinite(candidateStart) || candidateStart >= slotStart;
+      const beforeSlotEnd = !Number.isFinite(slotEnd) || !Number.isFinite(candidateStart) || candidateStart <= slotEnd;
+      if (afterSlotStart && beforeSlotEnd) related.add(candidate.id);
+    }
+    return related;
+  }
+
+  private buildUpstreamReportContext(
+    blueprint: BlueprintDefinition,
+    nodeRun: BlueprintNodeRun,
+    nodeRuns: BlueprintNodeRun[],
+    humanReports: Awaited<ReturnType<HivewardStore["listAgentHumanReports"]>>,
+    handoffs: Awaited<ReturnType<HivewardStore["listAgentHandoffs"]>>,
+    artifacts: Awaited<ReturnType<HivewardStore["listArtifacts"]>>
+  ): {
+    humanReports: Awaited<ReturnType<HivewardStore["listAgentHumanReports"]>>;
+    handoffs: Awaited<ReturnType<HivewardStore["listAgentHandoffs"]>>;
+    artifacts: Artifact[];
+  } {
+    const relatedNodeRunIds = this.relatedReceiptNodeRunIds(blueprint, nodeRun, nodeRuns);
+    return {
+      humanReports: humanReports.filter((report) => relatedNodeRunIds.has(report.nodeRunId)),
+      handoffs: handoffs.filter((handoff) => relatedNodeRunIds.has(handoff.nodeRunId)),
+      artifacts: artifacts.filter((artifact) =>
+        artifact.nodeRunId !== undefined && relatedNodeRunIds.has(artifact.nodeRunId)
+      )
+    };
+  }
+
+  private toArtifactRef(artifact: Artifact): ManagerReceiptArtifact {
+    const location = artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath;
+    return {
+      artifactId: artifact.id,
+      title: artifact.title ?? artifact.kind,
+      kind: artifact.kind,
+      ...(artifact.storagePath ? { storagePath: artifact.storagePath } : {}),
+      ...(artifact.relativePath ? { relativePath: artifact.relativePath } : {}),
+      ...(artifact.downloadUrl ? { downloadUrl: artifact.downloadUrl } : {}),
+      ...(location ? { location } : {})
+    };
+  }
+
   private getLoopRerunTargets(blueprint: BlueprintDefinition, loopNode: BlueprintNode): BlueprintNode[] {
     const nodesById = new Map(blueprint.nodes.map((candidate) => [candidate.id, candidate]));
     const visited = new Set<string>();
@@ -3314,7 +3672,7 @@ export class BlueprintWorker {
       readInteger(record?.returnToSlot) ??
       readInteger(record?.targetSlot);
     const status = readString(record?.status)?.toLowerCase();
-    const reason = readString(record?.reason) ?? readString(record?.message);
+    const reason = readString(record?.reason) ?? readString(record?.message) ?? "manager_decision_missing_reason";
 
     if (
       !options.ignoreCompletionStatus &&
@@ -3364,9 +3722,10 @@ export class BlueprintWorker {
     if (incoming.length === 0) return [];
 
     const nodeRuns = await this.store.listNodeRuns(blueprintRunId);
-    const [humanReports, handoffs] = await Promise.all([
+    const [humanReports, handoffs, artifacts] = await Promise.all([
       this.store.listAgentHumanReports(blueprintRunId),
-      this.store.listAgentHandoffs(blueprintRunId)
+      this.store.listAgentHandoffs(blueprintRunId),
+      this.store.listArtifacts(blueprintRunId)
     ]);
     const outputs: UpstreamOutput = [];
     const seen = new Set<string>();
@@ -3383,10 +3742,11 @@ export class BlueprintWorker {
       if (!sourceRun || seen.has(sourceRun.nodeId)) continue;
 
       seen.add(sourceRun.nodeId);
-      outputs.push(this.toUpstreamOutputItem(sourceRun, sourceRun.output, {
-        humanReport: humanReports.find((report) => report.nodeRunId === sourceRun.id),
-        handoff: handoffs.find((handoff) => handoff.nodeRunId === sourceRun.id)
-      }));
+      outputs.push(this.toUpstreamOutputItem(
+        sourceRun,
+        sourceRun.output,
+        this.buildUpstreamReportContext(blueprint, sourceRun, nodeRuns, humanReports, handoffs, artifacts)
+      ));
     }
 
     return outputs;
@@ -3396,20 +3756,51 @@ export class BlueprintWorker {
     nodeRun: BlueprintNodeRun,
     output = nodeRun.output,
     context: {
-      humanReport?: Awaited<ReturnType<HivewardStore["listAgentHumanReports"]>>[number];
-      handoff?: Awaited<ReturnType<HivewardStore["listAgentHandoffs"]>>[number];
+      humanReports?: Awaited<ReturnType<HivewardStore["listAgentHumanReports"]>>;
+      handoffs?: Awaited<ReturnType<HivewardStore["listAgentHandoffs"]>>;
+      artifacts?: Artifact[];
+      context?: unknown;
     } = {}
   ): UpstreamOutputItem {
+    const humanReports = context.humanReports ?? [];
+    const handoffs = context.handoffs ?? [];
+    const artifacts = context.artifacts ?? [];
+    const humanReportMd = humanReports.map((report) => report.bodyMd).filter(Boolean).join("\n\n") || undefined;
+    const handoffJson = handoffs.length === 1
+      ? handoffs[0]!.payload
+      : handoffs.length > 1
+        ? handoffs.map((handoff) => ({ nodeId: handoff.nodeId, payload: handoff.payload }))
+        : undefined;
+    const shouldExposeRawOutput = this.shouldExposeRawUpstreamOutput(nodeRun);
+    const outputSummary = !shouldExposeRawOutput && !humanReportMd && hasVisibleAgentOutput(output)
+      ? formatNodeOutputSummary(output)
+      : undefined;
     return {
       nodeId: nodeRun.nodeId,
       nodeLabel: nodeRun.nodeLabel,
       nodeRunId: nodeRun.id,
       status: nodeRun.status,
-      output,
-      ...(context.handoff ? { handoffJson: context.handoff.payload } : {}),
-      ...(context.humanReport ? { humanReportId: context.humanReport.id, humanReportMd: context.humanReport.bodyMd } : {}),
+      ...(shouldExposeRawOutput && output !== undefined ? { output } : {}),
+      ...(handoffJson !== undefined ? { handoffJson } : {}),
+      ...(humanReports[0] ? { humanReportId: humanReports[0].id } : {}),
+      ...(humanReportMd ? { humanReportMd } : {}),
+      ...(humanReports[0] && humanReportMd ? {
+        report: {
+          humanReportId: humanReports[0].id,
+          title: humanReports[0].title,
+          bodyMd: humanReportMd,
+          source: humanReports[0].source
+        }
+      } : {}),
+      ...(artifacts.length ? { artifacts: artifacts.map((artifact) => this.toArtifactRef(artifact)) } : {}),
+      ...(outputSummary ? { outputSummary } : {}),
+      ...(context.context !== undefined ? { context: context.context } : {}),
       runtimeRef: nodeRun.runtimeRef
     };
+  }
+
+  private shouldExposeRawUpstreamOutput(nodeRun: BlueprintNodeRun): boolean {
+    return nodeRun.nodeType === "condition" || nodeRun.nodeType === "loop";
   }
 
   private async completeNode(nodeRun: BlueprintNodeRun, output: unknown, runtimeRef?: RuntimeObjectRef): Promise<void> {
@@ -3970,6 +4361,14 @@ function formatNodeOutputSummary(output: unknown): string {
   } catch {
     return String(output);
   }
+}
+
+function readPromptForReceiptRoleContext(value: string | undefined): { value?: string; truncated?: boolean } {
+  const prompt = value?.trim();
+  if (!prompt) return {};
+  return prompt.length > managerReceiptPromptBudget
+    ? { value: prompt.slice(0, managerReceiptPromptBudget), truncated: true }
+    : { value: prompt, truncated: false };
 }
 
 function isNodeRunAtOrAfter(nodeRun: BlueprintNodeRun, timestamp: number): boolean {

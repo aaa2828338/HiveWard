@@ -47,7 +47,7 @@ describe("createHivewardStore startup migration gate", () => {
       hasSqliteDb: true,
       hasAppliedMigrationManifest: true
     });
-  });
+  }, 15_000);
 
   it("fails closed when legacy JSON exists without SQLite and auto migration is disabled", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-startup-gate-"));

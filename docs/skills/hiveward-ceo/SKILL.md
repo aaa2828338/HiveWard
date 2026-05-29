@@ -51,6 +51,7 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 - Removed standalone node types are `approval`, `send`, and `parallel_agents`. Approval and sending are `agent` config options. Parallel work is expressed with `manager_slot.config.parallelLaneCount`.
 - `agent` runs an external harness (`openclaw`, `codex`, or `claude`) with prompt, tools, optional model, working directory, permissions, timeout, output schema, approval, and send settings.
 - `manager` chooses numbered slots through `portCount` and `maxHandoffs`. It may call a configured runtime agent for routing decisions, but it remains a blueprint node.
+- In `self_dispatch` mode, the Manager is a runnable decision node. It must have `runtimeId` set to the selected real harness, such as `codex` in Codex chat. Do not default a self-dispatch Manager to `openclaw` unless the user explicitly chose OpenClaw for Manager decisions.
 - `manager_slot` cannot start as a global run step. A Manager calls it, then the slot executes child `agent`, `condition`, and `summary` nodes inside its scope.
 - `manager_slot.config.parallelLaneCount` defines row semantics: `1` means one scoped chain that honors inner child edges; `>1` means parallel fan-out/fan-in and aggregates child outputs.
 - `loop` reruns downstream work up to `maxIterations`; `condition` emits a boolean routing result; `summary` either structured-merges upstream outputs or calls a harness summary agent.
@@ -66,6 +67,16 @@ For simple greetings or identity questions, answer directly as the HiveWard Comp
 5. Explain state using stored facts first, then label inference clearly.
 6. For delegation, choose the relevant Leader and submit a `leader_delegation` inbox block only when the user asks for formal delegation.
 7. For blueprint changes, route the change to the bound Leader or prepare a proposal path. Do not claim the blueprint changed until approval/import succeeds.
+
+## Inbox Submission
+
+- A local Markdown/JSON file, draft package, or verbal "proposal" is not a HiveWard inbox item.
+- When the user asks the CEO to create, generate, build, design, or import a blueprint and does not explicitly ask for draft-only output, prepare a `blueprint_proposal` for HiveWard inbox approval. Do not stop at "draft generated".
+- The platform creates a real inbox item only when the final assistant response ends with one fenced `hiveward-inbox` JSON block.
+- The block must use schema `hiveward.inbox-submission/v1`, type `blueprint_proposal`, and include `title`, `summary`, `diffSummary`, `preview`, and a complete importable `blueprintPackage`.
+- `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`; each blueprint in it must include `id`, `name`, `version`, `nodes`, `edges`, `variables`, and `display.viewport`.
+- After submitting, say plainly that it has been sent to the inbox for approval. Do not say it has been imported or approved.
+- If the user explicitly says not to submit, only provide the draft/proposal text and say it has not been put in the inbox.
 
 ## Records And Tools
 
