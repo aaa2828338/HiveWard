@@ -246,6 +246,7 @@ export interface ClaudeCodeModelPreset {
   haikuModelId?: string;
   sonnetModelId?: string;
   opusModelId?: string;
+  modelOptions?: string[];
   extraEnv?: Record<string, ClaudeCodePresetExtraEnvValue>;
 }
 

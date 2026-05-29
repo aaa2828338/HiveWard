@@ -1113,6 +1113,7 @@ describe("apiRouter", () => {
             category: string;
             baseUrl?: string;
             sonnetModelId?: string;
+            modelOptions?: string[];
           }>;
         }>(response);
 
@@ -1138,7 +1139,13 @@ describe("apiRouter", () => {
               name: "MiniMax",
               category: "cn_official",
               baseUrl: "https://api.minimaxi.com/anthropic",
-              sonnetModelId: "MiniMax-M2.7"
+              sonnetModelId: "MiniMax-M2.7",
+              modelOptions: expect.arrayContaining(["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"])
+            }),
+            expect.objectContaining({
+              id: "xiaomi-mimo",
+              name: "Xiaomi MiMo",
+              modelOptions: ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"]
             })
           ])
         );

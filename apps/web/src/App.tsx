@@ -2570,8 +2570,7 @@ function buildClaudeCodeModelOptions(status: HarnessStatus | undefined, presets:
           .filter((model) => model.id && model.id !== "inherit")
           .map((model) => [model.id, model.label === model.id ? model.id : `${model.label} (${model.id})`] as const),
         ...presets.flatMap((preset) =>
-          [preset.fallbackModelId, preset.haikuModelId, preset.sonnetModelId, preset.opusModelId]
-            .filter((modelId): modelId is string => Boolean(modelId))
+          claudeCodePresetModelIds(preset)
             .map((modelId) => [modelId, `${preset.name} (${modelId})`] as const)
         )
       ]
@@ -2582,10 +2581,23 @@ function buildClaudeCodeModelOptions(status: HarnessStatus | undefined, presets:
 function buildClaudeCodePresetModelOptions(preset: ClaudeCodeModelPreset): ClaudeCodeModelOptionEntry[] {
   return [
     ...new Map(
-      [preset.fallbackModelId, preset.haikuModelId, preset.sonnetModelId, preset.opusModelId]
-        .filter((modelId): modelId is string => Boolean(modelId))
+      claudeCodePresetModelIds(preset)
         .map((modelId) => [modelId, preset.name ? `${preset.name} (${modelId})` : modelId] as const)
     ).entries()
+  ];
+}
+
+function claudeCodePresetModelIds(preset: ClaudeCodeModelPreset): string[] {
+  return [
+    ...new Set(
+      [
+        ...(preset.modelOptions ?? []),
+        preset.fallbackModelId,
+        preset.haikuModelId,
+        preset.sonnetModelId,
+        preset.opusModelId
+      ].filter((modelId): modelId is string => Boolean(modelId))
+    )
   ];
 }
 
