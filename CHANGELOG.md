@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.5.0 - 2026-05-29
+
+SQLite-backed Manager self-iteration runtime release.
+
+### 中文
+
+- 将运行时核心状态切换到 SQLite：run、round、node、event、approval、inbox、Agent 报告、handoff 和 artifact 元信息进入统一账本。
+- 新增 JSON 到 SQLite 的启动迁移、深度校验、manifest、schema migration fail-closed 和本地升级修复路径。
+- 收紧 Worker 状态机、Agent 输出发布事务、审批/收件箱条件更新和 artifact object store，降低 Windows 文件锁与大 JSON 覆盖写风险。
+- 将 Agent 的 Markdown 报告、人机交付位置、机器 handoff JSON 和 artifact 索引拆清楚，运行页优先展示人类可读报告和可打开产物。
+- 更新 CEO / Leader skill 与 Manager 自迭代文档，记录下一版流式输出和页面布局优化方向。
+- 将仓库、workspace 包和内部依赖版本推进到 `0.5.0`。
+
+### English
+
+- Moved runtime state to SQLite for runs, rounds, nodes, events, approvals, inbox items, agent reports, handoffs, and artifact metadata.
+- Added JSON-to-SQLite startup migration, deep verification, manifests, fail-closed schema migrations, and local upgrade repair.
+- Hardened the worker state machine, transactional agent output publishing, approval/inbox conditional updates, and artifact object storage to reduce Windows file-lock and large JSON rewrite failures.
+- Separated human Markdown reports, delivery locations, machine handoff JSON, and artifact indexes so the runs page can prioritize readable reports and openable outputs.
+- Updated CEO / Leader skills and Manager self-iteration documentation, including follow-up direction for streaming output and page layout polish.
+- Bumped repository, workspace package, and internal dependency versions to `0.5.0`.
+
 ## v0.4.2 - 2026-05-28
 
 Small Harness permission clarity release.
