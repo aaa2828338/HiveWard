@@ -94,7 +94,7 @@ import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hiveward
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
-import type { RuntimeAdapter } from "@hiveward/adapter";
+import { isRuntimeAdapterError, type RuntimeAdapter } from "@hiveward/adapter";
 import type { HivewardStore } from "../store/hivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import { listOpenClawModelUsage } from "../store/openClawUsageStore";
@@ -1873,6 +1873,7 @@ async function streamHivewardChatSession({
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Chat request failed.";
+    const code = isRuntimeAdapterError(error) ? error.code : undefined;
     await store.updateChatMessage(session.id, assistantMessage.id, {
       content: message,
       status: "failed"
@@ -1881,7 +1882,7 @@ async function streamHivewardChatSession({
       status: attemptedNativeResume && isNativeResumeFailure(message) ? "native_missing" : "failed",
       nativeSessionState: attemptedNativeResume && isNativeResumeFailure(message) ? "missing" : session.nativeSessionState
     });
-    writeChatStreamEvent(res, { type: "error", message }, isClosed);
+    writeChatStreamEvent(res, { type: "error", code, message }, isClosed);
     res.end();
     return;
   }

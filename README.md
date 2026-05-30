@@ -135,7 +135,7 @@ npm run check:env
 npm run dev
 ```
 
-默认情况下，HiveWard 会优先连接本机可用的 OpenClaw Gateway；如果没有检测到真实配置，会进入 mock 模式，方便先体验界面和蓝图流转。
+默认情况下，HiveWard 会优先连接本机可用的 OpenClaw Gateway；如果没有检测到真实 Gateway 配置，OpenClaw 运行时调用会返回明确的连接 / 配置错误。只有在明确需要演示假数据时，才设置 `OPENCLAW_ADAPTER=mock`。
 
 ## 截图跳转链接
 
