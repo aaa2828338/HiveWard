@@ -101,7 +101,7 @@ const agentArtifactPayloadSchema: Record<string, unknown> = {
   type: "array",
   items: {
     type: "object",
-    description: "Top-level published artifact declaration. Use exactly one source field: path for generated files, content/body for small inline artifacts, or url for links.",
+    description: "Top-level published artifact declaration. Use only for a new artifact produced by this exact step. Review, QA, acceptance, validation, summary, or routing steps must not publish upstream artifacts here. Use exactly one source field: path for generated files, content/body for small inline artifacts, or url for links.",
     required: ["kind", "title"],
     properties: {
       id: { type: "string" },
@@ -113,7 +113,7 @@ const agentArtifactPayloadSchema: Record<string, unknown> = {
       trusted: { type: "boolean" },
       content: { type: "string", description: "Inline artifact content. Use only when there is no path or url. If you wrote a file, do not include content." },
       body: { type: "string", description: "Alias for content. Inline artifact content only. If you wrote a file, do not include body." },
-      path: { type: "string", description: "Path to an actual generated file to publish, including generated HTML files. If path is present, do not include content or body for the same artifact." },
+      path: { type: "string", description: "Path to an actual generated file produced by this exact step and intended to publish, including generated HTML files. Do not use paths from upstream, previousResults, reviewed objects, or another agent's workspace. If path is present, do not include content or body for the same artifact." },
       url: { type: "string", description: "Only for kind link. Do not use url for html, markdown, json, or file artifacts." }
     }
   }
@@ -192,6 +192,9 @@ const agentOutputContractLines = [
   "- For review/QA/acceptance/validation steps, a tested HTML file, preview URL, screenshot, or upstream artifact is a referenced object, not this step's deliverable. In that case the delivery-location section must be exactly \"\u65e0\" for Chinese or \"None\" for English.",
   "- If an earlier role prompt asks a reviewer or QA agent to list a preview URL or file path, treat that as a request for a separate \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\" section and handoffJson.referencedArtifact(s), not as permission to fill top-level artifacts[] or delivery location.",
   "- Do not copy upstream artifact paths, download URLs, or storage paths into top-level artifacts[].path/url. Only the node that created the file may publish it there.",
+  "- Before returning, audit every top-level artifacts[] item. If its path, url, content, or body came from input, upstream, previousResults, a review target, or another node/agent workspace, remove that item from artifacts[] and record it only as handoffJson.referencedArtifacts or a humanReportMd \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\".",
+  "- Do not use handoffJson.artifacts for reviewed or upstream objects. Use handoffJson.referencedArtifacts for those references so downstream nodes know they are not newly produced deliverables.",
+  "- Correct QA/review pattern: artifacts: []; delivery-location: \"\u65e0\"/\"None\"; referenced objects may be listed separately as references only.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -477,9 +480,21 @@ export class BlueprintWorker {
       return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
     }
 
-    const requirementRevision = request.kind === "iteration_requirement_plan" && action === "reply"
-      ? await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "")
-      : undefined;
+    if (request.kind === "iteration_requirement_plan" && action === "reply") {
+      const replyResult = await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "");
+      await this.managerMailProjector.refresh(run.id);
+      const revisedRequirement = await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "");
+      if (revisedRequirement) {
+        await this.store.upsertApprovalRequest({
+          ...replyResult.approvalRequest,
+          supersededByRequestId: revisedRequirement.id
+        });
+      }
+      await this.managerMailProjector.refresh(run.id);
+      const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun);
+      if (autoAdvanced) return autoAdvanced.run;
+      return (await this.store.getBlueprintRun(currentRun.id)) ?? currentRun;
+    }
 
     let result;
     if (action === "approve") {
@@ -487,7 +502,9 @@ export class BlueprintWorker {
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "reply") {
-      result = await this.approvalService.reply(approvalRequestId, input.message ?? "", requirementRevision);
+      result = request.kind === "manager_release_report"
+        ? await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "")
+        : await this.approvalService.reply(approvalRequestId, input.message ?? "");
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
     } else {
@@ -1140,7 +1157,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     request: ApprovalRequest,
     message: string
-  ): Promise<{ title: string; body: string; capabilities?: ApprovalRequest["capabilities"] } | undefined> {
+  ): Promise<ApprovalRequest | undefined> {
     const feedback = message.trim();
     if (!feedback) return undefined;
 
@@ -1165,21 +1182,22 @@ export class BlueprintWorker {
       revision,
       executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
     });
-    await this.store.upsertIterationRound({
-      ...round,
-      researchStatus: preflight.researchStatus,
-      researchSummary: preflight.researchSummary,
-      researchArtifactIds: preflight.researchArtifactIds,
-      planSource: "revised_from_reply"
-    });
-    const title = `Round ${round.roundNumber} Execution Plan v${revision}`;
-    return {
-      title,
+    return this.iterationService.requestRoundPlan({
+      session,
+      round,
+      managerNode: topManager,
       body: preflight.body,
-      capabilities: preflight.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false }
-        : undefined
-    };
+      revision,
+      threadId: request.threadId,
+      replacesRequestId: request.id,
+      closeReplacedRequest: false,
+      metadata: {
+        researchStatus: preflight.researchStatus,
+        researchSummary: preflight.researchSummary,
+        researchArtifactIds: preflight.researchArtifactIds,
+        planSource: "revised_from_reply"
+      }
+    });
   }
 
   async approveRun(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+import type { ApprovalRequest, BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
 import {
   acknowledgedTerminalRunIdsStorageKey,
   readAcknowledgedTerminalRunIds,
@@ -144,6 +144,71 @@ describe("run state sync", () => {
           role: "user",
           body: "Tighten the wording.",
           createdAt: "2026-05-21T01:03:00.000Z"
+        }
+      ]
+    });
+  });
+
+  it("keeps replied lifecycle approvals distinct from rejected approvals", () => {
+    const runView = createRunView("succeeded");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-report-1",
+        kind: "manager_release_report",
+        status: "replied",
+        title: "Round 1 Release Report v1",
+        body: "Report feedback was recorded."
+      })
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]).toMatchObject({
+      approvalRequestId: "approval-report-1",
+      kind: "manager_release_report",
+      status: "replied",
+      canApprove: false,
+      canReply: false,
+      canReject: false,
+      canComplete: false,
+      reviewOutput: "Report feedback was recorded."
+    });
+  });
+
+  it("restores lifecycle approval replies from persisted decisions", () => {
+    const runView = createRunView("succeeded");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-plan-1",
+        kind: "iteration_requirement_plan",
+        status: "replied",
+        title: "Round 2 Execution Plan v1",
+        body: "Previous plan"
+      })
+    ];
+    runView.approvalDecisions = [
+      {
+        id: "decision-reply-1",
+        approvalRequestId: "approval-plan-1",
+        action: "reply",
+        actor: "user",
+        comment: "Please include my inbox feedback.",
+        resultingStatus: "replied",
+        createdAt: "2026-05-21T01:05:00.000Z"
+      }
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]).toMatchObject({
+      approvalRequestId: "approval-plan-1",
+      status: "replied",
+      replies: [
+        {
+          id: "decision-reply-1",
+          role: "user",
+          body: "Please include my inbox feedback.",
+          createdAt: "2026-05-21T01:05:00.000Z"
         }
       ]
     });
@@ -394,6 +459,33 @@ function createRunView(
     ],
     events: [],
     finalResult: null
+  };
+}
+
+function createApprovalRequest(overrides: Partial<ApprovalRequest>): ApprovalRequest {
+  return {
+    id: "approval-1",
+    runId: "run-1",
+    kind: "generic_message",
+    status: "pending",
+    title: "Approval",
+    body: "Approval body",
+    revision: 1,
+    capabilities: {
+      approve: false,
+      reject: false,
+      reply: false,
+      complete: false,
+      terminate: false
+    },
+    requestedBy: {
+      type: "node",
+      label: "Manager",
+      nodeId: "manager"
+    },
+    requestedAt: "2026-05-21T01:03:00.000Z",
+    updatedAt: "2026-05-21T01:04:00.000Z",
+    ...overrides
   };
 }
 

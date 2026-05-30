@@ -1523,7 +1523,7 @@ export function ApprovalsPage({
 
                   const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
-                  const processed = approval.status === "approved" || approval.status === "rejected";
+                  const processed = !isActionableApprovalThread(approval);
                   const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
                   const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
@@ -2042,12 +2042,16 @@ function inboxStatusLabel(status: InboxItem["status"], language: Language): stri
 }
 
 function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
-  return approval.status !== "approved" && approval.status !== "rejected" && approval.status !== "replying";
+  return approval.status === undefined || approval.status === "pending";
 }
 
 function approvalStatusClassName(approval: PendingApprovalItem): string {
   if (approval.status === "approved") return "status-approved";
+  if (approval.status === "completed") return "status-approved";
+  if (approval.status === "replied") return "status-approved";
+  if (approval.status === "superseded") return "status-approved";
   if (approval.status === "rejected") return "status-rejected";
+  if (approval.status === "terminated") return "status-rejected";
   if (approval.status === "replying") return "status-running";
   return "status-waiting_approval";
 }
@@ -2055,12 +2059,20 @@ function approvalStatusClassName(approval: PendingApprovalItem): string {
 function approvalStatusLabel(approval: PendingApprovalItem, language: Language, t: Messages): string {
   if (language === "zh-CN") {
     if (approval.status === "approved") return "已批准";
+    if (approval.status === "completed") return "已完成";
     if (approval.status === "rejected") return "已驳回";
+    if (approval.status === "replied") return "已回复";
+    if (approval.status === "terminated") return "已终止";
+    if (approval.status === "superseded") return "已替换";
     if (approval.status === "replying") return "回复中";
     return "待处理";
   }
   if (approval.status === "approved") return "Approved";
+  if (approval.status === "completed") return "Completed";
   if (approval.status === "rejected") return "Rejected";
+  if (approval.status === "replied") return "Replied";
+  if (approval.status === "terminated") return "Terminated";
+  if (approval.status === "superseded") return "Superseded";
   if (approval.status === "replying") return "Replying";
   return t.status.waiting_approval;
 }

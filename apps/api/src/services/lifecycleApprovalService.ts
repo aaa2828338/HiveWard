@@ -200,6 +200,22 @@ export class ApprovalService {
     return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
   }
 
+  async closeWithReply(id: string, message: string): Promise<ApprovalActionResult> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval reply message is required.");
+
+    const current = await this.requirePendingRequest(id, "reply");
+    const now = new Date().toISOString();
+    const closed: ApprovalRequest = {
+      ...current,
+      status: "replied",
+      capabilities: { ...emptyApprovalCapabilities },
+      updatedAt: now
+    };
+    const decision = this.buildDecision(current.id, "reply", "replied", "user", trimmed, now);
+    return this.applyDecisionOrThrow({ approvalRequest: closed, decision });
+  }
+
   async autoApprove(input: Parameters<ApprovalService["createRequest"]>[0], comment?: string): Promise<ApprovalActionResult> {
     const request = await this.createRequest(input);
     return this.autoResolve(request.id, comment);

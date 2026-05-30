@@ -33,7 +33,7 @@ class ScriptedAdapter implements RuntimeAdapter {
 
   constructor(
     private readonly startResults: StartedAgentTaskResult[],
-    private readonly completionResults: Array<AgentTaskResult | Error>
+    private readonly completionResults: Array<AgentTaskResult | Error | Promise<AgentTaskResult>>
   ) {}
 
   async listModels() {
@@ -95,13 +95,18 @@ class ScriptedAdapter implements RuntimeAdapter {
   async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
     this.waitCalls.push(input);
     const matchingIndex = this.completionResults.findIndex((candidate) =>
-      !(candidate instanceof Error) && candidate.taskId === input.taskId
+      !(candidate instanceof Error) &&
+      !(candidate instanceof Promise) &&
+      candidate.taskId === input.taskId
     );
     const result = matchingIndex >= 0
       ? this.completionResults.splice(matchingIndex, 1)[0]
       : this.completionResults.shift();
     if (!result) {
       throw new Error("No scripted agent completion result available.");
+    }
+    if (result instanceof Promise) {
+      return result;
     }
     if (result instanceof Error) {
       throw result;
@@ -3369,33 +3374,26 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager"]);
   });
 
-  it("creates a versioned release report approval after a release report reply", async () => {
+  it("treats a release report reply as next-round feedback instead of a report revision", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
     const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
     const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-report-reply-research"),
-      createStartedAgentTask("task-report-reply-plan"),
-      createStartedAgentTask("task-report-reply"),
-      createStartedAgentTask("task-report-reply-release"),
-      createStartedAgentTask("task-report-reply-snapshot")
+      createStartedAgentTask("task-report-reply-research-1"),
+      createStartedAgentTask("task-report-reply-plan-1"),
+      createStartedAgentTask("task-report-reply-build-1"),
+      createStartedAgentTask("task-report-reply-release-1"),
+      createStartedAgentTask("task-report-reply-research-2"),
+      createStartedAgentTask("task-report-reply-plan-2")
     ], [
-      createCompletedAgentTask("task-report-reply-research", "succeeded", "report reply research"),
-      createCompletedAgentTask("task-report-reply-plan", "succeeded", "report reply plan"),
-      createCompletedAgentTask("task-report-reply", "succeeded", "<!doctype html><html><body>reply round</body></html>"),
-      createCompletedAgentTask("task-report-reply-release", "succeeded", releaseReportOutput("report reply")),
-      createCompletedAgentTask("task-report-reply-snapshot", "succeeded", JSON.stringify({
-        completedItems: ["Reply report round completed."],
-        keyDecisions: ["Apply review feedback before memory deposition."],
-        validatedFacts: ["revised release report was confirmed"],
-        openQuestions: [],
-        activeRisks: [],
-        assumptions: [],
-        recommendedNextStep: "complete",
-        summary: "reply report snapshot"
-      }))
+      createCompletedAgentTask("task-report-reply-research-1", "succeeded", "round 1 research"),
+      createCompletedAgentTask("task-report-reply-plan-1", "succeeded", "round 1 plan"),
+      createCompletedAgentTask("task-report-reply-build-1", "succeeded", "<!doctype html><html><body>reply round</body></html>"),
+      createCompletedAgentTask("task-report-reply-release-1", "succeeded", releaseReportOutput("report reply")),
+      createCompletedAgentTask("task-report-reply-research-2", "succeeded", "round 2 research after report feedback"),
+      createCompletedAgentTask("task-report-reply-plan-2", "succeeded", "round 2 plan with clearer artifact notes")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3419,39 +3417,38 @@ describe("BlueprintWorker", () => {
 
     const replyView = await store.getRunView(run.id);
     const oldReportApproval = replyView?.approvalRequests?.find((request) => request.id === report1.id);
-    const revisedReportApproval = replyView?.approvalRequests
+    const pendingReportApproval = replyView?.approvalRequests
       ?.filter((request) => request.kind === "manager_release_report" && request.status === "pending")
       .at(-1);
+    const pendingRequirement = replyView?.approvalRequests
+      ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
+      .at(-1);
     const releaseReports = replyView?.releaseReports ?? [];
+    const sessions = await store.listIterationSessions(run.id);
 
     expect(oldReportApproval).toMatchObject({
       status: "replied",
-      supersededByRequestId: revisedReportApproval?.id
+      capabilities: expect.objectContaining({ approve: false, reply: false, complete: false })
     });
-    expect(revisedReportApproval).toMatchObject({
-      title: "Round 1 Release Report v2",
-      revision: 2,
-      replacesRequestId: report1.id,
-      capabilities: expect.objectContaining({ approve: false, complete: true })
+    expect(pendingReportApproval).toBeUndefined();
+    expect(pendingRequirement).toMatchObject({
+      title: "Round 2 Execution Plan",
+      revision: 1,
+      body: expect.stringContaining("Add clearer artifact notes."),
+      capabilities: expect.objectContaining({ approve: true, complete: false })
     });
-    expect(revisedReportApproval?.body).not.toContain("User reply:");
-    expect(releaseReports.map((report) => report.version)).toEqual([1, 2]);
-    expect(releaseReports[1]).toMatchObject({
-      title: "Round 1 Release Report v2",
-      supersedesReportId: releaseReports[0]?.id,
-      approvalRequestId: revisedReportApproval?.id
+    expect(pendingRequirement?.body).toContain("round 2 research after report feedback");
+    expect(releaseReports.map((report) => report.version)).toEqual([1]);
+    expect(sessions[0]).toMatchObject({
+      status: "running",
+      maxRounds: 2
     });
-
-    const currentRun3 = await store.getBlueprintRun(run.id);
-    if (!currentRun3 || !revisedReportApproval) throw new Error("Expected revised release report.");
-    await worker.applyApprovalRequest(blueprint, currentRun3, revisedReportApproval.id, "complete");
-    const completed = await waitForRunTerminal(store, run.id);
-    expect(completed?.run.status).toBe("succeeded");
-    expect(completed?.approvalDecisions?.map((decision) => decision.action)).toEqual([
-      "approve",
-      "reply",
-      "complete"
-    ]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager", "manager", "manager"]);
+    expect(adapter.calls.at(-1)?.input).toMatchObject({
+      roundNumber: 2
+    });
+    expect(replyView?.run.status).toBe("waiting_approval");
+    expect(replyView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["approve", "reply"]);
   });
 
   it("reruns the requirement agent when a requirement approval is replied to", async () => {
@@ -3503,6 +3500,72 @@ describe("BlueprintWorker", () => {
       body: expect.stringContaining("revised requirement plan from agent"),
       revision: 2,
       replacesRequestId: requirement1.id
+    });
+  });
+
+  it("closes a requirement approval before rerunning preflight after a reply", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    let resolveRevisionResearch!: (result: AgentTaskResult) => void;
+    const revisionResearch = new Promise<AgentTaskResult>((resolve) => {
+      resolveRevisionResearch = resolve;
+    });
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, requirementAgent: true });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-close-research-1"),
+      createStartedAgentTask("task-close-requirements-1"),
+      createStartedAgentTask("task-close-research-2"),
+      createStartedAgentTask("task-close-requirements-2")
+    ], [
+      createCompletedAgentTask("task-close-research-1", "succeeded", "initial research summary"),
+      createCompletedAgentTask("task-close-requirements-1", "succeeded", "initial requirement plan"),
+      revisionResearch,
+      createCompletedAgentTask("task-close-requirements-2", "succeeded", "revised requirement plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
+    const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
+    if (!requirement1) throw new Error("Expected initial requirement approval.");
+
+    const replyPromise = worker.applyApprovalRequest(blueprint, run, requirement1.id, "reply", {
+      message: "Add keyboard controls before execution."
+    });
+
+    const closedView = await waitForRunView(store, run.id, (view) =>
+      view.approvalRequests?.some((request) => request.id === requirement1.id && request.status === "replied") ?? false
+    );
+    const closedRequirement = closedView.approvalRequests?.find((request) => request.id === requirement1.id);
+    expect(closedRequirement).toMatchObject({
+      status: "replied",
+      capabilities: expect.objectContaining({ approve: false, reply: false })
+    });
+    expect(closedView.approvalDecisions?.find((decision) => decision.approvalRequestId === requirement1.id)).toMatchObject({
+      action: "reply",
+      comment: "Add keyboard controls before execution."
+    });
+    await waitForRunView(store, run.id, () => adapter.calls.length >= 3);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements", "manager"]);
+
+    const currentRun = await store.getBlueprintRun(run.id);
+    if (!currentRun) throw new Error("Expected current run.");
+    await expect(worker.applyApprovalRequest(blueprint, currentRun, requirement1.id, "approve"))
+      .rejects.toThrow("Approval request is already closed.");
+
+    resolveRevisionResearch(createCompletedAgentTask("task-close-research-2", "succeeded", "revised research summary"));
+    await replyPromise;
+
+    const replyView = await store.getRunView(run.id);
+    const revisedRequirement = replyView?.approvalRequests
+      ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
+      .at(-1);
+    expect(revisedRequirement).toMatchObject({
+      revision: 2,
+      replacesRequestId: requirement1.id,
+      body: expect.stringContaining("revised requirement plan")
     });
   });
 

@@ -189,7 +189,10 @@ function buildApprovalItemFromRequest(
   const nodeRun = request.nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === request.nodeRunId) : undefined;
   const upstream = readPendingApprovalUpstream(nodeRun?.input);
   const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
-  const replies = readPendingApprovalReplies(output?.replies);
+  const replies = mergePendingApprovalReplies(
+    request.kind === "agent_proposal" ? undefined : readApprovalDecisionReplies(runView, request.id),
+    readPendingApprovalReplies(output?.replies)
+  );
   const selectedReplyId = readOptionalString(output?.selectedReplyId);
   const isPending = request.status === "pending";
   return {
@@ -204,9 +207,7 @@ function buildApprovalItemFromRequest(
     startedBy: runView.run.startedBy,
     startedAt: runView.run.startedAt,
     requestedAt: request.requestedAt,
-    status: isPending
-      ? nodeRun?.status === "running" ? "replying" : "pending"
-      : request.status === "approved" || request.status === "completed" ? "approved" : "rejected",
+    status: isPending ? nodeRun?.status === "running" ? "replying" : "pending" : request.status,
     reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
     ...(replies ? { replies } : {}),
     ...(selectedReplyId ? { selectedReplyId } : {}),
@@ -272,6 +273,33 @@ function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replie
     return [{ id, role, body, createdAt }];
   });
   return replies.length ? replies : undefined;
+}
+
+function readApprovalDecisionReplies(runView: BlueprintRunView, approvalRequestId: string): PendingApprovalItem["replies"] {
+  const replies = (runView.approvalDecisions ?? []).flatMap((decision) => {
+    if (decision.approvalRequestId !== approvalRequestId || decision.action !== "reply" || !decision.comment) return [];
+    return [{
+      id: decision.id,
+      role: "user" as const,
+      body: decision.comment,
+      createdAt: decision.createdAt
+    }];
+  });
+  return replies.length ? replies : undefined;
+}
+
+function mergePendingApprovalReplies(
+  ...groups: Array<PendingApprovalItem["replies"]>
+): PendingApprovalItem["replies"] {
+  const replies = groups.flatMap((group) => group ?? []);
+  if (!replies.length) return undefined;
+  const seen = new Set<string>();
+  return replies.filter((reply) => {
+    const key = `${reply.role}\0${reply.body}\0${reply.createdAt}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {
