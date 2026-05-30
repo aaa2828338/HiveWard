@@ -637,6 +637,7 @@ export type ChatStreamEvent =
     }
   | {
       type: "error";
+      code?: string;
       message: string;
     };
 

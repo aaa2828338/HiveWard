@@ -24,6 +24,7 @@ import type {
 } from "@hiveward/shared";
 import { GatewayOpenClawAdapter } from "./gateway-adapter";
 import { resolveGatewayAdapterConfig } from "./gateway-config";
+import { createOpenClawGatewayNotConfiguredError } from "./runtime-errors";
 import { createAgentSdkRuntime, isAgentSdkProvider, readAgentSdkRuntimeOptions, type AgentSdkRuntime } from "./sdk-runtime";
 
 export interface RuntimeAdapter {
@@ -289,6 +290,64 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
   }
 }
 
+export class UnavailableOpenClawAdapter implements RuntimeAdapter {
+  async listModels(): Promise<RuntimeModel[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async listAgents(): Promise<RuntimeAgent[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async listTools(): Promise<RuntimeTool[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async listChannels(): Promise<RuntimeChannel[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async listSessions(): Promise<RuntimeSessionSummary[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async listTasks(): Promise<RuntimeTaskSummary[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async getRuntimeOverview(): Promise<RuntimeOverview> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async getSessionMessages(_sessionKey: string): Promise<ChatHistoryMessage[]> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async createChatSession(_input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async updateChatSessionTitle(_input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async streamChatMessage(_input: RuntimeChatStreamInput, _onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async startAgentTask(_input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async waitForAgentTask(_input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+
+  async sendChannelMessage(_input: SendChannelInput): Promise<SendChannelResult> {
+    throw createOpenClawGatewayNotConfiguredError();
+  }
+}
+
 export interface CreateRuntimeAdapterOptions {
   sdkWorkspaceRoot: string;
 }
@@ -373,17 +432,16 @@ export function createRuntimeAdapter(options: CreateRuntimeAdapterOptions): Runt
   }
 
   if (mode === "real" || mode === "gateway") {
-    throw new Error(
-      "OpenClaw Gateway configuration was not found. Set OPENCLAW_GATEWAY_URL or provide ~/.openclaw/openclaw.json."
-    );
+    throw createOpenClawGatewayNotConfiguredError();
   }
 
-  return new SdkRoutingRuntimeAdapter(new MockRuntimeAdapter(), sdkRuntime);
+  return new SdkRoutingRuntimeAdapter(new UnavailableOpenClawAdapter(), sdkRuntime);
 }
 
 export { GatewayOpenClawAdapter } from "./gateway-adapter";
 export { GatewayRequestError, GatewaySession } from "./gateway-client";
 export { resolveGatewayAdapterConfig, type GatewayAdapterConfig } from "./gateway-config";
+export { RuntimeAdapterError, isRuntimeAdapterError, type RuntimeAdapterErrorCode } from "./runtime-errors";
 export { createAgentSdkRuntime, isAgentSdkProvider } from "./sdk-runtime";
 
 function formatSourceLabel(source: HarnessId | RuntimeObjectSource): string {

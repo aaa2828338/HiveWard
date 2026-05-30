@@ -1421,13 +1421,21 @@ function applyChatEvent(
     return;
   }
 
+  const errorMessage = formatChatStreamError(event, copy);
   setMessages((current) =>
     current.map((message) =>
       message.id === assistantId
-        ? { ...message, progressText: undefined, runtimeStatus: undefined, content: message.content || event.message, status: "failed" }
+        ? { ...message, progressText: undefined, runtimeStatus: undefined, content: message.content || errorMessage, status: "failed" }
         : message
     )
   );
+}
+
+function formatChatStreamError(event: Extract<ChatStreamEvent, { type: "error" }>, copy: ReturnType<typeof chatCopy>): string {
+  if (event.code === "openclaw_gateway_not_configured") return copy.openClawGatewayNotConfigured;
+  if (event.code === "openclaw_gateway_unreachable") return copy.openClawGatewayUnreachable;
+  if (event.code === "openclaw_gateway_not_connected") return copy.openClawGatewayNotConnected;
+  return event.message;
 }
 
 function formatWaitingProgress(
@@ -1942,6 +1950,12 @@ function chatCopy(language: Language) {
       usageTokens: "Token \u6d88\u8017",
       tokensUnit: "tokens",
       runtimeError: "\u8fd0\u884c\u9519\u8bef",
+      openClawGatewayNotConfigured:
+        "OpenClaw Gateway \u672a\u914d\u7f6e\uff0cHiveWard \u6ca1\u6709\u628a\u8fd9\u6b21\u8bf7\u6c42\u53d1\u5230 OpenClaw\u3002\u8bf7\u914d\u7f6e OPENCLAW_GATEWAY_URL \u6216 ~/.openclaw/openclaw.json\uff1b\u5982\u679c\u53ea\u662f\u6f14\u793a\uff0c\u8bf7\u663e\u5f0f\u8bbe\u7f6e OPENCLAW_ADAPTER=mock\u3002",
+      openClawGatewayUnreachable:
+        "OpenClaw Gateway \u8fde\u63a5\u4e0d\u4e0a\uff0cHiveWard \u6ca1\u6709\u628a\u8fd9\u6b21\u8bf7\u6c42\u53d1\u5230 OpenClaw\u3002\u8bf7\u542f\u52a8 Gateway \u6216\u68c0\u67e5 OPENCLAW_GATEWAY_URL\u3002",
+      openClawGatewayNotConnected:
+        "OpenClaw Gateway \u5df2\u65ad\u5f00\uff0cHiveWard \u6ca1\u6709\u5b8c\u6210\u8fd9\u6b21 OpenClaw \u8bf7\u6c42\u3002\u8bf7\u91cd\u542f Gateway \u540e\u91cd\u8bd5\u3002",
       runtimeSucceeded: "\u6210\u529f",
       runtimeFailed: "\u5931\u8d25",
       runtimeCancelled: "\u5df2\u53d6\u6d88",
@@ -2043,6 +2057,12 @@ function chatCopy(language: Language) {
     usageTokens: "Token usage",
     tokensUnit: "tokens",
     runtimeError: "Runtime error",
+    openClawGatewayNotConfigured:
+      "OpenClaw Gateway is not configured, so HiveWard did not send this request to OpenClaw. Configure OPENCLAW_GATEWAY_URL or ~/.openclaw/openclaw.json; for demos, explicitly set OPENCLAW_ADAPTER=mock.",
+    openClawGatewayUnreachable:
+      "OpenClaw Gateway is unreachable, so HiveWard did not send this request to OpenClaw. Start the Gateway or check OPENCLAW_GATEWAY_URL.",
+    openClawGatewayNotConnected:
+      "OpenClaw Gateway is disconnected, so HiveWard could not complete this OpenClaw request. Restart the Gateway and retry.",
     runtimeSucceeded: "succeeded",
     runtimeFailed: "failed",
     runtimeCancelled: "cancelled",
