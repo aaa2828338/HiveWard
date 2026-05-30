@@ -198,6 +198,14 @@ type TraceIssue = {
   events: BlueprintNodeEvent[];
 };
 
+type TraceIssueBuildContext = {
+  humanReportByNodeRunId: Map<string, RunAgentHumanReport>;
+  artifactsByNodeRunId: Map<string, RunArtifact[]>;
+  eventsByNodeRunId: Map<string, BlueprintNodeEvent[]>;
+  nodeRunById: Map<string, BlueprintNodeRun>;
+  roundById: Map<string, RunIterationRound>;
+};
+
 export function CompanyDirectoryPage({
   companies,
   selectedCompanyId,
@@ -958,11 +966,11 @@ export function buildCurrentOutputDisplayBody({
     "",
     artifactBody,
     "",
-    ...(actorKind === "manager"
+    ...(managerReason
       ? [
           `## ${zh ? "🧭 调度原因" : "🧭 Dispatch reason"}`,
           "",
-          managerReason ?? noneText(language),
+          managerReason,
           ""
         ]
       : []),
@@ -3754,6 +3762,7 @@ function buildTraceIssues(
 ): TraceIssue[] {
   if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
+  const context = buildTraceIssueContext(activeRun);
   const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
   const humanReportIds = new Set((activeRun.agentHumanReports ?? []).map((report) => report.id));
   const nodeTimelineItemsByNodeRunId = buildNodeRunTimelineItemMap(activeRun, nodeRunIds);
@@ -3800,7 +3809,7 @@ function buildTraceIssues(
       if (item.kind === "node") {
         const node = nodesById.get(item.nodeRun.nodeId);
         return createNodeTraceIssue(
-          activeRun,
+          context,
           item.nodeRun,
           node,
           nodeTimelineItemsByNodeRunId.get(item.nodeRun.id) ?? [],
@@ -3813,8 +3822,38 @@ function buildTraceIssues(
       if (item.kind === "timeline") {
         return createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
       }
-      return createReportTraceIssue(activeRun, item.humanReport, index + 1, t, language);
+      return createReportTraceIssue(context, item.humanReport, index + 1, t, language);
     });
+}
+
+function buildTraceIssueContext(activeRun: BlueprintRunView): TraceIssueBuildContext {
+  const humanReportByNodeRunId = new Map<string, RunAgentHumanReport>();
+  for (const report of activeRun.agentHumanReports ?? []) {
+    if (!humanReportByNodeRunId.has(report.nodeRunId)) {
+      humanReportByNodeRunId.set(report.nodeRunId, report);
+    }
+  }
+  return {
+    humanReportByNodeRunId,
+    artifactsByNodeRunId: groupByNodeRunId(activeRun.artifacts ?? []),
+    eventsByNodeRunId: groupByNodeRunId(activeRun.events),
+    nodeRunById: new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun])),
+    roundById: new Map((activeRun.iterationRounds ?? []).map((round) => [round.id, round]))
+  };
+}
+
+function groupByNodeRunId<T extends { nodeRunId?: string }>(items: T[]): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    if (!item.nodeRunId) continue;
+    const existing = grouped.get(item.nodeRunId);
+    if (existing) {
+      existing.push(item);
+    } else {
+      grouped.set(item.nodeRunId, [item]);
+    }
+  }
+  return grouped;
 }
 
 function buildRoundResearchTraceItems(activeRun: BlueprintRunView): RunIterationRound[] {
@@ -3948,7 +3987,7 @@ function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {
 }
 
 function createNodeTraceIssue(
-  activeRun: BlueprintRunView,
+  context: TraceIssueBuildContext,
   nodeRun: BlueprintNodeRun,
   node: BlueprintNode | undefined,
   timelineItems: RunTimelineTraceItem[],
@@ -3959,13 +3998,18 @@ function createNodeTraceIssue(
 ): TraceIssue {
   const baseLabel = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
   const label = formatNodeTraceLabel(baseLabel, nodeRun, language);
-  const humanReport = activeRun.agentHumanReports?.find((report) => report.nodeRunId === nodeRun.id);
-  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === nodeRun.id) ?? [];
+  const humanReport = context.humanReportByNodeRunId.get(nodeRun.id);
+  const reportArtifacts = context.artifactsByNodeRunId.get(nodeRun.id) ?? [];
   const actorKind = traceActorKindForNodeRun(nodeRun);
-  const managerReason = actorKind === "manager" ? readManagerOutputReason(nodeRun.output) : undefined;
-  const readableSource = humanReport
+  const managerReason = actorKind === "manager" && isDispatchManagerNodeRun(nodeRun)
+    ? readManagerOutputReason(nodeRun.output)
+    : undefined;
+  const contextSnapshotBody = preflightModeFromNodeRunId(nodeRun.id) === "context_snapshot"
+    ? buildContextSnapshotReadableBody(nodeRun.output, humanReport?.bodyMd, language)
+    : undefined;
+  const readableSource = contextSnapshotBody ?? (humanReport
     ? humanReport.bodyMd
-    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language);
+    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language));
   const displaySource = managerReason && !humanReport && readableSource?.trim() === managerReason.trim()
     ? ""
     : readableSource;
@@ -3980,7 +4024,7 @@ function createNodeTraceIssue(
         timelineDetails: nodeTimelineDetailBodies(timelineItems, language)
       })
     : undefined;
-  const round = roundForNodeRun(activeRun, nodeRun);
+  const round = roundForNodeRun(context, nodeRun);
   const displayRoundNumber = managerRoundNumberForNodeRun(nodeRun) ?? round?.roundNumber;
   const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
   return {
@@ -4002,7 +4046,7 @@ function createNodeTraceIssue(
     timestamp: traceTimestampForNodeRun(nodeRun),
     outputPreview: summarizeOutput(previewSource ?? nodeRun.output, t),
     outputBody,
-    events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
+    events: context.eventsByNodeRunId.get(nodeRun.id) ?? []
   };
 }
 
@@ -4017,15 +4061,15 @@ function nodeTimelineDetailBodies(
 }
 
 function createReportTraceIssue(
-  activeRun: BlueprintRunView,
+  context: TraceIssueBuildContext,
   humanReport: RunAgentHumanReport,
   index: number,
   t: Messages,
   language: Language
 ): TraceIssue {
-  const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === humanReport.nodeRunId) ?? [];
-  const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === humanReport.nodeRunId);
-  const round = nodeRun ? roundForNodeRun(activeRun, nodeRun) : roundForReport(activeRun, humanReport);
+  const reportArtifacts = context.artifactsByNodeRunId.get(humanReport.nodeRunId) ?? [];
+  const nodeRun = context.nodeRunById.get(humanReport.nodeRunId);
+  const round = nodeRun ? roundForNodeRun(context, nodeRun) : roundForReport(context, humanReport);
   const displayRoundNumber = managerRoundNumberForReport(humanReport, nodeRun) ?? round?.roundNumber;
   const actorKind = nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindFromLabel(humanReport.nodeLabel);
   const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
@@ -4141,6 +4185,13 @@ function roundResearchStatusLabel(status: NonNullable<RunIterationRound["researc
 }
 
 function formatNodeTraceLabel(label: string, nodeRun: BlueprintNodeRun, language: Language): string {
+  if (isReleaseReportNodeRun(nodeRun)) {
+    const roundNumber = managerRoundNumberForNodeRun(nodeRun);
+    if (language === "zh-CN") {
+      return roundNumber ? `\u7b2c ${roundNumber} \u8f6e\u62a5\u544a\u53d1\u5e03` : "\u62a5\u544a\u53d1\u5e03";
+    }
+    return roundNumber ? `Round ${roundNumber} report publish` : "Report publish";
+  }
   return cleanTraceActorLabel(label);
 }
 
@@ -4177,6 +4228,20 @@ function preflightModeDisplayLabel(mode: RunPreflightMode, language: Language): 
   if (mode === "preflight_judgment") return zh ? "\u8ba1\u5212\u6821\u9a8c" : "plan review";
   if (mode === "context_snapshot") return zh ? "\u8bb0\u5fc6\u5feb\u7167" : "context snapshot";
   return zh ? "\u51c6\u5907" : "preflight";
+}
+
+function nodeRunTaskName(nodeRun: BlueprintNodeRun | undefined): string | undefined {
+  if (!nodeRun) return undefined;
+  const record = readOutputRecord(nodeRun.input);
+  return readNonEmptyString(record?.task);
+}
+
+function isReleaseReportNodeRun(nodeRun: BlueprintNodeRun | undefined): boolean {
+  return nodeRunTaskName(nodeRun) === "self_iteration_release_report";
+}
+
+function isDispatchManagerNodeRun(nodeRun: BlueprintNodeRun): boolean {
+  return nodeRun.nodeType === "manager" && !isReleaseReportNodeRun(nodeRun) && !preflightModeFromNodeRunId(nodeRun.id);
 }
 
 function createTimelineTraceIssue(
@@ -4243,14 +4308,14 @@ function traceActorKindFromLabel(label: string): TraceIssue["actorKind"] {
   return "system";
 }
 
-function roundForNodeRun(activeRun: BlueprintRunView, nodeRun: BlueprintNodeRun): RunIterationRound | undefined {
+function roundForNodeRun(context: TraceIssueBuildContext, nodeRun: BlueprintNodeRun): RunIterationRound | undefined {
   if (!nodeRun.iterationRoundId) return undefined;
-  return activeRun.iterationRounds?.find((round) => round.id === nodeRun.iterationRoundId);
+  return context.roundById.get(nodeRun.iterationRoundId);
 }
 
-function roundForReport(activeRun: BlueprintRunView, humanReport: RunAgentHumanReport): RunIterationRound | undefined {
+function roundForReport(context: TraceIssueBuildContext, humanReport: RunAgentHumanReport): RunIterationRound | undefined {
   if (humanReport.roundId) {
-    const direct = activeRun.iterationRounds?.find((round) => round.id === humanReport.roundId);
+    const direct = context.roundById.get(humanReport.roundId);
     if (direct) return direct;
   }
   return undefined;
@@ -4337,6 +4402,7 @@ function roleTagForActorKind(kind: TraceIssue["actorKind"], language: Language):
 function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: Language): string[] {
   const mode = preflightModeFromNodeRunId(nodeRun.id);
   if (mode) return [preflightWorkTag(mode, language)];
+  if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
   if (nodeRun.nodeType === "manager") return [dispatchWorkTag(language)];
   return [workTagFromLabel(label, language, nodeRun.nodeType)];
 }
@@ -4344,6 +4410,7 @@ function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: 
 function workTagsForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined, language: Language): string[] {
   const mode = preflightModeFromNodeRunId(humanReport.nodeRunId);
   if (mode) return [preflightWorkTag(mode, language)];
+  if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
   if (/manager-decision-\d+$/i.test(humanReport.nodeRunId) || /dispatch|调度/i.test(humanReport.nodeLabel)) {
     return [dispatchWorkTag(language)];
   }
@@ -4368,7 +4435,7 @@ function preflightWorkTag(mode: RunPreflightMode, language: Language): string {
   if (mode === "research_resolution") return zh ? "\u8c03\u7814" : "Research";
   if (mode === "requirement_resolution") return zh ? "\u63d0\u9700" : "Requirements";
   if (mode === "revise_plan" || mode === "preflight_judgment") return zh ? "\u8ba1\u5212" : "Planning";
-  if (mode === "context_snapshot") return zh ? "\u590d\u76d8" : "Review";
+  if (mode === "context_snapshot") return zh ? "\u590d\u76d8\u6c89\u6dc0" : "Review memory";
   return zh ? "\u51c6\u5907" : "Prep";
 }
 
@@ -4376,8 +4443,13 @@ function dispatchWorkTag(language: Language): string {
   return language === "zh-CN" ? "\u8c03\u5ea6" : "Dispatch";
 }
 
+function reportPublishWorkTag(language: Language): string {
+  return language === "zh-CN" ? "\u62a5\u544a\u53d1\u5e03" : "Report publish";
+}
+
 function workTagTone(tag: string): string {
   const normalized = tag.trim().toLowerCase();
+  if (/\u62a5\u544a\u53d1\u5e03|report publish|publish report/.test(normalized)) return "review";
   if (/调研|research/.test(normalized)) return "research";
   if (/提需|需求|requirements?/.test(normalized)) return "requirements";
   if (/计划|planning|prep/.test(normalized)) return "planning";
@@ -4424,15 +4496,11 @@ function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimel
     return "in_progress";
   }
   if (timelineItem.kind === "requirement_published") {
-    const request = (activeRun.approvalRequests ?? []).find(
-      (approval) => approval.kind === "iteration_requirement_plan" && approval.title === timelineItem.title
-    );
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
     return request?.status === "pending" ? "in_progress" : "completed";
   }
   if (timelineItem.kind === "release_report_published") {
-    const request = (activeRun.approvalRequests ?? []).find(
-      (approval) => approval.kind === "manager_release_report" && approval.title === timelineItem.title
-    );
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
     return request?.status === "pending" ? "in_progress" : "completed";
   }
   return "completed";
@@ -4554,6 +4622,12 @@ function buildRequirementApprovalTimelineBody(activeRun: BlueprintRunView, timel
 function buildReleaseApprovalTimelineBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
   const zh = language === "zh-CN";
   const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
+  const report = activeRun.releaseReports?.find((candidate) =>
+    candidate.id === timelineItem.payloadRef ||
+    (request && candidate.approvalRequestId === request.id)
+  );
+  const body = report?.summary ?? request?.body ?? timelineItem.body;
+  if (body?.trim()) return localizeHumanReportBody(body, language);
   const pending = request?.status === "pending";
   return [
     `## ${zh ? "\u6458\u8981" : "Summary"}`,
@@ -4729,9 +4803,70 @@ function buildReadableNodeOutputBody(output: unknown, error: string | undefined,
   return t.trace.noOutput;
 }
 
+function buildContextSnapshotReadableBody(
+  output: unknown,
+  fallbackBody: string | undefined,
+  language: Language
+): string | undefined {
+  const record = readOutputRecord(output);
+  if (!record) return fallbackBody;
+
+  const zh = language === "zh-CN";
+  const section = (title: string, value: string | string[] | undefined): string[] => {
+    const body = Array.isArray(value)
+      ? formatSnapshotList(value, language)
+      : conciseSectionBody(value, language);
+    return [`## ${title}`, "", body, ""];
+  };
+  const summary = readNonEmptyString(record.summary) ?? fallbackBody;
+  const risks = [
+    ...readStringList(record.activeRisks),
+    ...readStringList(record.assumptions).map((item) => `${zh ? "\u5047\u8bbe" : "Assumption"}: ${item}`)
+  ];
+
+  return [
+    ...section(zh ? "\u6458\u8981" : "Summary", summary),
+    ...section(zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location", noneText(language)),
+    ...section(zh ? "\u4ea7\u7269" : "Artifacts", noneText(language)),
+    ...section(zh ? "\u590d\u76d8\u6c89\u6dc0" : "Review memory", readStringList(record.completedItems)),
+    ...section(zh ? "\u5173\u952e\u51b3\u5b9a" : "Key decisions", readStringList(record.keyDecisions)),
+    ...section(zh ? "\u5df2\u9a8c\u8bc1\u4e8b\u5b9e" : "Validated facts", readStringList(record.validatedFacts)),
+    ...section(zh ? "\u98ce\u9669\u4e0e\u7ea6\u675f" : "Risks and constraints", risks),
+    ...section(zh ? "\u672a\u51b3\u95ee\u9898" : "Open questions", readStringList(record.openQuestions)),
+    ...section(zh ? "\u4e0b\u4e00\u6b65" : "Next step", readNonEmptyString(record.recommendedNextStep)),
+    ...section(zh ? "\u4e0d\u91c7\u7528\u9009\u9879" : "Rejected options", readStringList(record.rejectedOptions))
+  ].join("\n").trim();
+}
+
+function formatSnapshotList(items: string[], language: Language): string {
+  const cleanItems = items.map((item) => item.trim()).filter(Boolean);
+  if (!cleanItems.length) return noneText(language);
+  return cleanItems.map((item) => `- ${item}`).join("\n");
+}
+
+function readStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") return item.trim();
+      if (!isPlainObject(item)) return "";
+      return readNonEmptyString(item.summary) ??
+        readNonEmptyString(item.title) ??
+        readNonEmptyString(item.label) ??
+        readNonEmptyString(item.description) ??
+        "";
+    })
+    .filter(Boolean);
+}
+
 function buildRunningNodeProgressBody(nodeRun: BlueprintNodeRun, language: Language): string | undefined {
   if (nodeRun.status !== "queued" && nodeRun.status !== "running" && nodeRun.status !== "waiting_approval") return undefined;
   const zh = language === "zh-CN";
+  if (isReleaseReportNodeRun(nodeRun)) {
+    return zh
+      ? "Manager \u6b63\u5728\u53d1\u5e03\u672c\u8f6e\u62a5\u544a\u3002"
+      : "The manager is publishing the round report.";
+  }
   if (nodeRun.nodeType === "manager") {
     return zh
       ? "Manager \u6b63\u5728\u8c03\u5ea6\u4e0b\u6e38 Agent\u3002\u5982\u679c\u5f53\u524d\u6709 Agent \u5728\u8fd0\u884c\uff0c\u5b83\u4f1a\u7b49\u5f85\u8be5 Agent \u8fd4\u56de\u540e\u518d\u51b3\u5b9a\u4e0b\u4e00\u6b65\u3002"

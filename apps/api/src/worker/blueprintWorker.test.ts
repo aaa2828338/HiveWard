@@ -693,7 +693,8 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("complete single-file HTML");
     expect(adapter.calls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
     expect(adapter.calls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(adapter.calls[0]?.prompt).toContain("QA or reviewer agents must not redeclare upstream artifacts");
+    expect(adapter.calls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
+    expect(adapter.calls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
     expect(adapter.calls[0]?.outputSchema).toMatchObject({
       properties: {
         artifacts: {
@@ -2408,19 +2409,23 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-round-1-research"),
       createStartedAgentTask("task-round-1-plan"),
       createStartedAgentTask("task-round-1"),
+      createStartedAgentTask("task-round-1-report"),
       createStartedAgentTask("task-round-1-snapshot"),
       createStartedAgentTask("task-round-2-research"),
       createStartedAgentTask("task-round-2-plan"),
       createStartedAgentTask("task-round-2"),
+      createStartedAgentTask("task-round-2-report"),
       createStartedAgentTask("task-round-2-snapshot"),
       createStartedAgentTask("task-round-3-research"),
       createStartedAgentTask("task-round-3-plan"),
       createStartedAgentTask("task-round-3"),
+      createStartedAgentTask("task-round-3-report"),
       createStartedAgentTask("task-round-3-snapshot")
     ], [
       createCompletedAgentTask("task-round-1-research", "succeeded", "round 1 research summary"),
       createCompletedAgentTask("task-round-1-plan", "succeeded", "round 1 execution plan"),
       createCompletedAgentTask("task-round-1", "succeeded", htmlArtifactOutput("round 1")),
+      createCompletedAgentTask("task-round-1-report", "succeeded", releaseReportOutput("round 1")),
       createCompletedAgentTask("task-round-1-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 1 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 2."],
@@ -2435,6 +2440,7 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-round-2-research", "succeeded", "round 2 research summary from manager"),
       createCompletedAgentTask("task-round-2-plan", "succeeded", "round 2 execution plan from manager"),
       createCompletedAgentTask("task-round-2", "succeeded", htmlArtifactOutput("round 2")),
+      createCompletedAgentTask("task-round-2-report", "succeeded", releaseReportOutput("round 2")),
       createCompletedAgentTask("task-round-2-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 2 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 3."],
@@ -2449,6 +2455,7 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-round-3-research", "succeeded", "round 3 research summary from manager"),
       createCompletedAgentTask("task-round-3-plan", "succeeded", "round 3 execution plan from manager"),
       createCompletedAgentTask("task-round-3", "succeeded", htmlArtifactOutput("round 3")),
+      createCompletedAgentTask("task-round-3-report", "succeeded", releaseReportOutput("round 3")),
       createCompletedAgentTask("task-round-3-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 3 delivered final HTML."],
         keyDecisions: ["Complete the run."],
@@ -2495,8 +2502,10 @@ describe("BlueprintWorker", () => {
     expect(report1).toMatchObject({
       capabilities: expect.objectContaining({ approve: true, complete: true })
     });
-    expect(report1?.body).toContain("Agent reports:");
+    expect(report1?.body).toContain("## Completed Work");
     expect(report1?.body).toContain("Builder");
+    expect(report1?.body).not.toContain("Agent reports:");
+    expect(report1?.body).not.toContain("### Builder");
     expect(report1View.agentHumanReports).toEqual(expect.arrayContaining([
       expect.objectContaining({
         nodeId: "builder",
@@ -2504,7 +2513,7 @@ describe("BlueprintWorker", () => {
       })
     ]));
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(1);
-    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(1);
+    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
     expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(1);
     expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(1);
     expect(report1View.artifacts?.find((artifact) => artifact.kind === "html")).toMatchObject({
@@ -2515,7 +2524,9 @@ describe("BlueprintWorker", () => {
 
     const currentRun2 = await store.getBlueprintRun(run.id);
     if (!currentRun2 || !report1) throw new Error("Expected first release report approval.");
-    await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "approve");
+    await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "approve", {
+      comment: "Carry keyboard controls into the next round."
+    });
 
     const requirement2View = await waitForRunView(store, run.id, (view) =>
       (view.iterationRounds ?? []).some((round) => round.roundNumber === 2 && round.status === "requirement_pending")
@@ -2548,8 +2559,20 @@ describe("BlueprintWorker", () => {
     expect(round2ResearchStartIndex).toBeGreaterThanOrEqual(0);
     expect(round2RequirementStartIndex).toBeGreaterThan(round2ResearchStartIndex);
     expect(requirement2?.body).toContain("Previous report:");
+    expect(requirement2?.body).toContain("Carry keyboard controls into the next round.");
     expect(requirement2?.body).toContain("round 2 research summary from manager");
     expect(requirement2?.body).not.toContain("Use the previous round outcome to define the next execution round.");
+    const round1SnapshotCall = adapter.calls.find((call) =>
+      isRecord(call.input) &&
+      call.input.roundNumber === 1 &&
+      call.input.humanFeedback === "Carry keyboard controls into the next round." &&
+      isRecord(call.input.runContext) &&
+      call.input.runContext.mode === "context_snapshot"
+    );
+    expect(round1SnapshotCall?.input).toMatchObject({
+      humanFeedback: "Carry keyboard controls into the next round.",
+      runContext: expect.objectContaining({ mode: "context_snapshot" })
+    });
 
     const currentRun3 = await store.getBlueprintRun(run.id);
     if (!currentRun3 || !requirement2) throw new Error("Expected second requirement approval.");
@@ -2568,7 +2591,7 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: true, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(4);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(new Set(report2View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(2);
@@ -2603,7 +2626,7 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: false, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(3);
-    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(6);
     expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(3);
     expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(3);
     expect(new Set(report3View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(3);
@@ -2627,7 +2650,7 @@ describe("BlueprintWorker", () => {
     expect(completed?.runTimeline?.map((item) => item.sequence)).toEqual(
       completed?.runTimeline?.map((item) => item.sequence).slice().sort((left, right) => left - right)
     );
-    expect(completed?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(completed?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(6);
     expect(completed?.managerContextSnapshots).toHaveLength(3);
     expect(completed?.managerContextSnapshots?.[0]).toMatchObject({
       completedItems: ["Round 1 delivered an HTML artifact."],
@@ -3022,13 +3045,15 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-context-plan"),
       createStartedAgentTask("task-context-dispatch-1"),
       createStartedAgentTask("task-context-builder"),
-      createStartedAgentTask("task-context-dispatch-2")
+      createStartedAgentTask("task-context-dispatch-2"),
+      createStartedAgentTask("task-context-report")
     ], [
       createCompletedAgentTask("task-context-research", "succeeded", "context research"),
       createCompletedAgentTask("task-context-plan", "succeeded", "context plan"),
       createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"roundNumber\":1,\"nextSlot\":3,\"reason\":\"dispatch\"}"),
       createCompletedAgentTask("task-context-builder", "succeeded", "worker output"),
-      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":1,\"reason\":\"done\"}")
+      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":1,\"reason\":\"done\"}"),
+      createCompletedAgentTask("task-context-report", "succeeded", releaseReportOutput("context"))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3060,7 +3085,8 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("complete single-file HTML");
     expect(managerDecisionCalls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
     expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(managerDecisionCalls[0]?.prompt).toContain("QA or reviewer agents must not redeclare upstream artifacts");
+    expect(managerDecisionCalls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
+    expect(managerDecisionCalls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(managerDecisionCalls[0]?.prompt).toContain("Round lifecycle contract:");
     expect(managerDecisionCalls[0]?.prompt).toContain("input.manager.roundNumber is platform lifecycle state");
@@ -3146,6 +3172,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-revised-research-2"),
       createStartedAgentTask("task-revised-plan-2"),
       createStartedAgentTask("task-revised-dispatch"),
+      createStartedAgentTask("task-revised-report"),
       createStartedAgentTask("task-revised-snapshot")
     ], [
       createCompletedAgentTask("task-revised-research-1", "succeeded", "initial revision research"),
@@ -3153,6 +3180,7 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-revised-research-2", "succeeded", "updated revision research"),
       createCompletedAgentTask("task-revised-plan-2", "succeeded", "approved revised dispatch plan"),
       createCompletedAgentTask("task-revised-dispatch", "succeeded", "revised dispatch output"),
+      createCompletedAgentTask("task-revised-report", "succeeded", releaseReportOutput("revised dispatch")),
       createCompletedAgentTask("task-revised-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Revised plan executed."],
         keyDecisions: ["Use revised plan."],
@@ -3215,24 +3243,17 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-reject-research"),
       createStartedAgentTask("task-reject-plan"),
       createStartedAgentTask("task-rejected-round"),
-      createStartedAgentTask("task-rejected-snapshot"),
+      createStartedAgentTask("task-rejected-report"),
       createStartedAgentTask("task-fixed-round"),
+      createStartedAgentTask("task-fixed-report"),
       createStartedAgentTask("task-fixed-snapshot")
     ], [
       createCompletedAgentTask("task-reject-research", "succeeded", "reject test research"),
       createCompletedAgentTask("task-reject-plan", "succeeded", "reject test plan"),
       createCompletedAgentTask("task-rejected-round", "succeeded", htmlArtifactOutput("needs work")),
-      createCompletedAgentTask("task-rejected-snapshot", "succeeded", JSON.stringify({
-        completedItems: ["Rejected draft produced."],
-        keyDecisions: ["Fix the rejected artifact."],
-        validatedFacts: ["needs work artifact exists"],
-        openQuestions: [],
-        activeRisks: ["User rejected the output."],
-        assumptions: [],
-        recommendedNextStep: "execute",
-        summary: "rejected snapshot"
-      })),
+      createCompletedAgentTask("task-rejected-report", "succeeded", releaseReportOutput("needs work")),
       createCompletedAgentTask("task-fixed-round", "succeeded", htmlArtifactOutput("fixed")),
+      createCompletedAgentTask("task-fixed-report", "succeeded", releaseReportOutput("fixed")),
       createCompletedAgentTask("task-fixed-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Fixed draft produced."],
         keyDecisions: ["Complete after fix."],
@@ -3279,7 +3300,7 @@ describe("BlueprintWorker", () => {
       .at(-1);
 
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(4);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(report2View.releaseReports?.map((report) => report.version)).toEqual([1, 2]);
@@ -3287,7 +3308,12 @@ describe("BlueprintWorker", () => {
     expect(report2View.artifacts?.some((artifact) => artifact.status === "rejected")).toBe(true);
     expect(report2View.artifacts?.some((artifact) => artifact.status === "current")).toBe(true);
     const rerunManagerInput = report2View.nodeRuns
-      .filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")
+      .filter((nodeRun) =>
+        isRuntimeNodeRun(nodeRun) &&
+        nodeRun.nodeId === "top-manager" &&
+        isRecord(nodeRun.input) &&
+        isRecord(nodeRun.input.runContext)
+      )
       .at(-1)?.input;
     expect(rerunManagerInput).toMatchObject({
       runContext: expect.objectContaining({
@@ -3352,11 +3378,24 @@ describe("BlueprintWorker", () => {
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-report-reply-research"),
       createStartedAgentTask("task-report-reply-plan"),
-      createStartedAgentTask("task-report-reply")
+      createStartedAgentTask("task-report-reply"),
+      createStartedAgentTask("task-report-reply-release"),
+      createStartedAgentTask("task-report-reply-snapshot")
     ], [
       createCompletedAgentTask("task-report-reply-research", "succeeded", "report reply research"),
       createCompletedAgentTask("task-report-reply-plan", "succeeded", "report reply plan"),
-      createCompletedAgentTask("task-report-reply", "succeeded", "<!doctype html><html><body>reply round</body></html>")
+      createCompletedAgentTask("task-report-reply", "succeeded", "<!doctype html><html><body>reply round</body></html>"),
+      createCompletedAgentTask("task-report-reply-release", "succeeded", releaseReportOutput("report reply")),
+      createCompletedAgentTask("task-report-reply-snapshot", "succeeded", JSON.stringify({
+        completedItems: ["Reply report round completed."],
+        keyDecisions: ["Apply review feedback before memory deposition."],
+        validatedFacts: ["revised release report was confirmed"],
+        openQuestions: [],
+        activeRisks: [],
+        assumptions: [],
+        recommendedNextStep: "complete",
+        summary: "reply report snapshot"
+      }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3481,6 +3520,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-auto-research"),
       createStartedAgentTask("task-auto-plan"),
       createStartedAgentTask("task-auto-round"),
+      createStartedAgentTask("task-auto-report"),
       createStartedAgentTask("task-auto-snapshot")
     ], [
       createCompletedAgentTask("task-auto-research", "succeeded", "auto research"),
@@ -3489,6 +3529,11 @@ describe("BlueprintWorker", () => {
         humanReportMd: "## Auto builder report\n\nReadable auto result.",
         handoffJson: { conclusion: "auto handoff conclusion" },
         result: "SECRET_RAW_OUTPUT"
+      }),
+      createCompletedAgentTask("task-auto-report", "succeeded", {
+        humanReportMd: "## Summary\n\nAuto builder report confirmed by manager.\n\n## Delivery location\n\nNone\n\n## Completed Work\n\nAuto builder report.\n\n## Handoff\n\nauto handoff conclusion",
+        handoffJson: { conclusion: "auto handoff conclusion" },
+        result: { status: "ready_for_confirmation" }
       }),
       createCompletedAgentTask("task-auto-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Auto round output completed."],
@@ -3507,7 +3552,7 @@ describe("BlueprintWorker", () => {
     const completed = await waitForRunTerminal(store, run.id);
 
     expect(completed?.run.status).toBe("succeeded");
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager", "manager"]);
     expect(completed?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "top-manager")).toBe(true);
     expect(completed?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "slot-1")).toBe(true);
     expect(completed?.approvalRequests?.map((request) => request.kind)).toEqual([
@@ -3541,11 +3586,13 @@ describe("BlueprintWorker", () => {
         createStartedAgentTask("task-sqlite-research"),
         createStartedAgentTask("task-sqlite-plan"),
         createStartedAgentTask("task-sqlite-round"),
+        createStartedAgentTask("task-sqlite-report"),
         createStartedAgentTask("task-sqlite-snapshot")
       ], [
         createCompletedAgentTask("task-sqlite-research", "succeeded", "sqlite research"),
         createCompletedAgentTask("task-sqlite-plan", "succeeded", "sqlite execution plan"),
         createCompletedAgentTask("task-sqlite-round", "succeeded", htmlArtifactOutput("sqlite round")),
+        createCompletedAgentTask("task-sqlite-report", "succeeded", releaseReportOutput("sqlite round")),
         createCompletedAgentTask("task-sqlite-snapshot", "succeeded", JSON.stringify({
           completedItems: ["SQLite round output completed."],
           keyDecisions: ["Complete the SQLite-backed run."],
@@ -3812,6 +3859,27 @@ function htmlArtifactOutput(label: string): Record<string, unknown> {
       kind: "html",
       content: `<!doctype html><html><body>${label}</body></html>`
     }]
+  };
+}
+
+function releaseReportOutput(label: string): Record<string, unknown> {
+  return {
+    contractVersion: 2,
+    humanReportMd: [
+      "## Summary",
+      "",
+      `${label} release report written by the manager.`,
+      "",
+      "## Delivery location",
+      "",
+      "None",
+      "",
+      "## Completed Work",
+      "",
+      `Builder delivered ${label}.`
+    ].join("\n"),
+    handoffJson: { releaseReport: label },
+    result: { status: "ready_for_confirmation", summary: label }
   };
 }
 

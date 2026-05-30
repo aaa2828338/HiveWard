@@ -208,7 +208,7 @@ export class IterationService {
       roundId: input.round.id,
       kind: "manager_release_report",
       title,
-      body: `${input.summary}\n\nArtifacts:\n${artifactRefs.map((ref) => `- ${ref.title}: ${ref.location}`).join("\n")}`,
+      body: input.summary,
       payloadRef: reportId,
       sourceRef: { type: "blueprint_run", id: input.run.id },
       requestedBy: {

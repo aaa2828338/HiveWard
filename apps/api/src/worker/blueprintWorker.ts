@@ -8,6 +8,8 @@ import {
   isManagerSlotInnerOutHandle,
   resolveCrossRoundContextMode,
   resolveManagerSlotExecutionMode,
+  type AgentHandoff,
+  type AgentHumanReport,
   type AgentNodeConfig,
   type AgentRuntimeId,
   type AgentTaskResult,
@@ -31,7 +33,7 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import { ApprovalService, type ApprovalActionResult, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -169,6 +171,7 @@ const agentOutputContractLines = [
   "- Write humanReportMd in the natural style needed by the task. Keep useful narrative, judgment, reasoning, recommendations, and caveats instead of only filling fixed fields.",
   "- Write humanReportMd in the user's working language. If the user request, blueprint title, agent label, or runContext is Chinese, write Simplified Chinese. Do not default to English for human-facing reports.",
   "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
+  "- humanReportMd must be literal human-readable Markdown, not a JSON-encoded string, not an escaped string, and not a dump of the output envelope. Do not include visible escape sequences such as \\n, \\t, or JSON braces unless the task itself is to show JSON.",
   "- humanReportMd must start with a visible summary section. For Chinese reports, use \"## \u6458\u8981\"; for English reports, use \"## Summary\". Write the summary yourself in plain human language, target 100-150 Chinese characters or similarly brief English, and do not describe internal program phases, raw workflow status, or generic process labels.",
   "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result while keeping humanReportMd readable.",
@@ -176,6 +179,7 @@ const agentOutputContractLines = [
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
   "- If you created a concrete deliverable file or preview, declare it in top-level artifacts[]. Do not hide deliverables inside humanReportMd, result, result.artifacts, or handoffJson.",
   "- Only top-level artifacts[] creates openable artifact records. The platform will not infer artifacts from humanReportMd, result, titles, timeline text, or delivery prose.",
+  "- A top-level artifacts[] item is a claim that this exact step produced a new publishable artifact. Do not put reviewed, consumed, inspected, or upstream files there.",
   "- result.artifacts and handoffJson.artifacts are only handoff metadata. They do not publish UI artifacts and they are not substitutes for top-level artifacts[].",
   "- Each top-level artifacts[] item must include kind, title, and exactly one source field. Use path for generated files, including HTML files written under input.agentWorkspace.artifactsPath. Use content/body only when you are not writing a file and are returning the artifact body inline. Use url only for kind link. The delivery-location section must point to the same concrete artifact, not just repeat a title.",
   "- For file-backed deliverables, especially kind \"html\", declare only artifacts[].path. Put prose descriptions, summaries, labels, QA notes, or review comments in humanReportMd or handoffJson, not in artifacts[].content/body.",
@@ -183,7 +187,11 @@ const agentOutputContractLines = [
   "- If you reference artifacts[0], artifacts[1], etc. in humanReportMd, those same entries must exist in artifacts[] in the same output envelope.",
   "- Writing an HTML file under input.agentWorkspace.artifactsPath is not enough to publish an HTML preview. To publish it, declare that file path in top-level artifacts[].path with kind \"html\".",
   "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath. Mention durable paths in delivery-location and use the same path in top-level artifacts[].path when the file is the deliverable.",
-  "- QA or reviewer agents must not redeclare upstream artifacts in top-level artifacts[] unless they are publishing a new complete artifact. Reference upstream artifacts in humanReportMd or handoffJson instead.",
+  "- No Agent or Manager may redeclare upstream, reviewed, consumed, or referenced artifacts in top-level artifacts[] unless this exact step produced a new complete artifact.",
+  "- If this step only inspects, validates, reviews, summarizes, compares, cites, or relies on another node's file, URL, preview, or artifact, top-level artifacts[] must be omitted or empty.",
+  "- For review/QA/acceptance/validation steps, a tested HTML file, preview URL, screenshot, or upstream artifact is a referenced object, not this step's deliverable. In that case the delivery-location section must be exactly \"\u65e0\" for Chinese or \"None\" for English.",
+  "- If an earlier role prompt asks a reviewer or QA agent to list a preview URL or file path, treat that as a request for a separate \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\" section and handoffJson.referencedArtifact(s), not as permission to fill top-level artifacts[] or delivery location.",
+  "- Do not copy upstream artifact paths, download URLs, or storage paths into top-level artifacts[].path/url. Only the node that created the file may publish it there.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -487,6 +495,7 @@ export class BlueprintWorker {
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
     await this.managerMailProjector.refresh(run.id);
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
@@ -623,6 +632,71 @@ export class BlueprintWorker {
     await this.prepareRoundPlan(blueprint, run, session, round, topManager, {
       humanFeedback: intent.humanFeedback
     });
+  }
+
+  private async persistManagerSnapshotAfterReleaseDecision(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    result: ApprovalActionResult
+  ): Promise<void> {
+    if (result.approvalRequest.kind !== "manager_release_report") return;
+    if (
+      result.decision.action !== "approve" &&
+      result.decision.action !== "auto_approve" &&
+      result.decision.action !== "complete"
+    ) {
+      return;
+    }
+    if (!result.approvalRequest.roundId) return;
+
+    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+    if (!topManager) return;
+    const rounds = await this.store.listIterationRounds({ runId: run.id });
+    const round = rounds.find((candidate) => candidate.id === result.approvalRequest.roundId);
+    if (!round || round.contextSnapshotId) return;
+    const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === round.sessionId);
+    if (!session) return;
+
+    const releaseReport = await this.releaseReportForApprovalRequest(run.id, result.approvalRequest);
+    const managerSummary = releaseReport
+      ? await this.buildManagerSnapshotDraft(
+        blueprint,
+        run,
+        session,
+        round,
+        topManager,
+        releaseReport,
+        result.decision.comment
+      )
+      : undefined;
+    const latestRound = (await this.store.listIterationRounds({ runId: run.id }))
+      .find((candidate) => candidate.id === round.id);
+    if (!latestRound || latestRound.contextSnapshotId) return;
+    const snapshot = await this.managerContextService.createSnapshotFromRoundResult({
+      run,
+      session,
+      round: latestRound,
+      releaseReport,
+      humanFeedback: result.decision.comment,
+      managerSummary
+    });
+    await this.store.upsertIterationRound({ ...latestRound, contextSnapshotId: snapshot.id });
+  }
+
+  private async releaseReportForApprovalRequest(
+    runId: string,
+    request: ApprovalRequest
+  ): Promise<ReleaseReport | undefined> {
+    const reports = await this.store.listReleaseReports(runId);
+    const byPayload = request.payloadRef
+      ? reports.find((report) => report.id === request.payloadRef)
+      : undefined;
+    if (byPayload) return byPayload;
+    const byApproval = reports.find((report) => report.approvalRequestId === request.id);
+    if (byApproval) return byApproval;
+    return request.roundId
+      ? reports.filter((report) => report.roundId === request.roundId).at(-1)
+      : undefined;
   }
 
   private async prepareRoundPlan(
@@ -1024,7 +1098,7 @@ export class BlueprintWorker {
       : mode === "preflight_judgment"
         ? "Semantically judge whether the draft round execution plan can proceed or needs another research pass. Put needsMoreResearch, reason, optional researchBrief, and optional hardBlocker inside result."
         : mode === "context_snapshot"
-          ? "Summarize this completed round for future manager memory. Return JSON with completedItems, rejectedOptions, keyDecisions, validatedFacts, openQuestions, activeRisks, assumptions, recommendedNextStep, summary, and optional freeform."
+          ? "This is the post-confirmation review deposition step for future manager memory. Summarize the confirmed release report plus any human feedback or requested additions into durable memory. Return one JSON object directly, not an AgentOutputEnvelope, with completedItems, rejectedOptions, keyDecisions, validatedFacts, openQuestions, activeRisks, assumptions, recommendedNextStep, summary, and optional freeform."
           : [
               "This is the mandatory system requirement/planning step for a self-iteration round. It must run after research even when existing requirements are already sufficient.",
               "Ordinary user-connected Manager slots are not substitutes for this system step. If no explicit system requirement agent is configured, you as Manager perform the step yourself.",
@@ -1035,11 +1109,29 @@ export class BlueprintWorker {
       config.instructions?.trim() || "You are a Hiveward manager preparing a self-iteration round.",
       "",
       modeInstruction,
-      ...agentOutputContractLines,
-      "For hard blockers, set result.hardBlocker: true and put the user-readable blocker explanation in humanReportMd.",
+      ...(mode === "context_snapshot" ? [
+        "Output must be valid JSON only. Do not include Markdown fences, prose before the JSON, or humanReportMd."
+      ] : agentOutputContractLines),
+      ...(mode === "context_snapshot" ? [] : [
+        "For hard blockers, set result.hardBlocker: true and put the user-readable blocker explanation in humanReportMd."
+      ]),
       "Use the provided runContext as structured input for this call only.",
       "Do not increment or invent roundNumber. Treat task input roundNumber and runContext round data as platform lifecycle state.",
       "Do not claim the round is complete. Do not dispatch worker slots from this preflight call."
+    ].join("\n");
+  }
+
+  private resolveManagerReleaseReportPrompt(config: ManagerNodeConfig): string {
+    return [
+      config.instructions?.trim() || "You are a Hiveward manager writing a self-iteration round release report.",
+      "",
+      "This is the base release report step for the current self-iteration round. It is one Manager run.",
+      "Write the report yourself from the provided structured facts. Do not mechanically concatenate each node report, do not dump every Agent output, and do not expose raw JSON/logs as the human report.",
+      "This report is before human confirmation. Do not include post-confirmation review deposition, future memory, or human feedback that is not present in the input.",
+      "The report should help a human decide whether to approve continuing, complete the run, or reply with changes. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
+      "The release report itself belongs in humanReportMd. Do not declare top-level artifacts[] unless this Manager run actually creates a separate new file.",
+      ...agentOutputContractLines,
+      "- Return an AgentOutputEnvelope JSON object. humanReportMd is the release report. result may contain concise status, summary, recommendation, and risk fields. handoffJson may contain compact structured facts for later confirmation and review deposition."
     ].join("\n");
   }
 
@@ -1479,8 +1571,12 @@ export class BlueprintWorker {
       const nodeRun = nodeRunsById.get(report.nodeRunId);
       return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
     });
-    const summary = this.selfIterationOrchestrator.buildReleaseSummary({
+    const summary = await this.writeSelfIterationReleaseReport({
       blueprint,
+      run,
+      round: executingRound,
+      managerNode: topManager,
+      roundNumber: executingRound.roundNumber,
       approvedPlan: approvedPlanRequest ? {
         title: approvedPlanRequest.title,
         revision: executingRound.approvedRequirementRevision ?? approvedPlanRequest.revision,
@@ -1494,26 +1590,12 @@ export class BlueprintWorker {
       agentReports: releaseAgentReports,
       agentHandoffs
     });
-    const published = await this.iterationService.publishExecutionResult({
+    await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
       summary,
       artifacts
     });
-    if (published) {
-      const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === published.round.sessionId);
-      if (session) {
-        const managerSummary = await this.buildManagerSnapshotDraft(blueprint, run, session, published.round, topManager, published.releaseReport);
-        const snapshot = await this.managerContextService.createSnapshotFromRoundResult({
-          run,
-          session,
-          round: published.round,
-          releaseReport: published.releaseReport,
-          managerSummary
-        });
-        await this.store.upsertIterationRound({ ...published.round, contextSnapshotId: snapshot.id });
-      }
-    }
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
       return "handled";
@@ -1527,19 +1609,98 @@ export class BlueprintWorker {
     return "handled";
   }
 
+  private async writeSelfIterationReleaseReport(input: {
+    blueprint: BlueprintDefinition;
+    run: BlueprintRun;
+    round: IterationRound;
+    managerNode: BlueprintNode;
+    roundNumber?: number;
+    approvedPlan?: { title: string; revision: number; body: string };
+    research?: { status?: string; summary?: string };
+    artifacts: Array<{ id: string; title?: string; kind: string; downloadUrl?: string; relativePath?: string; storagePath?: string }>;
+    agentReports: AgentHumanReport[];
+    agentHandoffs: AgentHandoff[];
+  }): Promise<string> {
+    const config = input.managerNode.config as ManagerNodeConfig;
+    const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
+    const taskInput = {
+      task: "self_iteration_release_report",
+      runId: input.run.id,
+      blueprintName: input.blueprint.name,
+      manager: this.buildManagerRoundMetadata(input.managerNode, input.round.roundNumber),
+      roundNumber: input.roundNumber ?? input.round.roundNumber,
+      approvedPlan: input.approvedPlan,
+      research: input.research,
+      artifacts: input.artifacts.map((artifact) => ({
+        id: artifact.id,
+        title: artifact.title,
+        kind: artifact.kind,
+        location: artifact.storagePath ?? artifact.downloadUrl ?? artifact.relativePath ?? artifact.id,
+        downloadUrl: artifact.downloadUrl,
+        storagePath: artifact.storagePath,
+        relativePath: artifact.relativePath
+      })),
+      agentReports: input.agentReports.map((report) => ({
+        nodeId: report.nodeId,
+        nodeLabel: report.nodeLabel,
+        title: report.title,
+        bodyMd: report.bodyMd
+      })),
+      agentHandoffs: input.agentHandoffs.map((handoff) => ({
+        nodeId: handoff.nodeId,
+        payload: handoff.payload
+      }))
+    };
+    let nodeRun = await this.createRunningNodeRun(input.blueprint, input.run, input.managerNode, taskInput);
+    const { result, runtimeRef } = await this.runAgentTask({
+      blueprintRunId: input.run.id,
+      nodeRunId: nodeRun.id,
+      source: resolveAgentRuntimeSource(runtimeId),
+      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      profileId: runtimeId === "hermes" ? config.profileId : undefined,
+      agentName: config.agentName?.trim() || defaultManagerAgentName,
+      prompt: this.resolveManagerReleaseReportPrompt(config),
+      modelId: config.modelId,
+      permissionProfile: config.permissionProfile,
+      runtimeAccessPolicy: config.runtimeAccessPolicy,
+      workingDirectory: config.workingDirectory,
+      timeoutMs: config.timeoutMs,
+      outputSchema: humanReportEnvelopeSchemaBase,
+      input: taskInput,
+      skillIds: config.skillIds,
+      tools: config.tools ?? []
+    }, async (startedRef) => {
+      nodeRun = await this.recordNodeRuntimeRef(nodeRun, startedRef);
+    });
+    if (result.status !== "succeeded") {
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.error ?? `Manager release report run ${result.status}.`);
+      throw new Error(result.error ?? `Manager release report run ${result.status}.`);
+    }
+    const humanReport = this.agentReportService.extractHumanReport(result.output);
+    if (!humanReport?.bodyMd) {
+      const error = "Manager release report run did not return humanReportMd.";
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, error);
+      throw new Error(error);
+    }
+    await this.completeNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.output, runtimeRef);
+    return humanReport.bodyMd;
+  }
+
   private async buildManagerSnapshotDraft(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     session: IterationSession,
     round: IterationRound,
     topManager: BlueprintNode,
-    releaseReport: ReleaseReport
+    releaseReport: ReleaseReport,
+    humanFeedback?: string
   ): Promise<ManagerSnapshotDraft | undefined> {
     const roundStartContext = await this.managerContextService.buildRoundStartContext({
       run,
       session,
       round,
-      managerNode: topManager
+      managerNode: topManager,
+      humanFeedback
     });
     const runContext = this.managerContextService.buildManagerInjectedContext(roundStartContext, {
       mode: "context_snapshot",
@@ -1565,6 +1726,7 @@ export class BlueprintWorker {
           blueprintName: blueprint.name,
           roundNumber: round.roundNumber,
           releaseReport,
+          humanFeedback,
           agentReports: agentReports.map((report) => ({
             nodeId: report.nodeId,
             nodeLabel: report.nodeLabel,
@@ -1583,7 +1745,7 @@ export class BlueprintWorker {
             "summary",
             "freeform"
           ],
-          instruction: "Create a durable cross-round manager memory snapshot. Fill required fields with concrete content and use freeform for task-specific context.",
+          instruction: "Create a durable cross-round manager memory snapshot after report confirmation. Treat releaseReport as the confirmed report and fold humanFeedback into the memory when present. Fill required fields with concrete content and use freeform for task-specific context.",
           runContext
         }
       );
@@ -1613,6 +1775,7 @@ export class BlueprintWorker {
       const result = await this.approvalService.autoResolve(request.id, "Auto-resolved by manager lifecycle policy.");
       changed = true;
       const lifecycle = await this.iterationService.handleApprovalResult(result);
+      await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
       await this.managerMailProjector.refresh(run.id);
 
       if (lifecycle.prepareNextRound) {
