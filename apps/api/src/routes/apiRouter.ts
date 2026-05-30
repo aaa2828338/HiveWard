@@ -81,6 +81,7 @@ import type {
   HivewardChatSession,
   StartBlueprintRunRequest,
   ApplyHivewardUpdateResponse,
+  ApplyHivewardUpdateRequest,
   ClaudeCodeModelConfig,
   ClaudeCodeModelPreset,
   ClaudeCodeModelConfigResponse,
@@ -301,9 +302,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post("/api/hiveward-update/apply", async (_req, res, next) => {
+  router.post("/api/hiveward-update/apply", async (req, res, next) => {
     try {
-      const result: ApplyHivewardUpdateResponse = await applyHivewardUpdate();
+      const body = (req.body ?? {}) as ApplyHivewardUpdateRequest;
+      const result: ApplyHivewardUpdateResponse = await applyHivewardUpdate({ force: body.force === true });
       res.json(result);
     } catch (error) {
       next(error);

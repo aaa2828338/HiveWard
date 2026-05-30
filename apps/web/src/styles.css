@@ -828,6 +828,18 @@ pre {
   font-size: var(--title-section-size);
 }
 
+.hiveward-update-head > .hiveward-update-actions {
+  min-width: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.hiveward-update-head > .hiveward-update-actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .openclaw-panel-state.update {
   color: var(--accent-strong);
 }
@@ -7258,6 +7270,15 @@ html[data-theme="light"] .openclaw-panel-metric.offline strong {
 
   .hiveward-update-head button {
     width: 100%;
+  }
+
+  .hiveward-update-head > .hiveward-update-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .hiveward-update-head > .hiveward-update-actions button {
+    width: auto;
   }
 
   .openclaw-panel-metrics {

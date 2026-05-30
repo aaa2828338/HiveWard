@@ -926,6 +926,15 @@ export function App() {
     });
   }, [withBusy]);
 
+  const forceHivewardUpdateAction = useCallback(() => {
+    if (!window.confirm(hivewardHomeUi.forceUpdateConfirm)) return;
+    void withBusy("forceApplyHivewardUpdate", async () => {
+      const result = await api.applyHivewardUpdate({ force: true });
+      setHivewardUpdateResult(result);
+      setHivewardUpdate(result.update);
+    });
+  }, [hivewardHomeUi.forceUpdateConfirm, withBusy]);
+
   const refreshHarnessStatus = useCallback(
     () =>
       withBusy("refreshHarnessStatus", async () => {
@@ -1509,9 +1518,10 @@ export function App() {
           update={hivewardUpdate}
           updateResult={hivewardUpdateResult}
           checking={hivewardUpdateChecking}
-          updating={busyAction === "applyHivewardUpdate"}
+          updating={busyAction === "applyHivewardUpdate" || busyAction === "forceApplyHivewardUpdate"}
           onCheckUpdate={checkHivewardUpdate}
           onApplyUpdate={applyHivewardUpdateAction}
+          onForceUpdate={forceHivewardUpdateAction}
         />
       );
     }
@@ -2056,7 +2066,8 @@ function HivewardHomePage({
   checking,
   updating,
   onCheckUpdate,
-  onApplyUpdate
+  onApplyUpdate,
+  onForceUpdate
 }: {
   ui: HivewardHomeCopy;
   language: Language;
@@ -2067,6 +2078,7 @@ function HivewardHomePage({
   updating: boolean;
   onCheckUpdate: () => void;
   onApplyUpdate: () => void;
+  onForceUpdate: () => void;
 }) {
   const updateAvailable = Boolean(update?.updateAvailable);
   const updateStatusLabel = update?.error
@@ -2084,6 +2096,9 @@ function HivewardHomePage({
       : ui.none;
   const sourceLabel = update?.source === "npm" ? "npm" : "GitHub";
   const canApply = Boolean(update?.updateAvailable && update.canApply && !updating);
+  const canForceApply = Boolean(
+    update?.updateAvailable && update.source === "git" && !update.canApply && update.canForceApply !== false && !updating
+  );
 
   return (
     <section className="hiveward-home-page" aria-label="Hiveward">
@@ -2113,10 +2128,18 @@ function HivewardHomePage({
             <span className={`openclaw-panel-state ${updateTone}`}>{updateStatusLabel}</span>
             <h3>{ui.updateTitle}</h3>
           </div>
-          <button type="button" onClick={onApplyUpdate} disabled={!canApply}>
-            <Download size={14} className={updating ? "spin" : undefined} />
-            {updating ? ui.updating : ui.applyUpdate}
-          </button>
+          <div className="hiveward-update-actions">
+            {canForceApply && (
+              <button type="button" className="danger-action" onClick={onForceUpdate} disabled={updating}>
+                <CircleAlert size={14} />
+                {ui.forceUpdate}
+              </button>
+            )}
+            <button type="button" onClick={onApplyUpdate} disabled={!canApply}>
+              <Download size={14} className={updating ? "spin" : undefined} />
+              {updating ? ui.updating : ui.applyUpdate}
+            </button>
+          </div>
         </div>
         <div className="openclaw-panel-metrics">
           <OpenClawPanelMetric label={ui.current} value={versionLabel} />
@@ -3287,6 +3310,8 @@ interface HivewardHomeCopy {
   checkUpdate: string;
   checking: string;
   applyUpdate: string;
+  forceUpdate: string;
+  forceUpdateConfirm: string;
   updating: string;
   updateApplied: string;
   updateSkipped: string;
@@ -3319,6 +3344,8 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
       checkUpdate: "检查更新",
       checking: "检查中",
       applyUpdate: "自动更新",
+      forceUpdate: "\u5f3a\u5236\u66f4\u65b0",
+      forceUpdateConfirm: "\u5f3a\u5236\u66f4\u65b0\u4f1a\u4e22\u5f03\u672c\u5730 checkout \u91cc\u672a\u63d0\u4ea4\u7684\u4ee3\u7801\u4fee\u6539\uff0c\u4f46\u4f1a\u5907\u4efd\u5e76\u6062\u590d HiveWard \u5e73\u53f0\u6570\u636e\u548c\u4ea7\u7269\u3002\u786e\u5b9a\u7ee7\u7eed\u5417\uff1f",
       updating: "更新中",
       updateApplied: "更新已执行，重启 HiveWard 后生效。",
       updateSkipped: "未执行更新。",
@@ -3399,6 +3426,8 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
     checkUpdate: "Check updates",
     checking: "Checking",
     applyUpdate: "Auto update",
+    forceUpdate: "Force update",
+    forceUpdateConfirm: "Force update will discard uncommitted checkout changes. HiveWard data and artifacts are backed up and restored. Continue?",
     updating: "Updating",
     updateApplied: "Update applied. Restart HiveWard to use the new version.",
     updateSkipped: "Update was not applied.",
