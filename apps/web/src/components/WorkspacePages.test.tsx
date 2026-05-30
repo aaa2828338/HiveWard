@@ -2,7 +2,26 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { BlueprintDefinition, BlueprintRunView } from "@hiveward/shared";
 import { messages } from "../lib/i18n";
-import { RunsPage } from "./WorkspacePages";
+import { CompanyDirectoryPage, RunsPage } from "./WorkspacePages";
+
+describe("CompanyDirectoryPage", () => {
+  it("renders the add-company action without the external Plus icon component", () => {
+    const html = renderToStaticMarkup(
+      <CompanyDirectoryPage
+        companies={[]}
+        language="en"
+        busy={false}
+        onEnterCompany={() => undefined}
+        onCreateCompany={async () => undefined}
+        onUpdateCompany={async () => undefined}
+        onDeleteCompany={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Add company");
+    expect(html).toContain("local-add-icon");
+  });
+});
 
 describe("RunsPage", () => {
   it("renders the run report board before raw trace details", () => {

@@ -15,7 +15,6 @@ import {
   MessageSquareText,
   PanelsTopLeft,
   Pencil,
-  Plus,
   RefreshCw,
   Search,
   Send,
@@ -76,6 +75,28 @@ type IdentitySpec = {
   initials: string;
   logoUrl?: string;
 };
+
+function AddIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      className="lucide lucide-plus local-add-icon"
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </svg>
+  );
+}
 
 const OPENAI_PRODUCT_ICON =
   "https://images.ctfassets.net/j22is2dtoxu1/intercom-img-d177d076c9a5453052925143/49d5d812b0a6fcc20a14faa8c629d9fb/icon-ios-1024_401x.png";
@@ -305,7 +326,7 @@ export function CompanyDirectoryPage({
           disabled={busy}
           onClick={createCompany}
         >
-          {busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+          {busy ? <Loader2 className="spin" size={16} /> : <AddIcon size={16} />}
           {copy.addCompany}
         </button>
       </div>
