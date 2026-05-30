@@ -2720,34 +2720,66 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("agent round execution plan");
   });
 
-  it("does not infer system research from user-connected research-like slots", async () => {
+  it("uses connected system requirement interface but does not infer system research from ordinary slots", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
-    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, researchAgent: true, requirementAgent: true });
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, requirementAgent: true });
     const manager = blueprint.nodes.find((node) => node.id === "top-manager");
-    const userResearchSlot = blueprint.nodes.find((node) => node.id === "research-slot");
-    const userResearchAgent = blueprint.nodes.find((node) => node.id === "research");
     const researchRequirementSlot = blueprint.nodes.find((node) => node.id === "requirement-slot");
     const researchRequirementAgent = blueprint.nodes.find((node) => node.id === "requirements");
-    if (!manager || !userResearchSlot || !userResearchAgent || userResearchAgent.type !== "agent" || !researchRequirementSlot || !researchRequirementAgent || researchRequirementAgent.type !== "agent") {
-      throw new Error("Expected manager, user research slot, and requirement agent.");
+    if (!manager || !researchRequirementSlot || !researchRequirementAgent || researchRequirementAgent.type !== "agent") {
+      throw new Error("Expected manager, research requirement slot, and agent.");
     }
     manager.config = {
       ...manager.config,
-      researchAgentNodeId: undefined
+      requirementAgentNodeId: undefined
     };
-    userResearchSlot.config = {
-      ...userResearchSlot.config,
-      label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Slot"
+    const userResearchSlot = {
+      id: "user-research-slot",
+      type: "manager_slot" as const,
+      position: { x: 300, y: -320 },
+      config: {
+        label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Slot",
+        managerNodeId: "top-manager",
+        slot: 4,
+        executionMode: "manual" as const
+      }
     };
-    userResearchAgent.config = {
-      ...userResearchAgent.config,
-      label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Agent",
-      agentName: "user-research",
-      prompt: "Run ordinary user-connected research."
+    const userResearchAgent = {
+      ...createAgentNode("user-research", "\u7528\u6237\u666e\u901a\u8c03\u7814 Agent", { x: 80, y: 560 }),
+      parentId: "user-research-slot"
     };
+    blueprint.nodes.push(userResearchSlot, userResearchAgent);
+    blueprint.edges.push(
+      {
+        id: "edge-top-manager-user-research-slot",
+        source: "top-manager",
+        sourceHandle: "manager-out-4",
+        target: "user-research-slot",
+        targetHandle: "manager-slot-in"
+      },
+      {
+        id: "edge-user-research-slot-top-manager",
+        source: "user-research-slot",
+        sourceHandle: "manager-slot-out",
+        target: "top-manager",
+        targetHandle: "manager-in-4"
+      },
+      {
+        id: "edge-user-research-slot-agent",
+        source: "user-research-slot",
+        sourceHandle: "manager-slot-inner-out",
+        target: "user-research"
+      },
+      {
+        id: "edge-user-research-agent-slot",
+        source: "user-research",
+        target: "user-research-slot",
+        targetHandle: "manager-slot-inner-in"
+      }
+    );
     researchRequirementSlot.config = {
       ...researchRequirementSlot.config,
       label: "\u8c03\u7814\u4e0e\u63d0\u9700 Slot"

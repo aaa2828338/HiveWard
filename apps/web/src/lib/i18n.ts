@@ -798,7 +798,7 @@ export const messages: Record<Language, Messages> = {
       provider: "提供方",
       relatedRun: "关联运行",
       requirementAgent: "提需 / Round plan agent",
-      requirementInterface: "提取接口",
+      requirementInterface: "提需接口",
       relatedBlueprint: "\u5173\u8054\u84dd\u56fe",
       researchAgent: "调研 agent",
       researchInterface: "调研接口",
