@@ -11489,6 +11489,16 @@ html[data-theme="light"] .architecture-role-metrics time {
   flex: 0 0 auto;
 }
 
+.node-detail-sidebar .node-title-editable,
+.node-detail-sidebar .node-title-input {
+  color: var(--accent);
+}
+
+html[data-theme="light"] .node-detail-sidebar .node-modal-header {
+  border-bottom-color: var(--line);
+  background: var(--paper-strong);
+}
+
 .node-detail-sidebar .node-modal-grid {
   flex: 1 1 auto;
   min-height: 0;
