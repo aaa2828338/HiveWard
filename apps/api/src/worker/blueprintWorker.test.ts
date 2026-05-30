@@ -1327,6 +1327,7 @@ describe("BlueprintWorker", () => {
     const firstApproval = await waitForNodeRun(store, run.id, "approval-a", (nodeRun) => nodeRun.status === "waiting_approval");
     const secondApproval = await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "waiting_approval");
     const waitingRun = await waitForRunStatus(store, run.id, "waiting_approval");
+    const secondApprovalExpectedOutput = secondApproval.runtimeRef?.sourceId === "task-approval-a" ? "A ready" : "B ready";
 
     await worker.approveRun(blueprint, waitingRun.run, secondApproval.id);
     await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "succeeded");
@@ -1334,7 +1335,8 @@ describe("BlueprintWorker", () => {
 
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === firstApproval.id)?.status).toBe("waiting_approval");
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.status).toBe("succeeded");
-    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.output).toBe("B ready");
+    expect(["task-approval-a", "task-approval-b"]).toContain(secondApproval.runtimeRef?.sourceId);
+    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.output).toBe(secondApprovalExpectedOutput);
   });
 
   it("passes SDK node configuration to the adapter and persists provider refs", async () => {
@@ -1554,7 +1556,7 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("failed");
     expect(managerRun?.status).toBe("failed");
     expect(managerRun?.error).toContain("roundNumber");
-    expect(managerRun?.error).toContain("current round 1 or next round 2");
+    expect(managerRun?.error).toContain("must equal current round 1");
     expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "worker")).toBe(false);
   });
 
@@ -2407,9 +2409,11 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-round-1-plan"),
       createStartedAgentTask("task-round-1"),
       createStartedAgentTask("task-round-1-snapshot"),
+      createStartedAgentTask("task-round-2-research"),
       createStartedAgentTask("task-round-2-plan"),
       createStartedAgentTask("task-round-2"),
       createStartedAgentTask("task-round-2-snapshot"),
+      createStartedAgentTask("task-round-3-research"),
       createStartedAgentTask("task-round-3-plan"),
       createStartedAgentTask("task-round-3"),
       createStartedAgentTask("task-round-3-snapshot")
@@ -2428,6 +2432,7 @@ describe("BlueprintWorker", () => {
         summary: "round 1 manager snapshot",
         freeform: "Round 1 freeform memory."
       })),
+      createCompletedAgentTask("task-round-2-research", "succeeded", "round 2 research summary from manager"),
       createCompletedAgentTask("task-round-2-plan", "succeeded", "round 2 execution plan from manager"),
       createCompletedAgentTask("task-round-2", "succeeded", htmlArtifactOutput("round 2")),
       createCompletedAgentTask("task-round-2-snapshot", "succeeded", JSON.stringify({
@@ -2441,6 +2446,7 @@ describe("BlueprintWorker", () => {
         summary: "round 2 manager snapshot",
         freeform: "Round 2 freeform memory."
       })),
+      createCompletedAgentTask("task-round-3-research", "succeeded", "round 3 research summary from manager"),
       createCompletedAgentTask("task-round-3-plan", "succeeded", "round 3 execution plan from manager"),
       createCompletedAgentTask("task-round-3", "succeeded", htmlArtifactOutput("round 3")),
       createCompletedAgentTask("task-round-3-snapshot", "succeeded", JSON.stringify({
@@ -2536,20 +2542,13 @@ describe("BlueprintWorker", () => {
     });
     expect(round2ResearchRun).toMatchObject({
       status: "succeeded",
-      output: expect.objectContaining({
-        result: expect.objectContaining({
-          status: "context_sufficient",
-          source: "previous_snapshot",
-          summary: "round 1 manager snapshot"
-        })
-      })
+      output: "round 2 research summary from manager"
     });
-    expect(round2ResearchReport?.bodyMd).toContain("Skipped additional research");
-    expect(round2ResearchReport?.bodyMd).toContain("round 1 manager snapshot");
+    expect(round2ResearchReport?.bodyMd).toContain("round 2 research summary from manager");
     expect(round2ResearchStartIndex).toBeGreaterThanOrEqual(0);
     expect(round2RequirementStartIndex).toBeGreaterThan(round2ResearchStartIndex);
     expect(requirement2?.body).toContain("Previous report:");
-    expect(requirement2?.body).toContain("round 1");
+    expect(requirement2?.body).toContain("round 2 research summary from manager");
     expect(requirement2?.body).not.toContain("Use the previous round outcome to define the next execution round.");
 
     const currentRun3 = await store.getBlueprintRun(run.id);
@@ -2584,7 +2583,7 @@ describe("BlueprintWorker", () => {
     const round3 = requirement3View.iterationRounds?.find((round) => round.roundNumber === 3);
     const requirement3 = requirement3View.approvalRequests?.find((request) => request.id === round3?.requirementRequestId);
 
-    expect(requirement3?.body).toContain("round 2");
+    expect(requirement3?.body).toContain("round 3 research summary from manager");
     expect(requirement3?.body).not.toContain("Use the previous round outcome to define the next execution round.");
 
     const currentRun5 = await store.getBlueprintRun(run.id);
@@ -2695,9 +2694,12 @@ describe("BlueprintWorker", () => {
     expect(view.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["research", "requirements"]);
     expect(adapter.calls[0]?.input).toMatchObject({
+      isFirstRound: true,
+      researchInstruction: expect.stringContaining("Every self-iteration round must trigger this system research step"),
       runContext: expect.objectContaining({ mode: "research_resolution" })
     });
     expect(adapter.calls[1]?.input).toMatchObject({
+      requirementInstruction: expect.stringContaining("Every self-iteration round must trigger this system requirement/planning step"),
       researchSummary: "agent research summary",
       runContext: expect.objectContaining({
         mode: "requirement_resolution",
@@ -2716,6 +2718,78 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("Research source: agent_generated");
     expect(request?.body).toContain("Plan source: agent_generated");
     expect(request?.body).toContain("agent round execution plan");
+  });
+
+  it("does not infer system research from user-connected research-like slots", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, researchAgent: true, requirementAgent: true });
+    const manager = blueprint.nodes.find((node) => node.id === "top-manager");
+    const userResearchSlot = blueprint.nodes.find((node) => node.id === "research-slot");
+    const userResearchAgent = blueprint.nodes.find((node) => node.id === "research");
+    const researchRequirementSlot = blueprint.nodes.find((node) => node.id === "requirement-slot");
+    const researchRequirementAgent = blueprint.nodes.find((node) => node.id === "requirements");
+    if (!manager || !userResearchSlot || !userResearchAgent || userResearchAgent.type !== "agent" || !researchRequirementSlot || !researchRequirementAgent || researchRequirementAgent.type !== "agent") {
+      throw new Error("Expected manager, user research slot, and requirement agent.");
+    }
+    manager.config = {
+      ...manager.config,
+      researchAgentNodeId: undefined
+    };
+    userResearchSlot.config = {
+      ...userResearchSlot.config,
+      label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Slot"
+    };
+    userResearchAgent.config = {
+      ...userResearchAgent.config,
+      label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Agent",
+      agentName: "user-research",
+      prompt: "Run ordinary user-connected research."
+    };
+    researchRequirementSlot.config = {
+      ...researchRequirementSlot.config,
+      label: "\u8c03\u7814\u4e0e\u63d0\u9700 Slot"
+    };
+    researchRequirementAgent.config = {
+      ...researchRequirementAgent.config,
+      label: "\u8c03\u7814\u4e0e\u63d0\u9700 Agent",
+      agentName: "research-requirements",
+      prompt: "Run first-round research and requirements."
+    };
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-research"),
+      createStartedAgentTask("task-research-requirement-plan")
+    ], [
+      createCompletedAgentTask("task-manager-research", "succeeded", "manager first-round research baseline"),
+      createCompletedAgentTask("task-research-requirement-plan", "succeeded", "first-round execution plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "research-requirements"]);
+    expect(adapter.calls[0]?.input).toMatchObject({
+      isFirstRound: true,
+      researchInstruction: expect.stringContaining("Absence of lastRound"),
+      runContext: expect.objectContaining({ mode: "research_resolution" })
+    });
+    expect(adapter.calls[1]?.input).toMatchObject({
+      requirementInstruction: expect.stringContaining("Every self-iteration round must trigger this system requirement/planning step"),
+      researchSummary: "manager first-round research baseline",
+      runContext: expect.objectContaining({
+        mode: "requirement_resolution",
+        research: expect.objectContaining({ status: "manager_fallback" })
+      })
+    });
+    expect(view?.iterationRounds?.[0]).toMatchObject({
+      researchStatus: "manager_fallback",
+      planSource: "agent_generated"
+    });
+    expect(view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan")?.body)
+      .toContain("first-round execution plan");
   });
 
   it("uses user-facing Chinese copy for Chinese round plan approvals", async () => {
@@ -2922,7 +2996,7 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-context-plan", "succeeded", "context plan"),
       createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"roundNumber\":1,\"nextSlot\":3,\"reason\":\"dispatch\"}"),
       createCompletedAgentTask("task-context-builder", "succeeded", "worker output"),
-      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":2,\"reason\":\"done\"}")
+      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":1,\"reason\":\"done\"}")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2938,6 +3012,7 @@ describe("BlueprintWorker", () => {
     );
     const managerDecisionCalls = adapter.calls.filter((call) => call.nodeRunId.includes("manager-decision"));
     const builderRuns = reportView.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder");
+    const managerRunInput = reportView.nodeRuns.find((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")?.input;
     const managerDecisionReports = reportView.agentHumanReports?.filter((report) => report.nodeRunId.includes("manager-decision")) ?? [];
     const managerDecisionTimeline = reportView.runTimeline?.filter((item) => item.payloadRef?.startsWith("agent-human-report-")) ?? [];
 
@@ -2955,6 +3030,10 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
     expect(managerDecisionCalls[0]?.prompt).toContain("QA or reviewer agents must not redeclare upstream artifacts");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Round lifecycle contract:");
+    expect(managerDecisionCalls[0]?.prompt).toContain("input.manager.roundNumber is platform lifecycle state");
+    expect(managerDecisionCalls[0]?.prompt).toContain("result.roundNumber must equal input.manager.roundNumber exactly");
+    expect(managerDecisionCalls[0]?.prompt).toContain("result.status=\"complete\" means current-round delegation is finished");
     expect(managerDecisionCalls[0]?.prompt).not.toContain("Do not include markdown");
     expect(managerDecisionCalls[0]?.outputSchema).toMatchObject({
       required: ["humanReportMd", "result"],
@@ -2976,6 +3055,10 @@ describe("BlueprintWorker", () => {
       manager: expect.objectContaining({
         roundNumber: 1
       }),
+      decisionContract: expect.objectContaining({
+        status: expect.stringContaining("not that the round is approved"),
+        roundNumber: expect.stringContaining("copy input.manager.roundNumber exactly")
+      }),
       runContext: expect.objectContaining({
         mode: "dispatch",
         research: expect.objectContaining({ status: "manager_fallback" }),
@@ -2986,6 +3069,16 @@ describe("BlueprintWorker", () => {
       })
     });
     expect(builderRuns).not.toHaveLength(0);
+    expect(managerRunInput).toMatchObject({
+      manager: expect.objectContaining({
+        roundNumber: 1
+      })
+    });
+    expect(builderRuns.every((nodeRun) =>
+      isRecord(nodeRun.input) &&
+      isRecord(nodeRun.input.manager) &&
+      nodeRun.input.manager.roundNumber === 1
+    )).toBe(true);
     expect(builderRuns.every((nodeRun) => !isRecord(nodeRun.input) || !("runContext" in nodeRun.input))).toBe(true);
     expect(managerDecisionReports).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -2998,7 +3091,7 @@ describe("BlueprintWorker", () => {
       expect.objectContaining({
         nodeId: "top-manager",
         nodeLabel: "Top Manager dispatch 2",
-        managerRoundNumber: 2,
+        managerRoundNumber: 1,
         bodyMd: "done",
         source: "fallback"
       })
@@ -3923,6 +4016,8 @@ function createSelfIterationBlueprint(config: {
           maxPreparationAttempts: config.maxPreparationAttempts ?? 1,
           autoApproveRequirements: config.autoApproveRequirements,
           autoApproveReleaseReports: config.autoApproveReleaseReports,
+          researchAgentNodeId: config.researchAgent ? "research" : undefined,
+          requirementAgentNodeId: config.requirementAgent ? "requirements" : undefined,
           instructions: "Coordinate self-iteration rounds."
         }
       },

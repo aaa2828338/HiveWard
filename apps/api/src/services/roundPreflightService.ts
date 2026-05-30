@@ -8,7 +8,7 @@ import type {
   IterationSession,
   ManagerNodeConfig
 } from "@hiveward/shared";
-import { isAgentBlueprintNode, isManagerSlotInnerOutHandle } from "@hiveward/shared";
+import { isAgentBlueprintNode } from "@hiveward/shared";
 import { ManagerContextService, type ManagerInjectedContext, type RoundStartContext } from "./managerContextService";
 
 export type RoundPreflightMode =
@@ -34,12 +34,6 @@ export interface RoundPreflightExecutors {
     mode: RoundPreflightMode;
     runContext: ManagerInjectedContext;
     taskInput: Record<string, unknown>;
-  }): Promise<RoundPreflightExecutionResult>;
-  recordContextSufficientResearch(input: {
-    runContext: ManagerInjectedContext;
-    taskInput: Record<string, unknown>;
-    summary: string;
-    source: "previous_snapshot" | "previous_release_report";
   }): Promise<RoundPreflightExecutionResult>;
 }
 
@@ -79,9 +73,6 @@ interface ParsedPreflightOutput {
   risks?: string[];
   assumptionBased?: boolean;
 }
-
-const selfIterationResearchSlot = 1;
-const selfIterationRequirementSlot = 2;
 
 class RoundPreflightBlockedError extends Error {
   constructor(
@@ -221,7 +212,7 @@ export class RoundPreflightService {
     const managerConfig = input.topManagerNode.config as ManagerNodeConfig;
     const preparationAttempt = input.preparationAttempt ?? 1;
     const maxPreparationAttempts = input.maxPreparationAttempts ?? normalizePreparationAttempts(managerConfig.maxPreparationAttempts);
-    const researchAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationResearchSlot);
+    const researchAgent = this.resolveConfiguredPreflightAgent(input.blueprint, managerConfig.researchAgentNodeId);
     const baseRunContext = this.managerContextService.buildManagerInjectedContext(input.context, {
       mode: "research_resolution",
       roundStatus: input.round.status
@@ -232,39 +223,28 @@ export class RoundPreflightService {
       manager: input.topManagerNode.config.label,
       instructions: managerConfig.instructions,
       roundNumber: input.round.roundNumber,
+      isFirstRound: input.round.roundNumber === 1,
       humanFeedback: input.humanFeedback,
       preparationAttempt,
       maxPreparationAttempts,
+      researchInstruction: input.round.roundNumber === 1
+        ? [
+            "Every self-iteration round must trigger this system research step before requirement planning. If no explicit system research agent is configured, the Manager must perform it.",
+            "This is round 1. Absence of lastRound, previous feedback, existing artifacts, or prior research is normal startup context, not a reason to stop.",
+            "Create the first-round research baseline from the blueprint goal and available sources.",
+            "Use external web/live research when the runtime allows it. If web search is unavailable, say so and use local repository/artifact inspection plus stable domain knowledge, but still produce concrete findings.",
+            "Do not report broad input as insufficient by itself. Narrow the goal into usable research facts, constraints, risks, acceptance criteria, and next execution inputs.",
+            "You may decide no additional research is needed only by returning an explicit research result with rationale; never silently skip this step."
+          ].join(" ")
+        : [
+            "Every self-iteration round must trigger this system research step before requirement planning. If no explicit system research agent is configured, the Manager must perform it.",
+            "Use the previous round context, user feedback, and current goal to refresh the research baseline.",
+            "Use external web/live research when facts may have changed or the task depends on current outside information.",
+            "If more information is needed, state the specific missing evidence and what source should be checked.",
+            "You may decide no additional research is needed only by returning an explicit research result with rationale; never silently skip this step."
+          ].join(" "),
       runContext: baseRunContext
     };
-    if (!input.forceResearch && input.context.previousSnapshot && !input.humanFeedback?.trim()) {
-      await input.executors.recordContextSufficientResearch({
-        runContext: baseRunContext,
-        taskInput,
-        summary: input.context.previousSnapshot.summary,
-        source: "previous_snapshot"
-      });
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousSnapshot.summary,
-        artifactIds: [],
-        source: "previous_snapshot"
-      };
-    }
-    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !researchAgent) {
-      await input.executors.recordContextSufficientResearch({
-        runContext: baseRunContext,
-        taskInput,
-        summary: input.context.previousReleaseReport.summary,
-        source: "previous_release_report"
-      });
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousReleaseReport.summary,
-        artifactIds: [],
-        source: "previous_release_report"
-      };
-    }
     if (researchAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
@@ -347,9 +327,15 @@ export class RoundPreflightService {
       roundNumber: input.round.roundNumber,
       preparationAttempt,
       maxPreparationAttempts,
+      requirementInstruction: [
+        "Every self-iteration round must trigger this system requirement/planning step after research.",
+        "If no explicit system requirement agent is configured, the Manager must perform it.",
+        "You may decide the current requirements are already sufficient only by returning an explicit plan result with rationale; never silently skip this step.",
+        "Always leave the next execution stage with a concrete objective, scope, constraints, acceptance criteria, and expected artifacts."
+      ].join(" "),
       runContext
     };
-    const requirementAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationRequirementSlot);
+    const requirementAgent = this.resolveConfiguredPreflightAgent(input.blueprint, managerConfig.requirementAgentNodeId);
     if (requirementAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
@@ -449,37 +435,15 @@ export class RoundPreflightService {
     };
   }
 
-  private resolvePreflightSlotAgent(
+  private resolveConfiguredPreflightAgent(
     blueprint: BlueprintDefinition,
-    managerNode: BlueprintNode,
-    slot: number
+    nodeId: string | undefined
   ): BlueprintNode & { type: "agent"; config: AgentNodeConfig } | undefined {
-    const target = this.resolveManagerSlotTarget(blueprint, managerNode, slot);
-    if (!target || target.disabled) return undefined;
-    if (isAgentBlueprintNode(target)) return target;
-    if (target.type !== "manager_slot") return undefined;
-
-    const childAgents = blueprint.nodes.filter(
-      (node): node is BlueprintNode & { type: "agent"; config: AgentNodeConfig } =>
-        node.parentId === target.id && !node.disabled && isAgentBlueprintNode(node)
-    );
-    if (childAgents.length === 0) return undefined;
-
-    const entryEdge = blueprint.edges.find(
-      (edge) => edge.source === target.id && isManagerSlotInnerOutHandle(edge.sourceHandle)
-    );
-    return childAgents.find((node) => node.id === entryEdge?.target) ?? childAgents[0];
-  }
-
-  private resolveManagerSlotTarget(
-    blueprint: BlueprintDefinition,
-    managerNode: BlueprintNode,
-    slot: number
-  ): BlueprintNode | undefined {
-    const edge = blueprint.edges.find(
-      (candidate) => candidate.source === managerNode.id && candidate.sourceHandle === `manager-out-${slot}`
-    );
-    return edge ? blueprint.nodes.find((node) => node.id === edge.target) : undefined;
+    const targetId = nodeId?.trim();
+    if (!targetId) return undefined;
+    const target = blueprint.nodes.find((node) => node.id === targetId);
+    if (!target || target.disabled || !isAgentBlueprintNode(target)) return undefined;
+    return target;
   }
 
   private blockedResult(
