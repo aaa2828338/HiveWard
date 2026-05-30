@@ -206,6 +206,7 @@ export interface HivewardStore {
   upsertNodeRun(nodeRun: BlueprintNodeRun): Promise<void>;
   listNodeRuns(blueprintRunId: string): Promise<BlueprintNodeRun[]>;
   appendEvent(event: BlueprintNodeEvent): Promise<void>;
+  getRunArchive(blueprintRunId: string): Promise<BlueprintRunArchive | undefined>;
   getRunView(blueprintRunId: string): Promise<BlueprintRunView | undefined>;
   getLatestRunViewForBlueprint(blueprintId: string): Promise<BlueprintRunView | undefined>;
   listRunSummaries(): Promise<BlueprintRunSummary[]>;

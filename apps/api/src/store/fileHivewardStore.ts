@@ -1124,6 +1124,16 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
+  async getRunArchive(blueprintRunId: string): Promise<BlueprintRunArchive | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const companyId = this.getCurrentCompanyId(index);
+      const run = index.runIndex.find((item) => item.id === blueprintRunId);
+      if (!run || !companyId || run.companyId !== companyId) return undefined;
+      return this.readRunArchiveUnlocked(blueprintRunId);
+    });
+  }
+
   async getLatestRunViewForBlueprint(blueprintId: string): Promise<BlueprintRunView | undefined> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();

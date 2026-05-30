@@ -33,7 +33,7 @@ class ScriptedAdapter implements RuntimeAdapter {
 
   constructor(
     private readonly startResults: StartedAgentTaskResult[],
-    private readonly completionResults: Array<AgentTaskResult | Error>
+    private readonly completionResults: Array<AgentTaskResult | Error | Promise<AgentTaskResult>>
   ) {}
 
   async listModels() {
@@ -95,13 +95,18 @@ class ScriptedAdapter implements RuntimeAdapter {
   async waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {
     this.waitCalls.push(input);
     const matchingIndex = this.completionResults.findIndex((candidate) =>
-      !(candidate instanceof Error) && candidate.taskId === input.taskId
+      !(candidate instanceof Error) &&
+      !(candidate instanceof Promise) &&
+      candidate.taskId === input.taskId
     );
     const result = matchingIndex >= 0
       ? this.completionResults.splice(matchingIndex, 1)[0]
       : this.completionResults.shift();
     if (!result) {
       throw new Error("No scripted agent completion result available.");
+    }
+    if (result instanceof Promise) {
+      return result;
     }
     if (result instanceof Error) {
       throw result;
@@ -685,6 +690,28 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd");
     expect(adapter.calls[0]?.prompt).toContain("AgentOutputEnvelope is a transport wrapper");
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd is your free-form human answer");
+    expect(adapter.calls[0]?.prompt).toContain("## 摘要");
+    expect(adapter.calls[0]?.prompt).toContain("100-150");
+    expect(adapter.calls[0]?.prompt).toContain("do not describe internal program phases");
+    expect(adapter.calls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
+    expect(adapter.calls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
+    expect(adapter.calls[0]?.prompt).toContain("complete single-file HTML");
+    expect(adapter.calls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
+    expect(adapter.calls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
+    expect(adapter.calls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
+    expect(adapter.calls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
+    expect(adapter.calls[0]?.outputSchema).toMatchObject({
+      properties: {
+        artifacts: {
+          items: {
+            properties: {
+              content: { description: expect.stringContaining("Inline artifact content") },
+              path: { description: expect.stringContaining("generated file") }
+            }
+          }
+        }
+      }
+    });
   });
 
   it("lets Agent approval replies revise output before approval sends the final answer", async () => {
@@ -1306,6 +1333,7 @@ describe("BlueprintWorker", () => {
     const firstApproval = await waitForNodeRun(store, run.id, "approval-a", (nodeRun) => nodeRun.status === "waiting_approval");
     const secondApproval = await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "waiting_approval");
     const waitingRun = await waitForRunStatus(store, run.id, "waiting_approval");
+    const secondApprovalExpectedOutput = secondApproval.runtimeRef?.sourceId === "task-approval-a" ? "A ready" : "B ready";
 
     await worker.approveRun(blueprint, waitingRun.run, secondApproval.id);
     await waitForNodeRun(store, run.id, "approval-b", (nodeRun) => nodeRun.status === "succeeded");
@@ -1313,7 +1341,8 @@ describe("BlueprintWorker", () => {
 
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === firstApproval.id)?.status).toBe("waiting_approval");
     expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.status).toBe("succeeded");
-    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.output).toBe("B ready");
+    expect(["task-approval-a", "task-approval-b"]).toContain(secondApproval.runtimeRef?.sourceId);
+    expect(latestView.nodeRuns.find((nodeRun) => nodeRun.id === secondApproval.id)?.output).toBe(secondApprovalExpectedOutput);
   });
 
   it("passes SDK node configuration to the adapter and persists provider refs", async () => {
@@ -1441,20 +1470,20 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-test-2"),
       createStartedAgentTask("task-manager-6")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with product requirements" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "start with product requirements" })),
       createCompletedAgentTask("task-product", "succeeded", "prd ready"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the draft from the product receipt" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "build the draft from the product receipt" })),
       createCompletedAgentTask("task-dev-1", "succeeded", "app draft"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "send the draft to QA" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "send the draft to QA" })),
       createCompletedAgentTask("task-test-1", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "QA receipt asks for a loading-state fix" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "QA receipt asks for a loading-state fix" })),
       createCompletedAgentTask("task-dev-2", "succeeded", "app fixed"),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "retest the fixed build" })),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "retest the fixed build" })),
       createCompletedAgentTask("task-test-2", "succeeded", {
         humanReportMd: "## QA report\n\n## Delivery location\n\n- No new deliverable produced in this step.",
         result: { status: "pass" }
       }),
-      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "complete", reason: "QA passed after the fix" }))
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "QA passed after the fix" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1478,6 +1507,63 @@ describe("BlueprintWorker", () => {
       "test",
       "manager"
     ]);
+  });
+
+  it("rejects manager decisions that jump beyond the current or next round", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          runtimeId: "openclaw",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            dispatchMode: "self_dispatch",
+            portCount: 1,
+            maxHandoffs: 3
+          }
+        },
+        createAgentNode("worker", "Worker", { x: 420, y: 180 })
+      ],
+      [
+        { id: "manager-worker", source: "manager", sourceHandle: "manager-out-1", target: "worker", condition: "success" },
+        { id: "worker-manager", source: "worker", target: "manager", targetHandle: "manager-in-1", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager"),
+      createStartedAgentTask("task-worker"),
+      createStartedAgentTask("task-manager-complete")
+    ], [
+      createCompletedAgentTask("task-manager", "succeeded", JSON.stringify({
+        status: "continue",
+        roundNumber: 5,
+        nextSlot: 1,
+        reason: "jump ahead"
+      })),
+      createCompletedAgentTask("task-worker", "succeeded", "worker output"),
+      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({
+        status: "complete",
+        roundNumber: 5,
+        reason: "done"
+      }))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const managerRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager");
+
+    expect(view?.run.status).toBe("failed");
+    expect(managerRun?.status).toBe("failed");
+    expect(managerRun?.error).toContain("roundNumber");
+    expect(managerRun?.error).toContain("must equal current round 1");
+    expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "worker")).toBe(false);
   });
 
   it("lets a manager route work to a nested manager", async () => {
@@ -1860,9 +1946,9 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-implementer"),
       createStartedAgentTask("task-manager-complete")
     ], [
-      createCompletedAgentTask("task-manager", "succeeded", "use the obvious first slot"),
+      createCompletedAgentTask("task-manager", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "use the obvious first slot" })),
       createCompletedAgentTask("task-implementer", "succeeded", "implementation done"),
-      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({ status: "complete", reason: "single slot done" }))
+      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "single slot done" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1962,7 +2048,7 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-manager-1", "succeeded", {
         humanReportMd: "## Dispatch\n\n## Delivery location\n\nNo new deliverable produced in this step.",
-        result: { status: "continue", nextSlot: 1, reason: "Need the worker receipt first." }
+        result: { status: "continue", roundNumber: 1, nextSlot: 1, reason: "Need the worker receipt first." }
       }),
       createCompletedAgentTask("task-worker", "succeeded", {
         humanReportMd: "## Worker report\n\n## Delivery location\n\nNo new deliverable produced in this step.",
@@ -1971,7 +2057,7 @@ describe("BlueprintWorker", () => {
       }),
       createCompletedAgentTask("task-manager-2", "succeeded", {
         humanReportMd: "## Complete\n\n## Delivery location\n\nNo new deliverable produced in this step.",
-        result: { status: "complete", reason: "Worker receipt is present." }
+        result: { status: "complete", roundNumber: 1, reason: "Worker receipt is present." }
       })
     ]);
     const worker = new BlueprintWorker(store, adapter);
@@ -2116,7 +2202,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-3"),
       createStartedAgentTask("task-manager-3")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with research" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "start with research" })),
       createCompletedAgentTask(
         "task-1",
         "succeeded",
@@ -2143,13 +2229,13 @@ describe("BlueprintWorker", () => {
           "Acceptance criteria: standalone HTML, no placeholders."
         ].join("\n")
       ),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the page" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "build the page" })),
       createCompletedAgentTask(
         "task-3",
         "succeeded",
         "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>"
       ),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "complete", reason: "HTML complete" }))
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "HTML complete" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2193,19 +2279,19 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-qa"),
       createStartedAgentTask("task-manager-5")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先收集新闻" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "先收集新闻" })),
       createCompletedAgentTask("task-news", "succeeded", "新闻简报：AI agent 正在进入企业运营。"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写制作说明" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 4, reason: "再写制作说明" })),
       createCompletedAgentTask("task-doc", "succeeded", "制作说明：需要 hero、新闻要点、source-index 和 risk-notes。"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "现在构建 HTML" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "现在构建 HTML" })),
       createCompletedAgentTask(
         "task-html",
         "succeeded",
         "<!doctype html><html><body><main><section id=\"source-index\"></section><section id=\"risk-notes\"></section></main></body></html>"
       ),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "最后 QA" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "最后 QA" })),
       createCompletedAgentTask("task-qa", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true })),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "complete", reason: "QA 已通过" }))
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "QA 已通过" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2264,25 +2350,25 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-qa-2"),
       createStartedAgentTask("task-manager-8")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先研究视频主题" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "先研究视频主题" })),
       createCompletedAgentTask("task-research", "succeeded", "研究：AI agent 与多 agent 工作流正在进入企业运营，需提示验证与治理风险。"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写脚本分镜" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 4, reason: "再写脚本分镜" })),
       createCompletedAgentTask("task-storyboard", "succeeded", "分镜：0-90 标题，90-210 三个趋势点，210-330 风险，330-450 行动建议。"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 5, reason: "补技术规划" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 5, reason: "补技术规划" })),
       createCompletedAgentTask("task-tech", "succeeded", "技术规划：Root.tsx 注册 AgentOpsBriefVideo，1920x1080，30fps，450 frames，使用 Sequence、AbsoluteFill、interpolate。"),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "开始构建 Remotion" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "开始构建 Remotion" })),
       createCompletedAgentTask("task-build-1", "succeeded", "<!doctype html><html><body>这是网页，不是 Remotion Composition。</body></html>"),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "严格 QA" })),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "严格 QA" })),
       createCompletedAgentTask(
         "task-qa-1",
         "succeeded",
         JSON.stringify({ status: "fail", returnToSlot: 1, reason: "产物是 HTML，不是 Remotion Composition", fixes: ["删除 HTML 输出", "提供 Root.tsx 和 Composition"] })
       ),
-      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "QA 未通过，回退到构建槽修复" })),
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "QA 未通过，回退到构建槽修复" })),
       createCompletedAgentTask("task-build-2", "succeeded", remotionBundle),
-      createCompletedAgentTask("task-manager-7", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "复审修复后的 Remotion 产物" })),
+      createCompletedAgentTask("task-manager-7", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "复审修复后的 Remotion 产物" })),
       createCompletedAgentTask("task-qa-2", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true, reason: "Remotion 产物已通过严格审查" })),
-      createCompletedAgentTask("task-manager-8", "succeeded", JSON.stringify({ status: "complete", reason: "Remotion QA 已通过" }))
+      createCompletedAgentTask("task-manager-8", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "Remotion QA 已通过" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2328,17 +2414,23 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-round-1-research"),
       createStartedAgentTask("task-round-1-plan"),
       createStartedAgentTask("task-round-1"),
+      createStartedAgentTask("task-round-1-report"),
       createStartedAgentTask("task-round-1-snapshot"),
+      createStartedAgentTask("task-round-2-research"),
       createStartedAgentTask("task-round-2-plan"),
       createStartedAgentTask("task-round-2"),
+      createStartedAgentTask("task-round-2-report"),
       createStartedAgentTask("task-round-2-snapshot"),
+      createStartedAgentTask("task-round-3-research"),
       createStartedAgentTask("task-round-3-plan"),
       createStartedAgentTask("task-round-3"),
+      createStartedAgentTask("task-round-3-report"),
       createStartedAgentTask("task-round-3-snapshot")
     ], [
       createCompletedAgentTask("task-round-1-research", "succeeded", "round 1 research summary"),
       createCompletedAgentTask("task-round-1-plan", "succeeded", "round 1 execution plan"),
       createCompletedAgentTask("task-round-1", "succeeded", htmlArtifactOutput("round 1")),
+      createCompletedAgentTask("task-round-1-report", "succeeded", releaseReportOutput("round 1")),
       createCompletedAgentTask("task-round-1-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 1 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 2."],
@@ -2350,8 +2442,10 @@ describe("BlueprintWorker", () => {
         summary: "round 1 manager snapshot",
         freeform: "Round 1 freeform memory."
       })),
+      createCompletedAgentTask("task-round-2-research", "succeeded", "round 2 research summary from manager"),
       createCompletedAgentTask("task-round-2-plan", "succeeded", "round 2 execution plan from manager"),
       createCompletedAgentTask("task-round-2", "succeeded", htmlArtifactOutput("round 2")),
+      createCompletedAgentTask("task-round-2-report", "succeeded", releaseReportOutput("round 2")),
       createCompletedAgentTask("task-round-2-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 2 delivered an HTML artifact."],
         keyDecisions: ["Continue to round 3."],
@@ -2363,8 +2457,10 @@ describe("BlueprintWorker", () => {
         summary: "round 2 manager snapshot",
         freeform: "Round 2 freeform memory."
       })),
+      createCompletedAgentTask("task-round-3-research", "succeeded", "round 3 research summary from manager"),
       createCompletedAgentTask("task-round-3-plan", "succeeded", "round 3 execution plan from manager"),
       createCompletedAgentTask("task-round-3", "succeeded", htmlArtifactOutput("round 3")),
+      createCompletedAgentTask("task-round-3-report", "succeeded", releaseReportOutput("round 3")),
       createCompletedAgentTask("task-round-3-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Round 3 delivered final HTML."],
         keyDecisions: ["Complete the run."],
@@ -2411,8 +2507,10 @@ describe("BlueprintWorker", () => {
     expect(report1).toMatchObject({
       capabilities: expect.objectContaining({ approve: true, complete: true })
     });
-    expect(report1?.body).toContain("Agent reports:");
+    expect(report1?.body).toContain("## Completed Work");
     expect(report1?.body).toContain("Builder");
+    expect(report1?.body).not.toContain("Agent reports:");
+    expect(report1?.body).not.toContain("### Builder");
     expect(report1View.agentHumanReports).toEqual(expect.arrayContaining([
       expect.objectContaining({
         nodeId: "builder",
@@ -2420,7 +2518,7 @@ describe("BlueprintWorker", () => {
       })
     ]));
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(1);
-    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(1);
+    expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
     expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(1);
     expect(report1View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(1);
     expect(report1View.artifacts?.find((artifact) => artifact.kind === "html")).toMatchObject({
@@ -2431,21 +2529,55 @@ describe("BlueprintWorker", () => {
 
     const currentRun2 = await store.getBlueprintRun(run.id);
     if (!currentRun2 || !report1) throw new Error("Expected first release report approval.");
-    await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "approve");
+    await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "approve", {
+      comment: "Carry keyboard controls into the next round."
+    });
 
     const requirement2View = await waitForRunView(store, run.id, (view) =>
       (view.iterationRounds ?? []).some((round) => round.roundNumber === 2 && round.status === "requirement_pending")
     );
     const round2 = requirement2View.iterationRounds?.find((round) => round.roundNumber === 2);
     const requirement2 = requirement2View.approvalRequests?.find((request) => request.id === round2?.requirementRequestId);
+    const round2ResearchRun = requirement2View.nodeRuns.find((nodeRun) =>
+      nodeRun.iterationRoundId === round2?.id &&
+      nodeRun.nodeId === "top-manager" &&
+      nodeRun.id.startsWith("preflight-research_resolution-")
+    );
+    const round2RequirementRun = requirement2View.nodeRuns.find((nodeRun) =>
+      nodeRun.iterationRoundId === round2?.id &&
+      nodeRun.nodeId === "top-manager" &&
+      nodeRun.id.startsWith("preflight-requirement_resolution-")
+    );
+    const round2ResearchReport = requirement2View.agentHumanReports?.find((report) => report.nodeRunId === round2ResearchRun?.id);
+    const round2ResearchStartIndex = requirement2View.runTimeline?.findIndex((item) => item.payloadRef === round2ResearchRun?.id && item.kind === "node_started") ?? -1;
+    const round2RequirementStartIndex = requirement2View.runTimeline?.findIndex((item) => item.payloadRef === round2RequirementRun?.id && item.kind === "node_started") ?? -1;
 
     expect(requirement2).toMatchObject({
       status: "pending",
       capabilities: expect.objectContaining({ approve: true, complete: false })
     });
+    expect(round2ResearchRun).toMatchObject({
+      status: "succeeded",
+      output: "round 2 research summary from manager"
+    });
+    expect(round2ResearchReport?.bodyMd).toContain("round 2 research summary from manager");
+    expect(round2ResearchStartIndex).toBeGreaterThanOrEqual(0);
+    expect(round2RequirementStartIndex).toBeGreaterThan(round2ResearchStartIndex);
     expect(requirement2?.body).toContain("Previous report:");
-    expect(requirement2?.body).toContain("round 1");
+    expect(requirement2?.body).toContain("Carry keyboard controls into the next round.");
+    expect(requirement2?.body).toContain("round 2 research summary from manager");
     expect(requirement2?.body).not.toContain("Use the previous round outcome to define the next execution round.");
+    const round1SnapshotCall = adapter.calls.find((call) =>
+      isRecord(call.input) &&
+      call.input.roundNumber === 1 &&
+      call.input.humanFeedback === "Carry keyboard controls into the next round." &&
+      isRecord(call.input.runContext) &&
+      call.input.runContext.mode === "context_snapshot"
+    );
+    expect(round1SnapshotCall?.input).toMatchObject({
+      humanFeedback: "Carry keyboard controls into the next round.",
+      runContext: expect.objectContaining({ mode: "context_snapshot" })
+    });
 
     const currentRun3 = await store.getBlueprintRun(run.id);
     if (!currentRun3 || !requirement2) throw new Error("Expected second requirement approval.");
@@ -2464,7 +2596,7 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: true, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(4);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(new Set(report2View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(2);
@@ -2479,7 +2611,7 @@ describe("BlueprintWorker", () => {
     const round3 = requirement3View.iterationRounds?.find((round) => round.roundNumber === 3);
     const requirement3 = requirement3View.approvalRequests?.find((request) => request.id === round3?.requirementRequestId);
 
-    expect(requirement3?.body).toContain("round 2");
+    expect(requirement3?.body).toContain("round 3 research summary from manager");
     expect(requirement3?.body).not.toContain("Use the previous round outcome to define the next execution round.");
 
     const currentRun5 = await store.getBlueprintRun(run.id);
@@ -2499,7 +2631,7 @@ describe("BlueprintWorker", () => {
       capabilities: expect.objectContaining({ approve: false, complete: true, terminate: false })
     });
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(3);
-    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(6);
     expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(3);
     expect(report3View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(3);
     expect(new Set(report3View.nodeRuns.map((nodeRun) => nodeRun.iterationRoundId).filter(Boolean)).size).toBe(3);
@@ -2523,7 +2655,7 @@ describe("BlueprintWorker", () => {
     expect(completed?.runTimeline?.map((item) => item.sequence)).toEqual(
       completed?.runTimeline?.map((item) => item.sequence).slice().sort((left, right) => left - right)
     );
-    expect(completed?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(3);
+    expect(completed?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(6);
     expect(completed?.managerContextSnapshots).toHaveLength(3);
     expect(completed?.managerContextSnapshots?.[0]).toMatchObject({
       completedItems: ["Round 1 delivered an HTML artifact."],
@@ -2590,9 +2722,12 @@ describe("BlueprintWorker", () => {
     expect(view.run.status).toBe("waiting_approval");
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["research", "requirements"]);
     expect(adapter.calls[0]?.input).toMatchObject({
+      isFirstRound: true,
+      researchInstruction: expect.stringContaining("Every self-iteration round must trigger this system research step"),
       runContext: expect.objectContaining({ mode: "research_resolution" })
     });
     expect(adapter.calls[1]?.input).toMatchObject({
+      requirementInstruction: expect.stringContaining("Every self-iteration round must trigger this system requirement/planning step"),
       researchSummary: "agent research summary",
       runContext: expect.objectContaining({
         mode: "requirement_resolution",
@@ -2611,6 +2746,147 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("Research source: agent_generated");
     expect(request?.body).toContain("Plan source: agent_generated");
     expect(request?.body).toContain("agent round execution plan");
+  });
+
+  it("uses connected system requirement interface but does not infer system research from ordinary slots", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, requirementAgent: true });
+    const manager = blueprint.nodes.find((node) => node.id === "top-manager");
+    const researchRequirementSlot = blueprint.nodes.find((node) => node.id === "requirement-slot");
+    const researchRequirementAgent = blueprint.nodes.find((node) => node.id === "requirements");
+    if (!manager || !researchRequirementSlot || !researchRequirementAgent || researchRequirementAgent.type !== "agent") {
+      throw new Error("Expected manager, research requirement slot, and agent.");
+    }
+    manager.config = {
+      ...manager.config,
+      requirementAgentNodeId: undefined
+    };
+    const userResearchSlot = {
+      id: "user-research-slot",
+      type: "manager_slot" as const,
+      position: { x: 300, y: -320 },
+      config: {
+        label: "\u7528\u6237\u666e\u901a\u8c03\u7814 Slot",
+        managerNodeId: "top-manager",
+        slot: 4,
+        executionMode: "manual" as const
+      }
+    };
+    const userResearchAgent = {
+      ...createAgentNode("user-research", "\u7528\u6237\u666e\u901a\u8c03\u7814 Agent", { x: 80, y: 560 }),
+      parentId: "user-research-slot"
+    };
+    blueprint.nodes.push(userResearchSlot, userResearchAgent);
+    blueprint.edges.push(
+      {
+        id: "edge-top-manager-user-research-slot",
+        source: "top-manager",
+        sourceHandle: "manager-out-4",
+        target: "user-research-slot",
+        targetHandle: "manager-slot-in"
+      },
+      {
+        id: "edge-user-research-slot-top-manager",
+        source: "user-research-slot",
+        sourceHandle: "manager-slot-out",
+        target: "top-manager",
+        targetHandle: "manager-in-4"
+      },
+      {
+        id: "edge-user-research-slot-agent",
+        source: "user-research-slot",
+        sourceHandle: "manager-slot-inner-out",
+        target: "user-research"
+      },
+      {
+        id: "edge-user-research-agent-slot",
+        source: "user-research",
+        target: "user-research-slot",
+        targetHandle: "manager-slot-inner-in"
+      }
+    );
+    researchRequirementSlot.config = {
+      ...researchRequirementSlot.config,
+      label: "\u8c03\u7814\u4e0e\u63d0\u9700 Slot"
+    };
+    researchRequirementAgent.config = {
+      ...researchRequirementAgent.config,
+      label: "\u8c03\u7814\u4e0e\u63d0\u9700 Agent",
+      agentName: "research-requirements",
+      prompt: "Run first-round research and requirements."
+    };
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager-research"),
+      createStartedAgentTask("task-research-requirement-plan")
+    ], [
+      createCompletedAgentTask("task-manager-research", "succeeded", "manager first-round research baseline"),
+      createCompletedAgentTask("task-research-requirement-plan", "succeeded", "first-round execution plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "research-requirements"]);
+    expect(adapter.calls[0]?.input).toMatchObject({
+      isFirstRound: true,
+      researchInstruction: expect.stringContaining("Absence of lastRound"),
+      runContext: expect.objectContaining({ mode: "research_resolution" })
+    });
+    expect(adapter.calls[1]?.input).toMatchObject({
+      requirementInstruction: expect.stringContaining("Every self-iteration round must trigger this system requirement/planning step"),
+      researchSummary: "manager first-round research baseline",
+      runContext: expect.objectContaining({
+        mode: "requirement_resolution",
+        research: expect.objectContaining({ status: "manager_fallback" })
+      })
+    });
+    expect(view?.iterationRounds?.[0]).toMatchObject({
+      researchStatus: "manager_fallback",
+      planSource: "agent_generated"
+    });
+    expect(view?.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan")?.body)
+      .toContain("first-round execution plan");
+  });
+
+  it("uses user-facing Chinese copy for Chinese round plan approvals", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    blueprint.name = "自分发测试";
+    const manager = blueprint.nodes.find((node) => node.id === "top-manager");
+    if (!manager || manager.type !== "manager") throw new Error("Expected top manager.");
+    manager.config = {
+      ...manager.config,
+      label: "自分发测试 Manager",
+      instructions: "先完成前期准备，再把执行计划交给用户确认。"
+    };
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-cn-research"),
+      createStartedAgentTask("task-cn-plan")
+    ], [
+      createCompletedAgentTask("task-cn-research", "succeeded", "当前输入足够，不需要额外调研。"),
+      createCompletedAgentTask("task-cn-plan", "succeeded", "制作一个单文件 HTML 测试页面，并在用户确认后交给页面制作 Agent。")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const request = view.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
+
+    expect(request?.title).toBe("第 1 轮执行计划");
+    expect(request?.body).toContain("前期准备工作已完成");
+    expect(request?.body).toContain("请确认本轮执行计划");
+    expect(request?.body).toContain("确认后会开始后续 Agent 工作");
+    expect(request?.body).toContain("## 调研摘要");
+    expect(request?.body).toContain("## 执行计划");
+    expect(request?.body).not.toContain("Research source:");
+    expect(request?.body).not.toContain("Plan source:");
   });
 
   it("blocks the round instead of falling back when a configured research agent fails", async () => {
@@ -2774,13 +3050,15 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-context-plan"),
       createStartedAgentTask("task-context-dispatch-1"),
       createStartedAgentTask("task-context-builder"),
-      createStartedAgentTask("task-context-dispatch-2")
+      createStartedAgentTask("task-context-dispatch-2"),
+      createStartedAgentTask("task-context-report")
     ], [
       createCompletedAgentTask("task-context-research", "succeeded", "context research"),
       createCompletedAgentTask("task-context-plan", "succeeded", "context plan"),
-      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"nextSlot\":3,\"reason\":\"dispatch\"}"),
+      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"roundNumber\":1,\"nextSlot\":3,\"reason\":\"dispatch\"}"),
       createCompletedAgentTask("task-context-builder", "succeeded", "worker output"),
-      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"reason\":\"done\"}")
+      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":1,\"reason\":\"done\"}"),
+      createCompletedAgentTask("task-context-report", "succeeded", releaseReportOutput("context"))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2796,6 +3074,7 @@ describe("BlueprintWorker", () => {
     );
     const managerDecisionCalls = adapter.calls.filter((call) => call.nodeRunId.includes("manager-decision"));
     const builderRuns = reportView.nodeRuns.filter((nodeRun) => nodeRun.nodeId === "builder");
+    const managerRunInput = reportView.nodeRuns.find((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")?.input;
     const managerDecisionReports = reportView.agentHumanReports?.filter((report) => report.nodeRunId.includes("manager-decision")) ?? [];
     const managerDecisionTimeline = reportView.runTimeline?.filter((item) => item.payloadRef?.startsWith("agent-human-report-")) ?? [];
 
@@ -2804,7 +3083,20 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("handoffJson");
     expect(managerDecisionCalls[0]?.prompt).toContain("Write humanReportMd in the user's working language");
     expect(managerDecisionCalls[0]?.prompt).toContain("All visible headings, labels, and prose inside humanReportMd");
+    expect(managerDecisionCalls[0]?.prompt).toContain("## 摘要");
+    expect(managerDecisionCalls[0]?.prompt).toContain("100-150");
+    expect(managerDecisionCalls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
+    expect(managerDecisionCalls[0]?.prompt).toContain("complete single-file HTML");
+    expect(managerDecisionCalls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
+    expect(managerDecisionCalls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
+    expect(managerDecisionCalls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Round lifecycle contract:");
+    expect(managerDecisionCalls[0]?.prompt).toContain("input.manager.roundNumber is platform lifecycle state");
+    expect(managerDecisionCalls[0]?.prompt).toContain("result.roundNumber must equal input.manager.roundNumber exactly");
+    expect(managerDecisionCalls[0]?.prompt).toContain("result.status=\"complete\" means current-round delegation is finished");
     expect(managerDecisionCalls[0]?.prompt).not.toContain("Do not include markdown");
     expect(managerDecisionCalls[0]?.outputSchema).toMatchObject({
       required: ["humanReportMd", "result"],
@@ -2812,9 +3104,10 @@ describe("BlueprintWorker", () => {
         humanReportMd: { type: "string" },
         result: {
           type: "object",
-          required: ["status", "reason"],
+          required: ["status", "reason", "roundNumber"],
           properties: expect.objectContaining({
             status: { type: "string" },
+            roundNumber: { type: "integer" },
             nextSlot: { type: "integer" },
             reason: { type: "string" }
           })
@@ -2822,6 +3115,13 @@ describe("BlueprintWorker", () => {
       }
     });
     expect(managerDecisionCalls[0]?.input).toMatchObject({
+      manager: expect.objectContaining({
+        roundNumber: 1
+      }),
+      decisionContract: expect.objectContaining({
+        status: expect.stringContaining("not that the round is approved"),
+        roundNumber: expect.stringContaining("copy input.manager.roundNumber exactly")
+      }),
       runContext: expect.objectContaining({
         mode: "dispatch",
         research: expect.objectContaining({ status: "manager_fallback" }),
@@ -2832,17 +3132,29 @@ describe("BlueprintWorker", () => {
       })
     });
     expect(builderRuns).not.toHaveLength(0);
+    expect(managerRunInput).toMatchObject({
+      manager: expect.objectContaining({
+        roundNumber: 1
+      })
+    });
+    expect(builderRuns.every((nodeRun) =>
+      isRecord(nodeRun.input) &&
+      isRecord(nodeRun.input.manager) &&
+      nodeRun.input.manager.roundNumber === 1
+    )).toBe(true);
     expect(builderRuns.every((nodeRun) => !isRecord(nodeRun.input) || !("runContext" in nodeRun.input))).toBe(true);
     expect(managerDecisionReports).toEqual(expect.arrayContaining([
       expect.objectContaining({
         nodeId: "top-manager",
         nodeLabel: "Top Manager dispatch 1",
+        managerRoundNumber: 1,
         bodyMd: "dispatch",
         source: "fallback"
       }),
       expect.objectContaining({
         nodeId: "top-manager",
         nodeLabel: "Top Manager dispatch 2",
+        managerRoundNumber: 1,
         bodyMd: "done",
         source: "fallback"
       })
@@ -2865,6 +3177,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-revised-research-2"),
       createStartedAgentTask("task-revised-plan-2"),
       createStartedAgentTask("task-revised-dispatch"),
+      createStartedAgentTask("task-revised-report"),
       createStartedAgentTask("task-revised-snapshot")
     ], [
       createCompletedAgentTask("task-revised-research-1", "succeeded", "initial revision research"),
@@ -2872,6 +3185,7 @@ describe("BlueprintWorker", () => {
       createCompletedAgentTask("task-revised-research-2", "succeeded", "updated revision research"),
       createCompletedAgentTask("task-revised-plan-2", "succeeded", "approved revised dispatch plan"),
       createCompletedAgentTask("task-revised-dispatch", "succeeded", "revised dispatch output"),
+      createCompletedAgentTask("task-revised-report", "succeeded", releaseReportOutput("revised dispatch")),
       createCompletedAgentTask("task-revised-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Revised plan executed."],
         keyDecisions: ["Use revised plan."],
@@ -2934,24 +3248,17 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-reject-research"),
       createStartedAgentTask("task-reject-plan"),
       createStartedAgentTask("task-rejected-round"),
-      createStartedAgentTask("task-rejected-snapshot"),
+      createStartedAgentTask("task-rejected-report"),
       createStartedAgentTask("task-fixed-round"),
+      createStartedAgentTask("task-fixed-report"),
       createStartedAgentTask("task-fixed-snapshot")
     ], [
       createCompletedAgentTask("task-reject-research", "succeeded", "reject test research"),
       createCompletedAgentTask("task-reject-plan", "succeeded", "reject test plan"),
       createCompletedAgentTask("task-rejected-round", "succeeded", htmlArtifactOutput("needs work")),
-      createCompletedAgentTask("task-rejected-snapshot", "succeeded", JSON.stringify({
-        completedItems: ["Rejected draft produced."],
-        keyDecisions: ["Fix the rejected artifact."],
-        validatedFacts: ["needs work artifact exists"],
-        openQuestions: [],
-        activeRisks: ["User rejected the output."],
-        assumptions: [],
-        recommendedNextStep: "execute",
-        summary: "rejected snapshot"
-      })),
+      createCompletedAgentTask("task-rejected-report", "succeeded", releaseReportOutput("needs work")),
       createCompletedAgentTask("task-fixed-round", "succeeded", htmlArtifactOutput("fixed")),
+      createCompletedAgentTask("task-fixed-report", "succeeded", releaseReportOutput("fixed")),
       createCompletedAgentTask("task-fixed-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Fixed draft produced."],
         keyDecisions: ["Complete after fix."],
@@ -2998,7 +3305,7 @@ describe("BlueprintWorker", () => {
       .at(-1);
 
     expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(4);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
     expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
     expect(report2View.releaseReports?.map((report) => report.version)).toEqual([1, 2]);
@@ -3006,7 +3313,12 @@ describe("BlueprintWorker", () => {
     expect(report2View.artifacts?.some((artifact) => artifact.status === "rejected")).toBe(true);
     expect(report2View.artifacts?.some((artifact) => artifact.status === "current")).toBe(true);
     const rerunManagerInput = report2View.nodeRuns
-      .filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")
+      .filter((nodeRun) =>
+        isRuntimeNodeRun(nodeRun) &&
+        nodeRun.nodeId === "top-manager" &&
+        isRecord(nodeRun.input) &&
+        isRecord(nodeRun.input.runContext)
+      )
       .at(-1)?.input;
     expect(rerunManagerInput).toMatchObject({
       runContext: expect.objectContaining({
@@ -3062,20 +3374,26 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager"]);
   });
 
-  it("creates a versioned release report approval after a release report reply", async () => {
+  it("treats a release report reply as next-round feedback instead of a report revision", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
 
     const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
     const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-report-reply-research"),
-      createStartedAgentTask("task-report-reply-plan"),
-      createStartedAgentTask("task-report-reply")
+      createStartedAgentTask("task-report-reply-research-1"),
+      createStartedAgentTask("task-report-reply-plan-1"),
+      createStartedAgentTask("task-report-reply-build-1"),
+      createStartedAgentTask("task-report-reply-release-1"),
+      createStartedAgentTask("task-report-reply-research-2"),
+      createStartedAgentTask("task-report-reply-plan-2")
     ], [
-      createCompletedAgentTask("task-report-reply-research", "succeeded", "report reply research"),
-      createCompletedAgentTask("task-report-reply-plan", "succeeded", "report reply plan"),
-      createCompletedAgentTask("task-report-reply", "succeeded", "<!doctype html><html><body>reply round</body></html>")
+      createCompletedAgentTask("task-report-reply-research-1", "succeeded", "round 1 research"),
+      createCompletedAgentTask("task-report-reply-plan-1", "succeeded", "round 1 plan"),
+      createCompletedAgentTask("task-report-reply-build-1", "succeeded", "<!doctype html><html><body>reply round</body></html>"),
+      createCompletedAgentTask("task-report-reply-release-1", "succeeded", releaseReportOutput("report reply")),
+      createCompletedAgentTask("task-report-reply-research-2", "succeeded", "round 2 research after report feedback"),
+      createCompletedAgentTask("task-report-reply-plan-2", "succeeded", "round 2 plan with clearer artifact notes")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3099,39 +3417,38 @@ describe("BlueprintWorker", () => {
 
     const replyView = await store.getRunView(run.id);
     const oldReportApproval = replyView?.approvalRequests?.find((request) => request.id === report1.id);
-    const revisedReportApproval = replyView?.approvalRequests
+    const pendingReportApproval = replyView?.approvalRequests
       ?.filter((request) => request.kind === "manager_release_report" && request.status === "pending")
       .at(-1);
+    const pendingRequirement = replyView?.approvalRequests
+      ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
+      .at(-1);
     const releaseReports = replyView?.releaseReports ?? [];
+    const sessions = await store.listIterationSessions(run.id);
 
     expect(oldReportApproval).toMatchObject({
       status: "replied",
-      supersededByRequestId: revisedReportApproval?.id
+      capabilities: expect.objectContaining({ approve: false, reply: false, complete: false })
     });
-    expect(revisedReportApproval).toMatchObject({
-      title: "Round 1 Release Report v2",
-      revision: 2,
-      replacesRequestId: report1.id,
-      capabilities: expect.objectContaining({ approve: false, complete: true })
+    expect(pendingReportApproval).toBeUndefined();
+    expect(pendingRequirement).toMatchObject({
+      title: "Round 2 Execution Plan",
+      revision: 1,
+      body: expect.stringContaining("Add clearer artifact notes."),
+      capabilities: expect.objectContaining({ approve: true, complete: false })
     });
-    expect(revisedReportApproval?.body).not.toContain("User reply:");
-    expect(releaseReports.map((report) => report.version)).toEqual([1, 2]);
-    expect(releaseReports[1]).toMatchObject({
-      title: "Round 1 Release Report v2",
-      supersedesReportId: releaseReports[0]?.id,
-      approvalRequestId: revisedReportApproval?.id
+    expect(pendingRequirement?.body).toContain("round 2 research after report feedback");
+    expect(releaseReports.map((report) => report.version)).toEqual([1]);
+    expect(sessions[0]).toMatchObject({
+      status: "running",
+      maxRounds: 2
     });
-
-    const currentRun3 = await store.getBlueprintRun(run.id);
-    if (!currentRun3 || !revisedReportApproval) throw new Error("Expected revised release report.");
-    await worker.applyApprovalRequest(blueprint, currentRun3, revisedReportApproval.id, "complete");
-    const completed = await waitForRunTerminal(store, run.id);
-    expect(completed?.run.status).toBe("succeeded");
-    expect(completed?.approvalDecisions?.map((decision) => decision.action)).toEqual([
-      "approve",
-      "reply",
-      "complete"
-    ]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager", "manager", "manager"]);
+    expect(adapter.calls.at(-1)?.input).toMatchObject({
+      roundNumber: 2
+    });
+    expect(replyView?.run.status).toBe("waiting_approval");
+    expect(replyView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["approve", "reply"]);
   });
 
   it("reruns the requirement agent when a requirement approval is replied to", async () => {
@@ -3186,6 +3503,72 @@ describe("BlueprintWorker", () => {
     });
   });
 
+  it("closes a requirement approval before rerunning preflight after a reply", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    let resolveRevisionResearch!: (result: AgentTaskResult) => void;
+    const revisionResearch = new Promise<AgentTaskResult>((resolve) => {
+      resolveRevisionResearch = resolve;
+    });
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, requirementAgent: true });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-close-research-1"),
+      createStartedAgentTask("task-close-requirements-1"),
+      createStartedAgentTask("task-close-research-2"),
+      createStartedAgentTask("task-close-requirements-2")
+    ], [
+      createCompletedAgentTask("task-close-research-1", "succeeded", "initial research summary"),
+      createCompletedAgentTask("task-close-requirements-1", "succeeded", "initial requirement plan"),
+      revisionResearch,
+      createCompletedAgentTask("task-close-requirements-2", "succeeded", "revised requirement plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
+    const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
+    if (!requirement1) throw new Error("Expected initial requirement approval.");
+
+    const replyPromise = worker.applyApprovalRequest(blueprint, run, requirement1.id, "reply", {
+      message: "Add keyboard controls before execution."
+    });
+
+    const closedView = await waitForRunView(store, run.id, (view) =>
+      view.approvalRequests?.some((request) => request.id === requirement1.id && request.status === "replied") ?? false
+    );
+    const closedRequirement = closedView.approvalRequests?.find((request) => request.id === requirement1.id);
+    expect(closedRequirement).toMatchObject({
+      status: "replied",
+      capabilities: expect.objectContaining({ approve: false, reply: false })
+    });
+    expect(closedView.approvalDecisions?.find((decision) => decision.approvalRequestId === requirement1.id)).toMatchObject({
+      action: "reply",
+      comment: "Add keyboard controls before execution."
+    });
+    await waitForRunView(store, run.id, () => adapter.calls.length >= 3);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements", "manager"]);
+
+    const currentRun = await store.getBlueprintRun(run.id);
+    if (!currentRun) throw new Error("Expected current run.");
+    await expect(worker.applyApprovalRequest(blueprint, currentRun, requirement1.id, "approve"))
+      .rejects.toThrow("Approval request is already closed.");
+
+    resolveRevisionResearch(createCompletedAgentTask("task-close-research-2", "succeeded", "revised research summary"));
+    await replyPromise;
+
+    const replyView = await store.getRunView(run.id);
+    const revisedRequirement = replyView?.approvalRequests
+      ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
+      .at(-1);
+    expect(revisedRequirement).toMatchObject({
+      revision: 2,
+      replacesRequestId: requirement1.id,
+      body: expect.stringContaining("revised requirement plan")
+    });
+  });
+
   it("auto-resolves self-iteration approvals while still recording requests and decisions", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -3200,6 +3583,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-auto-research"),
       createStartedAgentTask("task-auto-plan"),
       createStartedAgentTask("task-auto-round"),
+      createStartedAgentTask("task-auto-report"),
       createStartedAgentTask("task-auto-snapshot")
     ], [
       createCompletedAgentTask("task-auto-research", "succeeded", "auto research"),
@@ -3208,6 +3592,11 @@ describe("BlueprintWorker", () => {
         humanReportMd: "## Auto builder report\n\nReadable auto result.",
         handoffJson: { conclusion: "auto handoff conclusion" },
         result: "SECRET_RAW_OUTPUT"
+      }),
+      createCompletedAgentTask("task-auto-report", "succeeded", {
+        humanReportMd: "## Summary\n\nAuto builder report confirmed by manager.\n\n## Delivery location\n\nNone\n\n## Completed Work\n\nAuto builder report.\n\n## Handoff\n\nauto handoff conclusion",
+        handoffJson: { conclusion: "auto handoff conclusion" },
+        result: { status: "ready_for_confirmation" }
       }),
       createCompletedAgentTask("task-auto-snapshot", "succeeded", JSON.stringify({
         completedItems: ["Auto round output completed."],
@@ -3226,7 +3615,7 @@ describe("BlueprintWorker", () => {
     const completed = await waitForRunTerminal(store, run.id);
 
     expect(completed?.run.status).toBe("succeeded");
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager", "manager"]);
     expect(completed?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "top-manager")).toBe(true);
     expect(completed?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "slot-1")).toBe(true);
     expect(completed?.approvalRequests?.map((request) => request.kind)).toEqual([
@@ -3260,11 +3649,13 @@ describe("BlueprintWorker", () => {
         createStartedAgentTask("task-sqlite-research"),
         createStartedAgentTask("task-sqlite-plan"),
         createStartedAgentTask("task-sqlite-round"),
+        createStartedAgentTask("task-sqlite-report"),
         createStartedAgentTask("task-sqlite-snapshot")
       ], [
         createCompletedAgentTask("task-sqlite-research", "succeeded", "sqlite research"),
         createCompletedAgentTask("task-sqlite-plan", "succeeded", "sqlite execution plan"),
         createCompletedAgentTask("task-sqlite-round", "succeeded", htmlArtifactOutput("sqlite round")),
+        createCompletedAgentTask("task-sqlite-report", "succeeded", releaseReportOutput("sqlite round")),
         createCompletedAgentTask("task-sqlite-snapshot", "succeeded", JSON.stringify({
           completedItems: ["SQLite round output completed."],
           keyDecisions: ["Complete the SQLite-backed run."],
@@ -3534,6 +3925,27 @@ function htmlArtifactOutput(label: string): Record<string, unknown> {
   };
 }
 
+function releaseReportOutput(label: string): Record<string, unknown> {
+  return {
+    contractVersion: 2,
+    humanReportMd: [
+      "## Summary",
+      "",
+      `${label} release report written by the manager.`,
+      "",
+      "## Delivery location",
+      "",
+      "None",
+      "",
+      "## Completed Work",
+      "",
+      `Builder delivered ${label}.`
+    ].join("\n"),
+    handoffJson: { releaseReport: label },
+    result: { status: "ready_for_confirmation", summary: label }
+  };
+}
+
 function markdownArtifactOutput(markdown: string, title: string): Record<string, unknown> {
   return {
     contractVersion: 2,
@@ -3767,6 +4179,8 @@ function createSelfIterationBlueprint(config: {
           maxPreparationAttempts: config.maxPreparationAttempts ?? 1,
           autoApproveRequirements: config.autoApproveRequirements,
           autoApproveReleaseReports: config.autoApproveReleaseReports,
+          researchAgentNodeId: config.researchAgent ? "research" : undefined,
+          requirementAgentNodeId: config.requirementAgent ? "requirements" : undefined,
           instructions: "Coordinate self-iteration rounds."
         }
       },

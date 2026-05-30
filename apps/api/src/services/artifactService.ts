@@ -81,7 +81,9 @@ export class ArtifactService {
     createdAt: string,
     index: number
   ): Promise<Artifact> {
-    const artifactId = normalizeArtifactId(payload.id) ?? stableArtifactId(input.nodeRunId, payload.slot, index);
+    const artifactId = scopedArtifactId(input.nodeRunId, normalizeArtifactId(payload.id)) ??
+      stableArtifactId(input.nodeRunId, payload.slot, index);
+    assertArtifactSourceShape(payload);
     if (payload.kind === "link") {
       const url = typeof payload.url === "string" && payload.url.trim() ? payload.url.trim() : undefined;
       if (!url) throw new Error("Link artifact payload requires url.");
@@ -102,7 +104,7 @@ export class ArtifactService {
       };
     }
 
-    if (payload.kind === "file" && payload.path) {
+    if (payload.path) {
       return this.copyArtifactFile(
         {
           ...input,
@@ -116,6 +118,9 @@ export class ArtifactService {
     }
 
     const body = serializeArtifactBody(payload);
+    if (payload.kind === "html") {
+      assertCompleteHtmlDocument(body, payload);
+    }
     return this.writeArtifactBuffer(
       {
         ...input,
@@ -141,16 +146,22 @@ export class ArtifactService {
     payload: AgentArtifactPayload,
     createdAt: string
   ): Promise<Artifact> {
-    if (!payload.path) throw new Error("File artifact payload requires path or content.");
+    if (!payload.path) throw new Error("Artifact path payload requires path.");
     const sourcePath = await this.resolveArtifactSourcePath(payload.path);
     const bytes = await readFile(sourcePath);
-    return this.writeArtifactBuffer(input, bytes, createdAt, {
-      extension: extensionFromPath(sourcePath),
-      kind: "file",
-      format: payload.format ?? "application/octet-stream",
-      previewPolicy: payload.previewPolicy ?? "source",
-      trusted: payload.trusted ?? true
-    });
+    if (payload.kind === "html") {
+      assertCompleteHtmlDocument(bytes.toString("utf8"), payload);
+    }
+    const options = payload.kind === "file"
+      ? {
+          extension: extensionFromPath(sourcePath),
+          kind: "file" as const,
+          format: payload.format ?? "application/octet-stream",
+          previewPolicy: payload.previewPolicy ?? "source",
+          trusted: payload.trusted ?? true
+        }
+      : resolveArtifactWriteOptions(payload);
+    return this.writeArtifactBuffer(input, bytes, createdAt, options);
   }
 
   private async writeArtifactBuffer(
@@ -272,6 +283,13 @@ function normalizeArtifactId(value: string | undefined): string | undefined {
   return normalized || undefined;
 }
 
+function scopedArtifactId(nodeRunId: string | undefined, artifactId: string | undefined): string | undefined {
+  if (!artifactId) return undefined;
+  if (!nodeRunId) return artifactId;
+  if (artifactId.includes(nodeRunId)) return artifactId;
+  return normalizeArtifactId(`artifact-${nodeRunId}-${artifactId}`);
+}
+
 function normalizeArtifactPayload(value: unknown): AgentArtifactPayload[] {
   if (!isRecord(value)) return [];
   const kind = value.kind;
@@ -291,6 +309,22 @@ function normalizeArtifactPayload(value: unknown): AgentArtifactPayload[] {
   }];
 }
 
+function assertArtifactSourceShape(payload: AgentArtifactPayload): void {
+  const label = payload.title ?? payload.slot ?? payload.kind;
+  const hasContent = payload.content !== undefined || payload.body !== undefined;
+  const hasPath = Boolean(payload.path);
+  const hasUrl = Boolean(payload.url);
+  if (payload.kind === "link") {
+    if (hasContent || hasPath) {
+      throw new Error(`Artifact payload ${label} must declare exactly one artifact source: url for link artifacts.`);
+    }
+    return;
+  }
+  if (hasUrl || [hasContent, hasPath].filter(Boolean).length !== 1) {
+    throw new Error(`Artifact payload ${label} must declare exactly one artifact source: path or content/body.`);
+  }
+}
+
 function serializeArtifactBody(payload: AgentArtifactPayload): string {
   const body = payload.content ?? payload.body;
   if (payload.kind === "json") {
@@ -300,6 +334,17 @@ function serializeArtifactBody(payload: AgentArtifactPayload): string {
     throw new Error(`Artifact payload ${payload.title ?? payload.slot ?? payload.kind} requires content.`);
   }
   return typeof body === "string" ? body : JSON.stringify(body, null, 2);
+}
+
+function assertCompleteHtmlDocument(body: string, payload: AgentArtifactPayload): void {
+  if (isCompleteHtmlDocument(body)) return;
+  const label = payload.title ?? payload.slot ?? "html";
+  throw new Error(`HTML artifact payload ${label} requires a complete HTML document with <html>...</html>.`);
+}
+
+function isCompleteHtmlDocument(body: string): boolean {
+  const trimmed = body.trim();
+  return /<html(?:\s|>)/i.test(trimmed) && /<\/html>/i.test(trimmed);
 }
 
 function resolveArtifactWriteOptions(payload: AgentArtifactPayload): {

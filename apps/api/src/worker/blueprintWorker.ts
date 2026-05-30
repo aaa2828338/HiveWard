@@ -8,6 +8,8 @@ import {
   isManagerSlotInnerOutHandle,
   resolveCrossRoundContextMode,
   resolveManagerSlotExecutionMode,
+  type AgentHandoff,
+  type AgentHumanReport,
   type AgentNodeConfig,
   type AgentRuntimeId,
   type AgentTaskResult,
@@ -31,7 +33,7 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import { ApprovalService, type ApprovalActionResult, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -60,10 +62,11 @@ const managerReceiptPromptBudget = 6000;
 const reviewOutputSelectionId = "reviewOutput";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
-  "Choose which numbered slot should receive the next handoff by reading the upstream input, previousResults, and delegationRoster.",
+  "Route work inside the platform-provided Manager round by reading upstream input, previousResults, and delegationRoster.",
+  "The platform owns round lifecycle state. You do not create, approve, or advance rounds.",
   "If there is no better instruction, run connected slots in ascending order.",
-  "Return an AgentOutputEnvelope JSON object. Put the routing decision keys status, nextSlot, and reason inside result.",
-  "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" when the workflow is done."
+  "Return an AgentOutputEnvelope JSON object. Put status, roundNumber, nextSlot, and reason inside result; roundNumber must copy input.manager.roundNumber exactly.",
+  "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" only when current-round delegation is done."
 ].join("\n");
 const defaultSummaryHarnessPrompt = [
   "Perform a structured merge of the upstream node outputs.",
@@ -98,27 +101,29 @@ const agentArtifactPayloadSchema: Record<string, unknown> = {
   type: "array",
   items: {
     type: "object",
+    description: "Top-level published artifact declaration. Use only for a new artifact produced by this exact step. Review, QA, acceptance, validation, summary, or routing steps must not publish upstream artifacts here. Use exactly one source field: path for generated files, content/body for small inline artifacts, or url for links.",
     required: ["kind", "title"],
     properties: {
       id: { type: "string" },
       slot: { type: "string" },
       title: { type: "string" },
-      kind: { type: "string", enum: ["html", "markdown", "json", "file", "link"] },
+      kind: { type: "string", enum: ["html", "markdown", "json", "file", "link"], description: "Artifact type. For generated HTML files, use kind html with path pointing to the file." },
       format: { type: "string" },
       previewPolicy: { type: "string", enum: ["none", "source", "sandboxed_iframe"] },
       trusted: { type: "boolean" },
-      content: { type: "string" },
-      body: { type: "string" },
-      path: { type: "string" },
-      url: { type: "string" }
+      content: { type: "string", description: "Inline artifact content. Use only when there is no path or url. If you wrote a file, do not include content." },
+      body: { type: "string", description: "Alias for content. Inline artifact content only. If you wrote a file, do not include body." },
+      path: { type: "string", description: "Path to an actual generated file produced by this exact step and intended to publish, including generated HTML files. Do not use paths from upstream, previousResults, reviewed objects, or another agent's workspace. If path is present, do not include content or body for the same artifact." },
+      url: { type: "string", description: "Only for kind link. Do not use url for html, markdown, json, or file artifacts." }
     }
   }
 };
 const managerDecisionResultSchema: Record<string, unknown> = {
   type: "object",
-  required: ["status", "reason"],
+  required: ["status", "reason", "roundNumber"],
   properties: {
     status: { type: "string" },
+    roundNumber: { type: "integer" },
     nextSlot: { type: "integer" },
     routeToSlot: { type: "integer" },
     returnToSlot: { type: "integer" },
@@ -166,13 +171,30 @@ const agentOutputContractLines = [
   "- Write humanReportMd in the natural style needed by the task. Keep useful narrative, judgment, reasoning, recommendations, and caveats instead of only filling fixed fields.",
   "- Write humanReportMd in the user's working language. If the user request, blueprint title, agent label, or runContext is Chinese, write Simplified Chinese. Do not default to English for human-facing reports.",
   "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
-  "- humanReportMd must include a visible delivery-location section near the top. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\" and write \"\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002\" if this step created no new deliverable. For English reports, use \"## Delivery location\" and \"No new deliverable produced in this step.\"",
+  "- humanReportMd must be literal human-readable Markdown, not a JSON-encoded string, not an escaped string, and not a dump of the output envelope. Do not include visible escape sequences such as \\n, \\t, or JSON braces unless the task itself is to show JSON.",
+  "- humanReportMd must start with a visible summary section. For Chinese reports, use \"## \u6458\u8981\"; for English reports, use \"## Summary\". Write the summary yourself in plain human language, target 100-150 Chinese characters or similarly brief English, and do not describe internal program phases, raw workflow status, or generic process labels.",
+  "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result while keeping humanReportMd readable.",
   "- When the task schema allows it, include concise hard fields in result such as status, summary, artifacts, and handoff. Do not embed large file bodies there.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
-  "- If you created a concrete deliverable file or preview, declare it in artifacts[]. Do not hide deliverables inside humanReportMd or result.",
-  "- Each artifacts[] item must include kind (html, markdown, json, file, or link), title, and content/body for generated text artifacts, path for existing file artifacts, or url for link artifacts.",
-  "- If input.agentWorkspace is present, put durable files for this agent under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath.",
+  "- If you created a concrete deliverable file or preview, declare it in top-level artifacts[]. Do not hide deliverables inside humanReportMd, result, result.artifacts, or handoffJson.",
+  "- Only top-level artifacts[] creates openable artifact records. The platform will not infer artifacts from humanReportMd, result, titles, timeline text, or delivery prose.",
+  "- A top-level artifacts[] item is a claim that this exact step produced a new publishable artifact. Do not put reviewed, consumed, inspected, or upstream files there.",
+  "- result.artifacts and handoffJson.artifacts are only handoff metadata. They do not publish UI artifacts and they are not substitutes for top-level artifacts[].",
+  "- Each top-level artifacts[] item must include kind, title, and exactly one source field. Use path for generated files, including HTML files written under input.agentWorkspace.artifactsPath. Use content/body only when you are not writing a file and are returning the artifact body inline. Use url only for kind link. The delivery-location section must point to the same concrete artifact, not just repeat a title.",
+  "- For file-backed deliverables, especially kind \"html\", declare only artifacts[].path. Put prose descriptions, summaries, labels, QA notes, or review comments in humanReportMd or handoffJson, not in artifacts[].content/body.",
+  "- For kind \"html\", publish the actual complete single-file HTML document containing <html>...</html>. Prefer writing the file and declaring its path in top-level artifacts[].path. If you use content/body instead, it must contain the complete HTML because there is no file path for that artifact.",
+  "- If you reference artifacts[0], artifacts[1], etc. in humanReportMd, those same entries must exist in artifacts[] in the same output envelope.",
+  "- Writing an HTML file under input.agentWorkspace.artifactsPath is not enough to publish an HTML preview. To publish it, declare that file path in top-level artifacts[].path with kind \"html\".",
+  "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath. Mention durable paths in delivery-location and use the same path in top-level artifacts[].path when the file is the deliverable.",
+  "- No Agent or Manager may redeclare upstream, reviewed, consumed, or referenced artifacts in top-level artifacts[] unless this exact step produced a new complete artifact.",
+  "- If this step only inspects, validates, reviews, summarizes, compares, cites, or relies on another node's file, URL, preview, or artifact, top-level artifacts[] must be omitted or empty.",
+  "- For review/QA/acceptance/validation steps, a tested HTML file, preview URL, screenshot, or upstream artifact is a referenced object, not this step's deliverable. In that case the delivery-location section must be exactly \"\u65e0\" for Chinese or \"None\" for English.",
+  "- If an earlier role prompt asks a reviewer or QA agent to list a preview URL or file path, treat that as a request for a separate \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\" section and handoffJson.referencedArtifact(s), not as permission to fill top-level artifacts[] or delivery location.",
+  "- Do not copy upstream artifact paths, download URLs, or storage paths into top-level artifacts[].path/url. Only the node that created the file may publish it there.",
+  "- Before returning, audit every top-level artifacts[] item. If its path, url, content, or body came from input, upstream, previousResults, a review target, or another node/agent workspace, remove that item from artifacts[] and record it only as handoffJson.referencedArtifacts or a humanReportMd \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\".",
+  "- Do not use handoffJson.artifacts for reviewed or upstream objects. Use handoffJson.referencedArtifacts for those references so downstream nodes know they are not newly produced deliverables.",
+  "- Correct QA/review pattern: artifacts: []; delivery-location: \"\u65e0\"/\"None\"; referenced objects may be listed separately as references only.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -244,6 +266,7 @@ interface ManagerTraceItem {
 
 interface ManagerDecision {
   status: "continue" | "retry" | "complete";
+  roundNumber?: number;
   nextSlot?: number;
   reason?: string;
 }
@@ -286,6 +309,7 @@ interface ManagerSlotContext {
     nodeId: string;
     nodeLabel: string;
     instructions?: string;
+    roundNumber: number;
     slot: number;
     handoff: number;
     maxHandoffs: number;
@@ -456,9 +480,21 @@ export class BlueprintWorker {
       return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
     }
 
-    const requirementRevision = request.kind === "iteration_requirement_plan" && action === "reply"
-      ? await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "")
-      : undefined;
+    if (request.kind === "iteration_requirement_plan" && action === "reply") {
+      const replyResult = await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "");
+      await this.managerMailProjector.refresh(run.id);
+      const revisedRequirement = await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "");
+      if (revisedRequirement) {
+        await this.store.upsertApprovalRequest({
+          ...replyResult.approvalRequest,
+          supersededByRequestId: revisedRequirement.id
+        });
+      }
+      await this.managerMailProjector.refresh(run.id);
+      const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun);
+      if (autoAdvanced) return autoAdvanced.run;
+      return (await this.store.getBlueprintRun(currentRun.id)) ?? currentRun;
+    }
 
     let result;
     if (action === "approve") {
@@ -466,7 +502,9 @@ export class BlueprintWorker {
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "reply") {
-      result = await this.approvalService.reply(approvalRequestId, input.message ?? "", requirementRevision);
+      result = request.kind === "manager_release_report"
+        ? await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "")
+        : await this.approvalService.reply(approvalRequestId, input.message ?? "");
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
     } else {
@@ -474,6 +512,7 @@ export class BlueprintWorker {
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
     await this.managerMailProjector.refresh(run.id);
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
@@ -612,6 +651,71 @@ export class BlueprintWorker {
     });
   }
 
+  private async persistManagerSnapshotAfterReleaseDecision(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    result: ApprovalActionResult
+  ): Promise<void> {
+    if (result.approvalRequest.kind !== "manager_release_report") return;
+    if (
+      result.decision.action !== "approve" &&
+      result.decision.action !== "auto_approve" &&
+      result.decision.action !== "complete"
+    ) {
+      return;
+    }
+    if (!result.approvalRequest.roundId) return;
+
+    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+    if (!topManager) return;
+    const rounds = await this.store.listIterationRounds({ runId: run.id });
+    const round = rounds.find((candidate) => candidate.id === result.approvalRequest.roundId);
+    if (!round || round.contextSnapshotId) return;
+    const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === round.sessionId);
+    if (!session) return;
+
+    const releaseReport = await this.releaseReportForApprovalRequest(run.id, result.approvalRequest);
+    const managerSummary = releaseReport
+      ? await this.buildManagerSnapshotDraft(
+        blueprint,
+        run,
+        session,
+        round,
+        topManager,
+        releaseReport,
+        result.decision.comment
+      )
+      : undefined;
+    const latestRound = (await this.store.listIterationRounds({ runId: run.id }))
+      .find((candidate) => candidate.id === round.id);
+    if (!latestRound || latestRound.contextSnapshotId) return;
+    const snapshot = await this.managerContextService.createSnapshotFromRoundResult({
+      run,
+      session,
+      round: latestRound,
+      releaseReport,
+      humanFeedback: result.decision.comment,
+      managerSummary
+    });
+    await this.store.upsertIterationRound({ ...latestRound, contextSnapshotId: snapshot.id });
+  }
+
+  private async releaseReportForApprovalRequest(
+    runId: string,
+    request: ApprovalRequest
+  ): Promise<ReleaseReport | undefined> {
+    const reports = await this.store.listReleaseReports(runId);
+    const byPayload = request.payloadRef
+      ? reports.find((report) => report.id === request.payloadRef)
+      : undefined;
+    if (byPayload) return byPayload;
+    const byApproval = reports.find((report) => report.approvalRequestId === request.id);
+    if (byApproval) return byApproval;
+    return request.roundId
+      ? reports.filter((report) => report.roundId === request.roundId).at(-1)
+      : undefined;
+  }
+
   private async prepareRoundPlan(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
@@ -719,13 +823,13 @@ export class BlueprintWorker {
       }));
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
-      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
+      await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
-      await this.appendPreflightTaskFailed(run, node, mode, nodeRunId, error);
+      await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightOutput(blueprint, run, round, node, preflightNode, mode, result)
@@ -782,13 +886,13 @@ export class BlueprintWorker {
       }));
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
-      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
+      await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
-      await this.appendPreflightTaskFailed(run, topManager, mode, nodeRunId, error);
+      await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
       ? await this.publishPreflightOutput(blueprint, run, round, topManager, preflightNode, mode, result)
@@ -868,6 +972,7 @@ export class BlueprintWorker {
 
   private async appendPreflightTaskFailed(
     run: BlueprintRun,
+    round: IterationRound,
     node: BlueprintNode,
     mode: RoundPreflightMode,
     nodeRunId: string,
@@ -997,20 +1102,53 @@ export class BlueprintWorker {
     mode: RoundPreflightMode
   ): string {
     const modeInstruction = mode === "research_resolution"
-      ? "Resolve whether this round has enough information. Put facts, assumptions, risks, and hardBlocker in result when execution must stop."
+      ? [
+          "This is the mandatory system research step for a self-iteration round. It must run before requirement planning even when the answer is that no extra research is needed.",
+          "Ordinary user-connected Manager slots are not substitutes for this system step. If no explicit system research agent is configured, you as Manager perform the step yourself.",
+          "Perform the round research pass; do not treat this as a bare sufficiency check.",
+          "If input.roundNumber is 1, absence of previousResults, lastRound, existing artifacts, previous feedback, or prior research is normal startup context, not a blocker and not an excuse to stop.",
+          "For round 1, build the first research baseline from the blueprint goal and available sources. Use external web/live research when available; if it is unavailable, state that limitation and use local repository/artifact inspection plus stable domain knowledge.",
+          "Do not answer that the goal is too broad unless no useful baseline can be produced. Narrow broad goals into concrete facts, constraints, risks, acceptance criteria, and execution inputs.",
+          "You may decide no additional research is needed only by returning an explicit research result with rationale; never silently skip this step.",
+          "Put facts, assumptions, risks, research conclusions, and hardBlocker in result only when execution truly cannot continue."
+        ].join(" ")
       : mode === "preflight_judgment"
         ? "Semantically judge whether the draft round execution plan can proceed or needs another research pass. Put needsMoreResearch, reason, optional researchBrief, and optional hardBlocker inside result."
         : mode === "context_snapshot"
-          ? "Summarize this completed round for future manager memory. Return JSON with completedItems, rejectedOptions, keyDecisions, validatedFacts, openQuestions, activeRisks, assumptions, recommendedNextStep, summary, and optional freeform."
-          : "Generate a round execution plan. Put objective, scope, exclusions, basis, assumptions, risks, acceptance criteria, expected artifacts, and hardBlocker inside result when execution must stop.";
+          ? "This is the post-confirmation review deposition step for future manager memory. Summarize the confirmed release report plus any human feedback or requested additions into durable memory. Return one JSON object directly, not an AgentOutputEnvelope, with completedItems, rejectedOptions, keyDecisions, validatedFacts, openQuestions, activeRisks, assumptions, recommendedNextStep, summary, and optional freeform."
+          : [
+              "This is the mandatory system requirement/planning step for a self-iteration round. It must run after research even when existing requirements are already sufficient.",
+              "Ordinary user-connected Manager slots are not substitutes for this system step. If no explicit system requirement agent is configured, you as Manager perform the step yourself.",
+              "Generate a round execution plan. Put objective, scope, exclusions, basis, assumptions, risks, acceptance criteria, expected artifacts, and hardBlocker inside result when execution must stop.",
+              "You may decide the current requirements are already sufficient only by returning an explicit plan result with rationale; never silently skip this step."
+            ].join(" ");
     return [
       config.instructions?.trim() || "You are a Hiveward manager preparing a self-iteration round.",
       "",
       modeInstruction,
-      ...agentOutputContractLines,
-      "For hard blockers, set result.hardBlocker: true and put the user-readable blocker explanation in humanReportMd.",
+      ...(mode === "context_snapshot" ? [
+        "Output must be valid JSON only. Do not include Markdown fences, prose before the JSON, or humanReportMd."
+      ] : agentOutputContractLines),
+      ...(mode === "context_snapshot" ? [] : [
+        "For hard blockers, set result.hardBlocker: true and put the user-readable blocker explanation in humanReportMd."
+      ]),
       "Use the provided runContext as structured input for this call only.",
+      "Do not increment or invent roundNumber. Treat task input roundNumber and runContext round data as platform lifecycle state.",
       "Do not claim the round is complete. Do not dispatch worker slots from this preflight call."
+    ].join("\n");
+  }
+
+  private resolveManagerReleaseReportPrompt(config: ManagerNodeConfig): string {
+    return [
+      config.instructions?.trim() || "You are a Hiveward manager writing a self-iteration round release report.",
+      "",
+      "This is the base release report step for the current self-iteration round. It is one Manager run.",
+      "Write the report yourself from the provided structured facts. Do not mechanically concatenate each node report, do not dump every Agent output, and do not expose raw JSON/logs as the human report.",
+      "This report is before human confirmation. Do not include post-confirmation review deposition, future memory, or human feedback that is not present in the input.",
+      "The report should help a human decide whether to approve continuing, complete the run, or reply with changes. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
+      "The release report itself belongs in humanReportMd. Do not declare top-level artifacts[] unless this Manager run actually creates a separate new file.",
+      ...agentOutputContractLines,
+      "- Return an AgentOutputEnvelope JSON object. humanReportMd is the release report. result may contain concise status, summary, recommendation, and risk fields. handoffJson may contain compact structured facts for later confirmation and review deposition."
     ].join("\n");
   }
 
@@ -1019,7 +1157,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     request: ApprovalRequest,
     message: string
-  ): Promise<{ title: string; body: string; capabilities?: ApprovalRequest["capabilities"] } | undefined> {
+  ): Promise<ApprovalRequest | undefined> {
     const feedback = message.trim();
     if (!feedback) return undefined;
 
@@ -1044,21 +1182,22 @@ export class BlueprintWorker {
       revision,
       executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
     });
-    await this.store.upsertIterationRound({
-      ...round,
-      researchStatus: preflight.researchStatus,
-      researchSummary: preflight.researchSummary,
-      researchArtifactIds: preflight.researchArtifactIds,
-      planSource: "revised_from_reply"
-    });
-    const title = `Round ${round.roundNumber} Execution Plan v${revision}`;
-    return {
-      title,
+    return this.iterationService.requestRoundPlan({
+      session,
+      round,
+      managerNode: topManager,
       body: preflight.body,
-      capabilities: preflight.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false }
-        : undefined
-    };
+      revision,
+      threadId: request.threadId,
+      replacesRequestId: request.id,
+      closeReplacedRequest: false,
+      metadata: {
+        researchStatus: preflight.researchStatus,
+        researchSummary: preflight.researchSummary,
+        researchArtifactIds: preflight.researchArtifactIds,
+        planSource: "revised_from_reply"
+      }
+    });
   }
 
   async approveRun(
@@ -1450,8 +1589,12 @@ export class BlueprintWorker {
       const nodeRun = nodeRunsById.get(report.nodeRunId);
       return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
     });
-    const summary = this.selfIterationOrchestrator.buildReleaseSummary({
+    const summary = await this.writeSelfIterationReleaseReport({
       blueprint,
+      run,
+      round: executingRound,
+      managerNode: topManager,
+      roundNumber: executingRound.roundNumber,
       approvedPlan: approvedPlanRequest ? {
         title: approvedPlanRequest.title,
         revision: executingRound.approvedRequirementRevision ?? approvedPlanRequest.revision,
@@ -1465,26 +1608,12 @@ export class BlueprintWorker {
       agentReports: releaseAgentReports,
       agentHandoffs
     });
-    const published = await this.iterationService.publishExecutionResult({
+    await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
       summary,
       artifacts
     });
-    if (published) {
-      const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === published.round.sessionId);
-      if (session) {
-        const managerSummary = await this.buildManagerSnapshotDraft(blueprint, run, session, published.round, topManager, published.releaseReport);
-        const snapshot = await this.managerContextService.createSnapshotFromRoundResult({
-          run,
-          session,
-          round: published.round,
-          releaseReport: published.releaseReport,
-          managerSummary
-        });
-        await this.store.upsertIterationRound({ ...published.round, contextSnapshotId: snapshot.id });
-      }
-    }
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
       return "handled";
@@ -1498,19 +1627,98 @@ export class BlueprintWorker {
     return "handled";
   }
 
+  private async writeSelfIterationReleaseReport(input: {
+    blueprint: BlueprintDefinition;
+    run: BlueprintRun;
+    round: IterationRound;
+    managerNode: BlueprintNode;
+    roundNumber?: number;
+    approvedPlan?: { title: string; revision: number; body: string };
+    research?: { status?: string; summary?: string };
+    artifacts: Array<{ id: string; title?: string; kind: string; downloadUrl?: string; relativePath?: string; storagePath?: string }>;
+    agentReports: AgentHumanReport[];
+    agentHandoffs: AgentHandoff[];
+  }): Promise<string> {
+    const config = input.managerNode.config as ManagerNodeConfig;
+    const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
+    const taskInput = {
+      task: "self_iteration_release_report",
+      runId: input.run.id,
+      blueprintName: input.blueprint.name,
+      manager: this.buildManagerRoundMetadata(input.managerNode, input.round.roundNumber),
+      roundNumber: input.roundNumber ?? input.round.roundNumber,
+      approvedPlan: input.approvedPlan,
+      research: input.research,
+      artifacts: input.artifacts.map((artifact) => ({
+        id: artifact.id,
+        title: artifact.title,
+        kind: artifact.kind,
+        location: artifact.storagePath ?? artifact.downloadUrl ?? artifact.relativePath ?? artifact.id,
+        downloadUrl: artifact.downloadUrl,
+        storagePath: artifact.storagePath,
+        relativePath: artifact.relativePath
+      })),
+      agentReports: input.agentReports.map((report) => ({
+        nodeId: report.nodeId,
+        nodeLabel: report.nodeLabel,
+        title: report.title,
+        bodyMd: report.bodyMd
+      })),
+      agentHandoffs: input.agentHandoffs.map((handoff) => ({
+        nodeId: handoff.nodeId,
+        payload: handoff.payload
+      }))
+    };
+    let nodeRun = await this.createRunningNodeRun(input.blueprint, input.run, input.managerNode, taskInput);
+    const { result, runtimeRef } = await this.runAgentTask({
+      blueprintRunId: input.run.id,
+      nodeRunId: nodeRun.id,
+      source: resolveAgentRuntimeSource(runtimeId),
+      agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+      profileId: runtimeId === "hermes" ? config.profileId : undefined,
+      agentName: config.agentName?.trim() || defaultManagerAgentName,
+      prompt: this.resolveManagerReleaseReportPrompt(config),
+      modelId: config.modelId,
+      permissionProfile: config.permissionProfile,
+      runtimeAccessPolicy: config.runtimeAccessPolicy,
+      workingDirectory: config.workingDirectory,
+      timeoutMs: config.timeoutMs,
+      outputSchema: humanReportEnvelopeSchemaBase,
+      input: taskInput,
+      skillIds: config.skillIds,
+      tools: config.tools ?? []
+    }, async (startedRef) => {
+      nodeRun = await this.recordNodeRuntimeRef(nodeRun, startedRef);
+    });
+    if (result.status !== "succeeded") {
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.error ?? `Manager release report run ${result.status}.`);
+      throw new Error(result.error ?? `Manager release report run ${result.status}.`);
+    }
+    const humanReport = this.agentReportService.extractHumanReport(result.output);
+    if (!humanReport?.bodyMd) {
+      const error = "Manager release report run did not return humanReportMd.";
+      await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, error);
+      throw new Error(error);
+    }
+    await this.completeNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.output, runtimeRef);
+    return humanReport.bodyMd;
+  }
+
   private async buildManagerSnapshotDraft(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     session: IterationSession,
     round: IterationRound,
     topManager: BlueprintNode,
-    releaseReport: ReleaseReport
+    releaseReport: ReleaseReport,
+    humanFeedback?: string
   ): Promise<ManagerSnapshotDraft | undefined> {
     const roundStartContext = await this.managerContextService.buildRoundStartContext({
       run,
       session,
       round,
-      managerNode: topManager
+      managerNode: topManager,
+      humanFeedback
     });
     const runContext = this.managerContextService.buildManagerInjectedContext(roundStartContext, {
       mode: "context_snapshot",
@@ -1536,6 +1744,7 @@ export class BlueprintWorker {
           blueprintName: blueprint.name,
           roundNumber: round.roundNumber,
           releaseReport,
+          humanFeedback,
           agentReports: agentReports.map((report) => ({
             nodeId: report.nodeId,
             nodeLabel: report.nodeLabel,
@@ -1554,7 +1763,7 @@ export class BlueprintWorker {
             "summary",
             "freeform"
           ],
-          instruction: "Create a durable cross-round manager memory snapshot. Fill required fields with concrete content and use freeform for task-specific context.",
+          instruction: "Create a durable cross-round manager memory snapshot after report confirmation. Treat releaseReport as the confirmed report and fold humanFeedback into the memory when present. Fill required fields with concrete content and use freeform for task-specific context.",
           runContext
         }
       );
@@ -1584,6 +1793,7 @@ export class BlueprintWorker {
       const result = await this.approvalService.autoResolve(request.id, "Auto-resolved by manager lifecycle policy.");
       changed = true;
       const lifecycle = await this.iterationService.handleApprovalResult(result);
+      await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
       await this.managerMailProjector.refresh(run.id);
 
       if (lifecycle.prepareNextRound) {
@@ -1800,16 +2010,30 @@ export class BlueprintWorker {
     const portCount = normalizeInteger(config.portCount, 1, 8, 3);
     const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
     const dispatchRunContext = await this.buildDispatchRunContext(run, node);
+    const initialManagerRoundNumber = await this.resolveManagerRoundNumber(run.id, nodeRun);
     const nodeRunWithInput = nodeRun.input === undefined
       ? await this.recordNodeInput(nodeRun, {
+          manager: this.buildManagerRoundMetadata(node, initialManagerRoundNumber),
           upstream: await this.collectUpstreamOutputs(blueprint, run.id, node),
           ...(dispatchRunContext ? { runContext: dispatchRunContext } : {})
         })
+      : readManagerRoundNumberFromManagerContext(nodeRun.input) === undefined
+        ? await this.recordNodeInput(nodeRun, {
+            ...(isRecord(nodeRun.input) ? nodeRun.input : {}),
+            manager: this.buildManagerRoundMetadata(node, initialManagerRoundNumber),
+            upstream: isRecord(nodeRun.input) && Array.isArray(nodeRun.input.upstream)
+              ? nodeRun.input.upstream as UpstreamOutput
+              : await this.collectUpstreamOutputs(blueprint, run.id, node),
+            ...(isRecord(nodeRun.input) && "runContext" in nodeRun.input
+              ? { runContext: nodeRun.input.runContext }
+              : dispatchRunContext ? { runContext: dispatchRunContext } : {})
+          })
       : nodeRun;
     const managerUpstream = this.readUpstreamInput(nodeRunWithInput.input);
     const isAgentDriven = this.isAgentDrivenManager(node);
     const firstWorkSlot = this.firstManagerWorkSlot(node);
     const trace: ManagerTraceItem[] = [];
+    let managerRoundNumber = await this.resolveManagerRoundNumber(run.id, nodeRunWithInput);
     let slot = this.firstConnectedManagerSlot(blueprint, node, portCount, firstWorkSlot);
     let searchAfterIndex = nodeRuns.findIndex((candidate) => candidate.id === nodeRun.id);
     if (searchAfterIndex < 0) return false;
@@ -1817,6 +2041,7 @@ export class BlueprintWorker {
     if (!slot) {
       await this.completeNode(nodeRunWithInput, {
         status: "completed",
+        roundNumber: managerRoundNumber,
         reason: firstWorkSlot > 1 ? "manager_has_no_connected_work_slots" : "manager_has_no_connected_slots",
         trace
       });
@@ -1835,6 +2060,7 @@ export class BlueprintWorker {
             nodeId: node.id,
             nodeLabel: node.config.label,
             instructions: config.instructions,
+            roundNumber: managerRoundNumber,
             slot,
             handoff,
             maxHandoffs
@@ -1849,9 +2075,11 @@ export class BlueprintWorker {
           return true;
         }
         managerDecision = managerDecisionResult.decision;
+        managerRoundNumber = managerDecision.roundNumber ?? managerRoundNumber;
         if (managerDecision.status === "complete" || managerDecision.nextSlot === undefined) {
           await this.completeNode(nodeRunWithInput, {
             status: "completed",
+            roundNumber: managerRoundNumber,
             reason: managerDecision.reason ?? "manager_completed",
             trace
           });
@@ -1864,6 +2092,7 @@ export class BlueprintWorker {
       if (!assignment) {
         await this.completeNode(nodeRunWithInput, {
           status: "completed",
+          roundNumber: managerRoundNumber,
           reason: `manager_slot_${slot}_is_not_connected`,
           trace
         });
@@ -1887,6 +2116,7 @@ export class BlueprintWorker {
         if (slot > portCount || decision.status === "complete") {
           await this.completeNode(nodeRunWithInput, {
             status: "completed",
+            roundNumber: managerRoundNumber,
             reason: decision.reason ?? "manager_reached_final_slot",
             trace
           });
@@ -1902,6 +2132,7 @@ export class BlueprintWorker {
             nodeId: node.id,
             nodeLabel: node.config.label,
             instructions: config.instructions,
+            roundNumber: managerRoundNumber,
             slot,
             handoff,
             maxHandoffs
@@ -1915,6 +2146,7 @@ export class BlueprintWorker {
       }
 
       if (!this.isTerminalStatus(participant.nodeRun.status)) return false;
+      managerRoundNumber = readManagerRoundNumberFromManagerContext(participant.nodeRun.input) ?? managerRoundNumber;
 
       const result = this.nodeRunToAgentTaskResult(participant.nodeRun);
       const receipt = await this.buildManagerResultReceipt(blueprint, run.id, participant.nodeRun, result.output);
@@ -1953,6 +2185,7 @@ export class BlueprintWorker {
       if (decision.status === "complete" || !decision.nextSlot) {
         await this.completeNode(nodeRunWithInput, {
           status: "completed",
+          roundNumber: managerRoundNumber,
           reason: decision.reason ?? "manager_reached_final_connected_slot",
           trace
         });
@@ -2064,14 +2297,47 @@ export class BlueprintWorker {
         previousResults: context.previousResults,
         delegationRoster: this.buildManagerDelegationRoster(blueprint, node, portCount, minSlot),
         decisionContract: {
-          status: "continue | complete | retry",
-          nextSlot: "numbered slot to delegate next",
-          reason: "short explanation for the route"
+          status: "continue | complete | retry; complete means current-round delegation is done, not that the round is approved",
+          roundNumber: "copy input.manager.roundNumber exactly; do not infer, increment, or announce a next round",
+          nextSlot: "numbered slot to delegate next; required for continue or retry, omitted when complete",
+          reason: "short explanation for the route inside the current round"
         }
       },
       skillIds: config.skillIds,
       tools: config.tools ?? []
     });
+    if (result.status !== "succeeded") {
+      await this.publishManagerDecisionReport({
+        run,
+        node,
+        nodeRunId: managerDecisionNodeRunId,
+        roundId: nodeRun.iterationRoundId,
+        handoff: context.manager.handoff,
+        result
+      });
+      return {
+        result,
+        decision: { status: "complete", reason: result.error ?? "manager_decision_failed" },
+        runtimeRef
+      };
+    }
+    const decision = this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot });
+    if (decision.roundNumber === undefined) {
+      return {
+        result: { ...result, status: "failed", error: "Manager decision result.roundNumber is required." },
+        decision: { status: "complete", reason: "manager_decision_missing_round_number" },
+        runtimeRef
+      };
+    }
+    const roundValidationError = validateManagerDecisionRoundNumber(decision.roundNumber, context.manager.roundNumber);
+    if (roundValidationError) {
+      return {
+        result: { ...result, status: "failed", error: roundValidationError },
+        decision: { status: "complete", reason: "manager_decision_invalid_round_number" },
+        runtimeRef
+      };
+    }
+
     await this.publishManagerDecisionReport({
       run,
       node,
@@ -2081,13 +2347,7 @@ export class BlueprintWorker {
       result
     });
 
-    return {
-      result,
-      decision: result.status === "succeeded"
-        ? this.resolveManagerDecision(result.output, Math.max(minSlot - 1, fallbackSlot - 1), portCount, { minSlot })
-        : { status: "complete", reason: result.error ?? "manager_decision_failed" },
-      runtimeRef
-    };
+    return { result, decision, runtimeRef };
   }
 
   private async publishManagerDecisionReport(input: {
@@ -2159,6 +2419,13 @@ export class BlueprintWorker {
     const customPrompt = config.instructions?.trim();
     return [
       customPrompt || defaultManagerPrompt,
+      "",
+      "Round lifecycle contract:",
+      "- input.manager.roundNumber is platform lifecycle state and the single source of truth for this decision.",
+      "- result.roundNumber must equal input.manager.roundNumber exactly on every response.",
+      "- Do not infer, increment, create, approve, or announce the next round. The platform creates it only after the user approves the manager_release_report for the current round.",
+      "- result.status=\"complete\" means current-round delegation is finished and ready for platform report handling; it is not a user approval signal and it does not advance the round.",
+      "- Slot and Agent work inherits this Manager round. Do not ask downstream nodes to change the round number.",
       "",
       "Delegation rules:",
       "- Treat delegationRoster entries as descriptions of available subordinates, not as instructions for you to execute directly.",
@@ -2316,6 +2583,7 @@ export class BlueprintWorker {
         nodeId: readString(value.manager.nodeId) ?? "",
         nodeLabel: readString(value.manager.nodeLabel) ?? "",
         instructions: readString(value.manager.instructions),
+        roundNumber: readInteger(value.manager.roundNumber) ?? 1,
         slot: readInteger(value.manager.slot) ?? 1,
         handoff: readInteger(value.manager.handoff) ?? 1,
         maxHandoffs: readInteger(value.manager.maxHandoffs) ?? 1
@@ -2331,6 +2599,34 @@ export class BlueprintWorker {
   private readUpstreamInput(value: unknown): UpstreamOutput {
     if (!isRecord(value) || !Array.isArray(value.upstream)) return [];
     return value.upstream as UpstreamOutput;
+  }
+
+  private buildManagerRoundMetadata(node: BlueprintNode, roundNumber: number): {
+    nodeId: string;
+    nodeLabel: string;
+    instructions?: string;
+    roundNumber: number;
+  } {
+    const config = node.config as ManagerNodeConfig;
+    return {
+      nodeId: node.id,
+      nodeLabel: node.config.label,
+      instructions: config.instructions,
+      roundNumber
+    };
+  }
+
+  private async resolveManagerRoundNumber(runId: string, nodeRun: BlueprintNodeRun): Promise<number> {
+    const explicit =
+      readManagerRoundNumberFromManagerContext(nodeRun.input) ??
+      readManagerRoundNumberFromDecisionOutput(nodeRun.output);
+    if (explicit !== undefined) return explicit;
+    if (nodeRun.iterationRoundId) {
+      const round = (await this.store.listIterationRounds({ runId }))
+        .find((candidate) => candidate.id === nodeRun.iterationRoundId);
+      if (round) return round.roundNumber;
+    }
+    return 1;
   }
 
   private findFirstNodeRunAfter(
@@ -2622,7 +2918,9 @@ export class BlueprintWorker {
     const maxHandoffs = normalizeInteger(config.maxHandoffs, 1, 50, 12);
     const managerUpstream = upstream ?? await this.collectUpstreamOutputs(blueprint, run.id, node);
     const dispatchRunContext = await this.buildDispatchRunContext(run, node);
+    let managerRoundNumber = await this.resolveManagerRoundNumber(run.id, nodeRun);
     const nodeRunWithInput = await this.recordNodeInput(nodeRun, {
+      manager: this.buildManagerRoundMetadata(node, managerRoundNumber),
       upstream: managerUpstream,
       ...(dispatchRunContext ? { runContext: dispatchRunContext } : {})
     });
@@ -2634,6 +2932,7 @@ export class BlueprintWorker {
     if (!slot) {
       const output = {
         status: "completed",
+        roundNumber: managerRoundNumber,
         reason: firstWorkSlot > 1 ? "manager_has_no_connected_work_slots" : "manager_has_no_connected_slots",
         trace
       };
@@ -2647,6 +2946,7 @@ export class BlueprintWorker {
           nodeId: node.id,
           nodeLabel: node.config.label,
           instructions: config.instructions,
+          roundNumber: managerRoundNumber,
           slot,
           handoff,
           maxHandoffs
@@ -2664,10 +2964,13 @@ export class BlueprintWorker {
         }
 
         managerDecision = managerDecisionResult.decision;
+        managerRoundNumber = managerDecision.roundNumber ?? managerRoundNumber;
+        managerContext.manager.roundNumber = managerRoundNumber;
         managerContext.managerDecision = managerDecision;
         if (managerDecision.status === "complete" || managerDecision.nextSlot === undefined) {
           const output = {
             status: "completed",
+            roundNumber: managerRoundNumber,
             reason: managerDecision.reason ?? "manager_completed",
             trace
           };
@@ -2681,6 +2984,7 @@ export class BlueprintWorker {
       if (!assignment) {
         const output = {
           status: "completed",
+          roundNumber: managerRoundNumber,
           reason: `manager_slot_${slot}_is_not_connected`,
           trace
         };
@@ -2704,6 +3008,7 @@ export class BlueprintWorker {
         if (slot > portCount) {
           const output = {
             status: "completed",
+            roundNumber: managerRoundNumber,
             reason: "manager_reached_final_slot",
             trace
           };
@@ -2783,6 +3088,7 @@ export class BlueprintWorker {
       if (decision.status === "complete" || !decision.nextSlot) {
         const output = {
           status: "completed",
+          roundNumber: managerRoundNumber,
           reason: decision.reason ?? "manager_reached_final_connected_slot",
           trace
         };
@@ -2859,7 +3165,8 @@ export class BlueprintWorker {
               blueprint,
               run,
               node,
-              await this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput)
+              await this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput),
+              context
             )
           )
         );
@@ -2886,9 +3193,17 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
-    upstream: UpstreamOutput
+    upstream: UpstreamOutput,
+    managerContext?: ManagerSlotContext
   ): Promise<void> {
-    const input = { upstream };
+    const input = managerContext
+      ? {
+          manager: managerContext.manager,
+          upstream,
+          previousResults: managerContext.previousResults,
+          ...(managerContext.managerDecision ? { managerDecision: managerContext.managerDecision } : {})
+        }
+      : { upstream };
     const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
     if (isAgentBlueprintNode(node)) {
       await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
@@ -3599,6 +3914,7 @@ export class BlueprintWorker {
       readInteger(record?.targetSlot);
     const status = readString(record?.status)?.toLowerCase();
     const reason = readString(record?.reason) ?? readString(record?.message) ?? "manager_decision_missing_reason";
+    const roundNumber = readManagerRoundNumberFromDecisionRecord(record);
 
     if (
       !options.ignoreCompletionStatus &&
@@ -3606,17 +3922,18 @@ export class BlueprintWorker {
       ["complete", "completed", "done", "stop", "passed", "pass", "approved"].includes(status) &&
       currentSlot >= portCount
     ) {
-      return { status: "complete", reason };
+      return { status: "complete", roundNumber, reason };
     }
     if (!options.ignoreCompletionStatus && status && ["complete", "completed", "done", "stop"].includes(status)) {
-      return { status: "complete", reason };
+      return { status: "complete", roundNumber, reason };
     }
     if (explicitSlot !== undefined) {
       if (explicitSlot < minSlot || explicitSlot > portCount) {
-        return { status: "complete", reason: reason ?? `next slot ${explicitSlot} is outside available manager work slots` };
+        return { status: "complete", roundNumber, reason: reason ?? `next slot ${explicitSlot} is outside available manager work slots` };
       }
       return {
         status: explicitSlot <= currentSlot ? "retry" : "continue",
+        roundNumber,
         nextSlot: explicitSlot,
         reason
       };
@@ -3628,15 +3945,16 @@ export class BlueprintWorker {
     if (failed) {
       return {
         status: "retry",
+        roundNumber,
         nextSlot: Math.max(minSlot, currentSlot - 1),
         reason
       };
     }
 
     if (currentSlot >= portCount) {
-      return { status: "complete", reason };
+      return { status: "complete", roundNumber, reason };
     }
-    return { status: "continue", nextSlot: Math.max(minSlot, currentSlot + 1), reason };
+    return { status: "continue", roundNumber, nextSlot: Math.max(minSlot, currentSlot + 1), reason };
   }
 
   private async collectUpstreamOutputs(
@@ -4464,6 +4782,31 @@ function readDecisionRecord(output: unknown): Record<string, unknown> | undefine
     ...record,
     ...record.result
   };
+}
+
+function readManagerRoundNumberFromManagerContext(value: unknown): number | undefined {
+  const record = readOutputRecord(value);
+  if (!isRecord(record?.manager)) return undefined;
+  return readPositiveInteger(record.manager.roundNumber);
+}
+
+function readManagerRoundNumberFromDecisionOutput(output: unknown): number | undefined {
+  return readManagerRoundNumberFromDecisionRecord(readDecisionRecord(output));
+}
+
+function readManagerRoundNumberFromDecisionRecord(record: Record<string, unknown> | undefined): number | undefined {
+  return readPositiveInteger(record?.managerRoundNumber) ?? readPositiveInteger(record?.roundNumber);
+}
+
+function validateManagerDecisionRoundNumber(roundNumber: number, currentRoundNumber: number): string | undefined {
+  const current = Math.max(1, currentRoundNumber);
+  if (roundNumber === current) return undefined;
+  return `Manager decision result.roundNumber must equal current round ${current}; next round is created only after the manager release report is approved, received ${roundNumber}.`;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  const parsed = readInteger(value);
+  return parsed !== undefined && parsed >= 1 ? parsed : undefined;
 }
 
 function readManagerSnapshotDraft(output: unknown): ManagerSnapshotDraft | undefined {

@@ -132,9 +132,15 @@ export class IterationService {
     managerNode: BlueprintNode;
     body: string;
     revision?: number;
+    threadId?: string;
+    replacesRequestId?: string;
+    closeReplacedRequest?: boolean;
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
-    const title = `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
+    const zh = usesChineseText(input.body) || usesChineseText(input.managerNode.config.label);
+    const title = zh
+      ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+      : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
     const request = await this.approvalService.createRequest({
       runId: input.session.runId,
       roundId: input.round.id,
@@ -147,6 +153,10 @@ export class IterationService {
         label: input.managerNode.config.label,
         nodeId: input.managerNode.id
       },
+      threadId: input.threadId,
+      revision: input.revision,
+      replacesRequestId: input.replacesRequestId,
+      closeReplacedRequest: input.closeReplacedRequest,
       capabilities: input.metadata?.researchStatus === "blocked"
         ? { approve: false, reject: true, reply: true, complete: false, terminate: false }
         : undefined
@@ -205,7 +215,7 @@ export class IterationService {
       roundId: input.round.id,
       kind: "manager_release_report",
       title,
-      body: `${input.summary}\n\nArtifacts:\n${artifactRefs.map((ref) => `- ${ref.title}: ${ref.location}`).join("\n")}`,
+      body: input.summary,
       payloadRef: reportId,
       sourceRef: { type: "blueprint_run", id: input.run.id },
       requestedBy: {
@@ -316,6 +326,42 @@ export class IterationService {
         };
       }
       return { resumeExecution: false, completeRun: false };
+    }
+    if (result.decision.action === "reply") {
+      const now = result.decision.createdAt;
+      await this.store.upsertIterationRound({ ...round, status: "completed", endedAt: now });
+      await this.store.appendRunTimelineItem({
+        id: `timeline-${nanoid(10)}`,
+        runId: round.runId,
+        createdAt: now,
+        actorLabel: "manager",
+        kind: "round_completed",
+        title: `Round ${round.roundNumber} completed with feedback`,
+        body: result.decision.comment
+      });
+
+      let nextSession = session;
+      if (round.roundNumber >= session.maxRounds) {
+        nextSession = {
+          ...session,
+          status: "running",
+          maxRounds: round.roundNumber + 1,
+          endedAt: undefined
+        };
+        await this.store.upsertIterationSession(nextSession);
+      }
+
+      const nextRound = await this.startNextRound(nextSession, round);
+      return {
+        resumeExecution: false,
+        completeRun: false,
+        prepareNextRound: {
+          sessionId: nextSession.id,
+          roundId: nextRound.id,
+          previousReportRequestId: result.approvalRequest.id,
+          humanFeedback: result.decision.comment
+        }
+      };
     }
     if (result.decision.action === "reject") {
       await this.markRoundArtifactsRejected(round);
@@ -435,4 +481,8 @@ export class IterationService {
     if (!session) throw new Error(`Iteration session not found: ${sessionId}`);
     return session;
   }
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }

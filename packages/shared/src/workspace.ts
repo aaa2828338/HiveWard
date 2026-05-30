@@ -64,7 +64,7 @@ export interface PendingApprovalItem {
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
   selectedReplyId?: string;
-  status?: "pending" | "replying" | "approved" | "rejected";
+  status?: "pending" | "replying" | "approved" | "rejected" | "replied" | "completed" | "terminated" | "superseded";
   decidedAt?: string;
   decisionComment?: string;
   canApprove?: boolean;

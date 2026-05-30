@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { sqliteMigrations } from "./schema";
+import { sqliteMigrations, sqliteSchemaVersion } from "./schema";
 import { SqliteDriver } from "./sqliteDriver";
 
 describe("SqliteDriver schema migrations", () => {
@@ -10,7 +10,7 @@ describe("SqliteDriver schema migrations", () => {
     const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-schema-empty-")), "hiveward.sqlite");
     const first = new SqliteDriver(sqlitePath);
     first.migrate();
-    expect(first.currentSchemaVersion()).toBe(2);
+    expect(first.currentSchemaVersion()).toBe(sqliteSchemaVersion);
     first.close();
 
     const second = new SqliteDriver(sqlitePath);
@@ -31,7 +31,7 @@ describe("SqliteDriver schema migrations", () => {
 
     const upgraded = new SqliteDriver(sqlitePath);
     upgraded.migrate();
-    expect(upgraded.currentSchemaVersion()).toBe(2);
+    expect(upgraded.currentSchemaVersion()).toBe(sqliteSchemaVersion);
     expect(listColumnNames(upgraded, "artifacts")).toContain("declared_node_run_id");
     expect(listColumnNames(upgraded, "release_report_artifacts")).toContain("position");
     upgraded.close();

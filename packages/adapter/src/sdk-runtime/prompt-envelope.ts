@@ -15,6 +15,14 @@ export function buildPromptEnvelope(input: StartAgentTaskInput): string {
         "Return JSON that matches the supplied schema.",
         "The schema is a transport wrapper for Hiveward, not a limit on the substance of your answer.",
         "If the schema contains humanReportMd, humanReportMd is your free-form human answer: keep the natural report, reasoning, recommendations, and caveats there, and include delivery locations.",
+        "Start humanReportMd with ## Summary, or ## \u6458\u8981 when the user's working language is Chinese. Write the summary yourself in plain human language, target 100-150 Chinese characters or similarly brief English, and do not describe internal program phases.",
+        "Place ## Delivery location, or ## \u4ea4\u4ed8\u4f4d\u7f6e for Chinese, immediately after the summary. Use a real file path, browser URL, or exact artifacts[] reference; if there is no deliverable, write only None or \u65e0.",
+        "Only top-level artifacts[] creates openable artifact records. The platform will not infer artifacts from humanReportMd, result, titles, timeline text, or delivery prose.",
+        "result.artifacts and handoffJson.artifacts are only handoff metadata. They do not publish UI artifacts and they are not substitutes for top-level artifacts[].",
+        "Each top-level artifacts[] item must use exactly one source field. Use path for generated files, including HTML files written under an agent workspace. Use content/body only for small inline artifact bodies. Use url only for kind link. Do not mix path with content/body.",
+        "For kind \"html\", publish the actual complete single-file HTML document containing <html>...</html>. Prefer writing the file and declaring that file path in top-level artifacts[].path. If you use content/body instead, it must contain the complete HTML. A prose description, label, truncated body, or placeholder such as \"...完整 HTML 内容...\" is invalid and will be rejected.",
+        "Writing an HTML file under an agent workspace is not enough to publish an HTML preview. To publish it, declare that file path in top-level artifacts[].path with kind \"html\".",
+        "QA or reviewer agents must not redeclare upstream artifacts in top-level artifacts[] unless they are publishing a new complete artifact. Reference upstream artifacts in humanReportMd or handoffJson instead.",
         "Use structured fields such as result, handoffJson, and artifacts as add-ons for machine handoff and UI links."
       ].join("\n")
     : "";

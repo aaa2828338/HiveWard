@@ -62,6 +62,14 @@ describe("agent SDK runtime", () => {
 
     expect(envelope).toContain("The schema is a transport wrapper");
     expect(envelope).toContain("humanReportMd is your free-form human answer");
+    expect(envelope).toContain("## Summary");
+    expect(envelope).toContain("100-150");
+    expect(envelope).toContain("real file path, browser URL, or exact artifacts[] reference");
+    expect(envelope).toContain("Only top-level artifacts[] creates openable artifact records");
+    expect(envelope).toContain("complete single-file HTML");
+    expect(envelope).toContain("declare that file path in top-level artifacts[].path");
+    expect(envelope).toContain("Writing an HTML file under an agent workspace is not enough");
+    expect(envelope).toContain("QA or reviewer agents must not redeclare upstream artifacts");
   });
 
   it("converts optional Codex output schema properties to nullable required fields", () => {

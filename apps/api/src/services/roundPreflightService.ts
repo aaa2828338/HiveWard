@@ -74,8 +74,8 @@ interface ParsedPreflightOutput {
   assumptionBased?: boolean;
 }
 
-const selfIterationResearchSlot = 1;
-const selfIterationRequirementSlot = 2;
+const selfIterationResearchInterfaceSlot = 1;
+const selfIterationRequirementInterfaceSlot = 2;
 
 class RoundPreflightBlockedError extends Error {
   constructor(
@@ -215,24 +215,8 @@ export class RoundPreflightService {
     const managerConfig = input.topManagerNode.config as ManagerNodeConfig;
     const preparationAttempt = input.preparationAttempt ?? 1;
     const maxPreparationAttempts = input.maxPreparationAttempts ?? normalizePreparationAttempts(managerConfig.maxPreparationAttempts);
-    const researchAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationResearchSlot);
-    if (!input.forceResearch && input.context.previousSnapshot && !input.humanFeedback?.trim()) {
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousSnapshot.summary,
-        artifactIds: [],
-        source: "previous_snapshot"
-      };
-    }
-    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !researchAgent) {
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousReleaseReport.summary,
-        artifactIds: [],
-        source: "previous_release_report"
-      };
-    }
-
+    const researchAgent = this.resolveConfiguredPreflightAgent(input.blueprint, managerConfig.researchAgentNodeId)
+      ?? this.resolveSystemInterfaceAgent(input.blueprint, input.topManagerNode, selfIterationResearchInterfaceSlot);
     const baseRunContext = this.managerContextService.buildManagerInjectedContext(input.context, {
       mode: "research_resolution",
       roundStatus: input.round.status
@@ -243,9 +227,26 @@ export class RoundPreflightService {
       manager: input.topManagerNode.config.label,
       instructions: managerConfig.instructions,
       roundNumber: input.round.roundNumber,
+      isFirstRound: input.round.roundNumber === 1,
       humanFeedback: input.humanFeedback,
       preparationAttempt,
       maxPreparationAttempts,
+      researchInstruction: input.round.roundNumber === 1
+        ? [
+            "Every self-iteration round must trigger this system research step before requirement planning. If no explicit system research agent is configured, the Manager must perform it.",
+            "This is round 1. Absence of lastRound, previous feedback, existing artifacts, or prior research is normal startup context, not a reason to stop.",
+            "Create the first-round research baseline from the blueprint goal and available sources.",
+            "Use external web/live research when the runtime allows it. If web search is unavailable, say so and use local repository/artifact inspection plus stable domain knowledge, but still produce concrete findings.",
+            "Do not report broad input as insufficient by itself. Narrow the goal into usable research facts, constraints, risks, acceptance criteria, and next execution inputs.",
+            "You may decide no additional research is needed only by returning an explicit research result with rationale; never silently skip this step."
+          ].join(" ")
+        : [
+            "Every self-iteration round must trigger this system research step before requirement planning. If no explicit system research agent is configured, the Manager must perform it.",
+            "Use the previous round context, user feedback, and current goal to refresh the research baseline.",
+            "Use external web/live research when facts may have changed or the task depends on current outside information.",
+            "If more information is needed, state the specific missing evidence and what source should be checked.",
+            "You may decide no additional research is needed only by returning an explicit research result with rationale; never silently skip this step."
+          ].join(" "),
       runContext: baseRunContext
     };
     if (researchAgent) {
@@ -330,9 +331,16 @@ export class RoundPreflightService {
       roundNumber: input.round.roundNumber,
       preparationAttempt,
       maxPreparationAttempts,
+      requirementInstruction: [
+        "Every self-iteration round must trigger this system requirement/planning step after research.",
+        "If no explicit system requirement agent is configured, the Manager must perform it.",
+        "You may decide the current requirements are already sufficient only by returning an explicit plan result with rationale; never silently skip this step.",
+        "Always leave the next execution stage with a concrete objective, scope, constraints, acceptance criteria, and expected artifacts."
+      ].join(" "),
       runContext
     };
-    const requirementAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationRequirementSlot);
+    const requirementAgent = this.resolveConfiguredPreflightAgent(input.blueprint, managerConfig.requirementAgentNodeId)
+      ?? this.resolveSystemInterfaceAgent(input.blueprint, input.topManagerNode, selfIterationRequirementInterfaceSlot);
     if (requirementAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
@@ -432,12 +440,23 @@ export class RoundPreflightService {
     };
   }
 
-  private resolvePreflightSlotAgent(
+  private resolveConfiguredPreflightAgent(
+    blueprint: BlueprintDefinition,
+    nodeId: string | undefined
+  ): BlueprintNode & { type: "agent"; config: AgentNodeConfig } | undefined {
+    const targetId = nodeId?.trim();
+    if (!targetId) return undefined;
+    const target = blueprint.nodes.find((node) => node.id === targetId);
+    if (!target || target.disabled || !isAgentBlueprintNode(target)) return undefined;
+    return target;
+  }
+
+  private resolveSystemInterfaceAgent(
     blueprint: BlueprintDefinition,
     managerNode: BlueprintNode,
-    slot: number
+    interfaceSlot: number
   ): BlueprintNode & { type: "agent"; config: AgentNodeConfig } | undefined {
-    const target = this.resolveManagerSlotTarget(blueprint, managerNode, slot);
+    const target = this.resolveManagerSystemInterfaceTarget(blueprint, managerNode, interfaceSlot);
     if (!target || target.disabled) return undefined;
     if (isAgentBlueprintNode(target)) return target;
     if (target.type !== "manager_slot") return undefined;
@@ -454,13 +473,13 @@ export class RoundPreflightService {
     return childAgents.find((node) => node.id === entryEdge?.target) ?? childAgents[0];
   }
 
-  private resolveManagerSlotTarget(
+  private resolveManagerSystemInterfaceTarget(
     blueprint: BlueprintDefinition,
     managerNode: BlueprintNode,
-    slot: number
+    interfaceSlot: number
   ): BlueprintNode | undefined {
     const edge = blueprint.edges.find(
-      (candidate) => candidate.source === managerNode.id && candidate.sourceHandle === `manager-out-${slot}`
+      (candidate) => candidate.source === managerNode.id && candidate.sourceHandle === `manager-out-${interfaceSlot}`
     );
     return edge ? blueprint.nodes.find((node) => node.id === edge.target) : undefined;
   }
@@ -518,6 +537,45 @@ function formatRoundExecutionPlan(input: {
   assumptions: string[];
   risks: string[];
 }): string {
+  const zh = usesChineseText([
+    input.planText,
+    input.research.summary,
+    input.context.previousReleaseReport?.summary,
+    input.context.humanFeedback,
+    ...input.assumptions,
+    ...input.risks
+  ].filter((value): value is string => Boolean(value)).join("\n"));
+  if (zh) {
+    const assumptions = input.assumptions.length ? input.assumptions.map((item) => `- ${item}`).join("\n") : "- 未记录。";
+    const risks = input.risks.length ? input.risks.map((item) => `- ${item}`).join("\n") : "- 未记录。";
+    return [
+      `# 第 ${input.roundNumber} 轮执行计划${input.revision > 1 ? ` v${input.revision}` : ""}`,
+      "",
+      "前期准备工作已完成。请确认本轮执行计划；确认后会开始后续 Agent 工作。如需调整，请直接回复修改意见。",
+      "",
+      `调研来源：${input.research.status}（${input.research.source}）`,
+      `计划来源：${input.planSource}`,
+      input.context.previousReleaseReport ? `上一轮报告：${firstLine(input.context.previousReleaseReport.summary)}` : undefined,
+      input.context.humanFeedback ? `用户反馈：${input.context.humanFeedback}` : undefined,
+      "",
+      "## 调研摘要",
+      input.research.summary,
+      "",
+      "## 执行计划",
+      input.planText,
+      "",
+      "## 假设",
+      assumptions,
+      "",
+      "## 风险",
+      risks,
+      "",
+      "## 确认后会发生什么",
+      "- 用户确认后，本轮会进入执行阶段。",
+      "- Manager 只会调度本轮计划中的工作槽位。",
+      "- 产物与本轮报告会在执行后继续交给用户验收。"
+    ].filter((part) => part !== undefined).join("\n");
+  }
   const assumptions = input.assumptions.length ? input.assumptions.map((item) => `- ${item}`).join("\n") : "- None recorded.";
   const risks = input.risks.length ? input.risks.map((item) => `- ${item}`).join("\n") : "- None recorded.";
   return [
@@ -552,6 +610,26 @@ function formatBlockedRoundPlan(input: {
   blocker: RoundPreflightBlockedError;
   context: RoundStartContext;
 }): string {
+  const zh = usesChineseText([
+    input.blocker.humanReportMd,
+    input.blocker.message,
+    input.context.humanFeedback
+  ].filter((value): value is string => Boolean(value)).join("\n"));
+  if (zh) {
+    return [
+      `# 第 ${input.roundNumber} 轮预检受阻${input.revision > 1 ? ` v${input.revision}` : ""}`,
+      "调研来源：blocked",
+      "计划来源：blocked",
+      input.context.humanFeedback ? `用户反馈：${input.context.humanFeedback}` : undefined,
+      "",
+      "## 阻塞原因",
+      input.blocker.humanReportMd ?? input.blocker.message,
+      "",
+      "## 需要用户处理",
+      "- 请回复缺失的凭据、权限、事实或修订指令。",
+      "- 在修订计划生成前，本审批不能直接批准进入执行。"
+    ].filter((part) => part !== undefined).join("\n");
+  }
   return [
     `# Round ${input.roundNumber} Preflight Blocked v${input.revision}`,
     "Research source: blocked",
@@ -690,6 +768,10 @@ function normalizePreparationAttempts(value: number | undefined): number {
 
 function firstLine(value: string): string {
   return value.split(/\r?\n/).find((line) => line.trim())?.trim() ?? value.trim();
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

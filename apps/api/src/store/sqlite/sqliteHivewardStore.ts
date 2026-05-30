@@ -927,6 +927,13 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.runViewFromRunRow(row);
   }
 
+  async getRunArchive(blueprintRunId: string): Promise<BlueprintRunArchive | undefined> {
+    const companyId = this.getSelectedCompanyId();
+    if (!companyId) return undefined;
+    const row = this.driver.db.prepare("SELECT id FROM runs WHERE id = ? AND company_id = ?").get(blueprintRunId, companyId) as Row | undefined;
+    return row ? this.requireRunArchive(blueprintRunId) : undefined;
+  }
+
   async getLatestRunViewForBlueprint(blueprintId: string): Promise<BlueprintRunView | undefined> {
     const companyId = this.getSelectedCompanyId();
     if (!companyId) return undefined;
@@ -1338,14 +1345,15 @@ export class SqliteHivewardStore implements HivewardStore {
 
   private upsertAgentHumanReportSync(report: AgentHumanReport): AgentHumanReport {
     this.driver.db.prepare(
-      `INSERT INTO agent_human_reports (id, run_id, round_id, node_run_id, node_id, node_label, title, body_md, source, fallback_reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO agent_human_reports (id, run_id, round_id, manager_round_number, node_run_id, node_id, node_label, title, body_md, source, fallback_reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
+         manager_round_number = excluded.manager_round_number,
          title = excluded.title,
          body_md = excluded.body_md,
          source = excluded.source,
          fallback_reason = excluded.fallback_reason`
-    ).run(report.id, report.runId, report.roundId, report.nodeRunId, report.nodeId, report.nodeLabel, report.title, report.bodyMd, report.source, report.fallbackReason, report.createdAt);
+    ).run(report.id, report.runId, report.roundId, report.managerRoundNumber, report.nodeRunId, report.nodeId, report.nodeLabel, report.title, report.bodyMd, report.source, report.fallbackReason, report.createdAt);
     return report;
   }
 
@@ -2855,6 +2863,7 @@ function agentHumanReportFromRow(row: Row): AgentHumanReport {
     id: requireString(row.id),
     runId: requireString(row.run_id),
     roundId: readString(row.round_id),
+    managerRoundNumber: readNumberOrUndefined(row.manager_round_number),
     nodeRunId: requireString(row.node_run_id),
     nodeId: requireString(row.node_id),
     nodeLabel: requireString(row.node_label),

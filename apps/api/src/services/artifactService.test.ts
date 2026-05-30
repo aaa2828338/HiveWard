@@ -158,6 +158,142 @@ describe("ArtifactService", () => {
     expect(readFileSync(artifact!.storagePath!, "utf8")).toBe(html);
   });
 
+  it("publishes kind:html path artifacts as clickable html artifacts", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-html-path-"));
+    const sourceRoot = join(tempDir, "workspace");
+    const dataDir = join(tempDir, "data");
+    const sourcePath = join(sourceRoot, "deliverables", "report.html");
+    const html = "<!doctype html><html><body>real html file</body></html>";
+    mkdirSync(join(sourceRoot, "deliverables"), { recursive: true });
+    writeFileSync(sourcePath, html, { encoding: "utf8", flag: "w" });
+    const store = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await store.init();
+    const service = new ArtifactService(store, {
+      rootDir: join(dataDir, "artifacts"),
+      sourceRoot
+    });
+
+    const [artifact] = await service.prepareFromNodeRun({
+      runId: "run-html-path",
+      nodeRun: createNodeRun({
+        id: "node-run-html-path",
+        output: {
+          artifacts: [{
+            kind: "html",
+            title: "Path HTML",
+            path: "deliverables/report.html"
+          }]
+        }
+      })
+    });
+
+    expect(artifact).toMatchObject({
+      kind: "html",
+      format: "text/html",
+      previewPolicy: "sandboxed_iframe",
+      relativePath: expect.stringMatching(/\.html$/),
+      downloadUrl: expect.stringMatching(/\/artifacts\/.*\.html$/),
+      bytes: Buffer.byteLength(html)
+    });
+    expect(readFileSync(artifact!.storagePath!, "utf8")).toBe(html);
+  });
+
+  it("rejects artifact payloads that mix path with content fields", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-ambiguous-source-"));
+    const sourceRoot = join(tempDir, "workspace");
+    const dataDir = join(tempDir, "data");
+    mkdirSync(join(sourceRoot, "deliverables"), { recursive: true });
+    writeFileSync(
+      join(sourceRoot, "deliverables", "report.html"),
+      "<!doctype html><html><body>real html file</body></html>",
+      { encoding: "utf8", flag: "w" }
+    );
+    const store = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await store.init();
+    const service = new ArtifactService(store, {
+      rootDir: join(dataDir, "artifacts"),
+      sourceRoot
+    });
+
+    await expect(service.prepareFromNodeRun({
+      runId: "run-ambiguous-source",
+      nodeRun: createNodeRun({
+        id: "node-run-ambiguous-source",
+        output: {
+          artifacts: [{
+            kind: "file",
+            title: "Ambiguous file",
+            path: "deliverables/report.html",
+            content: "完整单文件 HTML 报告"
+          }]
+        }
+      })
+    })).rejects.toThrow(/must declare exactly one artifact source/);
+  });
+
+  it("rejects html artifact payloads that are only prose instead of an html document", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-invalid-html-"));
+    const store = new FileHivewardStore(join(tempDir, "hiveward-store.json"));
+    await store.init();
+    const service = new ArtifactService(store, { rootDir: join(tempDir, "artifacts"), sourceRoot: tempDir });
+
+    await expect(service.prepareFromNodeRun({
+      runId: "run-invalid-html",
+      nodeRun: createNodeRun({
+        id: "node-run-invalid-html",
+        output: {
+          artifacts: [{
+            kind: "html",
+            title: "AI Agent report",
+            body: "完整单文件 HTML，主题：AI Agent 与多 Agent 工作流进入企业运营"
+          }]
+        }
+      })
+    })).rejects.toThrow(/requires a complete HTML document/);
+  });
+
+  it("scopes agent-provided artifact ids by node run to avoid cross-run collisions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-id-scope-"));
+    const store = new FileHivewardStore(join(tempDir, "hiveward-store.json"));
+    await store.init();
+    const service = new ArtifactService(store, { rootDir: join(tempDir, "artifacts"), sourceRoot: tempDir });
+
+    const [first] = await service.publishFromNodeRun({
+      runId: "run-first",
+      nodeRun: createNodeRun({
+        id: "node-run-first",
+        output: {
+          artifacts: [{
+            id: "preview",
+            kind: "html",
+            title: "Preview",
+            body: "<!doctype html><html><body>first</body></html>"
+          }]
+        }
+      })
+    });
+    const [second] = await service.publishFromNodeRun({
+      runId: "run-second",
+      nodeRun: createNodeRun({
+        id: "node-run-second",
+        output: {
+          artifacts: [{
+            id: "preview",
+            kind: "html",
+            title: "Preview",
+            body: "<!doctype html><html><body>second</body></html>"
+          }]
+        }
+      })
+    });
+
+    expect(first?.id).toContain("node-run-first");
+    expect(second?.id).toContain("node-run-second");
+    expect(first?.id).not.toBe(second?.id);
+    expect(await store.listArtifacts("run-first")).toHaveLength(1);
+    expect(await store.listArtifacts("run-second")).toHaveLength(1);
+  });
+
   it("does not leave run-scoped published files when artifact metadata publish fails", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-orphan-"));
     const store = new FailingArtifactStore(join(tempDir, "hiveward-store.json"));

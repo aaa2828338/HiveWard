@@ -1138,7 +1138,7 @@ pre {
   min-width: 0;
 }
 
-.trace-issue-main span {
+.trace-issue-main span:not(.trace-status-chip):not(.trace-role-tag):not(.trace-work-tag) {
   font-size: 12px;
   line-height: 1.45;
   color: var(--muted);
@@ -3666,7 +3666,7 @@ textarea {
 .table-row p,
 .mini-column p,
 .trace-column-header p,
-.trace-issue-main span,
+.trace-issue-main span:not(.trace-status-chip):not(.trace-role-tag):not(.trace-work-tag),
 .wizard-option-main span,
 .wizard-stage-toolbar span,
 .field-hint {
@@ -7372,7 +7372,7 @@ html[data-theme="light"] .openclaw-panel-metric.offline strong {
   overflow-wrap: anywhere;
 }
 
-.trace-issue-main span:not(.trace-status-chip) {
+.trace-issue-main span:not(.trace-status-chip):not(.trace-role-tag):not(.trace-work-tag) {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
@@ -8604,11 +8604,119 @@ html[data-theme="light"] .run-blueprint-card-list::-webkit-scrollbar-thumb {
   gap: 10px;
 }
 
+.trace-issue-card {
+  position: relative;
+  height: auto;
+  min-height: 96px;
+  padding: 10px 12px;
+  display: block;
+  overflow: hidden;
+}
+
+.trace-issue-card.has-round-ribbon {
+  padding: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 0;
+}
+
+.trace-issue-card .trace-issue-main {
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+}
+
+.trace-issue-card.has-round-ribbon .trace-issue-main {
+  padding: 10px 12px;
+}
+
+.trace-round-ribbon {
+  width: 34px;
+  height: 100%;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 820;
+  line-height: 1;
+  writing-mode: vertical-rl;
+  letter-spacing: 0;
+  box-shadow: inset -1px 0 0 rgb(255 255 255 / 0.18);
+}
+
+.trace-round-tone-1 {
+  background: #2563eb;
+}
+
+.trace-round-tone-2 {
+  background: #059669;
+}
+
+.trace-round-tone-3 {
+  background: #7c3aed;
+}
+
+.trace-round-tone-4 {
+  background: #db2777;
+}
+
+.trace-round-tone-5 {
+  background: #0f766e;
+}
+
 .trace-issue-topline {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 8px;
+}
+
+.trace-actor-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-role-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--text);
+  background: rgb(255 255 255 / 0.09);
+  border: 1px solid rgb(148 163 184 / 0.24);
+}
+
+.trace-role-manager {
+  color: #fbbf24;
+  background: linear-gradient(135deg, rgb(251 191 36 / 0.24), rgb(245 158 11 / 0.13));
+  border-color: rgb(251 191 36 / 0.48);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.12), 0 0 0 1px rgb(251 191 36 / 0.08);
+}
+
+.trace-role-agent {
+  color: #34d399;
+  background: rgb(16 185 129 / 0.14);
+  border-color: rgb(52 211 153 / 0.36);
+}
+
+.trace-role-user {
+  color: #fbbf24;
+  background: rgb(251 191 36 / 0.12);
+}
+
+.trace-role-system {
+  color: var(--muted);
+  background: rgb(148 163 184 / 0.12);
 }
 
 .trace-issue-topline strong {
@@ -8618,6 +8726,136 @@ html[data-theme="light"] .run-blueprint-card-list::-webkit-scrollbar-thumb {
   line-height: 1.3;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 1;
+}
+
+.trace-issue-footer {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.trace-work-tags {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trace-role-tag,
+.trace-work-tag {
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  background: transparent;
+  border: 1px solid currentColor;
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18);
+}
+
+.trace-role-tag {
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
+}
+
+.trace-role-tag-manager {
+  color: #ffffff;
+  background: #b45309;
+  border-color: #d97706;
+}
+
+.trace-role-tag-agent {
+  color: #ffffff;
+  background: #047857;
+  border-color: #059669;
+}
+
+.trace-role-tag-system {
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
+}
+
+.trace-work-tag {
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
+}
+
+.trace-work-tag-research {
+  color: #ffffff;
+  background: #0369a1;
+  border-color: #0284c7;
+}
+
+.trace-work-tag-requirements {
+  color: #ffffff;
+  background: #6d28d9;
+  border-color: #7c3aed;
+}
+
+.trace-work-tag-planning {
+  color: #ffffff;
+  background: #1d4ed8;
+  border-color: #2563eb;
+}
+
+.trace-work-tag-dispatch {
+  color: #ffffff;
+  background: #b45309;
+  border-color: #d97706;
+}
+
+.trace-work-tag-page {
+  color: #ffffff;
+  background: #047857;
+  border-color: #059669;
+}
+
+.trace-work-tag-qa {
+  color: #ffffff;
+  background: #be185d;
+  border-color: #db2777;
+}
+
+.trace-work-tag-review {
+  color: #ffffff;
+  background: #0f766e;
+  border-color: #0d9488;
+}
+
+.trace-work-tag-artifact {
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
+}
+
+.trace-work-tag-issue {
+  color: #ffffff;
+  background: #b91c1c;
+  border-color: #dc2626;
+}
+
+.trace-issue-time {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 720;
+  line-height: 1.4;
 }
 
 .trace-issue-card .trace-status-chip {
@@ -8693,7 +8931,7 @@ html[data-theme="light"] .trace-issue-card .trace-failed {
   font-weight: 700;
   line-height: 1.45;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .markdown-body.trace-issue-preview code {
