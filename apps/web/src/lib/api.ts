@@ -23,6 +23,7 @@ import type {
   HarnessStatusResponse,
   HermesConfigResponse,
   ApplyHivewardUpdateResponse,
+  ApplyHivewardUpdateRequest,
   ApprovalRequest,
   ApprovalRequestResponse,
   HivewardUpdateResponse,
@@ -262,9 +263,10 @@ export const api = {
     return response.update;
   },
 
-  async applyHivewardUpdate(): Promise<ApplyHivewardUpdateResponse> {
+  async applyHivewardUpdate(input: ApplyHivewardUpdateRequest = {}): Promise<ApplyHivewardUpdateResponse> {
     return request<ApplyHivewardUpdateResponse>("/api/hiveward-update/apply", {
-      method: "POST"
+      method: "POST",
+      body: JSON.stringify(input satisfies ApplyHivewardUpdateRequest)
     });
   },
 
