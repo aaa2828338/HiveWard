@@ -348,22 +348,22 @@ interface CliHarnessConfig {
 const cliHarnessConfigs: Record<CliHarnessId, CliHarnessConfig> = {
   google: {
     id: "google",
-    label: "Google CLI Beta",
+    label: "Google CLI",
     command: "gemini"
   },
   cursor: {
     id: "cursor",
-    label: "Cursor CLI Beta",
+    label: "Cursor CLI",
     command: "cursor-agent"
   },
   opencode: {
     id: "opencode",
-    label: "OpenCode Beta",
+    label: "OpenCode",
     command: "opencode"
   },
   hermes: {
     id: "hermes",
-    label: "Hermes Beta",
+    label: "Hermes",
     command: "hermes"
   }
 };

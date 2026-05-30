@@ -10,16 +10,16 @@
 <h2 align="center">Put 101 agents to work together for you.</h2>
 
 <p align="center">
-  Organize OpenClaw, Claude Code, Codex, Google CLI Beta, Cursor CLI Beta, OpenCode Beta, and Hermes Beta into one schedulable, reviewable, auditable Agent Company.
+  Organize OpenClaw, Claude Code, Codex, Google CLI, Cursor CLI, OpenCode, and Hermes into one schedulable, reviewable, auditable Agent Company.
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-v0.4.0-f59e0b">
+  <img alt="Version" src="https://img.shields.io/badge/version-v0.5.9-f59e0b">
   <a href="https://www.npmjs.com/package/@hiveward/cli"><img alt="npm CLI" src="https://img.shields.io/npm/v/%40hiveward%2Fcli?label=npm%20cli&color=cb3837"></a>
   <img alt="Claude Code" src="https://img.shields.io/badge/employee-Claude%20Code-111827">
   <img alt="Codex" src="https://img.shields.io/badge/employee-Codex-0ea5e9">
   <img alt="OpenClaw" src="https://img.shields.io/badge/employee-OpenClaw-f59e0b">
-  <img alt="Beta CLI Harnesses" src="https://img.shields.io/badge/beta%20CLI-Google%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20Hermes-8b5cf6">
+  <img alt="CLI Harnesses" src="https://img.shields.io/badge/CLI-Google%20%7C%20Cursor%20%7C%20OpenCode%20%7C%20Hermes-8b5cf6">
 </p>
 
 <p align="center">
@@ -27,6 +27,7 @@
   <a href="#what-is-a-blueprint">What is a blueprint?</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#product-surfaces">Product surfaces</a> ·
+  <a href="#notes">Notes</a> ·
   <a href="#quick-start">Quick start</a>
 </p>
 
@@ -48,7 +49,7 @@ Hiveward is an open-source workspace for Agent Companies. It does not try to bec
 
 Think of it as an operations desk for the next generation of AI organizations: company as scope, blueprint as organization chart, models as resource pool, inbox as governance layer, and history as execution ledger.
 
-Hiveward manages and displays company goals, blueprint structure, node configuration, model selection, run state, human approvals, and history. Real execution remains owned by OpenClaw, Claude Code, Codex, and the beta CLI harnesses for Google CLI, Cursor CLI, OpenCode, and Hermes, keeping Hiveward as a clean product layer instead of leaking runtime mechanics into the UI.
+Hiveward manages and displays company goals, blueprint structure, node configuration, model selection, run state, human approvals, and history. Real execution remains owned by OpenClaw, Claude Code, Codex, Google CLI, Cursor CLI, OpenCode, and Hermes, keeping Hiveward as a clean product layer instead of leaking runtime mechanics into the UI.
 
 ## What is a blueprint?
 
@@ -105,7 +106,7 @@ graph LR
 The main README keeps one trusted run-state screenshot so new users see the core product loop first. Additional screenshots are maintained on the [screenshots page](docs/screenshots.md), including:
 
 - Blueprint Studio: express how an agent team works on a runnable canvas.
-- Model Configuration: inspect models, defaults, usage, OpenClaw catalog capabilities, and beta CLI harness status.
+- Model Configuration: inspect models, defaults, usage, OpenClaw catalog capabilities, and CLI harness status.
 - Run Monitor: watch node-level status, output previews, failure state, and execution evidence.
 - Inbox: handle workflow steps that require human judgment.
 - History: review successful runs, failed runs, output summaries, and timing.
@@ -115,15 +116,19 @@ The main README keeps one trusted run-state screenshot so new users see the core
 - Company context: organize goals, blueprints, runs, and approvals by company.
 - Blueprint orchestration: describe agent team structure with visual nodes.
 - Manager dispatch: let Manager nodes choose Slots, assign agents, request rework, or finish a workflow.
-- Agent team management: separate Hiveward display identity from the real OpenClaw, Claude Code, Codex, and beta CLI harness identities.
+- Agent team management: separate Hiveward display identity from the real OpenClaw, Claude Code, Codex, and CLI harness identities.
 - Model resource pool: inspect models, defaults, usage, and provider state.
 - Human governance: handle judgment points through the inbox.
 - Run ledger: turn every execution into reviewable history.
 - Runtime boundary: Hiveward owns the product layer; OpenClaw and the configured CLI harnesses own real execution.
 
+## Notes
+
+For the best first-run experience, open the configuration page for each harness you plan to use and install / configure the HiveWard Skills into that harness. This places the CEO, Leader, and skill-decomposer operating manuals in the native harness Skill directory so later chats and blueprint runs can call the right operating instructions more reliably.
+
 ## Current status
 
-Current version: `v0.4.0`. Core product surfaces are ready for local demos and early use. Google CLI Beta, Cursor CLI Beta, OpenCode Beta, and Hermes Beta are available as beta harnesses, while APIs and interaction details may still evolve.
+Current version: `v0.5.9`. Core product surfaces are ready for local demos and early use. Google CLI, Cursor CLI, OpenCode, and Hermes are available as CLI harnesses, while APIs and interaction details may still evolve.
 
 ## Quick start
 
@@ -140,8 +145,8 @@ hiveward start
 You can also run it without a global install:
 
 ```bash
-npx @hiveward/cli@beta setup
-npx @hiveward/cli@beta start
+npx @hiveward/cli setup
+npx @hiveward/cli start
 ```
 
 See [npm CLI Installation](docs/npm-cli-install.md) for `hiveward doctor`, `hiveward update`, and install directory options.
@@ -158,12 +163,6 @@ npm run dev
 - Health check: `http://localhost:10101/healthz`
 
 The default adapter mode is `OPENCLAW_ADAPTER=auto`. Hiveward connects to a real OpenClaw Gateway when local Gateway configuration is available, and falls back to mock mode otherwise.
-
-### Permission Notice
-
-In the current beta, CLI chat harnesses use safe mode by default. They are not automatically granted full file write, command execution, network, or live web-search access.
-
-If you want a higher-efficiency experience closer to the native CLIs, enable full-access mode manually from the relevant harness configuration page. Use it only in local repositories and environments you trust. Avoid running it directly in directories that contain sensitive credentials, production secrets, or files you cannot recover.
 
 ## Development and repository hygiene
 

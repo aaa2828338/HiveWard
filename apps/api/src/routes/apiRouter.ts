@@ -3301,7 +3301,7 @@ function buildHarnessStatuses(
     buildCodexHarnessStatus(checkedAt, defaults.codex, defaults.codexModels),
     buildCliHarnessStatus({
       id: "google",
-      label: "Google CLI Beta",
+      label: "Google CLI",
       cliLabel: "Gemini CLI",
       command: "gemini",
       checkedAt,
@@ -3310,7 +3310,7 @@ function buildHarnessStatuses(
     }),
     buildCliHarnessStatus({
       id: "cursor",
-      label: "Cursor CLI Beta",
+      label: "Cursor CLI",
       cliLabel: "Cursor CLI",
       command: "cursor-agent",
       checkedAt,
@@ -3319,7 +3319,7 @@ function buildHarnessStatuses(
     }),
     buildCliHarnessStatus({
       id: "opencode",
-      label: "OpenCode Beta",
+      label: "OpenCode",
       cliLabel: "OpenCode CLI",
       command: "opencode",
       checkedAt,
@@ -3328,7 +3328,7 @@ function buildHarnessStatuses(
     }),
     buildCliHarnessStatus({
       id: "hermes",
-      label: "Hermes Beta",
+      label: "Hermes",
       cliLabel: "Hermes CLI",
       command: "hermes",
       checkedAt,

@@ -40,12 +40,12 @@ describe("blueprint studio state", () => {
     ]);
   });
 
-  it("marks newly added CLI harness options as beta", () => {
+  it("shows CLI harness options without status badges", () => {
     expect(buildAgentHarnessOptions().filter((option) => ["google", "cursor", "opencode", "hermes"].includes(option.value))).toEqual([
-      { value: "google", label: "Google CLI", badgeLabel: "Beta" },
-      { value: "cursor", label: "Cursor CLI", badgeLabel: "Beta" },
-      { value: "opencode", label: "OpenCode", badgeLabel: "Beta" },
-      { value: "hermes", label: "Hermes", badgeLabel: "Beta" }
+      { value: "google", label: "Google CLI" },
+      { value: "cursor", label: "Cursor CLI" },
+      { value: "opencode", label: "OpenCode" },
+      { value: "hermes", label: "Hermes" }
     ]);
   });
 
@@ -87,12 +87,12 @@ describe("blueprint studio state", () => {
     expect(buildAgentHarnessOptions().map((option) => option.value)).toContain("claude");
   });
 
-  it("gives summary nodes the same beta CLI harness choices as agent nodes", () => {
+  it("gives summary nodes the same CLI harness choices as agent nodes", () => {
     expect(buildSummaryHarnessOptions().filter((option) => ["google", "cursor", "opencode", "hermes"].includes(option.value))).toEqual([
-      { value: "google", label: "Google CLI", badgeLabel: "Beta" },
-      { value: "cursor", label: "Cursor CLI", badgeLabel: "Beta" },
-      { value: "opencode", label: "OpenCode", badgeLabel: "Beta" },
-      { value: "hermes", label: "Hermes", badgeLabel: "Beta" }
+      { value: "google", label: "Google CLI" },
+      { value: "cursor", label: "Cursor CLI" },
+      { value: "opencode", label: "OpenCode" },
+      { value: "hermes", label: "Hermes" }
     ]);
   });
 

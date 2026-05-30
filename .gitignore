@@ -17,6 +17,11 @@ data/migration-backups/
 data/runs/*.json
 apps/web/data/
 docs/superpowers/
+docs/blueprint-proposals/
+docs/frontend-page-layout-architecture.md
+docs/manager-dispatch-and-agent-handoff-rules.md
+docs/manager-self-iteration-*.md
+docs/sqlite-vnext-*.md
 tmp/
 !.gitkeep
 !data/blueprints/.gitkeep

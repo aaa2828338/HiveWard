@@ -8,32 +8,32 @@ import {
 } from "./harness-labels";
 
 describe("harness display labels", () => {
-  it("marks newly added CLI harnesses as beta", () => {
-    expect(harnessDisplayLabel("google")).toBe("Google CLI Beta");
-    expect(harnessDisplayLabel("cursor")).toBe("Cursor CLI Beta");
-    expect(harnessDisplayLabel("opencode")).toBe("OpenCode Beta");
-    expect(harnessDisplayLabel("hermes")).toBe("Hermes Beta");
+  it("keeps CLI harness labels direct", () => {
+    expect(harnessDisplayLabel("google")).toBe("Google CLI");
+    expect(harnessDisplayLabel("cursor")).toBe("Cursor CLI");
+    expect(harnessDisplayLabel("opencode")).toBe("OpenCode");
+    expect(harnessDisplayLabel("hermes")).toBe("Hermes");
   });
 
-  it("maps blueprint runtime ids to the same beta labels", () => {
-    expect(runtimeDisplayLabel("google")).toBe("Google CLI Beta");
-    expect(runtimeDisplayLabel("cursor")).toBe("Cursor CLI Beta");
-    expect(runtimeDisplayLabel("opencode")).toBe("OpenCode Beta");
-    expect(runtimeDisplayLabel("hermes")).toBe("Hermes Beta");
+  it("maps blueprint runtime ids to the same direct labels", () => {
+    expect(runtimeDisplayLabel("google")).toBe("Google CLI");
+    expect(runtimeDisplayLabel("cursor")).toBe("Cursor CLI");
+    expect(runtimeDisplayLabel("opencode")).toBe("OpenCode");
+    expect(runtimeDisplayLabel("hermes")).toBe("Hermes");
   });
 
-  it("splits beta harness names into a base label and framed badge label for UI rendering", () => {
-    expect(harnessDisplayParts("google")).toEqual({ label: "Google CLI", badgeLabel: "Beta" });
-    expect(harnessDisplayParts("cursor")).toEqual({ label: "Cursor CLI", badgeLabel: "Beta" });
-    expect(harnessDisplayParts("opencode")).toEqual({ label: "OpenCode", badgeLabel: "Beta" });
-    expect(harnessDisplayParts("hermes")).toEqual({ label: "Hermes", badgeLabel: "Beta" });
+  it("splits CLI harness names without status badges", () => {
+    expect(harnessDisplayParts("google")).toEqual({ label: "Google CLI" });
+    expect(harnessDisplayParts("cursor")).toEqual({ label: "Cursor CLI" });
+    expect(harnessDisplayParts("opencode")).toEqual({ label: "OpenCode" });
+    expect(harnessDisplayParts("hermes")).toEqual({ label: "Hermes" });
   });
 
-  it("splits beta blueprint runtime names the same way", () => {
-    expect(runtimeDisplayParts("google")).toEqual({ label: "Google CLI", badgeLabel: "Beta" });
-    expect(runtimeDisplayParts("cursor")).toEqual({ label: "Cursor CLI", badgeLabel: "Beta" });
-    expect(runtimeDisplayParts("opencode")).toEqual({ label: "OpenCode", badgeLabel: "Beta" });
-    expect(runtimeDisplayParts("hermes")).toEqual({ label: "Hermes", badgeLabel: "Beta" });
+  it("splits blueprint runtime names the same way", () => {
+    expect(runtimeDisplayParts("google")).toEqual({ label: "Google CLI" });
+    expect(runtimeDisplayParts("cursor")).toEqual({ label: "Cursor CLI" });
+    expect(runtimeDisplayParts("opencode")).toEqual({ label: "OpenCode" });
+    expect(runtimeDisplayParts("hermes")).toEqual({ label: "Hermes" });
   });
 
   it("keeps legacy claude runtime ids readable", () => {
