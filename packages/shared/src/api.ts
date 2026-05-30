@@ -637,6 +637,7 @@ export type ChatStreamEvent =
     }
   | {
       type: "error";
+      code?: string;
       message: string;
     };
 
@@ -728,13 +729,19 @@ export interface HivewardUpdateStatus {
   checkedAt: string;
   updateAvailable: boolean;
   canApply: boolean;
+  canForceApply?: boolean;
   applyCommand: string;
+  forceApplyCommand?: string;
   restartRequired: boolean;
   error?: string;
 }
 
 export interface HivewardUpdateResponse {
   update: HivewardUpdateStatus;
+}
+
+export interface ApplyHivewardUpdateRequest {
+  force?: boolean;
 }
 
 export interface ApplyHivewardUpdateResponse {

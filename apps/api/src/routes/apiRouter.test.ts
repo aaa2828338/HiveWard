@@ -6,7 +6,9 @@ import express from "express";
 import { describe, expect, it } from "vitest";
 import {
   MockRuntimeAdapter,
+  RuntimeAdapterError,
   type RuntimeChatSessionInput,
+  type RuntimeChatSessionResult,
   type RuntimeChatSessionTitleInput,
   type RuntimeChatStreamInput
 } from "@hiveward/adapter";
@@ -64,6 +66,15 @@ class TrackingAdapter extends MockRuntimeAdapter {
   override async getRuntimeOverview(): Promise<RuntimeOverview> {
     this.runtimeOverviewCalls += 1;
     throw new Error("runtime overview is not on the run read path");
+  }
+}
+
+class OpenClawGatewayNotConfiguredAdapter extends TrackingAdapter {
+  override async createChatSession(_input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult> {
+    throw new RuntimeAdapterError(
+      "openclaw_gateway_not_configured",
+      "OpenClaw Gateway is not configured."
+    );
   }
 }
 
@@ -2473,6 +2484,32 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward blueprint run");
         expect(adapter.lastChatStreamInput?.modelId).toBe("openclaw/default");
         expect(adapter.lastChatStreamInput?.thinking).toBe("medium");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams a narrow OpenClaw connection error when Gateway is not configured", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new OpenClawGatewayNotConfiguredAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "openclaw",
+          message: "Say hello from chat.",
+          attachments: [],
+          modelId: "openclaw/default",
+          agentId: "main",
+          thinkingEffort: "medium"
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("event: error");
+        expect(text).toContain("\"code\":\"openclaw_gateway_not_configured\"");
+        expect(text).toContain("OpenClaw Gateway is not configured.");
+        expect(text).not.toContain("completed through runtime adapter");
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

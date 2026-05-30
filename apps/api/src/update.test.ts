@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -89,6 +89,72 @@ describe("Hiveward update status", () => {
       expect(result.update.updateAvailable).toBe(true);
       expect(result.update.canApply).toBe(false);
       expect(result.output).toContain("local changes");
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  });
+
+  it("force applies a Git update with local changes and restores platform data directories", async () => {
+    const fixture = createPackageFixture("0.1.1");
+    const rootArtifact = join(fixture, "data", "artifacts", "run.txt");
+    const legacyArtifact = join(fixture, "apps", "web", "data", "artifacts", "legacy-run.txt");
+    mkdirSync(join(fixture, "data", "artifacts"), { recursive: true });
+    mkdirSync(join(fixture, "apps", "web", "data", "artifacts"), { recursive: true });
+    writeFileSync(rootArtifact, "root artifact", "utf8");
+    writeFileSync(legacyArtifact, "legacy artifact", "utf8");
+
+    try {
+      const currentCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      const latestCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      const calls: string[] = [];
+      let resetApplied = false;
+      const runner: UpdateCommandRunner = async (command, args) => {
+        const key = [command, ...args].join(" ");
+        calls.push(key);
+        switch (key) {
+          case "git rev-parse --show-toplevel":
+            return { stdout: fixture, stderr: "" };
+          case "git remote get-url origin":
+            return { stdout: "https://github.com/Chaunyzhang/HiveWard.git\n", stderr: "" };
+          case "git symbolic-ref --quiet --short refs/remotes/origin/HEAD":
+            return { stdout: "origin/main\n", stderr: "" };
+          case "git branch --show-current":
+            return { stdout: "main\n", stderr: "" };
+          case "git fetch --quiet origin main":
+            return { stdout: "", stderr: "" };
+          case "git rev-parse HEAD":
+            return { stdout: `${resetApplied ? latestCommit : currentCommit}\n`, stderr: "" };
+          case "git rev-parse origin/main":
+            return { stdout: `${latestCommit}\n`, stderr: "" };
+          case "git rev-list --left-right --count HEAD...origin/main":
+            return { stdout: resetApplied ? "0\t0\n" : "0\t1\n", stderr: "" };
+          case "git status --porcelain":
+            return { stdout: resetApplied ? "" : " M package.json\n", stderr: "" };
+          case "git reset --hard origin/main":
+            resetApplied = true;
+            rmSync(join(fixture, "data"), { recursive: true, force: true });
+            rmSync(join(fixture, "apps", "web", "data"), { recursive: true, force: true });
+            return { stdout: `HEAD is now at ${latestCommit.slice(0, 7)}\n`, stderr: "" };
+          case "npm install":
+            return { stdout: "installed\n", stderr: "" };
+          default:
+            throw new Error(`Unexpected command: ${key}`);
+        }
+      };
+
+      const result = await applyHivewardUpdate({
+        repositoryRoot: fixture,
+        runner,
+        force: true,
+        now: () => new Date("2026-05-26T00:00:00.000Z")
+      });
+
+      expect(result.applied).toBe(true);
+      expect(calls).toContain("git reset --hard origin/main");
+      expect(result.output).toContain("Restored HiveWard platform data: data, apps/web/data.");
+      expect(readFileSync(rootArtifact, "utf8")).toBe("root artifact");
+      expect(readFileSync(legacyArtifact, "utf8")).toBe("legacy artifact");
+      expect(result.update.updateAvailable).toBe(false);
     } finally {
       rmSync(fixture, { recursive: true, force: true });
     }

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { cp, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ApplyHivewardUpdateResponse, HivewardUpdateStatus } from "@hiveward/shared";
 
@@ -21,6 +22,10 @@ export interface HivewardUpdateOptions {
   now?: () => Date;
   runner?: UpdateCommandRunner;
   fetcher?: typeof fetch;
+}
+
+export interface ApplyHivewardUpdateOptions extends HivewardUpdateOptions {
+  force?: boolean;
 }
 
 interface RootPackageJson {
@@ -55,6 +60,7 @@ const defaultGitBranch = "main";
 const defaultRegistryUrl = "https://registry.npmjs.org";
 const defaultDistTag = "latest";
 const cliPackageName = "@hiveward/cli";
+const protectedPlatformDataPaths = ["data", join("apps", "web", "data")];
 
 export async function getHivewardUpdateStatus(options: HivewardUpdateOptions = {}): Promise<HivewardUpdateStatus> {
   const root = options.repositoryRoot ?? repositoryRoot;
@@ -103,8 +109,9 @@ export async function getHivewardUpdateStatus(options: HivewardUpdateOptions = {
   }
 }
 
-export async function applyHivewardUpdate(options: HivewardUpdateOptions = {}): Promise<ApplyHivewardUpdateResponse> {
+export async function applyHivewardUpdate(options: ApplyHivewardUpdateOptions = {}): Promise<ApplyHivewardUpdateResponse> {
   const root = options.repositoryRoot ?? repositoryRoot;
+  const env = options.env ?? process.env;
   const runner = options.runner ?? runCommand;
   const update = await getHivewardUpdateStatus({ ...options, repositoryRoot: root, runner });
 
@@ -112,7 +119,7 @@ export async function applyHivewardUpdate(options: HivewardUpdateOptions = {}): 
     return { update, applied: false, output: "Hiveward is already up to date." };
   }
 
-  if (!update.canApply) {
+  if (!update.canApply && !(options.force && update.source === "git" && update.canForceApply)) {
     return {
       update,
       applied: false,
@@ -121,8 +128,19 @@ export async function applyHivewardUpdate(options: HivewardUpdateOptions = {}): 
   }
 
   if (update.source === "git") {
-    const remote = defaultGitRemote;
+    const remote = env.HIVEWARD_UPDATE_GIT_REMOTE ?? defaultGitRemote;
     const branch = update.remoteBranch ?? defaultGitBranch;
+    if (options.force) {
+      const forced = await applyForcedGitUpdate({ root, env, remote, branch, runner });
+      const install = await runner("npm", ["install"], { cwd: root, timeoutMs: 300000 });
+      const nextUpdate = await getHivewardUpdateStatus({ ...options, repositoryRoot: root, runner });
+      return {
+        update: nextUpdate,
+        applied: true,
+        output: [forced.output, install.stdout, install.stderr].filter(Boolean).join("\n").trim()
+      };
+    }
+
     const pull = await runner("git", ["pull", "--ff-only", remote, branch], { cwd: root, timeoutMs: 120000 });
     const install = await runner("npm", ["install"], { cwd: root, timeoutMs: 300000 });
     const nextUpdate = await getHivewardUpdateStatus({ ...options, repositoryRoot: root, runner });
@@ -169,7 +187,14 @@ async function getGitUpdateStatus({
   const { ahead, behind } = await readGitAheadBehind(root, remoteRef, runner);
   const dirty = Boolean(await readOptionalCommand(runner, "git", ["status", "--porcelain"], root));
   const updateAvailable = behind > 0 || (behind === 0 && ahead === 0 && currentCommit !== latestCommit);
-  const canApply = updateAvailable && !dirty && currentBranch === remoteBranch;
+  const onRemoteBranch = currentBranch === remoteBranch;
+  const canApply = updateAvailable && !dirty && onRemoteBranch;
+  const applyBlockers = [
+    dirty ? "Working tree has local changes; commit or stash them before applying an automatic update." : undefined,
+    updateAvailable && !onRemoteBranch
+      ? `Current branch is ${currentBranch || "detached"}; automatic update expects ${remoteBranch}.`
+      : undefined
+  ].filter(Boolean);
 
   return {
     source: "git",
@@ -183,10 +208,115 @@ async function getGitUpdateStatus({
     checkedAt,
     updateAvailable,
     canApply,
+    canForceApply: updateAvailable,
     applyCommand: `git pull --ff-only ${remote} ${remoteBranch} && npm install`,
+    forceApplyCommand: `git fetch --quiet ${remote} ${remoteBranch} && git reset --hard ${remoteRef} && npm install`,
     restartRequired: true,
-    error: updateAvailable && dirty ? "Working tree has local changes; commit or stash them before applying an automatic update." : undefined
+    error: applyBlockers.length ? applyBlockers.join(" ") : undefined
   };
+}
+
+async function applyForcedGitUpdate({
+  root,
+  env,
+  remote,
+  branch,
+  runner
+}: {
+  root: string;
+  env: NodeJS.ProcessEnv;
+  remote: string;
+  branch: string;
+  runner: UpdateCommandRunner;
+}): Promise<{ output: string }> {
+  const backup = await createPlatformDataBackup(root, env);
+  const output: string[] = [];
+  try {
+    const fetch = await runner("git", ["fetch", "--quiet", remote, branch], { cwd: root, timeoutMs: 120000 });
+    const reset = await runner("git", ["reset", "--hard", `${remote}/${branch}`], { cwd: root, timeoutMs: 120000 });
+    output.push(fetch.stdout, fetch.stderr, reset.stdout, reset.stderr);
+  } finally {
+    try {
+      const restored = await restorePlatformDataBackup(backup);
+      output.push(
+        restored.length
+          ? `Restored HiveWard platform data: ${restored.join(", ")}.`
+          : "No HiveWard platform data directories needed restoration."
+      );
+    } finally {
+      await removePlatformDataBackup(backup);
+    }
+  }
+  return { output: output.filter(Boolean).join("\n").trim() };
+}
+
+interface PlatformDataBackup {
+  backupRoot: string;
+  entries: Array<{
+    source: string;
+    backup: string;
+    label: string;
+  }>;
+}
+
+async function createPlatformDataBackup(root: string, env: NodeJS.ProcessEnv): Promise<PlatformDataBackup> {
+  const backupRoot = await mkdtemp(join(tmpdir(), "hiveward-force-update-"));
+  const entries: PlatformDataBackup["entries"] = [];
+
+  for (const source of resolvePlatformDataRoots(root, env)) {
+    if (!(await pathExists(source))) continue;
+    const label = relative(root, source).replace(/\\/g, "/");
+    const backup = join(backupRoot, ...label.split("/"));
+    await mkdir(dirname(backup), { recursive: true });
+    await cp(source, backup, { recursive: true, force: true });
+    entries.push({ source, backup, label });
+  }
+
+  return { backupRoot, entries };
+}
+
+async function restorePlatformDataBackup(backup: PlatformDataBackup): Promise<string[]> {
+  const restored: string[] = [];
+  for (const entry of backup.entries) {
+    if (!(await pathExists(entry.backup))) continue;
+    await mkdir(dirname(entry.source), { recursive: true });
+    await cp(entry.backup, entry.source, { recursive: true, force: true });
+    restored.push(entry.label);
+  }
+  return restored;
+}
+
+async function removePlatformDataBackup(backup: PlatformDataBackup): Promise<void> {
+  await rm(backup.backupRoot, { recursive: true, force: true });
+}
+
+function resolvePlatformDataRoots(root: string, env: NodeJS.ProcessEnv): string[] {
+  const roots = protectedPlatformDataPaths.map((path) => resolve(root, path));
+  const sqlitePath = env.HIVEWARD_SQLITE_PATH?.trim();
+  if (sqlitePath) {
+    const sqliteDataDir = dirname(isAbsolute(sqlitePath) ? resolve(sqlitePath) : resolve(root, sqlitePath));
+    if (isPathInsideOrEqual(sqliteDataDir, root)) roots.push(sqliteDataDir);
+  }
+  return [...new Set(roots.map((path) => resolve(path)))];
+}
+
+function isPathInsideOrEqual(path: string, parent: string): boolean {
+  const diff = relative(resolve(parent), resolve(path));
+  return diff === "" || (!diff.startsWith("..") && !isAbsolute(diff));
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+}
+
+function isNotFound(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && error.code === "ENOENT");
 }
 
 async function getNpmUpdateStatus({

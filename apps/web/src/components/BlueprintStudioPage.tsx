@@ -2366,20 +2366,39 @@ function ManagerModeField({
   t: Messages;
   onChange: (mode: ManagerPanelMode) => void;
 }) {
+  const activeIndex = Math.max(0, options.findIndex((option) => option.value === value));
+
   return (
     <div className="config-field manager-mode-field field-span-full">
       <span>{t.fields.managerMode}</span>
-      <div className="manager-mode-switch" role="radiogroup" aria-label={t.fields.managerMode}>
-        {options.map((option) => (
+      <div
+        className="manager-mode-control"
+        role="radiogroup"
+        aria-label={t.fields.managerMode}
+        style={{ "--manager-mode-count": options.length, "--manager-mode-index": activeIndex } as CSSProperties}
+      >
+        {options.map((option, index) => (
+          <span
+            key={`${option.value}-label`}
+            className="manager-mode-label"
+            data-active={option.value === value ? "true" : undefined}
+            style={{ gridColumn: index + 1 } as CSSProperties}
+            aria-hidden="true"
+          >
+            {option.label}
+          </span>
+        ))}
+        {options.map((option, index) => (
           <button
             key={option.value}
             type="button"
-            className={option.value === value ? "active" : ""}
-            aria-pressed={option.value === value}
+            role="radio"
+            className="manager-mode-hit-area"
+            style={{ gridColumn: index + 1 } as CSSProperties}
+            aria-checked={option.value === value}
+            aria-label={option.label}
             onClick={() => onChange(option.value as ManagerPanelMode)}
-          >
-            {option.label}
-          </button>
+          />
         ))}
       </div>
     </div>
@@ -2879,13 +2898,6 @@ function NodeConfigForm({
             />
           </label>
         )}
-        <AgentSkillField
-          className="field-span-full"
-          selectedSkills={config.skillIds ?? []}
-          skills={skills}
-          t={t}
-          onChange={(skillIds) => onPatchConfig({ skillIds })}
-        />
         <label className="field-span-full">
           <span>{t.fields.systemPrompt}</span>
           <textarea

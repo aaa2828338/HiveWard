@@ -46,7 +46,7 @@ Do not commit `.env`, `.env.*`, tokens, passwords, device identities, or local r
 Hiveward defaults to `OPENCLAW_ADAPTER=auto`.
 
 - If OpenClaw Gateway configuration is available through `OPENCLAW_GATEWAY_URL` or an OpenClaw config file, Hiveward connects to the real gateway.
-- If no gateway configuration is available, local development falls back to mock mode.
+- If no gateway configuration is available, OpenClaw runtime calls fail with an explicit `openclaw_gateway_not_configured` error.
 - Use `OPENCLAW_ADAPTER=mock` to force mock mode.
 - Use `OPENCLAW_ADAPTER=real` or `OPENCLAW_ADAPTER=gateway` to require a real gateway and fail when it is missing.
 

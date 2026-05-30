@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { GatewayAdapterConfig } from "./gateway-config";
 import { loadOrCreateGatewayDeviceIdentity, signGatewayDevice } from "./gateway-device";
+import {
+  RuntimeAdapterError,
+  createOpenClawGatewayNotConnectedError,
+  createOpenClawGatewayUnreachableError
+} from "./runtime-errors";
 
 interface GatewayResponseFrame {
   type: "res";
@@ -77,7 +82,7 @@ export class GatewaySession {
       this.connectResolve = resolve;
       this.connectReject = reject;
       this.connectTimer = setTimeout(
-        () => reject(new Error(`OpenClaw Gateway connect timeout: ${this.config.url}`)),
+        () => reject(createOpenClawGatewayUnreachableError(new Error("OpenClaw Gateway connect timeout."), this.config.url)),
         this.config.requestTimeoutMs,
       );
 
@@ -90,7 +95,7 @@ export class GatewaySession {
       this.ws.on("error", (error) => this.failConnect(error));
       this.ws.on("close", () => {
         this.connected = false;
-        this.rejectPending(new Error("OpenClaw Gateway connection closed."));
+        this.rejectPending(createOpenClawGatewayNotConnectedError());
       });
     });
   }
@@ -101,7 +106,7 @@ export class GatewaySession {
     opts?: { expectFinal?: boolean; timeoutMs?: number | null },
   ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("OpenClaw Gateway is not connected.");
+      throw createOpenClawGatewayNotConnectedError();
     }
 
     const id = randomUUID();
@@ -133,7 +138,7 @@ export class GatewaySession {
     opts?: { acceptedTimeoutMs?: number | null; finalTimeoutMs?: number | null },
   ): GatewayRequestLifecycle<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error("OpenClaw Gateway is not connected.");
+      throw createOpenClawGatewayNotConnectedError();
     }
 
     const id = randomUUID();
@@ -206,7 +211,7 @@ export class GatewaySession {
     this.ws?.close();
     this.ws = undefined;
     this.connected = false;
-    this.rejectPending(new Error("OpenClaw Gateway session closed."));
+    this.rejectPending(createOpenClawGatewayNotConnectedError());
   }
 
   private async handleMessage(raw: string): Promise<void> {
@@ -344,9 +349,13 @@ export class GatewaySession {
   }
 
   private failConnect(error: Error): void {
+    const runtimeError =
+      error instanceof RuntimeAdapterError || error instanceof GatewayRequestError
+        ? error
+        : createOpenClawGatewayUnreachableError(error, this.config.url);
     if (this.connectTimer) clearTimeout(this.connectTimer);
-    this.connectReject?.(error);
-    this.rejectPending(error);
+    this.connectReject?.(runtimeError);
+    this.rejectPending(runtimeError);
   }
 
   private emitEvent(event: string, payload: unknown): void {
