@@ -11544,6 +11544,16 @@ html[data-theme="light"] .architecture-role-metrics time {
   flex: 0 0 auto;
 }
 
+.node-detail-sidebar .node-title-editable,
+.node-detail-sidebar .node-title-input {
+  color: var(--accent);
+}
+
+html[data-theme="light"] .node-detail-sidebar .node-modal-header {
+  border-bottom-color: var(--line);
+  background: var(--paper-strong);
+}
+
 .node-detail-sidebar .node-modal-grid {
   flex: 1 1 auto;
   min-height: 0;
@@ -11958,36 +11968,87 @@ html[data-theme="light"] select {
   min-width: 0;
 }
 
-.manager-mode-switch {
+.manager-mode-control {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(var(--manager-mode-count, 3), minmax(0, 1fr));
+  align-items: stretch;
+  gap: 0;
+  min-height: 44px;
   padding: 3px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   background: var(--paper-raised, var(--paper-strong));
+  overflow: hidden;
 }
 
-.manager-mode-switch button {
+.manager-mode-control::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / var(--manager-mode-count, 3));
+  border-radius: calc(var(--radius-sm) - 2px);
+  background: rgb(245 154 11 / 0.18);
+  box-shadow: inset 0 0 0 1px rgb(245 154 11 / 0.24);
+  pointer-events: none;
+  transform: translateX(calc(var(--manager-mode-index, 0) * 100%));
+  transition:
+    transform 180ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.manager-mode-label {
+  position: relative;
+  z-index: 2;
+  grid-row: 1;
+  align-self: stretch;
   min-width: 0;
-  min-height: 38px;
-  justify-content: center;
-  padding: 6px 4px;
-  border-color: transparent;
-  background: transparent;
+  display: grid;
+  place-items: center;
+  padding: 8px 6px;
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 760;
-  transform: none;
+  pointer-events: none;
+  text-align: center;
   white-space: nowrap;
+  overflow: hidden;
+  max-width: 100%;
+  font-size: 13px;
+  font-weight: 720;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  transition:
+    color 140ms ease,
+    font-weight 140ms ease;
 }
 
-.manager-mode-switch button:hover:not(:disabled),
-.manager-mode-switch button.active {
-  border-color: rgb(245 154 11 / 0.30);
-  background: rgb(245 154 11 / 0.13);
+.manager-mode-label[data-active="true"] {
   color: var(--text);
-  transform: none;
+  font-weight: 860;
+}
+
+.manager-mode-hit-area {
+  all: unset;
+  position: relative;
+  z-index: 3;
+  grid-row: 1;
+  align-self: stretch;
+  min-width: 0;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  outline: none;
+  transform: none !important;
+  appearance: none;
+}
+
+.manager-mode-hit-area:focus-visible {
+  outline: 2px solid rgb(245 154 11 / 0.48);
+  outline-offset: -3px;
 }
 
 .blueprint-permission-field {
