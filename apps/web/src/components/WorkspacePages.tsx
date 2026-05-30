@@ -4,6 +4,8 @@ import {
   Activity,
   ArrowLeft,
   BadgeCheck,
+  Bot,
+  BotMessageSquare,
   Check,
   ChevronRight,
   Clock3,
@@ -20,6 +22,7 @@ import {
   Search,
   Send,
   Trash2,
+  UserRound,
   X
 } from "lucide-react";
 import type {
@@ -67,6 +70,7 @@ type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
 type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
 type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
+type RunIterationRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
 type RunOutputTabKey = "current" | "plan" | "agentReports" | "release" | "artifacts" | "advanced";
 
@@ -175,7 +179,8 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
-  kind: "node" | "report" | "timeline";
+  kind: "node" | "report" | "timeline" | "round_research";
+  actorKind: "manager" | "agent" | "user" | "system";
   depth: number;
   node?: BlueprintNode;
   nodeRun?: BlueprintNodeRun;
@@ -183,6 +188,11 @@ type TraceIssue = {
   timelineItem?: RunTimelineTraceItem;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
+  roundLabel?: string;
+  roundTone?: number;
+  roleTag: string;
+  workTags: string[];
+  timestamp?: string;
   outputPreview: string;
   outputBody?: string;
   events: BlueprintNodeEvent[];
@@ -740,19 +750,41 @@ export function RunsPage({
                   <button
                     key={issue.key}
                     type="button"
-                    className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${activeIssue?.key === issue.key ? "selected" : ""}`}
+                    className={`trace-issue-card trace-issue-${issue.kind} trace-issue-depth-${issue.depth} ${issue.roundLabel ? "has-round-ribbon" : ""} ${activeIssue?.key === issue.key ? "selected" : ""}`}
                     onClick={() => {
                       setActiveIssueKey(issue.key);
                       setActiveOutputTab("current");
                     }}
                   >
-                    <div className="trace-issue-index">{issue.index}</div>
+                    {issue.roundLabel && (
+                      <div className={`trace-round-ribbon trace-round-tone-${issue.roundTone ?? 1}`}>
+                        {issue.roundLabel}
+                      </div>
+                    )}
                     <div className="trace-issue-main">
                       <div className="trace-issue-topline">
-                        <strong>{issue.label}</strong>
+                        <div className="trace-actor-title">
+                          <span className={`trace-role-icon trace-role-${issue.actorKind}`}>
+                            {traceIssueIcon(issue.actorKind)}
+                          </span>
+                          <strong>{issue.label}</strong>
+                        </div>
                         <span className={`trace-status-chip trace-${issue.issueStatus}`}>{traceIssueStatusLabel(issue.issueStatus, language)}</span>
                       </div>
                       <MarkdownRenderer value={issue.outputPreview} className="trace-issue-preview" />
+                      <div className="trace-issue-footer">
+                        <div className="trace-work-tags">
+                          <span className={`trace-role-tag trace-role-tag-${issue.actorKind}`}>{issue.roleTag}</span>
+                          {issue.workTags.map((tag) => (
+                            <span className={`trace-work-tag trace-work-tag-${workTagTone(tag)}`} key={tag}>{tag}</span>
+                          ))}
+                        </div>
+                        {issue.timestamp && (
+                          <time className="trace-issue-time" dateTime={issue.timestamp}>
+                            {formatTraceTime(issue.timestamp, language)}
+                          </time>
+                        )}
+                      </div>
                     </div>
                   </button>
                 ))
@@ -1015,7 +1047,7 @@ function buildHumanReportDisplayBody(
 ): string {
   const body = bodyMd.trim();
   const reportBody = hasDeliverySection(body)
-    ? body
+    ? appendRecordedArtifactsSection(body, artifacts, language)
     : insertDeliverySectionNearTop(body, buildDeliverySection(artifacts, language));
   return localizeHumanReportBody(reportBody, language);
 }
@@ -1060,6 +1092,22 @@ function insertDeliverySectionNearTop(body: string, deliverySection: string): st
     "",
     ...lines.slice(insertAt)
   ].join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function appendRecordedArtifactsSection(body: string, artifacts: RunArtifact[], language: Language): string {
+  const deliveryItems = collectDeliveryItems(artifacts, language)
+    .filter((item) => !body.includes(item.location));
+  if (!deliveryItems.length) return body;
+
+  const zh = language === "zh-CN";
+  const title = zh ? "## \u7cfb\u7edf\u8bb0\u5f55\u7684\u4ea7\u7269" : "## System-recorded artifacts";
+  return [
+    body,
+    "",
+    title,
+    "",
+    ...deliveryItems.map((item) => `- ${item.label}: ${item.location}`)
+  ].join("\n").trim();
 }
 
 function buildDeliverySection(artifacts: RunArtifact[], language: Language): string {
@@ -3734,12 +3782,22 @@ function buildTraceIssues(
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
   const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
   const humanReportIds = new Set((activeRun.agentHumanReports ?? []).map((report) => report.id));
-  const visibleNodeRuns = activeRun.nodeRuns.filter((nodeRun) => nodeRun.nodeType !== "manager_slot");
+  const nodeTimelineItemsByNodeRunId = buildNodeRunTimelineItemMap(activeRun, nodeRunIds);
+  const managerContainerNodeRunIds = managerContainerNodeRunIdsWithDecisionReports(activeRun);
+  const visibleNodeRuns = activeRun.nodeRuns.filter(
+    (nodeRun) => nodeRun.nodeType !== "manager_slot" && !managerContainerNodeRunIds.has(nodeRun.id)
+  );
   const nodeItems = visibleNodeRuns.map((nodeRun, order) => ({
     kind: "node" as const,
     nodeRun,
     order,
     createdAt: traceTimestampForNodeRun(nodeRun)
+  }));
+  const roundResearchItems = buildRoundResearchTraceItems(activeRun).map((round, order) => ({
+    kind: "round_research" as const,
+    round,
+    order: -10_000 + order,
+    createdAt: round.startedAt
   }));
   const timelineItems = buildRunTimelineTraceItems(activeRun, nodeRunIds, humanReportIds, language).map((timelineItem, order) => ({
     kind: "timeline" as const,
@@ -3752,22 +3810,67 @@ function buildTraceIssues(
     .map((humanReport, order) => ({
       kind: "report" as const,
       humanReport,
-      order: visibleNodeRuns.length + timelineItems.length + order,
+      order: visibleNodeRuns.length + roundResearchItems.length + timelineItems.length + order,
       createdAt: humanReport.createdAt
     }));
 
-  return [...nodeItems, ...timelineItems, ...reportItems]
+  return [...roundResearchItems, ...nodeItems, ...timelineItems, ...reportItems]
     .sort(compareTraceChronologyItems)
     .map((item, index) => {
+      if (item.kind === "round_research") {
+        return createRoundResearchTraceIssue(activeRun, blueprint, item.round, index + 1, t, language);
+      }
       if (item.kind === "node") {
         const node = nodesById.get(item.nodeRun.nodeId);
-        return createNodeTraceIssue(activeRun, item.nodeRun, node, index + 1, node?.parentId ? 1 : 0, t, language);
+        return createNodeTraceIssue(
+          activeRun,
+          item.nodeRun,
+          node,
+          nodeTimelineItemsByNodeRunId.get(item.nodeRun.id) ?? [],
+          index + 1,
+          node?.parentId ? 1 : 0,
+          t,
+          language
+        );
       }
       if (item.kind === "timeline") {
         return createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
       }
       return createReportTraceIssue(activeRun, item.humanReport, index + 1, t, language);
     });
+}
+
+function buildRoundResearchTraceItems(activeRun: BlueprintRunView): RunIterationRound[] {
+  return (activeRun.iterationRounds ?? [])
+    .filter((round) => round.researchStatus === "context_sufficient")
+    .filter((round) => !activeRun.nodeRuns.some((nodeRun) =>
+      nodeRun.iterationRoundId === round.id && preflightModeFromNodeRunId(nodeRun.id) === "research_resolution"
+    ));
+}
+
+function buildNodeRunTimelineItemMap(
+  activeRun: BlueprintRunView,
+  nodeRunIds: Set<string>
+): Map<string, RunTimelineTraceItem[]> {
+  const itemsByNodeRunId = new Map<string, RunTimelineTraceItem[]>();
+  for (const item of activeRun.runTimeline ?? []) {
+    if ((item.kind !== "node_started" && item.kind !== "node_output") || !item.payloadRef || !nodeRunIds.has(item.payloadRef)) {
+      continue;
+    }
+    const existing = itemsByNodeRunId.get(item.payloadRef) ?? [];
+    existing.push(item);
+    itemsByNodeRunId.set(item.payloadRef, existing);
+  }
+  return itemsByNodeRunId;
+}
+
+function managerContainerNodeRunIdsWithDecisionReports(activeRun: BlueprintRunView): Set<string> {
+  const ids = new Set<string>();
+  for (const report of activeRun.agentHumanReports ?? []) {
+    const match = report.nodeRunId.match(/^(.+)-manager-decision-\d+$/);
+    if (match?.[1]) ids.add(match[1]);
+  }
+  return ids;
 }
 
 function buildRunTimelineTraceItems(
@@ -3778,16 +3881,12 @@ function buildRunTimelineTraceItems(
 ): RunTimelineTraceItem[] {
   const visible = (activeRun.runTimeline ?? [])
     .filter((item) => isVisibleRunTimelineKind(item.kind))
-    .filter((item) => item.kind !== "node_output" || !item.payloadRef || !humanReportIds.has(item.payloadRef))
+    .filter((item) => item.kind !== "node_output" || !item.payloadRef || (!humanReportIds.has(item.payloadRef) && !nodeRunIds.has(item.payloadRef)))
     .filter((item) => item.kind !== "node_started" || !item.payloadRef || !nodeRunIds.has(item.payloadRef));
   const eventFallback = visible.length === 0
     ? buildRunEventTimelineFallbackItems(activeRun, nodeRunIds, language)
     : [];
-  const artifactFallback = visible.some((item) => item.kind === "artifact_published")
-    ? []
-    : buildArtifactTimelineFallbackItems(activeRun);
-  const projected = [...visible, ...eventFallback, ...artifactFallback];
-  return [...projected, ...buildSyntheticPreflightTimelineItems(activeRun, projected, language)];
+  return [...visible, ...eventFallback];
 }
 
 function buildRunEventTimelineFallbackItems(
@@ -3799,6 +3898,7 @@ function buildRunEventTimelineFallbackItems(
   return activeRun.events.flatMap((event, index) => {
     const kind = runEventTimelineKind(event.type);
     if (!kind) return [];
+    if (!isVisibleRunTimelineKind(kind)) return [];
     if (event.nodeRunId && nodeRunIds.has(event.nodeRunId)) return [];
     const nodeRun = event.nodeRunId ? nodeRunsById.get(event.nodeRunId) : undefined;
     return [{
@@ -3851,77 +3951,20 @@ function runEventTimelineTitle(
   return event.message;
 }
 
-function buildArtifactTimelineFallbackItems(activeRun: BlueprintRunView): RunTimelineTraceItem[] {
-  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
-  return (activeRun.artifacts ?? []).map((artifact, index) => {
-    const nodeRun = artifact.nodeRunId ? nodeRunsById.get(artifact.nodeRunId) : undefined;
-    return {
-      id: `artifact-timeline-${artifact.id}`,
-      runId: artifact.runId,
-      sequence: index + 1,
-      createdAt: artifact.createdAt,
-      actorNodeId: artifact.nodeRunId,
-      actorLabel: nodeRun?.nodeLabel ?? artifact.title ?? artifact.kind,
-      kind: "artifact_published",
-      title: artifact.title ?? artifact.kind,
-      body: artifact.downloadUrl ?? artifact.relativePath ?? artifact.storagePath,
-      payloadRef: artifact.id
-    };
-  });
-}
-
 function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {
-  return kind === "round_started" ||
-    kind === "requirement_published" ||
-    kind === "decision_created" ||
-    kind === "node_started" ||
+  return kind === "node_started" ||
     kind === "node_output" ||
-    kind === "artifact_published" ||
-    kind === "release_report_published" ||
-    kind === "round_completed" ||
     kind === "round_failed" ||
     kind === "round_cancelled" ||
-    kind === "run_completed" ||
     kind === "run_failed" ||
     kind === "run_cancelled";
-}
-
-function buildSyntheticPreflightTimelineItems(
-  activeRun: BlueprintRunView,
-  timelineItems: RunTimelineTraceItem[],
-  language: Language
-): RunTimelineTraceItem[] {
-  const zh = language === "zh-CN";
-  const synthetic: RunTimelineTraceItem[] = [];
-  for (const round of activeRun.iterationRounds ?? []) {
-    const hasPreflightStarted = timelineItems.some((item) =>
-      item.kind === "node_started" && item.payloadRef?.startsWith("preflight-") && item.payloadRef.includes(round.id)
-    );
-    if (round.status !== "requirement_pending" || round.requirementRequestId || hasPreflightStarted) continue;
-    const roundStart = timelineItems.find((item) => item.kind === "round_started" && toSafeTimestamp(item.createdAt) === toSafeTimestamp(round.startedAt));
-    synthetic.push({
-      id: `synthetic-preflight-${round.id}`,
-      runId: activeRun.run.id,
-      sequence: (roundStart?.sequence ?? 0) + 0.1,
-      createdAt: round.startedAt,
-      actorNodeId: roundStart?.actorNodeId,
-      actorLabel: roundStart?.actorLabel ?? "Manager",
-      kind: "node_started",
-      title: zh ? `Manager 正在准备第 ${round.roundNumber} 轮计划` : `Manager is preparing round ${round.roundNumber}`,
-      body: zh
-        ? "调研、提需和计划整理都属于运行步骤。完成后会把本轮计划送到收件箱审批。"
-        : "Research, requirement drafting, and plan preparation are part of the run. The round plan will move to inbox approval when ready.",
-      payloadRef: `synthetic-preflight-${round.id}`
-    });
-  }
-
-  return synthetic;
 }
 
 function createNodeTraceIssue(
   activeRun: BlueprintRunView,
   nodeRun: BlueprintNodeRun,
   node: BlueprintNode | undefined,
+  timelineItems: RunTimelineTraceItem[],
   index: number,
   depth: number,
   t: Messages,
@@ -3934,21 +3977,50 @@ function createNodeTraceIssue(
   const readableBody = humanReport
     ? buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language)
     : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language);
+  const outputBody = appendNodeTimelineDetails(readableBody, timelineItems, language);
+  const round = roundForNodeRun(activeRun, nodeRun);
+  const actorKind = traceActorKindForNodeRun(nodeRun);
   return {
     key: nodeRun.id,
     index,
     label,
     kind: "node",
+    actorKind,
     depth,
     node,
     nodeRun,
     humanReport,
     issueStatus: toIssueStatus(nodeRun.status),
     statusLabel: statusLabelForNodeRun(nodeRun.status, t),
+    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
+    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    roleTag: roleTagForActorKind(actorKind, language),
+    workTags: workTagsForNodeRun(nodeRun, label, language),
+    timestamp: traceTimestampForNodeRun(nodeRun),
     outputPreview: summarizeOutput(readableBody ?? nodeRun.output, t),
-    outputBody: readableBody,
+    outputBody,
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
+}
+
+function appendNodeTimelineDetails(
+  readableBody: string | undefined,
+  timelineItems: RunTimelineTraceItem[],
+  language: Language
+): string | undefined {
+  const details = timelineItems
+    .filter((item) => item.kind === "node_output")
+    .map((item) => localizeTimelineBody(item.body, language)?.trim())
+    .filter((body): body is string => Boolean(body));
+  if (!details.length) return readableBody;
+
+  const bodyText = readableBody?.trim() ?? "";
+  const uniqueDetails = details.filter((detail) => detail !== bodyText);
+  if (!uniqueDetails.length) return readableBody;
+
+  const zh = language === "zh-CN";
+  const timelineBody = [`### ${zh ? "过程记录" : "Timeline"}`, ...uniqueDetails].join("\n\n");
+  return [readableBody, timelineBody].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
 }
 
 function createReportTraceIssue(
@@ -3961,37 +4033,121 @@ function createReportTraceIssue(
   const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === humanReport.nodeRunId) ?? [];
   const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === humanReport.nodeRunId);
   const body = buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language);
+  const round = nodeRun ? roundForNodeRun(activeRun, nodeRun) : roundForReport(activeRun, humanReport);
+  const actorKind = nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindFromLabel(humanReport.nodeLabel);
   return {
     key: `report:${humanReport.id}`,
     index,
     label: formatReportTraceLabel(humanReport.nodeLabel, humanReport.nodeRunId, language),
     kind: "report",
+    actorKind,
     depth: 0,
     humanReport,
     issueStatus: "completed",
     statusLabel: t.trace.completed,
+    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
+    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    roleTag: roleTagForActorKind(actorKind, language),
+    workTags: workTagsForReport(humanReport, nodeRun, language),
+    timestamp: humanReport.createdAt,
     outputPreview: summarizeOutput(body, t),
     outputBody: body,
     events: []
   };
 }
 
-function formatNodeTraceLabel(label: string, nodeRun: BlueprintNodeRun, language: Language): string {
+function createRoundResearchTraceIssue(
+  activeRun: BlueprintRunView,
+  blueprint: BlueprintDefinition | undefined,
+  round: RunIterationRound,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const body = buildRoundResearchTraceBody(round, language);
+  return {
+    key: `round-research:${round.id}`,
+    index,
+    label: roundResearchManagerLabel(activeRun, blueprint, language),
+    kind: "round_research",
+    actorKind: "manager",
+    depth: 0,
+    issueStatus: "completed",
+    statusLabel: traceIssueStatusLabel("completed", language),
+    roundLabel: formatRoundRibbonLabel(round.roundNumber, language),
+    roundTone: roundTone(round.roundNumber),
+    roleTag: roleTagForActorKind("manager", language),
+    workTags: [preflightWorkTag("research_resolution", language)],
+    timestamp: round.startedAt,
+    outputPreview: summarizeOutput(body, t),
+    outputBody: body,
+    events: []
+  };
+}
+
+function roundResearchManagerLabel(
+  activeRun: BlueprintRunView,
+  blueprint: BlueprintDefinition | undefined,
+  language: Language
+): string {
+  const blueprintManager = blueprint?.nodes.find((node) => node.type === "manager")?.config.label;
+  const runManager = activeRun.nodeRuns.find((nodeRun) => nodeRun.nodeType === "manager")?.nodeLabel;
+  const reportManager = activeRun.agentHumanReports?.find((report) => traceActorKindFromLabel(report.nodeLabel) === "manager")?.nodeLabel;
+  return cleanTraceActorLabel(blueprintManager ?? runManager ?? reportManager ?? "Manager");
+}
+
+function buildRoundResearchTraceBody(round: RunIterationRound, language: Language): string {
   const zh = language === "zh-CN";
-  if (nodeRun.nodeType === "manager") return `${label} · ${zh ? "\u6267\u884c\u8c03\u5ea6" : "dispatch"}`;
-  return label;
+  const lead = zh
+    ? "已复用上一轮上下文，判断不需要额外调研。"
+    : "Reused previous round context and determined no additional research is needed.";
+  const status = round.researchStatus ? roundResearchStatusLabel(round.researchStatus, language) : undefined;
+  const summary = round.researchSummary?.trim();
+  return [
+    `## ${zh ? "\u8c03\u7814\u5224\u65ad" : "Research decision"}`,
+    "",
+    lead,
+    "",
+    `## ${zh ? "\u7cfb\u7edf\u8bb0\u5f55" : "System record"}`,
+    "",
+    status ? `${zh ? "\u8c03\u7814\u72b6\u6001" : "Research status"}：${status}` : undefined,
+    round.planSource ? `${zh ? "\u8ba1\u5212\u6765\u6e90" : "Plan source"}：${round.planSource}` : undefined,
+    summary ? "" : undefined,
+    summary ? `## ${zh ? "\u590d\u7528\u4f9d\u636e" : "Reused context"}` : undefined,
+    summary ? "" : undefined,
+    summary
+  ].filter((part): part is string => part !== undefined).join("\n").trim();
+}
+
+function roundResearchStatusLabel(status: NonNullable<RunIterationRound["researchStatus"]>, language: Language): string {
+  const zh = language === "zh-CN";
+  if (status === "context_sufficient") return zh ? "\u4e0a\u4e0b\u6587\u8db3\u591f" : "Context sufficient";
+  if (status === "not_required") return zh ? "\u65e0\u9700\u8c03\u7814" : "Not required";
+  if (status === "user_provided") return zh ? "\u7528\u6237\u5df2\u63d0\u4f9b" : "User provided";
+  if (status === "agent_generated") return zh ? "Agent \u751f\u6210" : "Agent generated";
+  if (status === "manager_fallback") return zh ? "Manager \u5224\u65ad" : "Manager fallback";
+  if (status === "assumption_based") return zh ? "\u57fa\u4e8e\u5047\u8bbe" : "Assumption based";
+  if (status === "blocked") return zh ? "\u5df2\u963b\u585e" : "Blocked";
+  return status;
+}
+
+function formatNodeTraceLabel(label: string, nodeRun: BlueprintNodeRun, language: Language): string {
+  return cleanTraceActorLabel(label);
 }
 
 function formatReportTraceLabel(label: string, nodeRunId: string, language: Language): string {
-  const displayLabel = localizeReportNodeLabel(label, language);
-  const mode = preflightModeFromNodeRunId(nodeRunId);
-  if (!mode) return displayLabel;
-  return `${displayLabel} · ${preflightModeDisplayLabel(mode, language)}`;
+  return localizeReportNodeLabel(label, language);
 }
 
 function localizeReportNodeLabel(label: string, language: Language): string {
-  if (language !== "zh-CN") return label;
-  return label.replace(/\s+dispatch\s+(\d+)$/i, " \u00b7 \u8c03\u5ea6 $1");
+  return cleanTraceActorLabel(label);
+}
+
+function cleanTraceActorLabel(label: string): string {
+  return label
+    .replace(/\s+dispatch\s+\d+$/i, "")
+    .replace(/\s*[\u00b7-]\s*\u8c03\u5ea6\s*\d+$/i, "")
+    .trim();
 }
 
 function preflightModeFromNodeRunId(nodeRunId: string): RunPreflightMode | undefined {
@@ -4023,15 +4179,23 @@ function createTimelineTraceIssue(
 ): TraceIssue {
   const body = buildTimelineIssueBody(activeRun, timelineItem, language);
   const issueStatus = timelineIssueStatus(activeRun, timelineItem);
+  const round = roundForTimelineItem(activeRun, timelineItem);
+  const actorKind = traceActorKindForTimelineItem(timelineItem);
   return {
     key: `timeline:${timelineItem.id}`,
     index,
     label: timelineIssueTitle(timelineItem, language),
     kind: "timeline",
+    actorKind,
     depth: 0,
     timelineItem,
     issueStatus,
     statusLabel: traceIssueStatusLabel(issueStatus, language),
+    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
+    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    roleTag: roleTagForActorKind(actorKind, language),
+    workTags: workTagsForTimelineItem(timelineItem, language),
+    timestamp: timelineItem.createdAt,
     outputPreview: summarizeOutput(body, t),
     outputBody: body,
     events: []
@@ -4039,6 +4203,7 @@ function createTimelineTraceIssue(
 }
 
 type TraceChronologyItem =
+  | { kind: "round_research"; round: RunIterationRound; order: number; createdAt: string }
   | { kind: "node"; nodeRun: BlueprintNodeRun; order: number; createdAt: string }
   | { kind: "timeline"; timelineItem: RunTimelineTraceItem; order: number; createdAt: string }
   | { kind: "report"; humanReport: RunAgentHumanReport; order: number; createdAt: string };
@@ -4049,6 +4214,156 @@ function compareTraceChronologyItems(left: TraceChronologyItem, right: TraceChro
 
 function traceTimestampForNodeRun(nodeRun: BlueprintNodeRun): string {
   return nodeRun.queuedAt || nodeRun.startedAt || nodeRun.endedAt || "";
+}
+
+function traceActorKindForNodeRun(nodeRun: BlueprintNodeRun | undefined): TraceIssue["actorKind"] {
+  if (!nodeRun) return "agent";
+  if (nodeRun.nodeType === "manager") return "manager";
+  return "agent";
+}
+
+function traceActorKindForTimelineItem(timelineItem: RunTimelineTraceItem): TraceIssue["actorKind"] {
+  return traceActorKindFromLabel(timelineItem.actorLabel);
+}
+
+function traceActorKindFromLabel(label: string): TraceIssue["actorKind"] {
+  if (label.toLowerCase() === "user") return "user";
+  if (/manager|调度|经理/i.test(label)) return "manager";
+  if (/agent|worker|执行|分析|制作|验收/i.test(label)) return "agent";
+  return "system";
+}
+
+function roundForNodeRun(activeRun: BlueprintRunView, nodeRun: BlueprintNodeRun): RunIterationRound | undefined {
+  if (!nodeRun.iterationRoundId) return undefined;
+  return activeRun.iterationRounds?.find((round) => round.id === nodeRun.iterationRoundId);
+}
+
+function roundForReport(activeRun: BlueprintRunView, humanReport: RunAgentHumanReport): RunIterationRound | undefined {
+  if (humanReport.roundId) {
+    const direct = activeRun.iterationRounds?.find((round) => round.id === humanReport.roundId);
+    if (direct) return direct;
+  }
+  return activeRun.iterationRounds?.find((round) => round.id && humanReport.nodeRunId.includes(round.id));
+}
+
+function roundForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): RunIterationRound | undefined {
+  if (timelineItem.kind === "artifact_published") {
+    const artifact = findTimelineArtifact(activeRun, timelineItem);
+    if (artifact?.roundId) {
+      return activeRun.iterationRounds?.find((round) => round.id === artifact.roundId);
+    }
+  }
+  const roundNumber = readRoundNumberFromText([timelineItem.title, timelineItem.body].filter(Boolean).join("\n"));
+  if (roundNumber !== undefined) {
+    return activeRun.iterationRounds?.find((round) => round.roundNumber === roundNumber);
+  }
+  return undefined;
+}
+
+function readRoundNumberFromText(value: string): number | undefined {
+  const numeric = value.match(/\bRound\s+(\d+)\b/i) ?? value.match(/第\s*(\d+)\s*轮/);
+  if (numeric?.[1]) {
+    const parsed = Number.parseInt(numeric[1], 10);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function formatRoundRibbonLabel(roundNumber: number, language: Language): string {
+  if (language === "zh-CN") return `第${toChineseRoundNumber(roundNumber)}轮`;
+  return `Round ${roundNumber}`;
+}
+
+function toChineseRoundNumber(value: number): string {
+  const digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+  if (value >= 0 && value <= 10) return digits[value] ?? String(value);
+  if (value > 10 && value < 20) return `十${digits[value - 10]}`;
+  if (value >= 20 && value < 100) {
+    const tens = Math.floor(value / 10);
+    const ones = value % 10;
+    return `${digits[tens]}十${ones ? digits[ones] : ""}`;
+  }
+  return String(value);
+}
+
+function roundTone(roundNumber: number): number {
+  return ((roundNumber - 1) % 5) + 1;
+}
+
+function roleTagForActorKind(kind: TraceIssue["actorKind"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (kind === "manager") return "Manager";
+  if (kind === "agent") return "Agent";
+  if (kind === "user") return zh ? "\u7528\u6237" : "User";
+  return zh ? "\u7cfb\u7edf" : "System";
+}
+
+function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: Language): string[] {
+  const mode = preflightModeFromNodeRunId(nodeRun.id);
+  if (mode) return [preflightWorkTag(mode, language)];
+  if (nodeRun.nodeType === "manager") return [dispatchWorkTag(language)];
+  return [workTagFromLabel(label, language, nodeRun.nodeType)];
+}
+
+function workTagsForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined, language: Language): string[] {
+  const mode = preflightModeFromNodeRunId(humanReport.nodeRunId);
+  if (mode) return [preflightWorkTag(mode, language)];
+  if (/manager-decision-\d+$/i.test(humanReport.nodeRunId) || /dispatch|调度/i.test(humanReport.nodeLabel)) {
+    return [dispatchWorkTag(language)];
+  }
+  if (nodeRun) return workTagsForNodeRun(nodeRun, humanReport.nodeLabel, language);
+  return [workTagFromLabel(humanReport.nodeLabel, language)];
+}
+
+function workTagsForTimelineItem(timelineItem: RunTimelineTraceItem, language: Language): string[] {
+  const zh = language === "zh-CN";
+  if (timelineItem.kind === "artifact_published") return [zh ? "产物" : "Artifact"];
+  if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output") {
+    return [workTagFromLabel(timelineItem.actorLabel, language)];
+  }
+  if (timelineItem.kind.includes("failed")) return [zh ? "异常" : "Issue"];
+  return [zh ? "运行" : "Run"];
+}
+
+function preflightWorkTag(mode: RunPreflightMode, language: Language): string {
+  const zh = language === "zh-CN";
+  if (mode === "research_resolution") return zh ? "\u8c03\u7814" : "Research";
+  if (mode === "requirement_resolution") return zh ? "\u63d0\u9700" : "Requirements";
+  if (mode === "revise_plan" || mode === "preflight_judgment") return zh ? "\u8ba1\u5212" : "Planning";
+  if (mode === "context_snapshot") return zh ? "\u590d\u76d8" : "Review";
+  return zh ? "\u51c6\u5907" : "Prep";
+}
+
+function dispatchWorkTag(language: Language): string {
+  return language === "zh-CN" ? "\u8c03\u5ea6" : "Dispatch";
+}
+
+function workTagTone(tag: string): string {
+  const normalized = tag.trim().toLowerCase();
+  if (/调研|research/.test(normalized)) return "research";
+  if (/提需|需求|requirements?/.test(normalized)) return "requirements";
+  if (/计划|planning|prep/.test(normalized)) return "planning";
+  if (/调度|dispatch/.test(normalized)) return "dispatch";
+  if (/页面|html|page/.test(normalized)) return "page";
+  if (/qa|验收|quality/.test(normalized)) return "qa";
+  if (/复盘|review|summary|汇总/.test(normalized)) return "review";
+  if (/产物|artifact/.test(normalized)) return "artifact";
+  if (/异常|issue|failed|error/.test(normalized)) return "issue";
+  return "default";
+}
+
+function workTagFromLabel(label: string, language: Language, nodeType?: BlueprintNodeRun["nodeType"]): string {
+  const zh = language === "zh-CN";
+  if (nodeType === "manager" || /manager|dispatch|调度|经理/i.test(label)) return dispatchWorkTag(language);
+  if (/需求分析|需求规划|提需|requirement/i.test(label)) return zh ? "提需" : "Requirements";
+  if (/页面|HTML|page/i.test(label)) return zh ? "页面制作" : "Page build";
+  if (/QA|验收|quality/i.test(label)) return zh ? "QA 验收" : "QA";
+  if (/调研|research/i.test(label)) return zh ? "调研" : "Research";
+  if (nodeType === "summary") return zh ? "汇总" : "Summary";
+  return label
+    .replace(/\s*(Agent|Manager|代理|智能体|经理)\s*$/i, "")
+    .replace(/\s+dispatch\s+\d+$/i, "")
+    .trim() || (zh ? "执行" : "Work");
 }
 
 function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): TraceIssueStatus {
@@ -4086,6 +4401,9 @@ function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimel
 }
 
 function timelineIssueTitle(timelineItem: RunTimelineTraceItem, language: Language): string {
+  if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output" || timelineItem.kind === "artifact_published") {
+    return formatTimelineActorLabel(timelineItem.actorLabel || timelineItem.title, language);
+  }
   const zh = language === "zh-CN";
   if (!zh) return timelineItem.title;
   const roundStarted = timelineItem.title.match(/^Round\s+(\d+)\s+started$/i);
@@ -4101,6 +4419,12 @@ function timelineIssueTitle(timelineItem: RunTimelineTraceItem, language: Langua
     return `${preflight[1]} · ${mode ? preflightModeDisplayLabel(mode, language) : preflight[2]}${action}`;
   }
   return timelineItem.title;
+}
+
+function formatTimelineActorLabel(label: string, language: Language): string {
+  return localizeReportNodeLabel(label, language)
+    .replace(/:\s*(research|requirement planning|plan revision|plan review|context snapshot)\s+(started|completed|failed)$/i, "")
+    .trim();
 }
 
 function buildTimelineIssueBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
@@ -4121,12 +4445,7 @@ function buildTimelineArtifactLocationLines(
   timelineItem: RunTimelineTraceItem,
   language: Language
 ): string[] | undefined {
-  const artifact = (activeRun.artifacts ?? []).find((candidate) =>
-    candidate.nodeRunId === timelineItem.actorNodeId &&
-    (!timelineItem.body || candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body || candidate.title === timelineItem.title)
-  ) ?? (activeRun.artifacts ?? []).find((candidate) =>
-    Boolean(timelineItem.body) && (candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body)
-  );
+  const artifact = findTimelineArtifact(activeRun, timelineItem);
   if (!artifact) return undefined;
 
   const zh = language === "zh-CN";
@@ -4141,6 +4460,16 @@ function buildTimelineArtifactLocationLines(
     lines.push(formatArtifactLocation(artifact));
   }
   return lines;
+}
+
+function findTimelineArtifact(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): RunArtifact | undefined {
+  return (activeRun.artifacts ?? []).find((candidate) =>
+    candidate.id === timelineItem.payloadRef ||
+    (candidate.nodeRunId === timelineItem.actorNodeId &&
+      (!timelineItem.body || candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body || candidate.title === timelineItem.title))
+  ) ?? (activeRun.artifacts ?? []).find((candidate) =>
+    Boolean(timelineItem.body) && (candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body)
+  );
 }
 
 function preflightModeFromDisplayText(value: string): RunPreflightMode | undefined {
@@ -4199,6 +4528,19 @@ function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): st
   return zh ? "等待中" : "Waiting";
 }
 
+function traceIssueIcon(kind: TraceIssue["actorKind"]): ReactNode {
+  if (kind === "manager") return <BotMessageSquare size={15} />;
+  if (kind === "agent") return <Bot size={15} />;
+  if (kind === "user") return <UserRound size={15} />;
+  return <Activity size={15} />;
+}
+
+function formatTraceTime(value: string, language: Language): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit" });
+}
+
 function traceRunFrameState(status?: BlueprintRunStatus): "static" | "running" | "succeeded" | "failed" {
   if (status === "queued" || status === "running" || status === "waiting_approval") return "running";
   if (status === "succeeded") return "succeeded";
@@ -4216,10 +4558,17 @@ function summarizeOutput(output: unknown, t: Messages): string {
   const previewLines = normalized
     .split("\n")
     .map(toTracePreviewLine)
+    .map(firstTraceSentence)
     .filter(Boolean)
-    .slice(0, 2);
+    .slice(0, 1);
   if (!previewLines.length) return t.trace.noOutput;
   return previewLines.map((line) => (line.length > 120 ? `${line.slice(0, 117)}...` : line)).join("\n");
+}
+
+function firstTraceSentence(line: string): string {
+  const trimmed = line.trim();
+  const match = trimmed.match(/^(.+?[\u3002\uff01\uff1f!?]|.+?\.(?=\s|$))/);
+  return (match?.[1] ?? trimmed).trim();
 }
 
 function buildReadableNodeOutputBody(output: unknown, error: string | undefined, t: Messages): string | undefined {
@@ -4298,19 +4647,32 @@ function readNonEmptyString(value: unknown): string | undefined {
 function toTracePreviewLine(line: string): string {
   const trimmed = line.trim();
   if (!trimmed) return "";
+  if (/^#{1,6}\s+/.test(trimmed)) return "";
   if (trimmed.startsWith("```")) return "";
   if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) return "";
   if (isTracePreviewTableSeparator(trimmed)) return "";
+  if (isTracePreviewBoilerplate(trimmed)) return "";
 
   const tableCells = parseTracePreviewTableCells(trimmed);
   if (tableCells.length > 1) return tableCells.filter(Boolean).join(" ");
 
   return trimmed
-    .replace(/^#{1,6}\s+/, "")
     .replace(/^>\s?/, "")
     .replace(/^\s{0,3}[-*+]\s+/, "")
     .replace(/^\s{0,3}\d+[.)]\s+/, "")
     .trim();
+}
+
+function isTracePreviewBoilerplate(line: string): boolean {
+  const normalized = line
+    .replace(/^>\s?/, "")
+    .replace(/^\s{0,3}[-*+]\s+/, "")
+    .replace(/^\s{0,3}\d+[.)]\s+/, "")
+    .trim();
+  return /^本步骤没有产生新的交付物[。.]?/.test(normalized) ||
+    /^无新文件产物[；;，,。.]?/.test(normalized) ||
+    /^Delivery location\s*\/\s*交付位置/i.test(normalized) ||
+    /^交付位置[：:]?/.test(normalized);
 }
 
 function parseTracePreviewTableCells(line: string): string[] {

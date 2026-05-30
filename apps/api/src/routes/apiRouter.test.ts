@@ -19,6 +19,7 @@ import type {
   ChatStreamEvent,
   HivewardChatMessage,
   HivewardChatSession,
+  ManagerNodeConfig,
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
@@ -600,6 +601,67 @@ describe("apiRouter", () => {
         { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
         { action: "select", approvalRequestId: "node-run-4", selectedReplyId: "reply-4" }
       ]);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies run approvals against the immutable run blueprint snapshot", async () => {
+    const fixture = await createStoreFixture();
+    const receivedBlueprints: BlueprintDefinition[] = [];
+    const worker = {
+      async applyApprovalRequest(
+        blueprint: BlueprintDefinition,
+        run: BlueprintRun,
+        _approvalRequestId: string,
+        _action: "approve" | "reject" | "reply"
+      ) {
+        receivedBlueprints.push(blueprint);
+        return { ...run, status: "running" as const };
+      }
+    } as unknown as BlueprintWorker;
+
+    try {
+      const created = await fixture.store.createBlueprint({ name: "Approval snapshot" });
+      const snapshotBlueprint = await fixture.store.saveBlueprint({
+        ...created,
+        nodes: [
+          {
+            id: "manager",
+            type: "manager",
+            runtimeId: "codex",
+            position: { x: 0, y: 0 },
+            config: {
+              label: "Manager",
+              portCount: 1,
+              maxHandoffs: 1,
+              dispatchMode: "self_dispatch",
+              modelId: "codex/snapshot-model"
+            } satisfies ManagerNodeConfig
+          }
+        ]
+      });
+      const run = await fixture.store.createBlueprintRun(snapshotBlueprint, "tester");
+      await fixture.store.saveBlueprint({
+        ...snapshotBlueprint,
+        nodes: snapshotBlueprint.nodes.map((node) => {
+          if (node.type !== "manager") return node;
+          const config = node.config as ManagerNodeConfig;
+          return { ...node, config: { ...config, modelId: undefined } satisfies ManagerNodeConfig };
+        })
+      });
+      await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1" })
+        }));
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+
+      const managerConfig = receivedBlueprints[0]?.nodes.find((node) => node.id === "manager")?.config as ManagerNodeConfig | undefined;
+      expect(managerConfig?.modelId).toBe("codex/snapshot-model");
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

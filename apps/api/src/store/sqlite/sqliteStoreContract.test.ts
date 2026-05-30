@@ -57,6 +57,11 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listBlueprints()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: blueprint.id })]));
 
       const run = await store.createBlueprintRun(blueprint, "contract-user");
+      await store.saveBlueprint({ ...blueprint, name: "Current Blueprint After Run" });
+      await expect(store.getBlueprint(blueprint.id)).resolves.toMatchObject({ name: "Current Blueprint After Run" });
+      await expect(store.getRunArchive(run.id)).resolves.toMatchObject({
+        blueprintSnapshot: { id: blueprint.id, name: "Contract Blueprint" }
+      });
       const output = {
         contractVersion: 2,
         humanReportMd: "## Contract Report\n\nDone.",

@@ -1125,7 +1125,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await store.getBlueprint(run.blueprintId);
+      const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1157,7 +1157,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await store.getBlueprint(run.blueprintId);
+      const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1186,7 +1186,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await store.getBlueprint(run.blueprintId);
+      const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1215,7 +1215,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      const blueprint = await store.getBlueprint(run.blueprintId);
+      const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) {
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
@@ -1264,7 +1264,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       if (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled") {
         throw new Error("Run is already finished.");
       }
-      const blueprint = await store.getBlueprint(run.blueprintId);
+      const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
       const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
         comment: readOptionalString(body.comment),
@@ -1285,6 +1285,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
             : await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
     await managerMailProjector.refresh();
     return result;
+  }
+
+  async function getRunActionBlueprint(run: BlueprintRun): Promise<BlueprintDefinition | undefined> {
+    const archive = await store.getRunArchive(run.id);
+    return archive?.blueprintSnapshot ?? store.getBlueprint(run.blueprintId);
   }
 
   async function buildApprovalRequestResponse(approvalRequestId: string, runId?: string): Promise<ApprovalRequestResponse> {

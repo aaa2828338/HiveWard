@@ -927,6 +927,13 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.runViewFromRunRow(row);
   }
 
+  async getRunArchive(blueprintRunId: string): Promise<BlueprintRunArchive | undefined> {
+    const companyId = this.getSelectedCompanyId();
+    if (!companyId) return undefined;
+    const row = this.driver.db.prepare("SELECT id FROM runs WHERE id = ? AND company_id = ?").get(blueprintRunId, companyId) as Row | undefined;
+    return row ? this.requireRunArchive(blueprintRunId) : undefined;
+  }
+
   async getLatestRunViewForBlueprint(blueprintId: string): Promise<BlueprintRunView | undefined> {
     const companyId = this.getSelectedCompanyId();
     if (!companyId) return undefined;
