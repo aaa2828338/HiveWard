@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import { App } from "./App";
+import { AppErrorBoundary } from "./components/AppErrorBoundary";
 
 const root = document.getElementById("root");
 
@@ -12,6 +13,8 @@ if (!root) {
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    <App />
+    <AppErrorBoundary>
+      <App />
+    </AppErrorBoundary>
   </React.StrictMode>
 );
