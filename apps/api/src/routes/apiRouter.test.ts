@@ -545,6 +545,52 @@ describe("apiRouter", () => {
     }
   });
 
+  it("does not repair missing artifact index entries from node output when serving a run archive", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const blueprint = (await fixture.store.listBlueprints())[0]!;
+      const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      const node = blueprint.nodes[0]!;
+      const now = new Date().toISOString();
+      const nodeRun: BlueprintNodeRun = {
+        id: "node-run-html-artifact",
+        blueprintRunId: run.id,
+        blueprintId: blueprint.id,
+        nodeId: node.id,
+        nodeLabel: node.config.label,
+        nodeType: "agent",
+        status: "succeeded",
+        queuedAt: now,
+        startedAt: now,
+        endedAt: now,
+        output: JSON.stringify({
+          humanReportMd: "## 摘要\n已制作 HTML 页面。\n\n## 交付位置\n- artifacts[0]：自分发测试页面。",
+          result: { ok: true },
+          artifacts: [{
+            title: "自分发测试页面",
+            kind: "html",
+            format: "text/html",
+            previewPolicy: "sandboxed_iframe",
+            trusted: true,
+            body: "<!doctype html><html><body>自分发测试页面</body></html>"
+          }]
+        })
+      };
+      await fixture.store.upsertNodeRun(nodeRun);
+      expect(await fixture.store.listArtifacts(run.id)).toHaveLength(0);
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}`);
+        const body = await readOkJson<{ run: { artifacts: Array<{ nodeRunId?: string; storagePath?: string; downloadUrl?: string }> } }>(response);
+
+        expect(body.run.artifacts).toEqual([]);
+        expect(await fixture.store.listArtifacts(run.id)).toHaveLength(0);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("routes legacy blueprint approval actions through pending approval requests", async () => {
     const fixture = await createStoreFixture();
     const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];

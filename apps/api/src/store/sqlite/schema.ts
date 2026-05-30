@@ -435,6 +435,10 @@ const sqliteLegacyMigrationCompatibilityStatements = [
   "ALTER TABLE release_report_artifacts ADD COLUMN position INTEGER NOT NULL DEFAULT 0"
 ];
 
+const sqliteManagerReportRoundNumberStatements = [
+  "ALTER TABLE agent_human_reports ADD COLUMN manager_round_number INTEGER"
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -451,6 +455,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "legacy_migration_compatibility",
     checksum: checksumStatements(sqliteLegacyMigrationCompatibilityStatements),
     up: sqliteLegacyMigrationCompatibilityStatements
+  },
+  {
+    version: 3,
+    name: "manager_report_round_number",
+    checksum: checksumStatements(sqliteManagerReportRoundNumberStatements),
+    up: sqliteManagerReportRoundNumberStatements
   }
 ];
 
@@ -469,7 +479,7 @@ export const sqliteRequiredSchema = {
   approval_decisions: ["id", "approval_request_id", "action", "actor", "resulting_status", "created_at"],
   inbox_items: ["id", "company_id", "type", "status", "title", "summary", "created_by_role_id", "created_at", "updated_at"],
   agent_outputs: ["id", "run_id", "round_id", "node_run_id", "node_id", "envelope_json", "created_at"],
-  agent_human_reports: ["id", "run_id", "round_id", "node_run_id", "node_id", "node_label", "title", "body_md", "source", "created_at"],
+  agent_human_reports: ["id", "run_id", "round_id", "manager_round_number", "node_run_id", "node_id", "node_label", "title", "body_md", "source", "created_at"],
   agent_handoffs: ["id", "run_id", "round_id", "node_run_id", "node_id", "payload_json", "created_at"],
   artifacts: ["id", "run_id", "round_id", "node_run_id", "declared_node_run_id", "kind", "storage_path", "relative_path", "download_url", "preview_policy", "trusted", "status", "created_at"],
   release_reports: ["id", "run_id", "round_id", "approval_request_id", "version", "title", "summary", "created_at"],

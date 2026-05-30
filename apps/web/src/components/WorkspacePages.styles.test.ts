@@ -34,15 +34,15 @@ describe("RunsPage work card tag styles", () => {
     expect(styles).not.toMatch(/(^|\n)\.trace-issue-main span,\n/);
   });
 
-  it("uses tinted outlined work tags instead of solid filled blocks", () => {
+  it("uses solid filled work tags instead of faint translucent blocks", () => {
     const tones = ["research", "requirements", "planning", "dispatch", "page", "qa", "review", "artifact", "issue"];
 
     for (const tone of tones) {
       const rule = cssRule(`\\.trace-work-tag-${tone}`);
 
-      expect(rule).toMatch(/color:\s*#[0-9a-f]{6};/i);
-      expect(rule).toMatch(/background:\s*rgb\([^;]+\/\s*0\.\d+\);/i);
-      expect(rule).not.toMatch(/^\s*background:\s*#[0-9a-f]{3,6};\s*$/im);
+      expect(rule).toContain("color: #ffffff;");
+      expect(rule).toMatch(/background:\s*#[0-9a-f]{6};/i);
+      expect(rule).not.toMatch(/background:\s*rgb\([^;]+\/\s*0\.\d+\);/i);
     }
   });
 });

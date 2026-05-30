@@ -22,7 +22,7 @@ type MarkdownTable = {
 };
 
 const INLINE_TOKEN_PATTERN =
-  /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\[[^\]\n]+\]\([^) \n]+(?:\s+"[^"]*")?\)|\*[^*\n]+\*|_[^_\n]+_)/g;
+  /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\[[^\n]+?\]\([^) \n]+(?:\s+"[^"]*")?\)|\*[^*\n]+\*|_[^_\n]+_)/g;
 
 const HEADING_TAGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
@@ -228,7 +228,7 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 }
 
 function renderMarkdownLink(token: string, key: string): ReactNode | null {
-  const match = /^\[([^\]\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
+  const match = /^\[([^\n]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)$/.exec(token);
   if (!match) return null;
 
   const label = match[1] ?? "";
@@ -236,8 +236,9 @@ function renderMarkdownLink(token: string, key: string): ReactNode | null {
   if (!isSafeMarkdownUrl(href)) return null;
 
   const external = /^https?:/i.test(href);
+  const opensInNewTab = external || href.startsWith("/artifacts/");
   return (
-    <a href={href} key={key} rel={external ? "noreferrer" : undefined} target={external ? "_blank" : undefined}>
+    <a href={href} key={key} rel={opensInNewTab ? "noreferrer" : undefined} target={opensInNewTab ? "_blank" : undefined}>
       {renderInlineMarkdown(label, `${key}-link`)}
     </a>
   );

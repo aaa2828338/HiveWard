@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { createHivewardStore, detectRuntimeStoreState, resolveHivewardStorePath } from "./createHivewardStore";
 import { FileHivewardStore } from "./fileHivewardStore";
 import { migrateJsonToSqlite } from "./sqlite/jsonToSqliteMigration";
+import { sqliteSchemaVersion } from "./sqlite/schema";
 import { SqliteHivewardStore } from "./sqlite/sqliteHivewardStore";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
@@ -111,7 +112,7 @@ describe("createHivewardStore startup migration gate", () => {
 
     const repaired = new Database(sqlitePath, { readonly: true, fileMustExist: true });
     try {
-      expect(repaired.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toMatchObject({ version: 2 });
+      expect(repaired.prepare("SELECT MAX(version) AS version FROM schema_migrations").get()).toMatchObject({ version: sqliteSchemaVersion });
       expect(repaired.prepare("SELECT checksum FROM schema_migrations WHERE version = 1").get()).not.toMatchObject({ checksum: "stale-checksum" });
     } finally {
       repaired.close();

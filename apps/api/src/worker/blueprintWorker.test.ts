@@ -685,6 +685,27 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd");
     expect(adapter.calls[0]?.prompt).toContain("AgentOutputEnvelope is a transport wrapper");
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd is your free-form human answer");
+    expect(adapter.calls[0]?.prompt).toContain("## 摘要");
+    expect(adapter.calls[0]?.prompt).toContain("100-150");
+    expect(adapter.calls[0]?.prompt).toContain("do not describe internal program phases");
+    expect(adapter.calls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
+    expect(adapter.calls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
+    expect(adapter.calls[0]?.prompt).toContain("complete single-file HTML");
+    expect(adapter.calls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
+    expect(adapter.calls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
+    expect(adapter.calls[0]?.prompt).toContain("QA or reviewer agents must not redeclare upstream artifacts");
+    expect(adapter.calls[0]?.outputSchema).toMatchObject({
+      properties: {
+        artifacts: {
+          items: {
+            properties: {
+              content: { description: expect.stringContaining("Inline artifact content") },
+              path: { description: expect.stringContaining("generated file") }
+            }
+          }
+        }
+      }
+    });
   });
 
   it("lets Agent approval replies revise output before approval sends the final answer", async () => {
@@ -1441,20 +1462,20 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-test-2"),
       createStartedAgentTask("task-manager-6")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with product requirements" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "start with product requirements" })),
       createCompletedAgentTask("task-product", "succeeded", "prd ready"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the draft from the product receipt" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "build the draft from the product receipt" })),
       createCompletedAgentTask("task-dev-1", "succeeded", "app draft"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "send the draft to QA" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "send the draft to QA" })),
       createCompletedAgentTask("task-test-1", "succeeded", JSON.stringify({ status: "fail", returnToSlot: 2, reason: "missing loading state" })),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "QA receipt asks for a loading-state fix" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "QA receipt asks for a loading-state fix" })),
       createCompletedAgentTask("task-dev-2", "succeeded", "app fixed"),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "retest the fixed build" })),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "retest the fixed build" })),
       createCompletedAgentTask("task-test-2", "succeeded", {
         humanReportMd: "## QA report\n\n## Delivery location\n\n- No new deliverable produced in this step.",
         result: { status: "pass" }
       }),
-      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "complete", reason: "QA passed after the fix" }))
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "QA passed after the fix" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1478,6 +1499,63 @@ describe("BlueprintWorker", () => {
       "test",
       "manager"
     ]);
+  });
+
+  it("rejects manager decisions that jump beyond the current or next round", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint(
+      [
+        {
+          id: "manager",
+          type: "manager",
+          runtimeId: "openclaw",
+          position: { x: 80, y: 180 },
+          config: {
+            label: "Manager",
+            dispatchMode: "self_dispatch",
+            portCount: 1,
+            maxHandoffs: 3
+          }
+        },
+        createAgentNode("worker", "Worker", { x: 420, y: 180 })
+      ],
+      [
+        { id: "manager-worker", source: "manager", sourceHandle: "manager-out-1", target: "worker", condition: "success" },
+        { id: "worker-manager", source: "worker", target: "manager", targetHandle: "manager-in-1", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-manager"),
+      createStartedAgentTask("task-worker"),
+      createStartedAgentTask("task-manager-complete")
+    ], [
+      createCompletedAgentTask("task-manager", "succeeded", JSON.stringify({
+        status: "continue",
+        roundNumber: 5,
+        nextSlot: 1,
+        reason: "jump ahead"
+      })),
+      createCompletedAgentTask("task-worker", "succeeded", "worker output"),
+      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({
+        status: "complete",
+        roundNumber: 5,
+        reason: "done"
+      }))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const managerRun = view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "manager");
+
+    expect(view?.run.status).toBe("failed");
+    expect(managerRun?.status).toBe("failed");
+    expect(managerRun?.error).toContain("roundNumber");
+    expect(managerRun?.error).toContain("current round 1 or next round 2");
+    expect(view?.nodeRuns.some((nodeRun) => nodeRun.nodeId === "worker")).toBe(false);
   });
 
   it("lets a manager route work to a nested manager", async () => {
@@ -1860,9 +1938,9 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-implementer"),
       createStartedAgentTask("task-manager-complete")
     ], [
-      createCompletedAgentTask("task-manager", "succeeded", "use the obvious first slot"),
+      createCompletedAgentTask("task-manager", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "use the obvious first slot" })),
       createCompletedAgentTask("task-implementer", "succeeded", "implementation done"),
-      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({ status: "complete", reason: "single slot done" }))
+      createCompletedAgentTask("task-manager-complete", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "single slot done" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1962,7 +2040,7 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-manager-1", "succeeded", {
         humanReportMd: "## Dispatch\n\n## Delivery location\n\nNo new deliverable produced in this step.",
-        result: { status: "continue", nextSlot: 1, reason: "Need the worker receipt first." }
+        result: { status: "continue", roundNumber: 1, nextSlot: 1, reason: "Need the worker receipt first." }
       }),
       createCompletedAgentTask("task-worker", "succeeded", {
         humanReportMd: "## Worker report\n\n## Delivery location\n\nNo new deliverable produced in this step.",
@@ -1971,7 +2049,7 @@ describe("BlueprintWorker", () => {
       }),
       createCompletedAgentTask("task-manager-2", "succeeded", {
         humanReportMd: "## Complete\n\n## Delivery location\n\nNo new deliverable produced in this step.",
-        result: { status: "complete", reason: "Worker receipt is present." }
+        result: { status: "complete", roundNumber: 1, reason: "Worker receipt is present." }
       })
     ]);
     const worker = new BlueprintWorker(store, adapter);
@@ -2116,7 +2194,7 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-3"),
       createStartedAgentTask("task-manager-3")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "start with research" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "start with research" })),
       createCompletedAgentTask(
         "task-1",
         "succeeded",
@@ -2143,13 +2221,13 @@ describe("BlueprintWorker", () => {
           "Acceptance criteria: standalone HTML, no placeholders."
         ].join("\n")
       ),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "build the page" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "build the page" })),
       createCompletedAgentTask(
         "task-3",
         "succeeded",
         "<!doctype html><html><body><h1>Agentic Workflow Brief</h1></body></html>"
       ),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "complete", reason: "HTML complete" }))
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "HTML complete" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2193,19 +2271,19 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-qa"),
       createStartedAgentTask("task-manager-5")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先收集新闻" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "先收集新闻" })),
       createCompletedAgentTask("task-news", "succeeded", "新闻简报：AI agent 正在进入企业运营。"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写制作说明" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 4, reason: "再写制作说明" })),
       createCompletedAgentTask("task-doc", "succeeded", "制作说明：需要 hero、新闻要点、source-index 和 risk-notes。"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "现在构建 HTML" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "现在构建 HTML" })),
       createCompletedAgentTask(
         "task-html",
         "succeeded",
         "<!doctype html><html><body><main><section id=\"source-index\"></section><section id=\"risk-notes\"></section></main></body></html>"
       ),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "最后 QA" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "最后 QA" })),
       createCompletedAgentTask("task-qa", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true })),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "complete", reason: "QA 已通过" }))
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "QA 已通过" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2264,25 +2342,25 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-qa-2"),
       createStartedAgentTask("task-manager-8")
     ], [
-      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", nextSlot: 3, reason: "先研究视频主题" })),
+      createCompletedAgentTask("task-manager-1", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 3, reason: "先研究视频主题" })),
       createCompletedAgentTask("task-research", "succeeded", "研究：AI agent 与多 agent 工作流正在进入企业运营，需提示验证与治理风险。"),
-      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", nextSlot: 4, reason: "再写脚本分镜" })),
+      createCompletedAgentTask("task-manager-2", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 4, reason: "再写脚本分镜" })),
       createCompletedAgentTask("task-storyboard", "succeeded", "分镜：0-90 标题，90-210 三个趋势点，210-330 风险，330-450 行动建议。"),
-      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", nextSlot: 5, reason: "补技术规划" })),
+      createCompletedAgentTask("task-manager-3", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 5, reason: "补技术规划" })),
       createCompletedAgentTask("task-tech", "succeeded", "技术规划：Root.tsx 注册 AgentOpsBriefVideo，1920x1080，30fps，450 frames，使用 Sequence、AbsoluteFill、interpolate。"),
-      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "开始构建 Remotion" })),
+      createCompletedAgentTask("task-manager-4", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "开始构建 Remotion" })),
       createCompletedAgentTask("task-build-1", "succeeded", "<!doctype html><html><body>这是网页，不是 Remotion Composition。</body></html>"),
-      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "严格 QA" })),
+      createCompletedAgentTask("task-manager-5", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "严格 QA" })),
       createCompletedAgentTask(
         "task-qa-1",
         "succeeded",
         JSON.stringify({ status: "fail", returnToSlot: 1, reason: "产物是 HTML，不是 Remotion Composition", fixes: ["删除 HTML 输出", "提供 Root.tsx 和 Composition"] })
       ),
-      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "continue", nextSlot: 1, reason: "QA 未通过，回退到构建槽修复" })),
+      createCompletedAgentTask("task-manager-6", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 1, reason: "QA 未通过，回退到构建槽修复" })),
       createCompletedAgentTask("task-build-2", "succeeded", remotionBundle),
-      createCompletedAgentTask("task-manager-7", "succeeded", JSON.stringify({ status: "continue", nextSlot: 2, reason: "复审修复后的 Remotion 产物" })),
+      createCompletedAgentTask("task-manager-7", "succeeded", JSON.stringify({ status: "continue", roundNumber: 1, nextSlot: 2, reason: "复审修复后的 Remotion 产物" })),
       createCompletedAgentTask("task-qa-2", "succeeded", JSON.stringify({ status: "complete", deliveryReady: true, reason: "Remotion 产物已通过严格审查" })),
-      createCompletedAgentTask("task-manager-8", "succeeded", JSON.stringify({ status: "complete", reason: "Remotion QA 已通过" }))
+      createCompletedAgentTask("task-manager-8", "succeeded", JSON.stringify({ status: "complete", roundNumber: 1, reason: "Remotion QA 已通过" }))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2438,11 +2516,38 @@ describe("BlueprintWorker", () => {
     );
     const round2 = requirement2View.iterationRounds?.find((round) => round.roundNumber === 2);
     const requirement2 = requirement2View.approvalRequests?.find((request) => request.id === round2?.requirementRequestId);
+    const round2ResearchRun = requirement2View.nodeRuns.find((nodeRun) =>
+      nodeRun.iterationRoundId === round2?.id &&
+      nodeRun.nodeId === "top-manager" &&
+      nodeRun.id.startsWith("preflight-research_resolution-")
+    );
+    const round2RequirementRun = requirement2View.nodeRuns.find((nodeRun) =>
+      nodeRun.iterationRoundId === round2?.id &&
+      nodeRun.nodeId === "top-manager" &&
+      nodeRun.id.startsWith("preflight-requirement_resolution-")
+    );
+    const round2ResearchReport = requirement2View.agentHumanReports?.find((report) => report.nodeRunId === round2ResearchRun?.id);
+    const round2ResearchStartIndex = requirement2View.runTimeline?.findIndex((item) => item.payloadRef === round2ResearchRun?.id && item.kind === "node_started") ?? -1;
+    const round2RequirementStartIndex = requirement2View.runTimeline?.findIndex((item) => item.payloadRef === round2RequirementRun?.id && item.kind === "node_started") ?? -1;
 
     expect(requirement2).toMatchObject({
       status: "pending",
       capabilities: expect.objectContaining({ approve: true, complete: false })
     });
+    expect(round2ResearchRun).toMatchObject({
+      status: "succeeded",
+      output: expect.objectContaining({
+        result: expect.objectContaining({
+          status: "context_sufficient",
+          source: "previous_snapshot",
+          summary: "round 1 manager snapshot"
+        })
+      })
+    });
+    expect(round2ResearchReport?.bodyMd).toContain("Skipped additional research");
+    expect(round2ResearchReport?.bodyMd).toContain("round 1 manager snapshot");
+    expect(round2ResearchStartIndex).toBeGreaterThanOrEqual(0);
+    expect(round2RequirementStartIndex).toBeGreaterThan(round2ResearchStartIndex);
     expect(requirement2?.body).toContain("Previous report:");
     expect(requirement2?.body).toContain("round 1");
     expect(requirement2?.body).not.toContain("Use the previous round outcome to define the next execution round.");
@@ -2613,6 +2718,43 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("agent round execution plan");
   });
 
+  it("uses user-facing Chinese copy for Chinese round plan approvals", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    blueprint.name = "自分发测试";
+    const manager = blueprint.nodes.find((node) => node.id === "top-manager");
+    if (!manager || manager.type !== "manager") throw new Error("Expected top manager.");
+    manager.config = {
+      ...manager.config,
+      label: "自分发测试 Manager",
+      instructions: "先完成前期准备，再把执行计划交给用户确认。"
+    };
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-cn-research"),
+      createStartedAgentTask("task-cn-plan")
+    ], [
+      createCompletedAgentTask("task-cn-research", "succeeded", "当前输入足够，不需要额外调研。"),
+      createCompletedAgentTask("task-cn-plan", "succeeded", "制作一个单文件 HTML 测试页面，并在用户确认后交给页面制作 Agent。")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const request = view.approvalRequests?.find((approval) => approval.kind === "iteration_requirement_plan");
+
+    expect(request?.title).toBe("第 1 轮执行计划");
+    expect(request?.body).toContain("前期准备工作已完成");
+    expect(request?.body).toContain("请确认本轮执行计划");
+    expect(request?.body).toContain("确认后会开始后续 Agent 工作");
+    expect(request?.body).toContain("## 调研摘要");
+    expect(request?.body).toContain("## 执行计划");
+    expect(request?.body).not.toContain("Research source:");
+    expect(request?.body).not.toContain("Plan source:");
+  });
+
   it("blocks the round instead of falling back when a configured research agent fails", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -2778,9 +2920,9 @@ describe("BlueprintWorker", () => {
     ], [
       createCompletedAgentTask("task-context-research", "succeeded", "context research"),
       createCompletedAgentTask("task-context-plan", "succeeded", "context plan"),
-      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"nextSlot\":3,\"reason\":\"dispatch\"}"),
+      createCompletedAgentTask("task-context-dispatch-1", "succeeded", "{\"status\":\"continue\",\"roundNumber\":1,\"nextSlot\":3,\"reason\":\"dispatch\"}"),
       createCompletedAgentTask("task-context-builder", "succeeded", "worker output"),
-      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"reason\":\"done\"}")
+      createCompletedAgentTask("task-context-dispatch-2", "succeeded", "{\"status\":\"complete\",\"roundNumber\":2,\"reason\":\"done\"}")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -2804,6 +2946,14 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("handoffJson");
     expect(managerDecisionCalls[0]?.prompt).toContain("Write humanReportMd in the user's working language");
     expect(managerDecisionCalls[0]?.prompt).toContain("All visible headings, labels, and prose inside humanReportMd");
+    expect(managerDecisionCalls[0]?.prompt).toContain("## 摘要");
+    expect(managerDecisionCalls[0]?.prompt).toContain("100-150");
+    expect(managerDecisionCalls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
+    expect(managerDecisionCalls[0]?.prompt).toContain("complete single-file HTML");
+    expect(managerDecisionCalls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
+    expect(managerDecisionCalls[0]?.prompt).toContain("QA or reviewer agents must not redeclare upstream artifacts");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(managerDecisionCalls[0]?.prompt).not.toContain("Do not include markdown");
     expect(managerDecisionCalls[0]?.outputSchema).toMatchObject({
@@ -2812,9 +2962,10 @@ describe("BlueprintWorker", () => {
         humanReportMd: { type: "string" },
         result: {
           type: "object",
-          required: ["status", "reason"],
+          required: ["status", "reason", "roundNumber"],
           properties: expect.objectContaining({
             status: { type: "string" },
+            roundNumber: { type: "integer" },
             nextSlot: { type: "integer" },
             reason: { type: "string" }
           })
@@ -2822,6 +2973,9 @@ describe("BlueprintWorker", () => {
       }
     });
     expect(managerDecisionCalls[0]?.input).toMatchObject({
+      manager: expect.objectContaining({
+        roundNumber: 1
+      }),
       runContext: expect.objectContaining({
         mode: "dispatch",
         research: expect.objectContaining({ status: "manager_fallback" }),
@@ -2837,12 +2991,14 @@ describe("BlueprintWorker", () => {
       expect.objectContaining({
         nodeId: "top-manager",
         nodeLabel: "Top Manager dispatch 1",
+        managerRoundNumber: 1,
         bodyMd: "dispatch",
         source: "fallback"
       }),
       expect.objectContaining({
         nodeId: "top-manager",
         nodeLabel: "Top Manager dispatch 2",
+        managerRoundNumber: 2,
         bodyMd: "done",
         source: "fallback"
       })

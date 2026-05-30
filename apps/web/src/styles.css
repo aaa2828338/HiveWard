@@ -8540,7 +8540,7 @@ html[data-theme="light"] .run-blueprint-card-list::-webkit-scrollbar-thumb {
 .trace-issue-card.has-round-ribbon {
   padding: 0;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   gap: 0;
 }
 
@@ -8559,7 +8559,7 @@ html[data-theme="light"] .run-blueprint-card-list::-webkit-scrollbar-thumb {
 }
 
 .trace-round-ribbon {
-  width: 44px;
+  width: 34px;
   height: 100%;
   border-radius: 0;
   display: grid;
@@ -8687,79 +8687,91 @@ html[data-theme="light"] .run-blueprint-card-list::-webkit-scrollbar-thumb {
   font-weight: 760;
   line-height: 1;
   white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18);
 }
 
 .trace-role-tag {
   color: #ffffff;
-  background: rgb(255 255 255 / 0.08);
+  background: #475569;
+  border-color: #64748b;
 }
 
 .trace-role-tag-manager {
   color: #ffffff;
-  background: rgb(251 191 36 / 0.14);
-  border-color: rgb(251 191 36 / 0.52);
+  background: #b45309;
+  border-color: #d97706;
 }
 
 .trace-role-tag-agent {
   color: #ffffff;
-  background: rgb(16 185 129 / 0.14);
-  border-color: rgb(52 211 153 / 0.50);
+  background: #047857;
+  border-color: #059669;
 }
 
 .trace-role-tag-system {
   color: #ffffff;
-  background: rgb(148 163 184 / 0.12);
-  border-color: rgb(226 232 240 / 0.36);
+  background: #475569;
+  border-color: #64748b;
 }
 
 .trace-work-tag {
-  color: var(--muted-strong);
-  background: rgb(148 163 184 / 0.10);
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
 }
 
 .trace-work-tag-research {
-  color: #38bdf8;
-  background: rgb(14 165 233 / 0.14);
+  color: #ffffff;
+  background: #0369a1;
+  border-color: #0284c7;
 }
 
 .trace-work-tag-requirements {
-  color: #c4b5fd;
-  background: rgb(124 58 237 / 0.16);
+  color: #ffffff;
+  background: #6d28d9;
+  border-color: #7c3aed;
 }
 
 .trace-work-tag-planning {
-  color: #93c5fd;
-  background: rgb(37 99 235 / 0.16);
+  color: #ffffff;
+  background: #1d4ed8;
+  border-color: #2563eb;
 }
 
 .trace-work-tag-dispatch {
-  color: #fbbf24;
-  background: rgb(245 158 11 / 0.16);
+  color: #ffffff;
+  background: #b45309;
+  border-color: #d97706;
 }
 
 .trace-work-tag-page {
-  color: #34d399;
-  background: rgb(16 185 129 / 0.15);
+  color: #ffffff;
+  background: #047857;
+  border-color: #059669;
 }
 
 .trace-work-tag-qa {
-  color: #f9a8d4;
-  background: rgb(219 39 119 / 0.16);
+  color: #ffffff;
+  background: #be185d;
+  border-color: #db2777;
 }
 
 .trace-work-tag-review {
-  color: #5eead4;
-  background: rgb(15 118 110 / 0.18);
+  color: #ffffff;
+  background: #0f766e;
+  border-color: #0d9488;
 }
 
 .trace-work-tag-artifact {
-  color: #cbd5e1;
-  background: rgb(71 85 105 / 0.18);
+  color: #ffffff;
+  background: #475569;
+  border-color: #64748b;
 }
 
 .trace-work-tag-issue {
-  color: #fca5a5;
-  background: rgb(220 38 38 / 0.16);
+  color: #ffffff;
+  background: #b91c1c;
+  border-color: #dc2626;
 }
 
 .trace-issue-time {

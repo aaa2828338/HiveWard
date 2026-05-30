@@ -99,6 +99,7 @@ export class AgentReportService {
         id: `agent-human-report-${input.nodeRunId}`,
         runId: input.runId,
         roundId: input.roundId,
+        managerRoundNumber: readManagerRoundNumber(input.output),
         nodeRunId: input.nodeRunId,
         nodeId: input.nodeId,
         nodeLabel: input.nodeLabel,
@@ -144,6 +145,21 @@ function readOutputRecord(output: unknown): Record<string, unknown> | undefined 
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readManagerRoundNumber(output: unknown): number | undefined {
+  const record = readOutputRecord(output);
+  if (!record) return undefined;
+  const result = isRecord(record.result) ? record.result : undefined;
+  return readInteger(record.managerRoundNumber) ??
+    readInteger(record.roundNumber) ??
+    readInteger(result?.managerRoundNumber) ??
+    readInteger(result?.roundNumber);
+}
+
+function readInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) return undefined;
+  return value;
 }
 
 function formatFallbackValue(value: unknown): string | undefined {

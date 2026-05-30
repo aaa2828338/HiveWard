@@ -633,7 +633,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
-      res.json({ run: (await store.getLatestRunViewForBlueprint(blueprintId)) ?? null });
+      const view = await store.getLatestRunViewForBlueprint(blueprintId);
+      res.json({ run: view ?? null });
     } catch (error) {
       next(error);
     }

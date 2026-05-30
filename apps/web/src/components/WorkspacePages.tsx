@@ -72,7 +72,7 @@ type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[nu
 type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
 type RunIterationRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
-type RunOutputTabKey = "current" | "plan" | "agentReports" | "release" | "artifacts" | "advanced";
+type RunOutputTabKey = "current" | "artifacts" | "release";
 
 type IdentitySpec = {
   key: string;
@@ -547,7 +547,10 @@ export function RunsPage({
     blueprint?.nodes
   ]);
 
-  const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : undefined;
+  const defaultActiveIssue = issues.find((issue) => issue.issueStatus === "in_progress") ?? issues.find(
+    (issue) => issue.outputBody !== undefined || issue.nodeRun?.output !== undefined || issue.nodeRun?.error
+  ) ?? issues[0];
+  const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : defaultActiveIssue;
   const activeIssueOutput =
     activeIssue?.outputBody !== undefined
       ? activeIssue.outputBody
@@ -556,21 +559,13 @@ export function RunsPage({
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
   const reportLayerCopy = getRunReportLayerCopy(language);
-  const approvedPlan = resolveRunApprovedPlan(activeRun);
-  const activeRound = resolveRunActiveRound(activeRun);
-  const agentHumanReports = activeRun?.agentHumanReports ?? [];
-  const agentHandoffs = activeRun?.agentHandoffs ?? [];
   const latestReleaseReport = activeRun?.releaseReports?.at(-1);
   const artifacts = activeRun?.artifacts ?? [];
-  const advancedDetailsBody = activeRun ? buildRunAdvancedDetailsBody(activeRun, approvedPlan) : "";
   const outputTabAriaLabel = language === "zh-CN" ? "运行输出标签" : "Run output tabs";
   const outputTabs: Array<{ key: RunOutputTabKey; label: string; badge?: string }> = [
     { key: "current", label: t.trace.modelOutput },
-    { key: "plan", label: reportLayerCopy.planTitle, badge: activeRun ? t.status[activeRun.run.status] : undefined },
-    { key: "agentReports", label: reportLayerCopy.agentReportsTitle, badge: reportLayerCopy.count(agentHumanReports.length) },
-    { key: "release", label: reportLayerCopy.releaseTitle, badge: latestReleaseReport ? `v${latestReleaseReport.version}` : undefined },
     { key: "artifacts", label: reportLayerCopy.artifactsTitle, badge: reportLayerCopy.count(artifacts.length) },
-    { key: "advanced", label: reportLayerCopy.runAdvancedDetails }
+    { key: "release", label: reportLayerCopy.releaseTitle, badge: latestReleaseReport ? `v${latestReleaseReport.version}` : undefined }
   ];
 
   useEffect(() => {
@@ -769,7 +764,7 @@ export function RunsPage({
                           </span>
                           <strong>{issue.label}</strong>
                         </div>
-                        <span className={`trace-status-chip trace-${issue.issueStatus}`}>{traceIssueStatusLabel(issue.issueStatus, language)}</span>
+                        <span className={`trace-status-chip trace-${issue.issueStatus}`}>{issue.statusLabel}</span>
                       </div>
                       <MarkdownRenderer value={issue.outputPreview} className="trace-issue-preview" />
                       <div className="trace-issue-footer">
@@ -835,97 +830,6 @@ export function RunsPage({
                 )}
               </section>
 
-              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "plan"}>
-                <div className="run-output-section">
-                  <div className="run-output-section-header">
-                    <div>
-                      <h4>{reportLayerCopy.planTitle}</h4>
-                      <p>{activeRound ? reportLayerCopy.roundLabel(activeRound.roundNumber) : reportLayerCopy.noRound}</p>
-                    </div>
-                    {activeRun && <span className={`status-pill status-${activeRun.run.status}`}>{t.status[activeRun.run.status]}</span>}
-                  </div>
-                  {!blueprint ? (
-                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-                  ) : !activeRun ? (
-                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-                  ) : approvedPlan ? (
-                    <MarkdownRenderer value={approvedPlan.body} className="run-report-body" />
-                  ) : (
-                    <div className="empty-state compact-empty-state">{reportLayerCopy.noPlan}</div>
-                  )}
-                </div>
-              </section>
-
-              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "agentReports"}>
-                <div className="run-output-section">
-                  <div className="run-output-section-header">
-                    <div>
-                      <h4>{reportLayerCopy.agentReportsTitle}</h4>
-                      <p>{reportLayerCopy.agentReportsHint}</p>
-                    </div>
-                    <span className="status-pill status-default">{reportLayerCopy.count(agentHumanReports.length)}</span>
-                  </div>
-                  {!blueprint ? (
-                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-                  ) : !activeRun ? (
-                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-                  ) : agentHumanReports.length === 0 ? (
-                    <div className="empty-state compact-empty-state">{reportLayerCopy.noAgentReports}</div>
-                  ) : (
-                    <div className="run-agent-report-list">
-                      {agentHumanReports.map((report) => {
-                        const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
-                        const handoff = agentHandoffs.find((candidate) => candidate.nodeRunId === report.nodeRunId);
-                        const reportArtifacts = artifacts.filter((artifact) => artifact.nodeRunId === report.nodeRunId);
-                        const reportBody = buildHumanReportDisplayBody(report.bodyMd, reportArtifacts, language);
-                        const reportAdvancedBody = buildAgentReportAdvancedBody(nodeRun, handoff);
-                        return (
-                          <section className="run-agent-report" key={report.id}>
-                            <div className="run-agent-report-header">
-                              <div>
-                                <strong>{report.nodeLabel}</strong>
-                                <span>{report.title}</span>
-                              </div>
-                              <span className={`status-pill ${report.source === "fallback" ? "status-empty" : "status-succeeded"}`}>
-                                {reportLayerCopy.source(report.source)}
-                              </span>
-                            </div>
-                            <MarkdownRenderer value={reportBody} className="run-report-body" />
-                            {reportAdvancedBody && (
-                              <details className="run-report-advanced">
-                                <summary>{reportLayerCopy.advancedDetails}</summary>
-                                <MarkdownRenderer value={reportAdvancedBody} className="run-report-body" />
-                              </details>
-                            )}
-                          </section>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </section>
-
-              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "release"}>
-                <div className="run-output-section">
-                  <div className="run-output-section-header">
-                    <div>
-                      <h4>{reportLayerCopy.releaseTitle}</h4>
-                      <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
-                    </div>
-                    {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
-                  </div>
-                  {!blueprint ? (
-                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
-                  ) : !activeRun ? (
-                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-                  ) : latestReleaseReport ? (
-                    <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
-                  ) : (
-                    <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
-                  )}
-                </div>
-              </section>
-
               <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "artifacts"}>
                 <div className="run-output-section">
                   <div className="run-output-section-header">
@@ -963,22 +867,23 @@ export function RunsPage({
                 </div>
               </section>
 
-              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "advanced"}>
+              <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "release"}>
                 <div className="run-output-section">
                   <div className="run-output-section-header">
                     <div>
-                      <h4>{reportLayerCopy.runAdvancedDetails}</h4>
-                      <p>{reportLayerCopy.layerLabel}</p>
+                      <h4>{reportLayerCopy.releaseTitle}</h4>
+                      <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
                     </div>
+                    {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
                   </div>
                   {!blueprint ? (
                     <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
                   ) : !activeRun ? (
                     <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
-                  ) : advancedDetailsBody ? (
-                    <MarkdownRenderer value={advancedDetailsBody} className="run-report-body" />
+                  ) : latestReleaseReport ? (
+                    <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
                   ) : (
-                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
+                    <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
                   )}
                 </div>
               </section>
@@ -990,70 +895,228 @@ export function RunsPage({
   );
 }
 
-type RunApprovalRequest = NonNullable<BlueprintRunView["approvalRequests"]>[number];
 type RunArtifact = NonNullable<BlueprintRunView["artifacts"]>[number];
-type RunRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
-type RunAgentHandoff = NonNullable<BlueprintRunView["agentHandoffs"]>[number];
 
 function getRunReportLayerCopy(language: Language) {
   const zh = language === "zh-CN";
   return {
-    layerLabel: zh ? "运行报告看板" : "Run report board",
-    planTitle: zh ? "本轮执行计划" : "Round Execution Plan",
-    roundLabel: (roundNumber: number) => zh ? `第 ${roundNumber} 轮` : `Round ${roundNumber}`,
-    noRound: zh ? "尚未进入自迭代轮次" : "No self-iteration round yet",
-    noPlan: zh ? "本轮还没有已批准的执行计划。" : "No approved plan has been published for this run.",
-    agentReportsTitle: zh ? "Agent Markdown 报告" : "Agent Markdown reports",
-    agentReportsHint: zh ? "默认展示写给人的报告层。" : "Default human-readable report layer.",
-    noAgentReports: zh ? "还没有 agent 报告。" : "No agent reports yet.",
-    releaseTitle: zh ? "Manager 发布报告" : "Manager Release Report",
+    releaseTitle: zh ? "本轮报告" : "Round Report",
     noReleaseHint: zh ? "等待 Manager 汇总本轮结果" : "Waiting for the manager's round summary",
     noRelease: zh ? "还没有发布报告。" : "No release report yet.",
     artifactsTitle: zh ? "产物" : "Artifacts",
     artifactsHint: zh ? "本轮发布的产物索引。" : "Published output index for this run.",
     noArtifacts: zh ? "还没有产物。" : "No artifacts yet.",
     openArtifact: zh ? "打开" : "Open",
-    advancedDetails: zh ? "高级详情" : "Advanced details",
-    runAdvancedDetails: zh ? "运行高级详情" : "Run Advanced Details",
-    count: (value: number) => zh ? `${value} 条` : `${value}`,
-    source: (source: "agent" | "fallback") => source === "fallback"
-      ? (zh ? "fallback" : "fallback")
-      : (zh ? "agent" : "agent")
+    count: (value: number) => zh ? `${value} 条` : `${value}`
   };
 }
 
-function resolveRunActiveRound(runView?: BlueprintRunView): RunRound | undefined {
-  const rounds = runView?.iterationRounds ?? [];
-  return rounds
-    .filter((round) => round.status === "executing" || round.status === "report_pending" || round.status === "artifact_published")
-    .at(-1) ?? rounds.at(-1);
+export function buildCurrentOutputDisplayBody({
+  bodyMd,
+  artifacts,
+  language,
+  actorKind,
+  reason,
+  timelineDetails = []
+}: {
+  bodyMd: string;
+  artifacts: RunArtifact[];
+  language: Language;
+  actorKind: TraceIssue["actorKind"];
+  reason?: string;
+  timelineDetails?: string[];
+}): string {
+  const zh = language === "zh-CN";
+  const body = localizeHumanReportBody(bodyMd.trim(), language);
+  const summarySplit = splitSummarySection(body);
+  const deliverySplit = splitDeliverySection(summarySplit.bodyWithoutSummary);
+  const deliveryItems = collectDeliveryItems(artifacts, language);
+  const deliveryBody = deliveryItems.length ? formatDeliveryItems(deliveryItems) : noneText(language);
+  const artifactBody = artifacts.length ? formatArtifactSummaryItems(artifacts) : noneText(language);
+  const managerReason = actorKind === "manager" ? conciseSectionBody(reason, language) : undefined;
+  const freeOutputSplit = splitPromotedOutputSections(deliverySplit.bodyWithoutDelivery);
+  const freeOutputParts = [
+    freeOutputSplit.freeBody.trim(),
+    ...timelineDetails.filter((detail) => detail.trim())
+  ]
+    .map((part) => part.trim())
+    .filter((part) => part && part !== managerReason);
+  const freeOutput = conciseSectionBody(freeOutputParts.join("\n\n"), language);
+  const summary = conciseSectionBody(summarySplit.summaryBody, language);
+  const actorLabel = currentOutputActorLabel(actorKind, language);
+
+  return [
+    `## ${zh ? "🧾 摘要" : "🧾 Summary"}`,
+    "",
+    summary,
+    "",
+    `## ${zh ? "📍 交付位置" : "📍 Delivery location"}`,
+    "",
+    deliveryBody,
+    "",
+    `## ${zh ? "📦 产物" : "📦 Artifacts"}`,
+    "",
+    artifactBody,
+    "",
+    ...(actorKind === "manager"
+      ? [
+          `## ${zh ? "🧭 调度原因" : "🧭 Dispatch reason"}`,
+          "",
+          managerReason ?? noneText(language),
+          ""
+        ]
+      : []),
+    ...freeOutputSplit.promotedSections.flatMap((section) => [section, ""]),
+    `## ${zh ? `✍️ ${actorLabel} 自由输出` : `✍️ ${actorLabel} free output`}`,
+    "",
+    freeOutput
+  ].join("\n").trim();
 }
 
-function resolveRunApprovedPlan(runView?: BlueprintRunView): RunApprovalRequest | undefined {
-  if (!runView) return undefined;
-  const round = resolveRunActiveRound(runView);
-  const requestId = round?.approvedRequirementRequestId ?? round?.requirementRequestId;
-  if (requestId) {
-    const request = runView.approvalRequests?.find((candidate) => candidate.id === requestId);
-    if (request) return request;
+function buildCurrentOutputPreviewBody(bodyMd: string, language: Language): string {
+  const body = localizeHumanReportBody(bodyMd.trim(), language);
+  const summarySplit = splitSummarySection(body);
+  const deliverySplit = splitDeliverySection(summarySplit.bodyWithoutSummary);
+  const artifactSplit = splitArtifactSections(deliverySplit.bodyWithoutDelivery);
+  return artifactSplit.bodyWithoutArtifacts.trim() || summarySplit.summaryBody?.trim() || body;
+}
+
+function splitSummarySection(markdown: string): { summaryBody?: string; bodyWithoutSummary: string } {
+  const lines = markdown.split(/\r?\n/);
+  const start = lines.findIndex((line) => isSummaryHeading(line));
+  if (start < 0) return { bodyWithoutSummary: markdown.trim() };
+  const endOffset = lines.slice(start + 1).findIndex((line) => /^#{1,6}\s+/.test(line.trim()));
+  const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+  return {
+    summaryBody: lines.slice(start + 1, end).join("\n").trim(),
+    bodyWithoutSummary: [...lines.slice(0, start), ...lines.slice(end)].join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  };
+}
+
+function splitDeliverySection(markdown: string): { deliveryBody?: string; bodyWithoutDelivery: string } {
+  const lines = markdown.split(/\r?\n/);
+  const start = lines.findIndex((line) => isDeliveryHeading(line));
+  if (start < 0) return { bodyWithoutDelivery: markdown.trim() };
+  const endOffset = lines.slice(start + 1).findIndex((line) => /^#{1,6}\s+/.test(line.trim()));
+  const end = endOffset < 0 ? lines.length : start + 1 + endOffset;
+  return {
+    deliveryBody: lines.slice(start + 1, end).join("\n").trim(),
+    bodyWithoutDelivery: [...lines.slice(0, start), ...lines.slice(end)].join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  };
+}
+
+function splitArtifactSections(markdown: string): { artifactBodies: string[]; bodyWithoutArtifacts: string } {
+  const lines = markdown.split(/\r?\n/);
+  const artifactBodies: string[] = [];
+  const retainedLines: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index] ?? "";
+    if (!isArtifactHeading(line)) {
+      retainedLines.push(line);
+      index += 1;
+      continue;
+    }
+    const endOffset = lines.slice(index + 1).findIndex((candidate) => isMarkdownHeading(candidate));
+    const end = endOffset < 0 ? lines.length : index + 1 + endOffset;
+    const body = lines.slice(index + 1, end).join("\n").trim();
+    if (body) artifactBodies.push(body);
+    index = end;
   }
-  return runView.approvalRequests?.filter((request) => request.kind === "iteration_requirement_plan").at(-1);
+  return {
+    artifactBodies,
+    bodyWithoutArtifacts: retainedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  };
 }
 
-function buildHumanReportDisplayBody(
-  bodyMd: string,
-  artifacts: RunArtifact[],
-  language: Language
-): string {
-  const body = bodyMd.trim();
-  const reportBody = hasDeliverySection(body)
-    ? appendRecordedArtifactsSection(body, artifacts, language)
-    : insertDeliverySectionNearTop(body, buildDeliverySection(artifacts, language));
-  return localizeHumanReportBody(reportBody, language);
+function splitPromotedOutputSections(markdown: string): { promotedSections: string[]; freeBody: string } {
+  const lines = markdown.split(/\r?\n/);
+  const promotedSections: string[] = [];
+  const freeLines: string[] = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index] ?? "";
+    if (!isMarkdownHeading(line)) {
+      freeLines.push(line);
+      index += 1;
+      continue;
+    }
+    const endOffset = lines.slice(index + 1).findIndex((candidate) => isMarkdownHeading(candidate));
+    const end = endOffset < 0 ? lines.length : index + 1 + endOffset;
+    const section = lines.slice(index, end).join("\n").trim();
+    if (section) promotedSections.push(section);
+    index = end;
+  }
+  return {
+    promotedSections,
+    freeBody: freeLines.join("\n").replace(/\n{3,}/g, "\n\n").trim()
+  };
 }
 
-function hasDeliverySection(markdown: string): boolean {
-  return /^#{1,6}\s*(?:交付位置|产物位置|产出位置|Delivery location|Delivery|Deliverables?|Artifact locations?)(?:\s|$)/im.test(markdown);
+function isMarkdownHeading(line: string): boolean {
+  return /^#{1,6}\s+/.test(line.trim());
+}
+
+function isSummaryHeading(line: string): boolean {
+  return /^#{1,6}\s*(?:🧾\s*)?(?:摘要|Summary)(?:\s|$)/i.test(line.trim());
+}
+
+function isDeliveryHeading(line: string): boolean {
+  return /^#{1,6}\s*(?:📍\s*)?(?:交付位置|产物位置|产出位置|Delivery location|Delivery|Artifact locations?)(?:\s|$)/i.test(line.trim());
+}
+
+function isArtifactHeading(line: string): boolean {
+  return /^#{1,6}\s*(?:📦\s*)?(?:产物|交付物|Artifacts?|Deliverables?)(?:\s|$)/i.test(line.trim());
+}
+
+function formatDeliveryItems(items: Array<{ label: string; location: string }>): string {
+  return items.map((item) => `- ${item.label}: ${item.location}`).join("\n");
+}
+
+function formatArtifactSummaryItems(artifacts: RunArtifact[]): string {
+  return artifacts.map((artifact) => {
+    const title = artifact.title ?? artifact.kind;
+    const linkedLabel = artifact.downloadUrl
+      ? `[${title}](${artifact.downloadUrl})`
+      : title;
+    const kind = [artifact.kind, artifact.format].filter(Boolean).join(" · ");
+    const previewPolicy = artifact.previewPolicy && artifact.previewPolicy !== "none" ? ` · ${artifact.previewPolicy}` : "";
+    return `- ${linkedLabel}${kind || previewPolicy ? ` (${kind}${previewPolicy})` : ""}`;
+  }).join("\n");
+}
+
+function noneText(language: Language): string {
+  return language === "zh-CN" ? "无" : "None";
+}
+
+function conciseSectionBody(value: string | undefined, language: Language): string {
+  const trimmed = value?.trim();
+  if (!trimmed || isEmptySectionText(trimmed)) return noneText(language);
+  return trimmed;
+}
+
+function isEmptySectionText(value: string): boolean {
+  const normalized = value
+    .replace(/^\s*[-*]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .replace(/[。.]$/u, "")
+    .trim()
+    .toLowerCase();
+  return [
+    "无",
+    "none",
+    "本步骤没有产生新的交付物",
+    "本步骤没有额外说明",
+    "无额外自由输出",
+    "no new deliverable produced in this step",
+    "this step did not include additional notes",
+    "no additional free output"
+  ].includes(normalized);
+}
+
+function currentOutputActorLabel(kind: TraceIssue["actorKind"], language: Language): string {
+  if (kind === "manager") return "Manager";
+  if (kind === "user") return language === "zh-CN" ? "用户" : "User";
+  if (kind === "system") return language === "zh-CN" ? "系统" : "System";
+  return "Agent";
 }
 
 function localizeHumanReportBody(markdown: string, language: Language): string {
@@ -1073,55 +1136,6 @@ function localizeHumanReportBody(markdown: string, language: Language): string {
     .replace(/^No filesystem file was created in this read-only node\./gim, "\u672c\u8282\u70b9\u4ee5\u53ea\u8bfb\u65b9\u5f0f\u8fd0\u884c\uff0c\u6ca1\u6709\u521b\u5efa\u672c\u5730\u6587\u4ef6\u3002")
     .replace(/\bNo new deliverable produced in this step\./g, "\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002")
     .replace(/\bRoute to Slot\s+(\d+)\b/g, "\u8def\u7531\u5230 Slot $1");
-}
-
-function insertDeliverySectionNearTop(body: string, deliverySection: string): string {
-  if (!body) return deliverySection;
-  const lines = body.split(/\r?\n/);
-  if (!/^#{1,6}\s+/.test(lines[0] ?? "")) {
-    return [deliverySection, body].join("\n\n");
-  }
-  let insertAt = 1;
-  while (insertAt < lines.length && !lines[insertAt]?.trim()) {
-    insertAt += 1;
-  }
-  return [
-    ...lines.slice(0, insertAt),
-    "",
-    deliverySection,
-    "",
-    ...lines.slice(insertAt)
-  ].join("\n").replace(/\n{3,}/g, "\n\n").trim();
-}
-
-function appendRecordedArtifactsSection(body: string, artifacts: RunArtifact[], language: Language): string {
-  const deliveryItems = collectDeliveryItems(artifacts, language)
-    .filter((item) => !body.includes(item.location));
-  if (!deliveryItems.length) return body;
-
-  const zh = language === "zh-CN";
-  const title = zh ? "## \u7cfb\u7edf\u8bb0\u5f55\u7684\u4ea7\u7269" : "## System-recorded artifacts";
-  return [
-    body,
-    "",
-    title,
-    "",
-    ...deliveryItems.map((item) => `- ${item.label}: ${item.location}`)
-  ].join("\n").trim();
-}
-
-function buildDeliverySection(artifacts: RunArtifact[], language: Language): string {
-  const zh = language === "zh-CN";
-  const title = zh ? "## 交付位置" : "## Delivery location";
-  const deliveryItems = collectDeliveryItems(artifacts, language);
-  if (deliveryItems.length === 0) {
-    return `${title}\n\n- ${zh ? "\u672c\u6b65\u9aa4\u6ca1\u6709\u4ea7\u751f\u65b0\u7684\u4ea4\u4ed8\u7269\u3002" : "No new deliverable produced in this step."}`;
-  }
-  return [
-    title,
-    "",
-    ...deliveryItems.map((item) => `- ${item.label}: ${item.location}`)
-  ].join("\n");
 }
 
 function collectDeliveryItems(artifacts: RunArtifact[], language: Language): Array<{ label: string; location: string }> {
@@ -1151,46 +1165,6 @@ function formatDeliveryLocationForDisplay(location: string, language: Language):
   if (/^[A-Za-z]:[\\/]/.test(location)) return location.replace(/\//g, "\\");
   if (/^(?:runs|artifacts|blueprints|tmp)[\\/]/i.test(location)) return location.replace(/\//g, "\\");
   return location;
-}
-
-function buildAgentReportAdvancedBody(nodeRun: BlueprintNodeRun | undefined, handoff: RunAgentHandoff | undefined): string {
-  return [
-    handoff ? buildMarkdownCodeSection("JSON handoff", handoff.payload, "json") : "",
-    nodeRun?.output !== undefined ? buildMarkdownCodeSection("Raw output", nodeRun.output) : "",
-    nodeRun ? buildMarkdownCodeSection("nodeRun", nodeRun, "json") : ""
-  ].filter(Boolean).join("\n\n");
-}
-
-function buildRunAdvancedDetailsBody(runView: BlueprintRunView, approvedPlan: RunApprovalRequest | undefined): string {
-  const round = resolveRunActiveRound(runView);
-  return [
-    approvedPlan ? buildMarkdownCodeSection("Approved plan JSON", approvedPlan, "json") : "",
-    round ? buildMarkdownCodeSection("Research context", {
-      roundId: round.id,
-      roundNumber: round.roundNumber,
-      researchStatus: round.researchStatus,
-      researchSummary: round.researchSummary,
-      researchArtifactIds: round.researchArtifactIds,
-      planSource: round.planSource
-    }, "json") : "",
-    buildMarkdownCodeSection("Agent handoffs", runView.agentHandoffs ?? [], "json"),
-    buildMarkdownCodeSection("Manager context snapshots", runView.managerContextSnapshots ?? [], "json"),
-    buildMarkdownCodeSection("nodeRuns", runView.nodeRuns, "json"),
-    buildMarkdownCodeSection("runContext source metadata", {
-      run: runView.run,
-      iterationRounds: runView.iterationRounds ?? [],
-      approvalRequests: runView.approvalRequests ?? [],
-      releaseReports: runView.releaseReports ?? []
-    }, "json")
-  ].filter(Boolean).join("\n\n");
-}
-
-function buildMarkdownCodeSection(title: string, value: unknown, language = ""): string {
-  if (value === undefined || value === null) return "";
-  const body = formatOutput(value).trim();
-  if (!body) return "";
-  const fence = language ? `\`\`\`${language}` : "```";
-  return [`#### ${title}`, "", fence, body, "```"].join("\n");
 }
 
 function formatArtifactLocation(artifact: RunArtifact): string {
@@ -3785,7 +3759,10 @@ function buildTraceIssues(
   const nodeTimelineItemsByNodeRunId = buildNodeRunTimelineItemMap(activeRun, nodeRunIds);
   const managerContainerNodeRunIds = managerContainerNodeRunIdsWithDecisionReports(activeRun);
   const visibleNodeRuns = activeRun.nodeRuns.filter(
-    (nodeRun) => nodeRun.nodeType !== "manager_slot" && !managerContainerNodeRunIds.has(nodeRun.id)
+    (nodeRun) =>
+      nodeRun.nodeType !== "manager_slot" &&
+      !managerContainerNodeRunIds.has(nodeRun.id) &&
+      !isSupersededPreflightJudgmentNodeRun(activeRun, nodeRun)
   );
   const nodeItems = visibleNodeRuns.map((nodeRun, order) => ({
     kind: "node" as const,
@@ -3873,6 +3850,14 @@ function managerContainerNodeRunIdsWithDecisionReports(activeRun: BlueprintRunVi
   return ids;
 }
 
+function isSupersededPreflightJudgmentNodeRun(activeRun: BlueprintRunView, nodeRun: BlueprintNodeRun): boolean {
+  if (preflightModeFromNodeRunId(nodeRun.id) !== "preflight_judgment") return false;
+  return (activeRun.approvalRequests ?? []).some((approval) =>
+    approval.kind === "iteration_requirement_plan" &&
+    approval.roundId === nodeRun.iterationRoundId
+  );
+}
+
 function buildRunTimelineTraceItems(
   activeRun: BlueprintRunView,
   nodeRunIds: Set<string>,
@@ -3954,6 +3939,8 @@ function runEventTimelineTitle(
 function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {
   return kind === "node_started" ||
     kind === "node_output" ||
+    kind === "requirement_published" ||
+    kind === "release_report_published" ||
     kind === "round_failed" ||
     kind === "round_cancelled" ||
     kind === "run_failed" ||
@@ -3974,12 +3961,28 @@ function createNodeTraceIssue(
   const label = formatNodeTraceLabel(baseLabel, nodeRun, language);
   const humanReport = activeRun.agentHumanReports?.find((report) => report.nodeRunId === nodeRun.id);
   const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === nodeRun.id) ?? [];
-  const readableBody = humanReport
-    ? buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language)
-    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language);
-  const outputBody = appendNodeTimelineDetails(readableBody, timelineItems, language);
-  const round = roundForNodeRun(activeRun, nodeRun);
   const actorKind = traceActorKindForNodeRun(nodeRun);
+  const managerReason = actorKind === "manager" ? readManagerOutputReason(nodeRun.output) : undefined;
+  const readableSource = humanReport
+    ? humanReport.bodyMd
+    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language);
+  const displaySource = managerReason && !humanReport && readableSource?.trim() === managerReason.trim()
+    ? ""
+    : readableSource;
+  const previewSource = readableSource ? buildCurrentOutputPreviewBody(readableSource, language) : undefined;
+  const outputBody = readableSource
+    ? buildCurrentOutputDisplayBody({
+        bodyMd: displaySource ?? "",
+        artifacts: reportArtifacts,
+        language,
+        actorKind,
+        reason: managerReason,
+        timelineDetails: nodeTimelineDetailBodies(timelineItems, language)
+      })
+    : undefined;
+  const round = roundForNodeRun(activeRun, nodeRun);
+  const displayRoundNumber = managerRoundNumberForNodeRun(nodeRun) ?? round?.roundNumber;
+  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
   return {
     key: nodeRun.id,
     index,
@@ -3992,35 +3995,25 @@ function createNodeTraceIssue(
     humanReport,
     issueStatus: toIssueStatus(nodeRun.status),
     statusLabel: statusLabelForNodeRun(nodeRun.status, t),
-    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
-    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    roundLabel,
+    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
     roleTag: roleTagForActorKind(actorKind, language),
     workTags: workTagsForNodeRun(nodeRun, label, language),
     timestamp: traceTimestampForNodeRun(nodeRun),
-    outputPreview: summarizeOutput(readableBody ?? nodeRun.output, t),
+    outputPreview: summarizeOutput(previewSource ?? nodeRun.output, t),
     outputBody,
     events: activeRun.events.filter((event) => event.nodeRunId === nodeRun.id)
   };
 }
 
-function appendNodeTimelineDetails(
-  readableBody: string | undefined,
+function nodeTimelineDetailBodies(
   timelineItems: RunTimelineTraceItem[],
   language: Language
-): string | undefined {
-  const details = timelineItems
+): string[] {
+  return timelineItems
     .filter((item) => item.kind === "node_output")
     .map((item) => localizeTimelineBody(item.body, language)?.trim())
     .filter((body): body is string => Boolean(body));
-  if (!details.length) return readableBody;
-
-  const bodyText = readableBody?.trim() ?? "";
-  const uniqueDetails = details.filter((detail) => detail !== bodyText);
-  if (!uniqueDetails.length) return readableBody;
-
-  const zh = language === "zh-CN";
-  const timelineBody = [`### ${zh ? "过程记录" : "Timeline"}`, ...uniqueDetails].join("\n\n");
-  return [readableBody, timelineBody].filter((part): part is string => Boolean(part?.trim())).join("\n\n");
 }
 
 function createReportTraceIssue(
@@ -4032,9 +4025,19 @@ function createReportTraceIssue(
 ): TraceIssue {
   const reportArtifacts = activeRun.artifacts?.filter((artifact) => artifact.nodeRunId === humanReport.nodeRunId) ?? [];
   const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === humanReport.nodeRunId);
-  const body = buildHumanReportDisplayBody(humanReport.bodyMd, reportArtifacts, language);
   const round = nodeRun ? roundForNodeRun(activeRun, nodeRun) : roundForReport(activeRun, humanReport);
+  const displayRoundNumber = managerRoundNumberForReport(humanReport, nodeRun) ?? round?.roundNumber;
   const actorKind = nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindFromLabel(humanReport.nodeLabel);
+  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
+  const managerReason = actorKind === "manager" ? readManagerOutputReason(nodeRun?.output) : undefined;
+  const previewSource = buildCurrentOutputPreviewBody(humanReport.bodyMd, language);
+  const body = buildCurrentOutputDisplayBody({
+    bodyMd: humanReport.bodyMd,
+    artifacts: reportArtifacts,
+    language,
+    actorKind,
+    reason: managerReason
+  });
   return {
     key: `report:${humanReport.id}`,
     index,
@@ -4045,12 +4048,12 @@ function createReportTraceIssue(
     humanReport,
     issueStatus: "completed",
     statusLabel: t.trace.completed,
-    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
-    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    roundLabel,
+    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
     roleTag: roleTagForActorKind(actorKind, language),
     workTags: workTagsForReport(humanReport, nodeRun, language),
     timestamp: humanReport.createdAt,
-    outputPreview: summarizeOutput(body, t),
+    outputPreview: summarizeOutput(previewSource, t),
     outputBody: body,
     events: []
   };
@@ -4064,7 +4067,13 @@ function createRoundResearchTraceIssue(
   t: Messages,
   language: Language
 ): TraceIssue {
-  const body = buildRoundResearchTraceBody(round, language);
+  const researchBody = buildRoundResearchTraceBody(round, language);
+  const body = buildCurrentOutputDisplayBody({
+    bodyMd: researchBody,
+    artifacts: [],
+    language,
+    actorKind: "manager"
+  });
   return {
     key: `round-research:${round.id}`,
     index,
@@ -4079,7 +4088,7 @@ function createRoundResearchTraceIssue(
     roleTag: roleTagForActorKind("manager", language),
     workTags: [preflightWorkTag("research_resolution", language)],
     timestamp: round.startedAt,
-    outputPreview: summarizeOutput(body, t),
+    outputPreview: summarizeOutput(buildCurrentOutputPreviewBody(researchBody, language), t),
     outputBody: body,
     events: []
   };
@@ -4179,20 +4188,21 @@ function createTimelineTraceIssue(
 ): TraceIssue {
   const body = buildTimelineIssueBody(activeRun, timelineItem, language);
   const issueStatus = timelineIssueStatus(activeRun, timelineItem);
-  const round = roundForTimelineItem(activeRun, timelineItem);
   const actorKind = traceActorKindForTimelineItem(timelineItem);
+  const displayRoundNumber = roundNumberForTimelineItem(activeRun, timelineItem);
+  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
   return {
     key: `timeline:${timelineItem.id}`,
     index,
-    label: timelineIssueTitle(timelineItem, language),
+    label: timelineIssueTitle(activeRun, timelineItem, language),
     kind: "timeline",
     actorKind,
     depth: 0,
     timelineItem,
     issueStatus,
-    statusLabel: traceIssueStatusLabel(issueStatus, language),
-    roundLabel: round ? formatRoundRibbonLabel(round.roundNumber, language) : undefined,
-    roundTone: round ? roundTone(round.roundNumber) : undefined,
+    statusLabel: timelineIssueStatusLabel(activeRun, timelineItem, issueStatus, language),
+    roundLabel,
+    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
     roleTag: roleTagForActorKind(actorKind, language),
     workTags: workTagsForTimelineItem(timelineItem, language),
     timestamp: timelineItem.createdAt,
@@ -4243,7 +4253,7 @@ function roundForReport(activeRun: BlueprintRunView, humanReport: RunAgentHumanR
     const direct = activeRun.iterationRounds?.find((round) => round.id === humanReport.roundId);
     if (direct) return direct;
   }
-  return activeRun.iterationRounds?.find((round) => round.id && humanReport.nodeRunId.includes(round.id));
+  return undefined;
 }
 
 function roundForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): RunIterationRound | undefined {
@@ -4253,19 +4263,45 @@ function roundForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTime
       return activeRun.iterationRounds?.find((round) => round.id === artifact.roundId);
     }
   }
-  const roundNumber = readRoundNumberFromText([timelineItem.title, timelineItem.body].filter(Boolean).join("\n"));
-  if (roundNumber !== undefined) {
-    return activeRun.iterationRounds?.find((round) => round.roundNumber === roundNumber);
+  if (timelineItem.kind === "requirement_published") {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
+    if (request?.roundId) return activeRun.iterationRounds?.find((round) => round.id === request.roundId);
+  }
+  if (timelineItem.kind === "release_report_published") {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
+    if (request?.roundId) return activeRun.iterationRounds?.find((round) => round.id === request.roundId);
+  }
+  if (timelineItem.kind === "node_output" && timelineItem.payloadRef) {
+    const report = activeRun.agentHumanReports?.find((candidate) => candidate.id === timelineItem.payloadRef);
+    if (report?.roundId) return activeRun.iterationRounds?.find((round) => round.id === report.roundId);
   }
   return undefined;
 }
 
-function readRoundNumberFromText(value: string): number | undefined {
-  const numeric = value.match(/\bRound\s+(\d+)\b/i) ?? value.match(/第\s*(\d+)\s*轮/);
-  if (numeric?.[1]) {
-    const parsed = Number.parseInt(numeric[1], 10);
-    return Number.isFinite(parsed) ? parsed : undefined;
+function managerRoundNumberForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined): number | undefined {
+  return readPositiveRoundNumber(humanReport.managerRoundNumber) ?? managerRoundNumberForNodeRun(nodeRun);
+}
+
+function managerRoundNumberForNodeRun(nodeRun: BlueprintNodeRun | undefined): number | undefined {
+  if (!nodeRun) return undefined;
+  return readManagerRoundNumberFromManagerContext(nodeRun.input) ?? readManagerRoundNumberFromOutput(nodeRun.output);
+}
+
+function roundNumberForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): number | undefined {
+  if (timelineItem.kind === "node_output" && timelineItem.payloadRef) {
+    const report = activeRun.agentHumanReports?.find((candidate) => candidate.id === timelineItem.payloadRef);
+    if (report) {
+      const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
+      const managerRoundNumber = managerRoundNumberForReport(report, nodeRun);
+      if (managerRoundNumber !== undefined) return managerRoundNumber;
+    }
   }
+  return roundForTimelineItem(activeRun, timelineItem)?.roundNumber;
+}
+
+function traceRoundLabel(actorKind: TraceIssue["actorKind"], roundNumber: number | undefined, language: Language): string | undefined {
+  if (roundNumber !== undefined) return formatRoundRibbonLabel(roundNumber, language);
+  if (actorKind === "manager") return language === "zh-CN" ? "\u8f6e\u6b21\u7f3a\u5931" : "Round missing";
   return undefined;
 }
 
@@ -4318,6 +4354,8 @@ function workTagsForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintN
 function workTagsForTimelineItem(timelineItem: RunTimelineTraceItem, language: Language): string[] {
   const zh = language === "zh-CN";
   if (timelineItem.kind === "artifact_published") return [zh ? "产物" : "Artifact"];
+  if (timelineItem.kind === "requirement_published") return [zh ? "计划确认" : "Plan approval"];
+  if (timelineItem.kind === "release_report_published") return [zh ? "报告确认" : "Report approval"];
   if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output") {
     return [workTagFromLabel(timelineItem.actorLabel, language)];
   }
@@ -4400,18 +4438,46 @@ function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimel
   return "completed";
 }
 
-function timelineIssueTitle(timelineItem: RunTimelineTraceItem, language: Language): string {
+function timelineIssueStatusLabel(
+  activeRun: BlueprintRunView,
+  timelineItem: RunTimelineTraceItem,
+  status: TraceIssueStatus,
+  language: Language
+): string {
+  const zh = language === "zh-CN";
+  if (timelineItem.kind === "requirement_published") {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
+    if (request?.status === "pending") return zh ? "待审批" : "Needs approval";
+    return zh ? "已确认" : "Confirmed";
+  }
+  if (timelineItem.kind === "release_report_published") {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
+    if (request?.status === "pending") return zh ? "待审批" : "Needs approval";
+    return zh ? "已确认" : "Confirmed";
+  }
+  return traceIssueStatusLabel(status, language);
+}
+
+function timelineIssueTitle(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
   if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output" || timelineItem.kind === "artifact_published") {
     return formatTimelineActorLabel(timelineItem.actorLabel || timelineItem.title, language);
   }
   const zh = language === "zh-CN";
   if (!zh) return timelineItem.title;
-  const roundStarted = timelineItem.title.match(/^Round\s+(\d+)\s+started$/i);
-  if (roundStarted?.[1]) return `第 ${roundStarted[1]} 轮启动`;
-  const roundPlan = timelineItem.title.match(/^Round\s+(\d+)\s+Execution Plan(?:\s+v(\d+))?$/i);
-  if (roundPlan?.[1]) return `第 ${roundPlan[1]} 轮执行计划${roundPlan[2] ? ` v${roundPlan[2]}` : ""}`;
-  const release = timelineItem.title.match(/^Round\s+(\d+)\s+Release Report(?:\s+v(\d+))?$/i);
-  if (release?.[1]) return `第 ${release[1]} 轮发布报告${release[2] ? ` v${release[2]}` : ""}`;
+  const round = roundForTimelineItem(activeRun, timelineItem);
+  if (timelineItem.kind === "round_started" && round) return `第 ${round.roundNumber} 轮启动`;
+  if (timelineItem.kind === "requirement_published" && round) {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
+    return `第 ${round.roundNumber} 轮执行计划${request && request.revision > 1 ? ` v${request.revision}` : ""}`;
+  }
+  if (timelineItem.kind === "release_report_published" && round) {
+    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
+    const report = activeRun.releaseReports?.find((candidate) =>
+      candidate.id === timelineItem.payloadRef ||
+      (request && candidate.approvalRequestId === request.id)
+    );
+    return `第 ${round.roundNumber} 轮发布报告${report ? ` v${report.version}` : ""}`;
+  }
   const preflight = timelineItem.title.match(/^(.+):\s+(.+)\s+(started|failed)$/i);
   if (preflight?.[1] && preflight[2] && preflight[3]) {
     const mode = preflightModeFromDisplayText(preflight[2]);
@@ -4421,6 +4487,18 @@ function timelineIssueTitle(timelineItem: RunTimelineTraceItem, language: Langua
   return timelineItem.title;
 }
 
+function findTimelineApprovalRequest(
+  activeRun: BlueprintRunView,
+  timelineItem: RunTimelineTraceItem,
+  kind: "iteration_requirement_plan" | "manager_release_report"
+): NonNullable<BlueprintRunView["approvalRequests"]>[number] | undefined {
+  return (activeRun.approvalRequests ?? []).find((approval) =>
+    approval.kind === kind &&
+    (!timelineItem.payloadRef || !approval.payloadRef || approval.payloadRef === timelineItem.payloadRef) &&
+    approval.title === timelineItem.title
+  );
+}
+
 function formatTimelineActorLabel(label: string, language: Language): string {
   return localizeReportNodeLabel(label, language)
     .replace(/:\s*(research|requirement planning|plan revision|plan review|context snapshot)\s+(started|completed|failed)$/i, "")
@@ -4428,6 +4506,12 @@ function formatTimelineActorLabel(label: string, language: Language): string {
 }
 
 function buildTimelineIssueBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
+  if (timelineItem.kind === "requirement_published") {
+    return buildRequirementApprovalTimelineBody(activeRun, timelineItem, language);
+  }
+  if (timelineItem.kind === "release_report_published") {
+    return buildReleaseApprovalTimelineBody(activeRun, timelineItem, language);
+  }
   const zh = language === "zh-CN";
   const kind = timelineKindDescription(timelineItem.kind, language);
   const artifactLines = timelineItem.kind === "artifact_published"
@@ -4438,6 +4522,50 @@ function buildTimelineIssueBody(activeRun: BlueprintRunView, timelineItem: RunTi
     ...(artifactLines ?? [localizeTimelineBody(timelineItem.body, language)]),
     zh ? `执行者：${timelineItem.actorLabel}` : `Actor: ${timelineItem.actorLabel}`
   ].filter((line): line is string => Boolean(line?.trim())).join("\n\n");
+}
+
+function buildRequirementApprovalTimelineBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
+  const zh = language === "zh-CN";
+  const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
+  const pending = request?.status === "pending";
+  return [
+    `## ${zh ? "\u6458\u8981" : "Summary"}`,
+    "",
+    pending
+      ? (zh
+          ? "\u524d\u671f\u51c6\u5907\u5de5\u4f5c\u5df2\u7ecf\u5b8c\u6210\uff0cManager \u5df2\u7ecf\u628a\u672c\u8f6e\u6267\u884c\u8ba1\u5212\u53d1\u7ed9\u4f60\u786e\u8ba4\u3002\u786e\u8ba4\u540e\u4f1a\u5f00\u59cb\u540e\u7eed Agent \u5de5\u4f5c\u3002"
+          : "Preparation is complete and the manager has sent this round's execution plan for your approval. Once approved, the downstream agent work can start.")
+      : (zh
+          ? "\u672c\u8f6e\u6267\u884c\u8ba1\u5212\u5df2\u786e\u8ba4\uff0c\u7cfb\u7edf\u53ef\u4ee5\u7ee7\u7eed\u540e\u7eed Agent \u5de5\u4f5c\u3002"
+          : "This round's execution plan has been confirmed and the downstream agent work can continue."),
+    "",
+    `## ${zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location"}`,
+    "",
+    zh ? "\u65e0" : "None",
+    "",
+    `## ${zh ? "\u5f85\u786e\u8ba4\u4e8b\u9879" : "Approval needed"}`,
+    "",
+    pending
+      ? (zh ? "\u8bf7\u5728\u5ba1\u6279/\u6536\u4ef6\u7bb1\u4e2d\u786e\u8ba4\u672c\u8f6e\u6267\u884c\u8ba1\u5212\uff0c\u6216\u56de\u590d\u4fee\u6539\u610f\u89c1\u3002" : "Review the execution plan in approvals/inbox, then approve it or reply with changes.")
+      : (zh ? "\u65e0\uff0c\u8be5\u8ba1\u5212\u5df2\u5904\u7406\u3002" : "None; this plan has already been handled.")
+  ].join("\n");
+}
+
+function buildReleaseApprovalTimelineBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
+  const zh = language === "zh-CN";
+  const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
+  const pending = request?.status === "pending";
+  return [
+    `## ${zh ? "\u6458\u8981" : "Summary"}`,
+    "",
+    pending
+      ? (zh ? "Manager \u5df2\u53d1\u5e03\u672c\u8f6e\u62a5\u544a\uff0c\u6b63\u7b49\u5f85\u4f60\u786e\u8ba4\u662f\u7ee7\u7eed\u4e0b\u4e00\u8f6e\u8fd8\u662f\u5b8c\u6210\u8fd0\u884c\u3002" : "The manager has published this round's report and is waiting for you to confirm whether to continue or complete the run.")
+      : (zh ? "\u672c\u8f6e\u62a5\u544a\u5df2\u5904\u7406\u3002" : "This round report has been handled."),
+    "",
+    `## ${zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location"}`,
+    "",
+    zh ? "\u65e0" : "None"
+  ].join("\n");
 }
 
 function buildTimelineArtifactLocationLines(
@@ -4624,6 +4752,41 @@ function readReadableResult(value: unknown): string | undefined {
     readNonEmptyString(record?.markdown) ??
     readNonEmptyString(record?.reason) ??
     readNonEmptyString(record?.message);
+}
+
+function readManagerOutputReason(output: unknown): string | undefined {
+  const record = readOutputRecord(output);
+  const directReason = readNonEmptyString(record?.reason) ?? readNonEmptyString(record?.message);
+  if (directReason) return directReason;
+  const resultRecord = readOutputRecord(record?.result);
+  return readNonEmptyString(resultRecord?.reason) ?? readNonEmptyString(resultRecord?.message);
+}
+
+function readManagerRoundNumberFromManagerContext(value: unknown): number | undefined {
+  const record = readOutputRecord(value);
+  const manager = isPlainObject(record?.manager) ? record.manager : undefined;
+  return readPositiveRoundNumber(manager?.roundNumber);
+}
+
+function readManagerRoundNumberFromOutput(output: unknown): number | undefined {
+  const record = readOutputRecord(output);
+  if (!record) return undefined;
+  const result = isPlainObject(record.result) ? record.result : undefined;
+  return readPositiveRoundNumber(record.managerRoundNumber) ??
+    readPositiveRoundNumber(record.roundNumber) ??
+    readPositiveRoundNumber(result?.managerRoundNumber) ??
+    readPositiveRoundNumber(result?.roundNumber);
+}
+
+function readPositiveRoundNumber(value: unknown): number | undefined {
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string"
+      ? Number.parseInt(value, 10)
+      : undefined;
+  if (numeric === undefined || !Number.isFinite(numeric)) return undefined;
+  const rounded = Math.round(numeric);
+  return rounded >= 1 ? rounded : undefined;
 }
 
 function readOutputRecord(output: unknown): Record<string, unknown> | undefined {

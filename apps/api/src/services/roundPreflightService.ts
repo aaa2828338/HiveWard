@@ -35,6 +35,12 @@ export interface RoundPreflightExecutors {
     runContext: ManagerInjectedContext;
     taskInput: Record<string, unknown>;
   }): Promise<RoundPreflightExecutionResult>;
+  recordContextSufficientResearch(input: {
+    runContext: ManagerInjectedContext;
+    taskInput: Record<string, unknown>;
+    summary: string;
+    source: "previous_snapshot" | "previous_release_report";
+  }): Promise<RoundPreflightExecutionResult>;
 }
 
 export interface RoundPreflightResult {
@@ -216,23 +222,6 @@ export class RoundPreflightService {
     const preparationAttempt = input.preparationAttempt ?? 1;
     const maxPreparationAttempts = input.maxPreparationAttempts ?? normalizePreparationAttempts(managerConfig.maxPreparationAttempts);
     const researchAgent = this.resolvePreflightSlotAgent(input.blueprint, input.topManagerNode, selfIterationResearchSlot);
-    if (!input.forceResearch && input.context.previousSnapshot && !input.humanFeedback?.trim()) {
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousSnapshot.summary,
-        artifactIds: [],
-        source: "previous_snapshot"
-      };
-    }
-    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !researchAgent) {
-      return {
-        status: "context_sufficient",
-        summary: input.context.previousReleaseReport.summary,
-        artifactIds: [],
-        source: "previous_release_report"
-      };
-    }
-
     const baseRunContext = this.managerContextService.buildManagerInjectedContext(input.context, {
       mode: "research_resolution",
       roundStatus: input.round.status
@@ -248,6 +237,34 @@ export class RoundPreflightService {
       maxPreparationAttempts,
       runContext: baseRunContext
     };
+    if (!input.forceResearch && input.context.previousSnapshot && !input.humanFeedback?.trim()) {
+      await input.executors.recordContextSufficientResearch({
+        runContext: baseRunContext,
+        taskInput,
+        summary: input.context.previousSnapshot.summary,
+        source: "previous_snapshot"
+      });
+      return {
+        status: "context_sufficient",
+        summary: input.context.previousSnapshot.summary,
+        artifactIds: [],
+        source: "previous_snapshot"
+      };
+    }
+    if (!input.forceResearch && input.context.previousReleaseReport && !input.humanFeedback?.trim() && !researchAgent) {
+      await input.executors.recordContextSufficientResearch({
+        runContext: baseRunContext,
+        taskInput,
+        summary: input.context.previousReleaseReport.summary,
+        source: "previous_release_report"
+      });
+      return {
+        status: "context_sufficient",
+        summary: input.context.previousReleaseReport.summary,
+        artifactIds: [],
+        source: "previous_release_report"
+      };
+    }
     if (researchAgent) {
       const executed = await executeRequired(
         () => input.executors.runAgentNode({
@@ -518,6 +535,45 @@ function formatRoundExecutionPlan(input: {
   assumptions: string[];
   risks: string[];
 }): string {
+  const zh = usesChineseText([
+    input.planText,
+    input.research.summary,
+    input.context.previousReleaseReport?.summary,
+    input.context.humanFeedback,
+    ...input.assumptions,
+    ...input.risks
+  ].filter((value): value is string => Boolean(value)).join("\n"));
+  if (zh) {
+    const assumptions = input.assumptions.length ? input.assumptions.map((item) => `- ${item}`).join("\n") : "- 未记录。";
+    const risks = input.risks.length ? input.risks.map((item) => `- ${item}`).join("\n") : "- 未记录。";
+    return [
+      `# 第 ${input.roundNumber} 轮执行计划${input.revision > 1 ? ` v${input.revision}` : ""}`,
+      "",
+      "前期准备工作已完成。请确认本轮执行计划；确认后会开始后续 Agent 工作。如需调整，请直接回复修改意见。",
+      "",
+      `调研来源：${input.research.status}（${input.research.source}）`,
+      `计划来源：${input.planSource}`,
+      input.context.previousReleaseReport ? `上一轮报告：${firstLine(input.context.previousReleaseReport.summary)}` : undefined,
+      input.context.humanFeedback ? `用户反馈：${input.context.humanFeedback}` : undefined,
+      "",
+      "## 调研摘要",
+      input.research.summary,
+      "",
+      "## 执行计划",
+      input.planText,
+      "",
+      "## 假设",
+      assumptions,
+      "",
+      "## 风险",
+      risks,
+      "",
+      "## 确认后会发生什么",
+      "- 用户确认后，本轮会进入执行阶段。",
+      "- Manager 只会调度本轮计划中的工作槽位。",
+      "- 产物与本轮报告会在执行后继续交给用户验收。"
+    ].filter((part) => part !== undefined).join("\n");
+  }
   const assumptions = input.assumptions.length ? input.assumptions.map((item) => `- ${item}`).join("\n") : "- None recorded.";
   const risks = input.risks.length ? input.risks.map((item) => `- ${item}`).join("\n") : "- None recorded.";
   return [
@@ -552,6 +608,26 @@ function formatBlockedRoundPlan(input: {
   blocker: RoundPreflightBlockedError;
   context: RoundStartContext;
 }): string {
+  const zh = usesChineseText([
+    input.blocker.humanReportMd,
+    input.blocker.message,
+    input.context.humanFeedback
+  ].filter((value): value is string => Boolean(value)).join("\n"));
+  if (zh) {
+    return [
+      `# 第 ${input.roundNumber} 轮预检受阻${input.revision > 1 ? ` v${input.revision}` : ""}`,
+      "调研来源：blocked",
+      "计划来源：blocked",
+      input.context.humanFeedback ? `用户反馈：${input.context.humanFeedback}` : undefined,
+      "",
+      "## 阻塞原因",
+      input.blocker.humanReportMd ?? input.blocker.message,
+      "",
+      "## 需要用户处理",
+      "- 请回复缺失的凭据、权限、事实或修订指令。",
+      "- 在修订计划生成前，本审批不能直接批准进入执行。"
+    ].filter((part) => part !== undefined).join("\n");
+  }
   return [
     `# Round ${input.roundNumber} Preflight Blocked v${input.revision}`,
     "Research source: blocked",
@@ -690,6 +766,10 @@ function normalizePreparationAttempts(value: number | undefined): number {
 
 function firstLine(value: string): string {
   return value.split(/\r?\n/).find((line) => line.trim())?.trim() ?? value.trim();
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

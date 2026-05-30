@@ -134,7 +134,10 @@ export class IterationService {
     revision?: number;
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
-    const title = `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
+    const zh = usesChineseText(input.body) || usesChineseText(input.managerNode.config.label);
+    const title = zh
+      ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+      : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
     const request = await this.approvalService.createRequest({
       runId: input.session.runId,
       roundId: input.round.id,
@@ -435,4 +438,8 @@ export class IterationService {
     if (!session) throw new Error(`Iteration session not found: ${sessionId}`);
     return session;
   }
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }

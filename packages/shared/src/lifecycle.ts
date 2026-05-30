@@ -260,6 +260,7 @@ export interface AgentHumanReport {
   id: string;
   runId: string;
   roundId?: string;
+  managerRoundNumber?: number;
   nodeRunId: string;
   nodeId: string;
   nodeLabel: string;
