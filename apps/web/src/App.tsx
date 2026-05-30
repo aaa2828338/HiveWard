@@ -1736,7 +1736,7 @@ export function App() {
     if (section === "googleConfig") {
       return (
         <HarnessConfigPage
-          title={t.pages.googleConfig?.title ?? "Google CLI Beta Config"}
+          title={t.pages.googleConfig?.title ?? "Google CLI Config"}
           description={t.pages.googleConfig?.description ?? ""}
           status={googleHarnessStatus}
           fallbackLabel={harnessDisplayLabel("google")}
@@ -1755,7 +1755,7 @@ export function App() {
     if (section === "cursorConfig") {
       return (
         <HarnessConfigPage
-          title={t.pages.cursorConfig?.title ?? "Cursor CLI Beta Config"}
+          title={t.pages.cursorConfig?.title ?? "Cursor CLI Config"}
           description={t.pages.cursorConfig?.description ?? ""}
           status={cursorHarnessStatus}
           fallbackLabel={harnessDisplayLabel("cursor")}
@@ -1774,7 +1774,7 @@ export function App() {
     if (section === "opencodeConfig") {
       return (
         <HarnessConfigPage
-          title={t.pages.opencodeConfig?.title ?? "OpenCode Beta Config"}
+          title={t.pages.opencodeConfig?.title ?? "OpenCode Config"}
           description={t.pages.opencodeConfig?.description ?? ""}
           status={opencodeHarnessStatus}
           fallbackLabel={harnessDisplayLabel("opencode")}
@@ -1793,7 +1793,7 @@ export function App() {
     if (section === "hermesConfig") {
       return (
         <HarnessConfigPage
-          title={t.pages.hermesConfig?.title ?? "Hermes Beta Config"}
+          title={t.pages.hermesConfig?.title ?? "Hermes Config"}
           description={t.pages.hermesConfig?.description ?? ""}
           status={hermesHarnessStatus}
           fallbackLabel={harnessDisplayLabel("hermes")}
@@ -2135,13 +2135,6 @@ function HivewardHomePage({
 
       <div className="hiveward-readme-layout">
         <div className="hiveward-readme-left">
-          <article className="hiveward-home-notice">
-            <span>{ui.permissionNotice.eyebrow(versionLabel)}</span>
-            <h3>{ui.permissionNotice.title}</h3>
-            <p>{ui.permissionNotice.body}</p>
-            <p>{ui.permissionNotice.risk}</p>
-          </article>
-
           <article className="hiveward-readme-main">
             {ui.readmeSections.map((section) => (
               <section key={section.title} className="hiveward-readme-section">
@@ -3306,12 +3299,6 @@ interface HivewardHomeCopy {
   none: string;
   communityTitle: string;
   communityPlaceholder: string;
-  permissionNotice: {
-    eyebrow: (versionLabel: string) => string;
-    title: string;
-    body: string;
-    risk: string;
-  };
   readmeSections: Array<{
     title: string;
     paragraphs: string[];
@@ -3344,12 +3331,6 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
       none: "-",
       communityTitle: "交流群",
       communityPlaceholder: "扫码加入 HiveWard 交流群，获取更新、反馈问题和交流蓝图玩法。",
-      permissionNotice: {
-        eyebrow: (versionLabel) => `${versionLabel} 本地运行公告`,
-        title: "完全访问权限需要手动开启",
-        body: "CLI 聊天 Harness 默认使用安全模式。你可以在各自配置页里手动开启完整本地权限。",
-        risk: "全权限会允许模型读写工作区文件、执行命令、访问网络和使用实时网页搜索；请只在信任的本地仓库中开启。"
-      },
       readmeSections: [
         {
           title: "什么是 HiveWard？",
@@ -3394,6 +3375,12 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
           ]
         },
         {
+          title: "注意事项",
+          paragraphs: [
+            "为了更好地使用 HiveWard，初次进入页面后，建议先打开你计划使用的 Harness 配置页，把 HiveWard Skill 安装 / 配置到对应 Harness。这样 CEO、Leader 和技能拆解等执行手册会进入原生 harness 的 Skill 目录，后续聊天和蓝图运行才能更稳定地调用正确的操作方式。"
+          ]
+        },
+        {
           title: "当前状态",
           paragraphs: ["当前版本面向本地演示和早期使用。核心产品界面已经可用，API 和交互细节仍会继续演进。"]
         }
@@ -3424,12 +3411,6 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
     none: "-",
     communityTitle: "Community",
     communityPlaceholder: "Scan to join the HiveWard community group for updates, feedback, and blueprint workflow discussion.",
-    permissionNotice: {
-      eyebrow: (versionLabel) => `${versionLabel} local runtime notice`,
-      title: "Full access is opt-in",
-      body: "CLI chat harnesses use safe mode by default. You can enable full local access from each harness configuration page.",
-      risk: "Full access allows workspace writes, command execution, network access, and live web search. Enable it only in local repositories you trust."
-    },
     readmeSections: [
       {
         title: "What is HiveWard?",
@@ -3471,6 +3452,12 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
           "Manager dispatch across Slots and agents.",
           "Human governance through the inbox.",
           "Run history that turns execution into reviewable evidence."
+        ]
+      },
+      {
+        title: "Notes",
+        paragraphs: [
+          "For the best first-run experience, open the configuration page for each harness you plan to use and install / configure the HiveWard Skills into that harness. This places the CEO, Leader, and skill-decomposer operating manuals in the native harness Skill directory so later chats and blueprint runs can call the right operating instructions more reliably."
         ]
       },
       {

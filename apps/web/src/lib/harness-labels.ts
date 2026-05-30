@@ -5,10 +5,6 @@ export type HarnessDisplayParts = {
   badgeLabel?: string;
 };
 
-const betaBadgeLabel = "Beta";
-
-const betaHarnessIds = new Set<HarnessId>(["google", "cursor", "opencode", "hermes"]);
-
 const harnessDisplayBaseLabels = {
   openclaw: "OpenClaw",
   claudeCode: "Claude Code",
@@ -23,10 +19,10 @@ export const harnessDisplayLabels = {
   openclaw: harnessDisplayBaseLabels.openclaw,
   claudeCode: harnessDisplayBaseLabels.claudeCode,
   codex: harnessDisplayBaseLabels.codex,
-  google: `${harnessDisplayBaseLabels.google} ${betaBadgeLabel}`,
-  cursor: `${harnessDisplayBaseLabels.cursor} ${betaBadgeLabel}`,
-  opencode: `${harnessDisplayBaseLabels.opencode} ${betaBadgeLabel}`,
-  hermes: `${harnessDisplayBaseLabels.hermes} ${betaBadgeLabel}`
+  google: harnessDisplayBaseLabels.google,
+  cursor: harnessDisplayBaseLabels.cursor,
+  opencode: harnessDisplayBaseLabels.opencode,
+  hermes: harnessDisplayBaseLabels.hermes
 } satisfies Record<HarnessId, string>;
 
 export function harnessDisplayLabel(harnessId: HarnessId): string {
@@ -35,7 +31,7 @@ export function harnessDisplayLabel(harnessId: HarnessId): string {
 
 export function harnessDisplayParts(harnessId: HarnessId): HarnessDisplayParts {
   const label = harnessDisplayBaseLabels[harnessId];
-  return betaHarnessIds.has(harnessId) ? { label, badgeLabel: betaBadgeLabel } : { label };
+  return { label };
 }
 
 export function runtimeDisplayLabel(runtimeId: AgentRuntimeId): string {

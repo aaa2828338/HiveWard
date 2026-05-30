@@ -389,9 +389,9 @@ export { createAgentSdkRuntime, isAgentSdkProvider } from "./sdk-runtime";
 function formatSourceLabel(source: HarnessId | RuntimeObjectSource): string {
   if (source === "codex") return "Codex";
   if (source === "claude" || source === "claudeCode") return "Claude Code";
-  if (source === "google") return "Google CLI Beta";
-  if (source === "cursor") return "Cursor CLI Beta";
-  if (source === "opencode") return "OpenCode Beta";
-  if (source === "hermes") return "Hermes Beta";
+  if (source === "google") return "Google CLI";
+  if (source === "cursor") return "Cursor CLI";
+  if (source === "opencode") return "OpenCode";
+  if (source === "hermes") return "Hermes";
   return "OpenClaw";
 }

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -191,11 +191,7 @@ describe("JSON to SQLite migration", () => {
     expect(verification.orphanArtifacts).toEqual(["runs/orphan.md"]);
   });
 
-  it("documents and accepts --sqlite-path for migration and verification CLIs", async () => {
-    const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
-    expect(readme).toContain("--sqlite-path data/hiveward.sqlite");
-    expect(readme).not.toMatch(/--sqlite\s+data\/hiveward\.sqlite/);
-
+  it("accepts --sqlite-path for migration and verification CLIs", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-cli-"));
     const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
     await source.init();

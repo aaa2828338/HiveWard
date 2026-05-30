@@ -1052,7 +1052,7 @@ describe("apiRouter", () => {
         const hermesStatus = body.statuses.find((status) => status.id === "hermes");
 
         expect(googleStatus).toMatchObject({
-          label: "Google CLI Beta",
+          label: "Google CLI",
           installed: true,
           connectionState: "available",
           defaultModelId: "gemini-2.5-pro"
@@ -1064,7 +1064,7 @@ describe("apiRouter", () => {
           "gemini-2.5-flash"
         ]);
         expect(cursorStatus).toMatchObject({
-          label: "Cursor CLI Beta",
+          label: "Cursor CLI",
           installed: true,
           connectionState: "available",
           defaultModelId: "gpt-5"
@@ -1076,7 +1076,7 @@ describe("apiRouter", () => {
           "claude-4-sonnet"
         ]);
         expect(opencodeStatus).toMatchObject({
-          label: "OpenCode Beta",
+          label: "OpenCode",
           installed: true,
           connectionState: "available",
           defaultModelId: "anthropic/claude-sonnet-4"
@@ -1088,7 +1088,7 @@ describe("apiRouter", () => {
         ]);
         expect(opencodeStatus?.models?.[0]?.isDefault).toBe(true);
         expect(hermesStatus).toMatchObject({
-          label: "Hermes Beta",
+          label: "Hermes",
           installed: true,
           connectionState: "available",
           defaultModelId: "hermes-env-default"
