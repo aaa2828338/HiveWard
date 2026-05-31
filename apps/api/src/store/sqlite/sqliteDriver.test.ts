@@ -74,7 +74,7 @@ describe("SqliteDriver schema migrations", () => {
     }).metadata_json)).toMatchObject({
       legacySource: "approval_replies_v1",
       legacyAction: "reply",
-      legacyMeaning: "message_only",
+      legacyMeaning: "legacy_agent_rerun_feedback",
       requestKind: "agent_proposal"
     });
     upgraded.close();
