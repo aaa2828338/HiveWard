@@ -329,15 +329,7 @@ export class IterationService {
     }
     if (result.decision.action === "reject") {
       await this.markRoundArtifactsRejected(round);
-      await this.store.upsertIterationRound({
-        ...round,
-        status: "executing",
-        artifactIds: [],
-        releaseReportRequestId: undefined,
-        startedAt: result.decision.createdAt,
-        endedAt: undefined
-      });
-      return { resumeExecution: true, completeRun: false };
+      return { resumeExecution: false, completeRun: false };
     }
     if (result.nextApprovalRequest) {
       await this.store.upsertIterationRound({

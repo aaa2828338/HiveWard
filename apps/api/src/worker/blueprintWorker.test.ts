@@ -799,6 +799,52 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls[0]?.body).toContain("draft answer");
   });
 
+  it("keeps Agent approval rejection from rerunning or continuing the run", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-agent-reject-1"),
+      createStartedAgentTask("task-agent-reject-2")
+    ], [
+      createCompletedAgentTask("task-agent-reject-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-agent-reject-2", "succeeded", "implicit rerun answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reject", {
+      comment: "Do not use this output."
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const rejectedView = await store.getRunView(run.id);
+    const rejectedRequest = rejectedView?.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const rejectedNode = rejectedView?.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id);
+
+    expect(rejectedView?.run.status).toBe("waiting_approval");
+    expect(rejectedRequest).toMatchObject({ status: "rejected" });
+    expect(rejectedNode).toMatchObject({
+      status: "waiting_approval",
+      output: expect.objectContaining({ reviewOutput: "draft answer" })
+    });
+    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.sendCalls).toHaveLength(0);
+  });
+
   it("keeps approvalRequestId Agent approval replies append-only until approval", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -3211,7 +3257,7 @@ describe("BlueprintWorker", () => {
     if (waitingRun) await worker.cancelRun(waitingRun);
   });
 
-  it("reruns the current self-iteration round after a release report rejection", async () => {
+  it("keeps release report rejection as a denial without rerunning the round", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -3221,27 +3267,12 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-reject-research"),
       createStartedAgentTask("task-reject-plan"),
       createStartedAgentTask("task-rejected-round"),
-      createStartedAgentTask("task-rejected-report"),
-      createStartedAgentTask("task-fixed-round"),
-      createStartedAgentTask("task-fixed-report"),
-      createStartedAgentTask("task-fixed-snapshot")
+      createStartedAgentTask("task-rejected-report")
     ], [
       createCompletedAgentTask("task-reject-research", "succeeded", "reject test research"),
       createCompletedAgentTask("task-reject-plan", "succeeded", "reject test plan"),
       createCompletedAgentTask("task-rejected-round", "succeeded", htmlArtifactOutput("needs work")),
-      createCompletedAgentTask("task-rejected-report", "succeeded", releaseReportOutput("needs work")),
-      createCompletedAgentTask("task-fixed-round", "succeeded", htmlArtifactOutput("fixed")),
-      createCompletedAgentTask("task-fixed-report", "succeeded", releaseReportOutput("fixed")),
-      createCompletedAgentTask("task-fixed-snapshot", "succeeded", JSON.stringify({
-        completedItems: ["Fixed draft produced."],
-        keyDecisions: ["Complete after fix."],
-        validatedFacts: ["fixed artifact exists"],
-        openQuestions: [],
-        activeRisks: [],
-        assumptions: [],
-        recommendedNextStep: "complete",
-        summary: "fixed snapshot"
-      }))
+      createCompletedAgentTask("task-rejected-report", "succeeded", releaseReportOutput("needs work"))
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3264,59 +3295,24 @@ describe("BlueprintWorker", () => {
     if (!currentRun2 || !report1) throw new Error("Expected first release report.");
     await worker.applyApprovalRequest(blueprint, currentRun2, report1.id, "reject", { comment: "Fix the page." });
 
-    const report2View = await waitForRunView(
-      store,
-      run.id,
-      (view) =>
-        view.run.status === "waiting_approval" &&
-        (view.releaseReports ?? []).length === 2 &&
-        (view.approvalRequests ?? []).filter((request) => request.kind === "manager_release_report" && request.status === "pending").length === 1,
-      60_000
-    );
-    const report2 = report2View.approvalRequests
-      ?.filter((request) => request.kind === "manager_release_report" && request.status === "pending")
-      .at(-1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const rejectedView = await store.getRunView(run.id);
+    const rejectedReport = rejectedView?.approvalRequests?.find((request) => request.id === report1.id);
 
-    expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(4);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(2);
-    expect(report2View.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(2);
-    expect(report2View.releaseReports?.map((report) => report.version)).toEqual([1, 2]);
-    expect(report2View.releaseReports?.[1]?.supersedesReportId).toBe(report2View.releaseReports?.[0]?.id);
-    expect(report2View.artifacts?.some((artifact) => artifact.status === "rejected")).toBe(true);
-    expect(report2View.artifacts?.some((artifact) => artifact.status === "current")).toBe(true);
-    const rerunManagerInput = report2View.nodeRuns
-      .filter((nodeRun) =>
-        isRuntimeNodeRun(nodeRun) &&
-        nodeRun.nodeId === "top-manager" &&
-        isRecord(nodeRun.input) &&
-        isRecord(nodeRun.input.runContext)
-      )
-      .at(-1)?.input;
-    expect(rerunManagerInput).toMatchObject({
-      runContext: expect.objectContaining({
-        rejectedArtifactIndex: expect.arrayContaining([expect.objectContaining({ status: "rejected" })])
-      })
-    });
-    const rerunContext = isRecord(rerunManagerInput) && isRecord(rerunManagerInput.runContext)
-      ? rerunManagerInput.runContext
-      : undefined;
-    expect(Array.isArray(rerunContext?.artifactIndex) ? rerunContext.artifactIndex : []).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ status: "rejected" })])
-    );
-
-    const currentRun3 = await store.getBlueprintRun(run.id);
-    if (!currentRun3 || !report2) throw new Error("Expected second release report.");
-    await worker.applyApprovalRequest(blueprint, currentRun3, report2.id, "complete");
-
-    const completed = await waitForRunTerminal(store, run.id);
-    expect(completed?.run.status).toBe("succeeded");
-    expect(completed?.approvalDecisions?.map((decision) => decision.action)).toEqual([
+    expect(rejectedView?.run.status).toBe("waiting_approval");
+    expect(rejectedReport).toMatchObject({ status: "rejected" });
+    expect(rejectedView?.approvalRequests?.filter((request) => request.kind === "manager_release_report" && request.status === "pending")).toHaveLength(0);
+    expect(adapter.calls.filter((call) => call.agentName === "builder")).toHaveLength(1);
+    expect(rejectedView?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "top-manager")).toHaveLength(2);
+    expect(rejectedView?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "slot-1")).toHaveLength(1);
+    expect(rejectedView?.nodeRuns.filter((nodeRun) => isRuntimeNodeRun(nodeRun) && nodeRun.nodeId === "builder")).toHaveLength(1);
+    expect(rejectedView?.releaseReports?.map((report) => report.version)).toEqual([1]);
+    expect(rejectedView?.artifacts?.some((artifact) => artifact.status === "rejected")).toBe(true);
+    expect(rejectedView?.approvalDecisions?.map((decision) => decision.action)).toEqual([
       "approve",
-      "reject",
-      "complete"
+      "reject"
     ]);
-  }, 70_000);
+  }, 30_000);
 
   it("freezes pending lifecycle approvals when a self-iteration run is cancelled", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));

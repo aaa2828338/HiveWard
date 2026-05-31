@@ -503,7 +503,6 @@ export class BlueprintWorker {
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
       if (action === "approve") return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, input.selectedReplyId);
-      if (action === "reject") return this.rejectRun(blueprint, currentRun, request.nodeRunId, input.comment);
     }
 
     if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
