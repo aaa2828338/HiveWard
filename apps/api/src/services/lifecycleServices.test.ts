@@ -36,7 +36,7 @@ describe("ApprovalService", () => {
     expect(source.split(/\r?\n/).length).toBeLessThan(40);
   });
 
-  it("replies by closing the old request once and creating a revised request", async () => {
+  it("records replies without changing request lifecycle or creating revisions", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -59,19 +59,22 @@ describe("ApprovalService", () => {
     const decisions = await store.listApprovalDecisions(request.id);
 
     expect(original).toMatchObject({
-      status: "replied",
-      supersededByRequestId: result.nextApprovalRequest?.id
+      status: "pending",
+      updatedAt: expect.any(String)
     });
     expect(decisions.map((decision) => decision.action)).toEqual(["reply"]);
-    expect(result.nextApprovalRequest).toMatchObject({
-      title: "Round 1 requirement v2",
+    expect(decisions[0]).toMatchObject({
+      resultingStatus: "pending",
+      comment: "Clarify the acceptance criteria."
+    });
+    expect(result.approvalRequest).toMatchObject({
+      id: request.id,
       status: "pending",
-      revision: 2,
-      replacesRequestId: request.id,
+      revision: 1,
       threadId: request.threadId
     });
-    expect(result.nextApprovalRequest?.body).toContain("Revision feedback:");
-    expect(result.nextApprovalRequest?.body).not.toContain("User reply:");
+    expect(result.nextApprovalRequest).toBeUndefined();
+    expect((await store.listApprovalRequests({ runId: "run-1" }))).toHaveLength(1);
   });
 
   it("freezes all pending approvals for a terminal run", async () => {

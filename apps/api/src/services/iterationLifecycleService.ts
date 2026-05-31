@@ -327,42 +327,6 @@ export class IterationService {
       }
       return { resumeExecution: false, completeRun: false };
     }
-    if (result.decision.action === "reply") {
-      const now = result.decision.createdAt;
-      await this.store.upsertIterationRound({ ...round, status: "completed", endedAt: now });
-      await this.store.appendRunTimelineItem({
-        id: `timeline-${nanoid(10)}`,
-        runId: round.runId,
-        createdAt: now,
-        actorLabel: "manager",
-        kind: "round_completed",
-        title: `Round ${round.roundNumber} completed with feedback`,
-        body: result.decision.comment
-      });
-
-      let nextSession = session;
-      if (round.roundNumber >= session.maxRounds) {
-        nextSession = {
-          ...session,
-          status: "running",
-          maxRounds: round.roundNumber + 1,
-          endedAt: undefined
-        };
-        await this.store.upsertIterationSession(nextSession);
-      }
-
-      const nextRound = await this.startNextRound(nextSession, round);
-      return {
-        resumeExecution: false,
-        completeRun: false,
-        prepareNextRound: {
-          sessionId: nextSession.id,
-          roundId: nextRound.id,
-          previousReportRequestId: result.approvalRequest.id,
-          humanFeedback: result.decision.comment
-        }
-      };
-    }
     if (result.decision.action === "reject") {
       await this.markRoundArtifactsRejected(round);
       await this.store.upsertIterationRound({

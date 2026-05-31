@@ -133,60 +133,8 @@ export class ApprovalService {
       capabilities?: ApprovalCapabilities;
     } = {}
   ): Promise<ApprovalActionResult> {
-    const trimmed = message.trim();
-    if (!trimmed) throw new Error("Approval reply message is required.");
-
-    const current = await this.requirePendingRequest(id, "reply");
-    const now = new Date().toISOString();
-    const revision = current.revision + 1;
-    const baseRevision = await this.buildReplyRevision(current, trimmed, revision);
-    const revised = {
-      ...baseRevision,
-      ...revisionOverride
-    };
-    const nextRequest: ApprovalRequest = {
-      id: `approval-${nanoid(10)}`,
-      runId: current.runId,
-      roundId: current.roundId,
-      nodeRunId: current.nodeRunId,
-      kind: current.kind,
-      status: "pending",
-      title: revised.title,
-      body: revised.body,
-      payloadRef: revised.payloadRef,
-      sourceRef: current.sourceRef,
-      threadId: current.threadId,
-      revision,
-      replacesRequestId: current.id,
-      capabilities: revised.capabilities ?? resolveApprovalCapabilities(
-        current.kind,
-        "pending",
-        { finalRound: current.kind === "manager_release_report" && current.capabilities.complete && !current.capabilities.approve }
-      ),
-      requestedBy: current.requestedBy,
-      requestedAt: now,
-      updatedAt: now
-    };
-    const linkedClosed: ApprovalRequest = {
-      ...current,
-      status: "replied",
-      supersededByRequestId: nextRequest.id,
-      capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: now
-    };
-    const decision = this.buildDecision(current.id, "reply", "replied", "user", trimmed, now);
-    return this.applyDecisionOrThrow({
-      approvalRequest: linkedClosed,
-      decision,
-      nextApprovalRequest: nextRequest,
-      releaseReport: revised.releaseReport
-        ? {
-            ...revised.releaseReport,
-            approvalRequestId: nextRequest.id,
-            createdAt: nextRequest.requestedAt
-          }
-        : undefined
-    });
+    void revisionOverride;
+    return this.recordPendingReply(id, message);
   }
 
   async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {
@@ -201,19 +149,7 @@ export class ApprovalService {
   }
 
   async closeWithReply(id: string, message: string): Promise<ApprovalActionResult> {
-    const trimmed = message.trim();
-    if (!trimmed) throw new Error("Approval reply message is required.");
-
-    const current = await this.requirePendingRequest(id, "reply");
-    const now = new Date().toISOString();
-    const closed: ApprovalRequest = {
-      ...current,
-      status: "replied",
-      capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: now
-    };
-    const decision = this.buildDecision(current.id, "reply", "replied", "user", trimmed, now);
-    return this.applyDecisionOrThrow({ approvalRequest: closed, decision });
+    return this.recordPendingReply(id, message);
   }
 
   async autoApprove(input: Parameters<ApprovalService["createRequest"]>[0], comment?: string): Promise<ApprovalActionResult> {
