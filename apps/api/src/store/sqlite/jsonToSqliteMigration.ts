@@ -3,6 +3,7 @@ import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promi
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { nanoid } from "nanoid";
+import Database from "better-sqlite3";
 import type {
   AgentHandoff,
   AgentHumanReport,
@@ -19,6 +20,7 @@ import type {
   ReleaseReport
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../fileHivewardStore";
+import { acquireSqliteMaintenanceLock } from "./sqliteProcessLock";
 import { SqliteHivewardStore } from "./sqliteHivewardStore";
 
 export interface JsonToSqliteMigrationOptions {
@@ -61,64 +63,71 @@ export async function migrateJsonToSqlite(options: JsonToSqliteMigrationOptions)
 
   const sqlitePath = resolve(options.sqlitePath ?? join(sourceRoot, "hiveward.sqlite"));
   const targetSqlitePath = options.dryRun ? join(backupRoot, "hiveward.sqlite") : sqlitePath;
-  await resetSqliteTarget(targetSqlitePath, backupRoot, options.dryRun ?? false);
-  const sourceStore = new FileHivewardStore(join(backupRoot, "hiveward-store.json"));
-  const sqliteStore = new SqliteHivewardStore(targetSqlitePath, { seedDefaults: false });
+  const maintenanceLock = options.dryRun
+    ? undefined
+    : await acquireSqliteMaintenanceLock({ sqlitePath, command: process.argv.join(" ") });
 
   try {
+    await resetSqliteTarget(targetSqlitePath, backupRoot, options.dryRun ?? false);
+    const sourceStore = new FileHivewardStore(join(backupRoot, "hiveward-store.json"));
+    const sqliteStore = new SqliteHivewardStore(targetSqlitePath, { seedDefaults: false });
     await sourceStore.init();
-    await sqliteStore.init();
-    const counts = await sqliteStore.importFromStore(sourceStore);
-    const completedAt = new Date().toISOString();
-    const result: JsonToSqliteMigrationResult = {
-      id,
-      status: options.dryRun ? "dry_run" : "applied",
-      sourceRoot,
-      backupRoot,
-      sqlitePath: targetSqlitePath,
-      sourceManifest,
-      counts,
-      createdAt,
-      completedAt
-    };
-    sqliteStore.recordMigrationManifest({
-      id,
-      sourceRoot,
-      backupRoot,
-      sourceManifest,
-      result,
-      status: result.status,
-      createdAt,
-      completedAt
-    });
-    return result;
-  } catch (error) {
-    const completedAt = new Date().toISOString();
-    const failedResult = {
-      id,
-      sourceRoot,
-      backupRoot,
-      sqlitePath: targetSqlitePath,
-      error: error instanceof Error ? error.message : String(error),
-      completedAt
-    };
     try {
+      await sqliteStore.init();
+      const counts = await sqliteStore.importFromStore(sourceStore);
+      const completedAt = new Date().toISOString();
+      const result: JsonToSqliteMigrationResult = {
+        id,
+        status: options.dryRun ? "dry_run" : "applied",
+        sourceRoot,
+        backupRoot,
+        sqlitePath: targetSqlitePath,
+        sourceManifest,
+        counts,
+        createdAt,
+        completedAt
+      };
       sqliteStore.recordMigrationManifest({
         id,
         sourceRoot,
         backupRoot,
         sourceManifest,
-        result: failedResult,
-        status: "failed",
+        result,
+        status: result.status,
         createdAt,
         completedAt
       });
-    } catch {
-      // The original migration error is more useful.
+      return result;
+    } catch (error) {
+      const completedAt = new Date().toISOString();
+      const failedResult = {
+        id,
+        sourceRoot,
+        backupRoot,
+        sqlitePath: targetSqlitePath,
+        error: error instanceof Error ? error.message : String(error),
+        completedAt
+      };
+      try {
+        sqliteStore.recordMigrationManifest({
+          id,
+          sourceRoot,
+          backupRoot,
+          sourceManifest,
+          result: failedResult,
+          status: "failed",
+          createdAt,
+          completedAt
+        });
+      } catch {
+        // The original migration error is more useful.
+      }
+      throw error;
+    } finally {
+      sqliteStore.close();
     }
-    throw error;
   } finally {
-    sqliteStore.close();
+    await maintenanceLock?.release();
   }
 }
 
@@ -639,11 +648,14 @@ async function copyMigrationInputs(sourceRoot: string, targetRoot: string): Prom
   await copyDirIfExists(join(sourceRoot, "artifacts"), join(targetRoot, "artifacts"));
 }
 
-async function copyIfExists(source: string, target: string): Promise<void> {
+async function copyIfExists(source: string, target: string, sqlitePathForLockMessage?: string): Promise<void> {
   try {
     await mkdir(dirname(target), { recursive: true });
     await cp(source, target);
   } catch (error) {
+    if (sqlitePathForLockMessage && isSqliteBusyOrLocked(error)) {
+      throw sqliteTargetLockedError(sqlitePathForLockMessage, error);
+    }
     if (!isNotFound(error)) throw error;
   }
 }
@@ -672,17 +684,72 @@ async function copyDirIfExists(source: string, target: string): Promise<void> {
 
 async function resetSqliteTarget(sqlitePath: string, backupRoot: string, dryRun: boolean): Promise<void> {
   if (!dryRun) {
-    await copyIfExists(sqlitePath, join(backupRoot, "previous-hiveward.sqlite"));
-    await copyIfExists(`${sqlitePath}-wal`, join(backupRoot, "previous-hiveward.sqlite-wal"));
-    await copyIfExists(`${sqlitePath}-shm`, join(backupRoot, "previous-hiveward.sqlite-shm"));
+    await assertSqliteTargetUnlocked(sqlitePath);
+    await copyIfExists(sqlitePath, join(backupRoot, "previous-hiveward.sqlite"), sqlitePath);
+    await copyIfExists(`${sqlitePath}-wal`, join(backupRoot, "previous-hiveward.sqlite-wal"), sqlitePath);
+    await copyIfExists(`${sqlitePath}-shm`, join(backupRoot, "previous-hiveward.sqlite-shm"), sqlitePath);
   }
-  await removeIfExists(sqlitePath);
-  await removeIfExists(`${sqlitePath}-wal`);
-  await removeIfExists(`${sqlitePath}-shm`);
+  await removeIfExists(sqlitePath, dryRun ? undefined : sqlitePath);
+  await removeIfExists(`${sqlitePath}-wal`, dryRun ? undefined : sqlitePath);
+  await removeIfExists(`${sqlitePath}-shm`, dryRun ? undefined : sqlitePath);
 }
 
-async function removeIfExists(path: string): Promise<void> {
-  await rm(path, { force: true });
+async function assertSqliteTargetUnlocked(sqlitePath: string): Promise<void> {
+  try {
+    await stat(sqlitePath);
+  } catch (error) {
+    if (isNotFound(error)) return;
+    throw error;
+  }
+
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(sqlitePath, { fileMustExist: true });
+    db.pragma("busy_timeout = 1");
+    db.exec("BEGIN EXCLUSIVE");
+    db.exec("ROLLBACK");
+  } catch (error) {
+    if (isSqliteBusyOrLocked(error)) {
+      throw sqliteTargetLockedError(sqlitePath, error);
+    }
+    throw error;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // The lock error above is the useful failure.
+    }
+  }
+}
+
+async function removeIfExists(path: string, sqlitePathForLockMessage?: string): Promise<void> {
+  try {
+    await rm(path, { force: true });
+  } catch (error) {
+    if (sqlitePathForLockMessage && isSqliteBusyOrLocked(error)) {
+      throw sqliteTargetLockedError(sqlitePathForLockMessage, error);
+    }
+    throw error;
+  }
+}
+
+function sqliteTargetLockedError(sqlitePath: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error([
+    `SQLite database is locked or busy: ${sqlitePath}`,
+    "Migration did not run and the live SQLite database was not removed or rebuilt.",
+    "Stop the process currently using this SQLite file, then retry the migration.",
+    "Run: npm run doctor:sqlite-lock",
+    `Original error: ${detail}`
+  ].join("\n"));
+}
+
+function isSqliteBusyOrLocked(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code) : "";
+  if (["SQLITE_BUSY", "SQLITE_LOCKED", "EBUSY", "EPERM", "EACCES"].includes(code)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /busy|locked|resource busy|being used by another process/i.test(message);
 }
 
 function classifyParseStatus(path: string, bytes: Buffer): SourceManifestEntry["parseStatus"] {

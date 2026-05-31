@@ -57,7 +57,7 @@ describe("ArtifactService", () => {
     expect(readFileSync(artifact!.storagePath!, "utf8")).toBe("copied file artifact\n");
   });
 
-  it("rejects missing and out-of-bounds kind:file path artifacts", async () => {
+  it("stores missing and out-of-bounds path declarations without reading unsafe files", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-path-"));
     const sourceRoot = join(tempDir, "workspace");
     const dataDir = join(tempDir, "data");
@@ -71,15 +71,21 @@ describe("ArtifactService", () => {
       sourceRoot
     });
 
-    await expect(service.prepareFromNodeRun({
+    const [missing] = await service.prepareFromNodeRun({
       runId: "run-missing-file",
       nodeRun: createNodeRun({
         id: "node-run-missing-file",
         output: { artifacts: [{ kind: "file", title: "Missing", path: "missing.txt" }] }
       })
-    })).rejects.toThrow(/does not exist/);
+    });
+    expect(missing).toMatchObject({
+      kind: "json",
+      title: "Missing",
+      relativePath: expect.stringMatching(/\.json$/)
+    });
+    expect(readFileSync(missing!.storagePath!, "utf8")).toContain("missing.txt");
 
-    await expect(service.prepareFromNodeRun({
+    const [escaped] = await service.prepareFromNodeRun({
       runId: "run-escaped-file",
       nodeRun: createNodeRun({
         id: "node-run-escaped-file",
@@ -91,7 +97,13 @@ describe("ArtifactService", () => {
           }]
         }
       })
-    })).rejects.toThrow(/escaped artifact source root/);
+    });
+    expect(escaped).toMatchObject({
+      kind: "json",
+      title: "Escaped",
+      relativePath: expect.stringMatching(/\.json$/)
+    });
+    expect(readFileSync(escaped!.storagePath!, "utf8")).toContain("outside.txt");
   });
 
   it("writes kind:file content payloads as text files without using path copy semantics", async () => {
@@ -198,7 +210,7 @@ describe("ArtifactService", () => {
     expect(readFileSync(artifact!.storagePath!, "utf8")).toBe(html);
   });
 
-  it("rejects artifact payloads that mix path with content fields", async () => {
+  it("accepts artifact payloads that mix path with content fields", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-ambiguous-source-"));
     const sourceRoot = join(tempDir, "workspace");
     const dataDir = join(tempDir, "data");
@@ -215,7 +227,7 @@ describe("ArtifactService", () => {
       sourceRoot
     });
 
-    await expect(service.prepareFromNodeRun({
+    const [artifact] = await service.prepareFromNodeRun({
       runId: "run-ambiguous-source",
       nodeRun: createNodeRun({
         id: "node-run-ambiguous-source",
@@ -228,16 +240,22 @@ describe("ArtifactService", () => {
           }]
         }
       })
-    })).rejects.toThrow(/must declare exactly one artifact source/);
+    });
+    expect(artifact).toMatchObject({
+      kind: "file",
+      title: "Ambiguous file",
+      relativePath: expect.stringMatching(/\.html$/)
+    });
+    expect(readFileSync(artifact!.storagePath!, "utf8")).toContain("real html file");
   });
 
-  it("rejects html artifact payloads that are only prose instead of an html document", async () => {
+  it("publishes html artifact payloads even when they are prose instead of complete documents", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "hiveward-artifact-invalid-html-"));
     const store = new FileHivewardStore(join(tempDir, "hiveward-store.json"));
     await store.init();
     const service = new ArtifactService(store, { rootDir: join(tempDir, "artifacts"), sourceRoot: tempDir });
 
-    await expect(service.prepareFromNodeRun({
+    const [artifact] = await service.prepareFromNodeRun({
       runId: "run-invalid-html",
       nodeRun: createNodeRun({
         id: "node-run-invalid-html",
@@ -249,7 +267,13 @@ describe("ArtifactService", () => {
           }]
         }
       })
-    })).rejects.toThrow(/requires a complete HTML document/);
+    });
+    expect(artifact).toMatchObject({
+      kind: "html",
+      title: "AI Agent report",
+      relativePath: expect.stringMatching(/\.html$/)
+    });
+    expect(readFileSync(artifact!.storagePath!, "utf8")).toContain("AI Agent");
   });
 
   it("scopes agent-provided artifact ids by node run to avoid cross-run collisions", async () => {

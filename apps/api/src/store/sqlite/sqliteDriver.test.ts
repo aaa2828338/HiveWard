@@ -23,11 +23,12 @@ describe("SqliteDriver schema migrations", () => {
     const first = new SqliteDriver(sqlitePath);
     const v1 = sqliteMigrations[0]!;
     for (const statement of v1.up) first.db.exec(statement);
-    first.db.prepare(
+    const insertApproval = first.db.prepare(
       `INSERT INTO approval_requests (
         id, run_id, kind, status, title, body, revision, capabilities_json, requested_by_json, requested_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+    );
+    insertApproval.run(
       "approval-v1",
       "run-v1",
       "agent_proposal",
@@ -40,14 +41,55 @@ describe("SqliteDriver schema migrations", () => {
       "2026-05-29T00:00:00.000Z",
       "2026-05-29T00:00:00.000Z"
     );
-    first.db.prepare(
+    insertApproval.run(
+      "approval-v1-requirement",
+      "run-v1",
+      "iteration_requirement_plan",
+      "pending",
+      "Review v1 requirement",
+      "Approve the v1 requirement.",
+      1,
+      JSON.stringify({ approve: true, reject: true, reply: true, complete: false, terminate: false, revise: true }),
+      JSON.stringify({ type: "node", label: "Manager" }),
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z"
+    );
+    insertApproval.run(
+      "approval-v1-release",
+      "run-v1",
+      "manager_release_report",
+      "pending",
+      "Review v1 release",
+      "Approve the v1 release.",
+      1,
+      JSON.stringify({ approve: true, reject: true, reply: true, complete: true, terminate: false, revise: true }),
+      JSON.stringify({ type: "node", label: "Manager" }),
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z"
+    );
+    const insertReply = first.db.prepare(
       "INSERT INTO approval_replies (id, approval_request_id, message, actor, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(
+    );
+    insertReply.run(
       "reply-v1",
       "approval-v1",
       "Please revise.",
       "user",
       "2026-05-29T00:01:00.000Z"
+    );
+    insertReply.run(
+      "reply-v1-requirement",
+      "approval-v1-requirement",
+      "Revise the requirement.",
+      "user",
+      "2026-05-29T00:02:00.000Z"
+    );
+    insertReply.run(
+      "reply-v1-release",
+      "approval-v1-release",
+      "Start another round from this feedback.",
+      "user",
+      "2026-05-29T00:03:00.000Z"
     );
     first.db.prepare(
       "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)"
@@ -76,6 +118,22 @@ describe("SqliteDriver schema migrations", () => {
       legacyAction: "reply",
       legacyMeaning: "legacy_agent_rerun_feedback",
       requestKind: "agent_proposal"
+    });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1-requirement") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "legacy_requirement_revision_feedback",
+      requestKind: "iteration_requirement_plan"
+    });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1-release") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "legacy_release_report_feedback",
+      requestKind: "manager_release_report"
     });
     upgraded.close();
   });

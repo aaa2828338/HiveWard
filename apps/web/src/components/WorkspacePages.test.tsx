@@ -476,6 +476,7 @@ describe("RunsPage", () => {
     const delivery = output.match(/## 📍 交付位置\n\n([\s\S]*?)\n\n## 📦 产物/)?.[1] ?? "";
     const artifactSummary = output.match(/## 📦 产物\n\n([\s\S]*?)\n\n## 执行说明/)?.[1] ?? "";
     expect(delivery).toContain("/artifacts/structured/preview.html");
+    expect(delivery).toContain("[/artifacts/structured/preview.html](/artifacts/structured/preview.html)");
     expect(artifactSummary).toContain("[页面预览](/artifacts/structured/preview.html)");
     expect(artifactSummary).not.toContain("artifacts[0]");
     expect(output).toContain(longBody);
@@ -621,8 +622,10 @@ describe("RunsPage", () => {
       actorKind: "agent"
     });
 
-    const artifacts = output.match(/## 📦 产物\n\n([\s\S]*?)\n\n## 产物/)?.[1] ?? "";
+    const artifacts = output.match(/## 📦 产物\n\n([\s\S]*?)\n\n## 制作说明/)?.[1] ?? "";
     expect(artifacts).toBe("无");
+    expect(output).not.toContain("artifacts[0]: 页面预览");
+    expect(output).not.toContain("/artifacts/from-body.html");
   });
 
   it("does not promote raw output paths into delivery locations when artifacts are empty", () => {
