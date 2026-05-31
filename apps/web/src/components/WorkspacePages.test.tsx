@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { BlueprintDefinition, BlueprintRunView } from "@hiveward/shared";
+import type { ApprovalThread, BlueprintDefinition, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
 import { messages } from "../lib/i18n";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { buildCurrentOutputDisplayBody, CompanyDirectoryPage, RunsPage } from "./WorkspacePages";
+import { ApprovalsPage, buildCurrentOutputDisplayBody, CompanyDirectoryPage, RunsPage, shouldAwaitApprovalHarnessReply } from "./WorkspacePages";
 
 describe("CompanyDirectoryPage", () => {
   it("renders the add-company action without the external Plus icon component", () => {
@@ -21,6 +21,105 @@ describe("CompanyDirectoryPage", () => {
 
     expect(html).toContain("Add company");
     expect(html).toContain("local-add-icon");
+  });
+});
+
+function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): PendingApprovalItem {
+  return {
+    approvalRequestId: "request-1",
+    approvalThreadId: "thread-1",
+    kind: "agent_proposal",
+    blueprintId: "blueprint-1",
+    blueprintName: "Blueprint 1",
+    blueprintRunId: "run-1",
+    nodeRunId: "node-run-1",
+    nodeId: "agent-1",
+    nodeLabel: "Review",
+    startedBy: "tester",
+    startedAt: "2026-05-21T01:00:00.000Z",
+    requestedAt: "2026-05-21T01:02:00.000Z",
+    status: "pending",
+    reviewOutput: "body",
+    canApprove: true,
+    canReject: true,
+    canReply: true,
+    canComplete: false,
+    canTerminate: false,
+    ...overrides
+  };
+}
+
+describe("ApprovalsPage", () => {
+  it("groups approval rows by stable approval thread id", () => {
+    const approvals = [
+      createPendingApproval({
+        approvalRequestId: "request-v1",
+        approvalThreadId: "thread-1",
+        nodeRunId: "node-run-v1",
+        nodeLabel: "Review v1",
+        requestedAt: "2026-05-21T01:02:00.000Z",
+        reviewOutput: "old body"
+      }),
+      createPendingApproval({
+        approvalRequestId: "request-v2",
+        approvalThreadId: "thread-1",
+        nodeRunId: "node-run-v2",
+        nodeLabel: "Review v2",
+        requestedAt: "2026-05-21T01:04:00.000Z",
+        reviewOutput: "current body"
+      })
+    ];
+    const approvalThreads: ApprovalThread[] = [
+      {
+        id: "thread-1",
+        kind: "agent_proposal",
+        status: "open",
+        title: "Review thread",
+        runId: "run-1",
+        nodeRunId: "node-run-v2",
+        currentRequestId: "request-v2",
+        currentRevision: 2,
+        capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:04:00.000Z"
+      }
+    ];
+
+    const html = renderToStaticMarkup(
+      <ApprovalsPage
+        approvals={approvals}
+        approvalThreads={approvalThreads}
+        inboxItems={[]}
+        language="en"
+        t={messages.en}
+        onApprove={() => undefined}
+        onApproveApprovalRequest={() => undefined}
+        onComplete={() => undefined}
+        onReject={() => undefined}
+        onRejectApprovalRequest={() => undefined}
+        onReply={() => undefined}
+        onReplyApprovalRequest={() => undefined}
+        onSelectApprovalReply={() => undefined}
+        onReplyInboxItem={() => undefined}
+        onApproveInboxItem={() => undefined}
+        onRejectInboxItem={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Review v2");
+    expect(html).toContain("current body");
+    expect(html).not.toContain("Review v1");
+    expect(html).not.toContain("old body");
+  });
+
+  it("does not wait for a harness reply for request-backed approval comments", () => {
+    const legacyApproval = createPendingApproval({ kind: "agent_proposal" });
+    delete legacyApproval.approvalRequestId;
+    expect(shouldAwaitApprovalHarnessReply(createPendingApproval({
+      approvalRequestId: "request-backed",
+      kind: "agent_proposal"
+    }))).toBe(false);
+    expect(shouldAwaitApprovalHarnessReply(legacyApproval)).toBe(true);
   });
 });
 

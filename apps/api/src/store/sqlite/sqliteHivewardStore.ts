@@ -38,6 +38,7 @@ import type {
   IterationSession,
   ManagerContextSnapshot,
   ManagerMail,
+  PendingApprovalItem,
   PortableBlueprintPackage,
   ReleaseReport,
   RoleDriverBinding,
@@ -992,15 +993,31 @@ export class SqliteHivewardStore implements HivewardStore {
        WHERE ar.status = 'pending' AND r.company_id = ?
        ORDER BY ar.requested_at DESC`
     ).all(companyId) as Row[];
-    return rows.map((row) => {
-      const request = approvalRequestFromRow(row);
+    const rowsWithRequests = rows.map((row) => ({ row, request: approvalRequestFromRow(row) }));
+    const approvalRepliesByRequestId = new Map<string, PendingApprovalItem["replies"]>();
+    if (rowsWithRequests.length > 0) {
+      const requestIds = rowsWithRequests.map(({ request }) => request.id);
+      const placeholders = requestIds.map(() => "?").join(", ");
+      const replies = (this.driver.db.prepare(
+        `SELECT * FROM approval_replies WHERE approval_request_id IN (${placeholders}) ORDER BY created_at`
+      ).all(...requestIds) as Row[]).map(approvalReplyFromRow);
+      for (const request of rowsWithRequests.map((entry) => entry.request)) {
+        const requestReplies = pendingApprovalRepliesFromApprovalReplies(
+          replies.filter((reply) => reply.approvalRequestId === request.id)
+        );
+        if (requestReplies) approvalRepliesByRequestId.set(request.id, requestReplies);
+      }
+    }
+    return rowsWithRequests.map(({ row, request }) => {
       const parsedOutput = parseOptionalJson(row.node_output_json);
       const output = isRecord(parsedOutput) && parsedOutput.approvalType === "agent"
         ? parsedOutput
         : undefined;
       const selectedReplyId = readString(output?.selectedReplyId);
+      const approvalReplies = approvalRepliesByRequestId.get(request.id);
       return {
         approvalRequestId: request.id,
+        approvalThreadId: approvalThreadIdForRequest(request),
         kind: request.kind,
         blueprintId: readString(row.blueprint_id) ?? request.runId,
         blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? request.runId,
@@ -1013,6 +1030,7 @@ export class SqliteHivewardStore implements HivewardStore {
         requestedAt: request.requestedAt,
         status: row.node_status === "running" ? "replying" : "pending",
         reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+        ...(approvalReplies ? { replies: approvalReplies } : {}),
         ...(selectedReplyId ? { selectedReplyId } : {}),
         canApprove: request.capabilities.approve,
         canReject: request.capabilities.reject,
@@ -2966,6 +2984,20 @@ function approvalReplyFromRow(row: Row): ApprovalReply {
     body: requireString(row.message),
     createdAt: requireString(row.created_at)
   };
+}
+
+function pendingApprovalRepliesFromApprovalReplies(
+  replies: ApprovalReply[],
+  selectedReplyId?: string
+): PendingApprovalItem["replies"] {
+  if (!replies.length) return undefined;
+  return replies.map((reply) => ({
+    id: reply.id,
+    role: reply.actor === "user" ? "user" : "assistant",
+    body: reply.body,
+    createdAt: reply.createdAt,
+    ...(selectedReplyId === reply.id ? { selected: true } : {})
+  }));
 }
 
 function approvalReplyFromDecision(decision: ApprovalDecision, request: ApprovalRequest): ApprovalReply {

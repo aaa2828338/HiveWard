@@ -40,6 +40,7 @@ import type {
   DashboardWidget,
   DashboardWidgetType,
   InboxItem,
+  ApprovalThread,
   PendingApprovalItem,
   RuntimeOverview,
   UpdateCompanyRequest,
@@ -1206,6 +1207,7 @@ function resolveArtifactDownloadUrl(downloadUrl: string): string {
 
 export function ApprovalsPage({
   approvals,
+  approvalThreads = [],
   inboxItems,
   language,
   t,
@@ -1222,6 +1224,7 @@ export function ApprovalsPage({
   onRejectInboxItem
 }: {
   approvals: PendingApprovalItem[];
+  approvalThreads?: ApprovalThread[];
   inboxItems: InboxItem[];
   language: Language;
   t: Messages;
@@ -1246,15 +1249,15 @@ export function ApprovalsPage({
     [approvals, inboxCopy, inboxItems]
   );
   const inboxThreadItems = useMemo(
-    () => buildInboxThreadItems(inboxItems, approvals, blueprintFilter, timeFilter),
-    [approvals, blueprintFilter, inboxItems, timeFilter]
+    () => buildInboxThreadItems(inboxItems, approvals, approvalThreads, blueprintFilter, timeFilter),
+    [approvalThreads, approvals, blueprintFilter, inboxItems, timeFilter]
   );
   const totalInboxItems = inboxItems.length + approvals.length;
   const pendingInboxCount =
     inboxItems.filter((item) => item.status === "pending").length +
     approvals.filter(isActionableApprovalThread).length;
   const [selectedThread, setSelectedThread] = useState<InboxThreadSelection | undefined>(() =>
-    firstInboxThreadSelection(inboxItems, approvals)
+    firstInboxThreadSelection(inboxItems, approvals, approvalThreads)
   );
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [localReplies, setLocalReplies] = useState<Record<string, InboxLocalReply[]>>({});
@@ -1263,10 +1266,11 @@ export function ApprovalsPage({
     selectedThread?.kind === "inbox"
       ? inboxItems.find((item) => item.id === selectedThread.id)
       : undefined;
-  const selectedApproval =
+  const selectedApprovalThread =
     selectedThread?.kind === "approval"
-      ? approvals.find((approval) => approval.nodeRunId === selectedThread.id)
+      ? inboxThreadItems.find((thread): thread is InboxApprovalThreadListItem => thread.kind === "approval" && thread.id === selectedThread.id)
       : undefined;
+  const selectedApproval = selectedApprovalThread?.approval;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
   const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
@@ -1313,7 +1317,7 @@ export function ApprovalsPage({
     setPendingHarnessReplies((current) => {
       let next = current;
       for (const approval of approvals) {
-        const key = inboxThreadKey({ kind: "approval", id: approval.nodeRunId });
+        const key = inboxThreadKey({ kind: "approval", id: approvalThreadIdForApproval(approval) });
         const pending = current[key];
         if (!pending || !hasAssistantReplyAfter(approval, pending.createdAt)) continue;
         if (next === current) next = { ...current };
@@ -1343,7 +1347,7 @@ export function ApprovalsPage({
       createdAt: new Date().toISOString()
     };
     if (selectedApproval?.canReply) {
-      const shouldWaitForHarnessReply = !selectedApproval.approvalRequestId || selectedApproval.kind === "agent_proposal";
+      const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
       const pendingHarnessReply = shouldWaitForHarnessReply
         ? {
             id: `${reply.id}:pending`,
@@ -1543,13 +1547,13 @@ export function ApprovalsPage({
                   }
 
                   const approval = thread.approval;
-                  const selected = selectedThread?.kind === "approval" && approval.nodeRunId === selectedThread.id;
+                  const selected = selectedThread?.kind === "approval" && thread.id === selectedThread.id;
                   const processed = !isActionableApprovalThread(approval);
                   const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
                   const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
                     <article
-                      key={approval.nodeRunId}
+                      key={thread.id}
                       className={`inbox-row inbox-row-${approval.status ?? "pending"}${processed ? " processed" : ""}${selected ? " selected" : ""}`}
                       role="listitem"
                     >
@@ -1557,7 +1561,7 @@ export function ApprovalsPage({
                         type="button"
                         className="inbox-row-main"
                         aria-pressed={selected}
-                        onClick={() => setSelectedThread({ kind: "approval", id: approval.nodeRunId })}
+                        onClick={() => setSelectedThread({ kind: "approval", id: thread.id })}
                       >
                         <span className="inbox-row-index">{index + 1}</span>
                         <span className="inbox-row-content">
@@ -1674,7 +1678,9 @@ type InboxThreadListItem =
       timestamp: string;
       blueprintKey: string;
       approval: PendingApprovalItem;
+      thread?: ApprovalThread;
     };
+type InboxApprovalThreadListItem = Extract<InboxThreadListItem, { kind: "approval" }>;
 
 const allInboxBlueprintFilterValue = "__all_blueprints__";
 const approvalReviewOutputSolutionId = "reviewOutput";
@@ -2003,9 +2009,28 @@ function buildInboxBlueprintFilterOptions(
 function buildInboxThreadItems(
   inboxItems: InboxItem[],
   approvals: PendingApprovalItem[],
+  approvalThreads: ApprovalThread[],
   blueprintFilter: string,
   timeFilter: InboxTimeFilter
 ): InboxThreadListItem[] {
+  const approvalThreadsById = new Map(approvalThreads.map((thread) => [thread.id, thread]));
+  const approvalsByThreadId = new Map<string, PendingApprovalItem[]>();
+  for (const approval of approvals) {
+    const threadId = approvalThreadIdForApproval(approval);
+    approvalsByThreadId.set(threadId, [...(approvalsByThreadId.get(threadId) ?? []), approval]);
+  }
+  const approvalThreadItems: InboxThreadListItem[] = [...approvalsByThreadId.entries()].map(([threadId, threadApprovals]) => {
+    const thread = approvalThreadsById.get(threadId);
+    const approval = selectCurrentApprovalForThread(threadApprovals, thread);
+    return {
+      kind: "approval" as const,
+      id: threadId,
+      timestamp: thread?.updatedAt ?? approval.requestedAt,
+      blueprintKey: approval.blueprintId || approval.blueprintName,
+      approval,
+      ...(thread ? { thread } : {})
+    };
+  });
   const threads: InboxThreadListItem[] = [
     ...inboxItems.map((item) => ({
       kind: "inbox" as const,
@@ -2014,19 +2039,23 @@ function buildInboxThreadItems(
       blueprintKey: inboxItemBlueprintKey(item),
       item
     })),
-    ...approvals.map((approval) => ({
-      kind: "approval" as const,
-      id: approval.nodeRunId,
-      timestamp: approval.requestedAt,
-      blueprintKey: approval.blueprintId || approval.blueprintName,
-      approval
-    }))
+    ...approvalThreadItems
   ];
 
   return threads
     .filter((thread) => blueprintFilter === allInboxBlueprintFilterValue || thread.blueprintKey === blueprintFilter)
     .filter((thread) => isInboxTimestampInTimeFilter(thread.timestamp, timeFilter))
     .sort((left, right) => toSafeTimestamp(right.timestamp) - toSafeTimestamp(left.timestamp));
+}
+
+function selectCurrentApprovalForThread(approvals: PendingApprovalItem[], thread?: ApprovalThread): PendingApprovalItem {
+  const currentRequestId = thread?.currentRequestId;
+  const current = currentRequestId
+    ? approvals.find((approval) => approval.approvalRequestId === currentRequestId)
+    : undefined;
+  return current ?? approvals
+    .slice()
+    .sort((left, right) => toSafeTimestamp(right.requestedAt) - toSafeTimestamp(left.requestedAt))[0]!;
 }
 
 function firstInboxThreadListSelection(items: InboxThreadListItem[]): InboxThreadSelection | undefined {
@@ -2185,11 +2214,21 @@ function approvalContentBlocks(approval: PendingApprovalItem, copy: InboxCopy, t
   });
 }
 
-function firstInboxThreadSelection(inboxItems: InboxItem[], approvals: PendingApprovalItem[]): InboxThreadSelection | undefined {
+function firstInboxThreadSelection(
+  inboxItems: InboxItem[],
+  approvals: PendingApprovalItem[],
+  approvalThreads: ApprovalThread[]
+): InboxThreadSelection | undefined {
   const firstInboxItem = inboxItems[0];
   if (firstInboxItem) return { kind: "inbox", id: firstInboxItem.id };
-  const firstApproval = approvals[0];
-  if (firstApproval) return { kind: "approval", id: firstApproval.nodeRunId };
+  const firstApproval = buildInboxThreadItems(
+    [],
+    approvals,
+    approvalThreads,
+    allInboxBlueprintFilterValue,
+    "all"
+  ).find((thread) => thread.kind === "approval");
+  if (firstApproval) return { kind: "approval", id: firstApproval.id };
   return undefined;
 }
 
@@ -2199,6 +2238,14 @@ function hasInboxThread(selection: InboxThreadSelection, items: InboxThreadListI
 
 function inboxThreadKey(selection: InboxThreadSelection): string {
   return `${selection.kind}:${selection.id}`;
+}
+
+function approvalThreadIdForApproval(approval: PendingApprovalItem): string {
+  return approval.approvalThreadId ?? approval.approvalRequestId ?? approval.nodeRunId;
+}
+
+export function shouldAwaitApprovalHarnessReply(approval: PendingApprovalItem): boolean {
+  return !approval.approvalRequestId;
 }
 
 function hasAssistantReplyAfter(approval: PendingApprovalItem, createdAt: string): boolean {

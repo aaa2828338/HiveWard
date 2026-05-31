@@ -1218,10 +1218,14 @@ export class FileHivewardStore implements HivewardStore {
             : undefined;
           const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
           const selectedReplyId = readString(output?.selectedReplyId);
-          const replies = readPendingApprovalReplies(output?.replies, selectedReplyId);
+          const replies = mergePendingApprovalReplies(
+            pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }), selectedReplyId),
+            readPendingApprovalReplies(output?.replies, selectedReplyId)
+          );
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
           return {
             approvalRequestId: request.id,
+            approvalThreadId: approvalThreadIdForRequest(request),
             kind: request.kind,
             blueprintId: run.blueprintId,
             blueprintName: run.blueprintName,
@@ -2849,6 +2853,34 @@ function readPendingApprovalReplies(value: unknown, selectedReplyId?: string): P
     return [{ id, role, body, createdAt, ...(selectedReplyId === id ? { selected: true } : {}) }];
   });
   return replies.length ? replies : undefined;
+}
+
+function pendingApprovalRepliesFromApprovalReplies(
+  replies: ApprovalReply[],
+  selectedReplyId?: string
+): PendingApprovalItem["replies"] {
+  if (!replies.length) return undefined;
+  return replies.map((reply) => ({
+    id: reply.id,
+    role: reply.actor === "user" ? "user" : "assistant",
+    body: reply.body,
+    createdAt: reply.createdAt,
+    ...(selectedReplyId === reply.id ? { selected: true } : {})
+  }));
+}
+
+function mergePendingApprovalReplies(
+  ...groups: Array<PendingApprovalItem["replies"]>
+): PendingApprovalItem["replies"] {
+  const replies = groups.flatMap((group) => group ?? []);
+  if (!replies.length) return undefined;
+  const seen = new Set<string>();
+  return replies.filter((reply) => {
+    const key = `${reply.role}\0${reply.body}\0${reply.createdAt}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {

@@ -50,6 +50,7 @@ export interface WorkspaceNote {
 
 export interface PendingApprovalItem {
   approvalRequestId?: string;
+  approvalThreadId?: string;
   kind?: string;
   blueprintId: string;
   blueprintName: string;

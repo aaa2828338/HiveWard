@@ -4,6 +4,7 @@ import type {
   BlueprintRunStatus,
   BlueprintRunSummary,
   BlueprintRunView,
+  ApprovalReply,
   ApprovalRequest,
   PendingApprovalItem
 } from "@hiveward/shared";
@@ -190,13 +191,15 @@ function buildApprovalItemFromRequest(
   const upstream = readPendingApprovalUpstream(nodeRun?.input);
   const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
   const replies = mergePendingApprovalReplies(
-    request.kind === "agent_proposal" ? undefined : readApprovalDecisionReplies(runView, request.id),
+    readApprovalFactReplies(runView, request),
+    readApprovalDecisionReplies(runView, request.id),
     readPendingApprovalReplies(output?.replies)
   );
   const selectedReplyId = readOptionalString(output?.selectedReplyId);
   const isPending = request.status === "pending";
   return {
     approvalRequestId: request.id,
+    approvalThreadId: request.threadId ?? request.id,
     kind: request.kind,
     blueprintId: runView.run.blueprintId,
     blueprintName: runView.run.blueprintName,
@@ -273,6 +276,23 @@ function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replie
     return [{ id, role, body, createdAt }];
   });
   return replies.length ? replies : undefined;
+}
+
+function readApprovalFactReplies(runView: BlueprintRunView, request: ApprovalRequest): PendingApprovalItem["replies"] {
+  const threadId = request.threadId ?? request.id;
+  const replies = (runView.approvalReplies ?? [])
+    .filter((reply) => reply.threadId === threadId || reply.approvalRequestId === request.id)
+    .map((reply) => pendingApprovalReplyFromApprovalReply(reply));
+  return replies.length ? replies : undefined;
+}
+
+function pendingApprovalReplyFromApprovalReply(reply: ApprovalReply): NonNullable<PendingApprovalItem["replies"]>[number] {
+  return {
+    id: reply.id,
+    role: reply.actor === "user" ? "user" : "assistant",
+    body: reply.body,
+    createdAt: reply.createdAt
+  };
 }
 
 function readApprovalDecisionReplies(runView: BlueprintRunView, approvalRequestId: string): PendingApprovalItem["replies"] {
