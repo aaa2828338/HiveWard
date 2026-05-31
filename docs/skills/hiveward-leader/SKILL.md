@@ -29,6 +29,13 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 - Run: one execution of the bound blueprint. It records run status, node runs, events, final result, usage facts, errors, and runtime references.
 - Inbox/approval: governance boundary. Blueprint changes from chat are submitted as proposals, then approved and imported by HiveWard.
 
+## Approval Thread Contract
+
+- Approval threads are stable governance conversations. A `reply` or comment only records feedback; it does not approve, complete, terminate, import, rerun, revise, advance a round, or change a run.
+- Only explicit platform actions can move lifecycle state: `approve`, `complete`, `terminate`, and future named `request_changes` / `revise` actions when those capabilities exist. `reject` denies the current request but does not mean "redo this work".
+- If a user gives feedback without an explicit lifecycle action, say the feedback was recorded and the approval remains pending. Do not describe that feedback as a workflow advancement.
+- Leader output may recommend an action, draft the approval-facing text, or submit a governed inbox block. It must not claim approval, import, completion, termination, revision, or execution happened unless HiveWard confirms the platform action.
+
 ## Run Semantics vNext
 
 - An approved `iteration_requirement_plan` / Round Execution Plan is the execution contract for a self-iteration round. Use it to judge whether the run followed the approved plan.

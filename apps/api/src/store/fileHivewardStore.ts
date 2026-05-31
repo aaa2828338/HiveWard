@@ -2911,15 +2911,21 @@ function pendingApprovalRepliesFromApprovalReplies(
 function mergePendingApprovalReplies(
   ...groups: Array<PendingApprovalItem["replies"]>
 ): PendingApprovalItem["replies"] {
-  const replies = groups.flatMap((group) => group ?? []);
-  if (!replies.length) return undefined;
-  const seen = new Set<string>();
-  return replies.filter((reply) => {
-    const key = `${reply.role}\0${reply.body}\0${reply.createdAt}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const merged: NonNullable<PendingApprovalItem["replies"]> = [];
+  const seenExact = new Set<string>();
+  const seenContentFromEarlierSources = new Set<string>();
+  groups.forEach((group, groupIndex) => {
+    for (const reply of group ?? []) {
+      const exactKey = `${reply.role}\0${reply.body}\0${reply.createdAt}`;
+      if (seenExact.has(exactKey)) continue;
+      const contentKey = `${reply.role}\0${reply.body}`;
+      if (groupIndex > 0 && seenContentFromEarlierSources.has(contentKey)) continue;
+      seenExact.add(exactKey);
+      seenContentFromEarlierSources.add(contentKey);
+      merged.push(reply);
+    }
   });
+  return merged.length ? merged : undefined;
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {
