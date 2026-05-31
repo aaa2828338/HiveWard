@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { BlueprintDefinition, BlueprintNode, BlueprintNodeRun } from "@hiveward/shared";
+import type { ApprovalDecision, ApprovalRequest, BlueprintDefinition, BlueprintNode, BlueprintNodeRun } from "@hiveward/shared";
 import { createBlankBlueprint } from "@hiveward/shared";
 import { FileHivewardStore } from "./fileHivewardStore";
 
@@ -105,6 +105,90 @@ describe("FileHivewardStore blueprint node sanitization", () => {
     expect(view?.nodeRuns[0]).not.toHaveProperty("openclawRef");
     expect(view?.events[0]?.runtimeRef).toMatchObject({ source: "codex", taskId: "codex-task-1" });
     expect(view?.events[0]).not.toHaveProperty("openclawRef");
+  });
+
+  it("backfills approval thread facts and manager mail projection from legacy index facts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const storePath = join(dir, "hiveward-store.json");
+    const now = "2026-05-29T00:00:00.000Z";
+    const approvalRequest: ApprovalRequest = {
+      id: "approval-legacy",
+      runId: "run-legacy",
+      kind: "iteration_requirement_plan",
+      status: "pending",
+      title: "Legacy plan",
+      body: "Review the legacy plan.",
+      revision: 1,
+      capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+      requestedBy: { type: "node", label: "Manager", nodeId: "manager" },
+      requestedAt: now
+    };
+    const replyDecision: ApprovalDecision = {
+      id: "decision-legacy-reply",
+      approvalRequestId: approvalRequest.id,
+      action: "reply",
+      actor: "user",
+      comment: "Keep this as a comment.",
+      resultingStatus: "pending",
+      createdAt: "2026-05-29T00:01:00.000Z"
+    };
+    writeFileSync(storePath, JSON.stringify({
+      schema: "hiveward.store-index/v1",
+      companies: [{ id: "company-1", name: "Company", createdAt: now, updatedAt: now }],
+      selectedCompanyId: "company-1",
+      blueprintIndex: [],
+      runIndex: [],
+      companyDashboards: {},
+      roleDirectories: {},
+      inboxItems: {},
+      roleDriverBindings: [],
+      iterationSessions: [],
+      iterationRounds: [],
+      approvalThreads: [],
+      approvalReplies: [],
+      approvalRequests: [approvalRequest],
+      approvalDecisions: [replyDecision],
+      artifacts: [],
+      releaseReports: [],
+      agentHumanReports: [],
+      agentHandoffs: [],
+      managerContextSnapshots: [],
+      runTimeline: [],
+      managerMail: [{
+        id: "stale-mail",
+        sourceType: "system",
+        sourceId: "stale",
+        kind: "system",
+        status: "stale",
+        title: "Stale",
+        body: "Stale projection",
+        capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+        createdAt: now,
+        updatedAt: now
+      }]
+    }, null, 2));
+
+    const store = new FileHivewardStore(storePath);
+    await store.init();
+
+    await expect(store.listApprovalThreads({ runId: approvalRequest.runId })).resolves.toEqual([
+      expect.objectContaining({ id: approvalRequest.id, status: "open", currentRequestId: approvalRequest.id })
+    ]);
+    await expect(store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).resolves.toEqual([
+      expect.objectContaining({
+        id: `reply-${replyDecision.id}`,
+        threadId: approvalRequest.id,
+        body: replyDecision.comment,
+        metadata: expect.objectContaining({
+          source: "approval_decision",
+          requestKind: approvalRequest.kind,
+          resultingStatus: "pending"
+        })
+      })
+    ]);
+    await expect(store.listManagerMail(approvalRequest.runId)).resolves.toEqual([
+      expect.objectContaining({ id: `mail-${approvalRequest.id}`, sourceId: approvalRequest.id, status: "pending" })
+    ]);
   });
 });
 

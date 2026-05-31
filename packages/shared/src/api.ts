@@ -15,7 +15,7 @@ import type {
 } from "./runtime";
 import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
-import type { ApprovalDecision, ApprovalRequest, ManagerMail } from "./lifecycle";
+import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 
 export interface ListBlueprintsResponse {
@@ -79,8 +79,25 @@ export interface ListApprovalRequestsResponse {
   approvalRequests: ApprovalRequest[];
 }
 
+export interface ListApprovalThreadsResponse {
+  approvalThreads: ApprovalThread[];
+}
+
+export interface ApprovalThreadResponse {
+  approvalThread: ApprovalThread;
+  approvalRequests: ApprovalRequest[];
+  approvalReplies: ApprovalReply[];
+  approvalDecisions: ApprovalDecision[];
+}
+
+export interface ApprovalThreadRepliesResponse {
+  approvalReplies: ApprovalReply[];
+}
+
 export interface ApprovalRequestResponse {
   approvalRequest: ApprovalRequest;
+  approvalThread?: ApprovalThread;
+  approvalReplies?: ApprovalReply[];
   decision?: ApprovalDecision;
   nextApprovalRequest?: ApprovalRequest;
   run?: BlueprintRunView;

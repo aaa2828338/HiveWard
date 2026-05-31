@@ -67,6 +67,8 @@ export interface ApprovalCapabilities {
   reply: boolean;
   complete: boolean;
   terminate: boolean;
+  requestChanges?: boolean;
+  revise?: boolean;
 }
 
 export type ApprovalRequestKind =
@@ -87,6 +89,38 @@ export type ApprovalRequestStatus =
   | "completed"
   | "terminated"
   | "superseded";
+
+export type ApprovalThreadStatus = "open" | "closed";
+export type ApprovalThreadKind = ApprovalRequestKind;
+
+export interface ApprovalThread {
+  id: string;
+  kind: ApprovalThreadKind;
+  status: ApprovalThreadStatus;
+  title: string;
+  runId?: string;
+  roundId?: string;
+  nodeRunId?: string;
+  sourceRef?: ApprovalRequest["sourceRef"];
+  currentRequestId?: string;
+  currentRevision: number;
+  capabilities: ApprovalCapabilities;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string;
+}
+
+export type ApprovalReplyActor = "user" | "agent" | "manager" | "system";
+
+export interface ApprovalReply {
+  id: string;
+  threadId: string;
+  approvalRequestId?: string;
+  actor: ApprovalReplyActor;
+  body: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+}
 
 export interface ApprovalRequest {
   id: string;
@@ -123,6 +157,8 @@ export type ApprovalDecisionAction =
   | "reply"
   | "complete"
   | "terminate"
+  | "request_changes"
+  | "revise"
   | "auto_approve"
   | "supersede";
 
@@ -368,7 +404,49 @@ export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: Ap
   if (action === "reply") return capabilities.reply;
   if (action === "complete") return capabilities.complete;
   if (action === "terminate") return capabilities.terminate;
+  if (action === "request_changes") return capabilities.requestChanges === true;
+  if (action === "revise") return capabilities.revise === true;
   return false;
+}
+
+export function approvalActionIsMessageOnly(action: ApprovalDecisionAction): boolean {
+  return action === "reply";
+}
+
+export function approvalActionCanTriggerWorkflow(action: ApprovalDecisionAction): boolean {
+  return action === "approve" ||
+    action === "complete" ||
+    action === "terminate" ||
+    action === "request_changes" ||
+    action === "revise" ||
+    action === "auto_approve";
+}
+
+export function resolveApprovalThreadStatus(status: ApprovalRequestStatus): ApprovalThreadStatus {
+  return status === "pending" ? "open" : "closed";
+}
+
+export function approvalThreadIdForRequest(request: Pick<ApprovalRequest, "id" | "threadId">): string {
+  return request.threadId ?? request.id;
+}
+
+export function approvalThreadFromRequest(request: ApprovalRequest): ApprovalThread {
+  return {
+    id: approvalThreadIdForRequest(request),
+    kind: request.kind,
+    status: resolveApprovalThreadStatus(request.status),
+    title: request.title,
+    runId: request.runId,
+    roundId: request.roundId,
+    nodeRunId: request.nodeRunId,
+    sourceRef: request.sourceRef,
+    currentRequestId: request.status === "pending" ? request.id : undefined,
+    currentRevision: request.revision,
+    capabilities: request.capabilities,
+    createdAt: request.requestedAt,
+    updatedAt: request.updatedAt ?? request.requestedAt,
+    closedAt: request.status === "pending" ? undefined : request.updatedAt ?? request.requestedAt
+  };
 }
 
 export function normalizeRuntimeAccessPolicy(

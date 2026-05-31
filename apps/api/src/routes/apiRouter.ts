@@ -76,6 +76,7 @@ import type {
   ChatStreamEvent,
   ApprovalDecision,
   ApprovalRequest,
+  ApprovalThread,
   BlueprintDefinition,
   BlueprintRun,
   HivewardChatMessage,
@@ -89,9 +90,12 @@ import type {
   ClaudeCodeSavedModelProfile,
   SaveClaudeCodeModelProfileRequest,
   UpdateClaudeCodeModelConfigRequest,
-  ApprovalRequestResponse
+  ApprovalRequestResponse,
+  ApprovalThreadRepliesResponse,
+  ApprovalThreadResponse,
+  ListApprovalThreadsResponse
 } from "@hiveward/shared";
-import { claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
+import { approvalThreadIdForRequest, claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
@@ -699,14 +703,58 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  router.get("/api/approval-threads", async (req, res, next) => {
+    try {
+      const status = readApprovalThreadStatus(req.query.status);
+      const response: ListApprovalThreadsResponse = {
+        approvalThreads: await store.listApprovalThreads({
+          runId: readOptionalString(req.query.runId),
+          status
+        })
+      };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-threads/:approvalThreadId", async (req, res, next) => {
+    try {
+      const response = await buildApprovalThreadResponse(readRouteParam(req.params.approvalThreadId, "approvalThreadId"));
+      if (!response) {
+        res.status(404).json({ error: { code: "approval_thread_not_found", message: "Approval thread not found." } });
+        return;
+      }
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/approval-threads/:approvalThreadId/replies", async (req, res, next) => {
+    try {
+      const threadId = readRouteParam(req.params.approvalThreadId, "approvalThreadId");
+      const response = await buildApprovalThreadResponse(threadId);
+      if (!response) {
+        res.status(404).json({ error: { code: "approval_thread_not_found", message: "Approval thread not found." } });
+        return;
+      }
+      const repliesResponse: ApprovalThreadRepliesResponse = { approvalReplies: response.approvalReplies };
+      res.json(repliesResponse);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/approval-requests/:approvalRequestId", async (req, res, next) => {
     try {
-      const approvalRequest = await store.getApprovalRequest(readRouteParam(req.params.approvalRequestId, "approvalRequestId"));
+      const approvalRequestId = readRouteParam(req.params.approvalRequestId, "approvalRequestId");
+      const approvalRequest = await store.getApprovalRequest(approvalRequestId);
       if (!approvalRequest) {
         res.status(404).json({ error: { code: "approval_request_not_found", message: "Approval request not found." } });
         return;
       }
-      res.json({ approvalRequest });
+      res.json(await buildApprovalRequestResponse(approvalRequestId));
     } catch (error) {
       next(error);
     }
@@ -1278,17 +1326,19 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       return buildApprovalRequestResponse(approvalRequestId, updated.id);
     }
 
-    const result = action === "approve"
-      ? await approvalService.approve(approvalRequestId, readOptionalString(body.comment), readOptionalString(body.selectedReplyId))
-      : action === "reject"
-        ? await approvalService.reject(approvalRequestId, readOptionalString(body.comment))
-        : action === "reply"
-          ? await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "")
-          : action === "complete"
-            ? await approvalService.complete(approvalRequestId, readOptionalString(body.comment))
-            : await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+    if (action === "approve") {
+      await approvalService.approve(approvalRequestId, readOptionalString(body.comment), readOptionalString(body.selectedReplyId));
+    } else if (action === "reject") {
+      await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
+    } else if (action === "reply") {
+      await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
+    } else if (action === "complete") {
+      await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
+    } else {
+      await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+    }
     await managerMailProjector.refresh();
-    return result;
+    return buildApprovalRequestResponse(approvalRequestId);
   }
 
   async function getRunActionBlueprint(run: BlueprintRun): Promise<BlueprintDefinition | undefined> {
@@ -1302,13 +1352,35 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       throw new Error(`Approval request not found: ${approvalRequestId}`);
     }
     const decisions = await store.listApprovalDecisions(approvalRequestId);
+    const threadId = approvalThreadIdForRequest(approvalRequest);
+    const approvalThread = (await store.listApprovalThreads({ runId: approvalRequest.runId }))
+      .find((thread) => thread.id === threadId);
+    const approvalReplies = await store.listApprovalReplies({ threadId });
     const nextApprovalRequest = (await store.listApprovalRequests({ runId: approvalRequest.runId }))
       .find((request) => request.replacesRequestId === approvalRequestId);
     return {
       approvalRequest,
+      approvalThread,
+      approvalReplies,
       decision: decisions.at(-1),
       nextApprovalRequest,
       run: runId ? await store.getRunView(runId) : undefined
+    };
+  }
+
+  async function buildApprovalThreadResponse(threadId: string): Promise<ApprovalThreadResponse | undefined> {
+    const approvalThread = (await store.listApprovalThreads()).find((thread) => thread.id === threadId);
+    if (!approvalThread) return undefined;
+    const approvalRequests = (await store.listApprovalRequests(
+      approvalThread.runId ? { runId: approvalThread.runId } : undefined
+    )).filter((request) => approvalThreadIdForRequest(request) === threadId);
+    const approvalReplies = await store.listApprovalReplies({ threadId });
+    const approvalDecisions = (await Promise.all(approvalRequests.map((request) => store.listApprovalDecisions(request.id)))).flat();
+    return {
+      approvalThread,
+      approvalRequests,
+      approvalReplies,
+      approvalDecisions
     };
   }
 
@@ -1381,6 +1453,13 @@ function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRu
     comment: readOptionalString(value.comment),
     selectedReplyId: readOptionalString(value.selectedReplyId)
   };
+}
+
+function readApprovalThreadStatus(value: unknown): ApprovalThread["status"] | undefined {
+  const status = readOptionalString(value);
+  if (!status) return undefined;
+  if (status === "open" || status === "closed") return status;
+  throw new Error("Approval thread status must be open or closed.");
 }
 
 function normalizeRejectBlueprintRunRequest(value: unknown): RejectBlueprintRunRequest {

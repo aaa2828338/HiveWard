@@ -475,25 +475,15 @@ export class BlueprintWorker {
       throw new Error("Run is already finished.");
     }
 
-    if (request.kind === "agent_proposal" && request.nodeRunId && action === "reply") {
+    if (action === "reply") {
       await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "");
-      return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
-    }
-
-    if (request.kind === "iteration_requirement_plan" && action === "reply") {
-      const replyResult = await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "");
-      await this.managerMailProjector.refresh(run.id);
-      const revisedRequirement = await this.buildRequirementReplyRevision(blueprint, currentRun, request, input.message ?? "");
-      if (revisedRequirement) {
-        await this.store.upsertApprovalRequest({
-          ...replyResult.approvalRequest,
-          supersededByRequestId: revisedRequirement.id
-        });
+      if (request.kind === "agent_proposal" && request.nodeRunId) {
+        await this.recordAgentApprovalComment(currentRun, request.nodeRunId, input.message ?? "");
       }
       await this.managerMailProjector.refresh(run.id);
-      const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun);
-      if (autoAdvanced) return autoAdvanced.run;
-      return (await this.store.getBlueprintRun(currentRun.id)) ?? currentRun;
+      const waiting = { ...currentRun, status: "waiting_approval" as const };
+      await this.store.updateBlueprintRun(waiting);
+      return waiting;
     }
 
     let result;
@@ -501,10 +491,6 @@ export class BlueprintWorker {
       result = await this.approvalService.approve(approvalRequestId, input.comment, input.selectedReplyId);
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
-    } else if (action === "reply") {
-      result = request.kind === "manager_release_report"
-        ? await this.approvalService.closeWithReply(approvalRequestId, input.message ?? "")
-        : await this.approvalService.reply(approvalRequestId, input.message ?? "");
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
     } else {
@@ -517,8 +503,6 @@ export class BlueprintWorker {
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
       if (action === "approve") return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, input.selectedReplyId);
-      if (action === "reject") return this.rejectRun(blueprint, currentRun, request.nodeRunId, input.comment);
-      if (action === "reply") return this.replyToApproval(blueprint, currentRun, request.nodeRunId, input.message ?? "");
     }
 
     if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
@@ -1292,10 +1276,28 @@ export class BlueprintWorker {
     nodeRunId: string,
     message: string
   ): Promise<BlueprintRun> {
+    void blueprint;
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
 
+    const request = (await this.store.listApprovalRequests({ runId: run.id, status: "pending" }))
+      .find((candidate) => candidate.nodeRunId === nodeRunId);
+    if (request) {
+      await this.approvalService.recordPendingReply(request.id, message);
+    }
+    await this.recordAgentApprovalComment(run, nodeRunId, message);
+    await this.managerMailProjector.refresh(run.id);
+    const nextRun = { ...run, status: "waiting_approval" as const };
+    await this.store.updateBlueprintRun(nextRun);
+    return nextRun;
+  }
+
+  private async recordAgentApprovalComment(
+    run: BlueprintRun,
+    nodeRunId: string,
+    message: string
+  ): Promise<void> {
     const nodeRuns = await this.store.listNodeRuns(run.id);
     const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
     if (!waiting) {
@@ -1308,11 +1310,6 @@ export class BlueprintWorker {
       throw new Error("Only Agent approval requests can receive replies.");
     }
 
-    const node = blueprint.nodes.find((candidate) => candidate.id === waiting.nodeId);
-    if (!node || !isAgentBlueprintNode(node)) {
-      throw new Error("Approval reply target Agent node was not found.");
-    }
-
     const now = new Date().toISOString();
     const userReply: AgentApprovalReply = {
       id: `approval-reply-${nanoid(10)}`,
@@ -1320,87 +1317,19 @@ export class BlueprintWorker {
       body: message.trim(),
       createdAt: now
     };
-    const runningNodeRun: BlueprintNodeRun = {
+    const repliedNodeRun: BlueprintNodeRun = {
       ...waiting,
-      status: "running",
       output: {
         ...waiting.output,
         replies: markSelectedApprovalReplies([...waiting.output.replies, userReply], waiting.output.selectedReplyId)
       }
     };
-    const claim = await this.ensureNodeRunClaim(waiting);
-    if (!claim) throw new Error(`Node run ${runningNodeRun.id} could not be reclaimed for approval reply.`);
-    await this.store.startNodeRun({
-      nodeRunId: runningNodeRun.id,
-      owner: claim.owner,
-      workerEpoch: claim.workerEpoch,
-      startedAt: now,
-      input: runningNodeRun.input
+    await this.store.upsertNodeRun(repliedNodeRun);
+    await this.migrationService.migratePendingNodeApproval({
+      runId: run.id,
+      nodeRun: repliedNodeRun,
+      requestedByLabel: waiting.nodeLabel
     });
-    await this.event(run.id, "node.run.started", `${waiting.nodeLabel} received a review reply.`, waiting.id);
-    await this.store.updateBlueprintRun({ ...run, status: "running" });
-
-    try {
-      const config = node.config as AgentNodeConfig;
-      const runtimeId = node.runtimeId ?? "openclaw";
-      let nodeRunWithRef = runningNodeRun;
-      const { result, runtimeRef } = await this.runAgentTask({
-        blueprintRunId: run.id,
-        nodeRunId: waiting.id,
-        source: resolveAgentRuntimeSource(runtimeId),
-        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-        profileId: runtimeId === "hermes" ? config.profileId : undefined,
-        agentName: config.agentName,
-        prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
-        modelId: config.modelId,
-        permissionProfile: config.permissionProfile,
-        runtimeAccessPolicy: config.runtimeAccessPolicy,
-        workingDirectory: config.workingDirectory,
-        timeoutMs: config.timeoutMs,
-        outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
-        input: buildAgentApprovalReplyInput(waiting.input, waiting.output.reviewOutput, waiting.output.replies, userReply),
-        skillIds: config.skillIds,
-        tools: config.tools
-      }, async (startedRef) => {
-        nodeRunWithRef = await this.recordNodeRuntimeRef(nodeRunWithRef, startedRef);
-      });
-
-      if (result.status !== "succeeded") {
-        await this.failNode({ ...nodeRunWithRef, runtimeRef, usage: result.usage }, result.error ?? `Agent run ${result.status}.`);
-      } else if (!hasVisibleAgentOutput(result.output)) {
-        await this.failNode({ ...nodeRunWithRef, runtimeRef, usage: result.usage }, this.missingAgentOutputError(runtimeRef));
-      } else {
-        const assistantReply: AgentApprovalReply = {
-          id: `approval-reply-${nanoid(10)}`,
-          role: "assistant",
-          body: formatNodeOutputSummary(result.output),
-          createdAt: new Date().toISOString()
-        };
-        const nextReplies = [...waiting.output.replies, userReply, assistantReply];
-        const selectedReplyId = isAgentApprovalSelectionAvailable(nextReplies, waiting.output.selectedReplyId)
-          ? waiting.output.selectedReplyId
-          : undefined;
-        await this.waitForAgentApproval(
-          { ...nodeRunWithRef, runtimeRef, usage: result.usage },
-          result.output,
-          nextReplies,
-          selectedReplyId,
-          selectedReplyId ? waiting.output.selectedOutput : undefined
-        );
-      }
-    } catch (error) {
-      const failure = error instanceof Error ? error.message : "Unknown approval reply failure.";
-      await this.failNode(runningNodeRun, failure);
-    }
-
-    const latestNodeRun = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
-    const nextStatus = latestNodeRun?.status === "waiting_approval" ? "waiting_approval" as const : "running" as const;
-    const nextRun = { ...run, status: nextStatus };
-    await this.store.updateBlueprintRun(nextRun);
-    if (nextRun.status === "running") {
-      this.scheduleRun(blueprint, nextRun);
-    }
-    return nextRun;
   }
 
   async cancelRun(run: BlueprintRun): Promise<BlueprintRun> {

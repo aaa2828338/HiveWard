@@ -48,6 +48,7 @@ import type {
   ApplyHivewardUpdateResponse,
   HivewardUpdateStatus,
   ArchitectureBlueprintView,
+  ApprovalThread,
   CompanyRoleDirectory,
   InboxItem,
   OpenClawConfigWizardMetadata,
@@ -141,6 +142,23 @@ type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "google" | "
 const CHAT_PERMISSION_MODES_STORAGE_KEY = "hiveward-chat-permission-modes";
 const CHAT_PERMISSION_MODES_STORAGE_VERSION = 2;
 
+function syncApprovalThreadsForRun(current: ApprovalThread[], runView: BlueprintRunView): ApprovalThread[] {
+  const runThreads = runView.approvalThreads;
+  if (!runThreads) return current;
+  return sortApprovalThreads([
+    ...runThreads,
+    ...current.filter((thread) => thread.runId !== runView.run.id)
+  ]);
+}
+
+function upsertApprovalThread(current: ApprovalThread[], thread: ApprovalThread): ApprovalThread[] {
+  return sortApprovalThreads([thread, ...current.filter((candidate) => candidate.id !== thread.id)]);
+}
+
+function sortApprovalThreads(threads: ApprovalThread[]): ApprovalThread[] {
+  return threads.slice().sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+}
+
 function AppSystemLabel({ systemId }: { systemId: AppSystemId }) {
   if (isHarnessId(systemId)) {
     return <HarnessLabel {...harnessDisplayParts(systemId)} className="nav-system-label" />;
@@ -219,6 +237,7 @@ export function App() {
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
+  const [approvalThreads, setApprovalThreads] = useState<ApprovalThread[]>([]);
   const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
   const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
@@ -358,6 +377,7 @@ export function App() {
         nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
+        nextApprovalThreads,
         nextRoles,
         nextInboxItems,
         nextDashboard,
@@ -375,6 +395,7 @@ export function App() {
         loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
+        api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.getRoleDirectory().catch(() => undefined),
         api.listInboxItems().catch(() => []),
         api.getDashboardState(),
@@ -407,6 +428,7 @@ export function App() {
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
+      setApprovalThreads(nextApprovalThreads);
       setRoleDirectory(nextRoles?.roles);
       setArchitecture(nextRoles?.architecture);
       setInboxItems(nextInboxItems);
@@ -745,6 +767,7 @@ export function App() {
     setRunDetailsById((current) => ({ ...current, [runView.run.id]: runView }));
     setRunSummaries((current) => upsertRunSummary(current, runView.run));
     setApprovals((current) => syncApprovalsForRun(current, runView));
+    setApprovalThreads((current) => syncApprovalThreadsForRun(current, runView));
   }, []);
 
   const loadOpenClawVersion = useCallback(async () => {
@@ -1270,6 +1293,10 @@ export function App() {
 
   const applyApprovalRequestResponse = useCallback(
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
+      if (response.approvalThread) {
+        const thread = response.approvalThread;
+        setApprovalThreads((current) => upsertApprovalThread(current, thread));
+      }
       if (response.run) {
         applyRunView(response.run);
         setSelectedRunId(response.run.run.id);
@@ -1360,11 +1387,13 @@ export function App() {
 
   const refreshInboxAndApprovals = useCallback(async () => {
     try {
-      const [nextApprovals, nextInboxItems] = await Promise.all([
+      const [nextApprovals, nextApprovalThreads, nextInboxItems] = await Promise.all([
         api.listPendingApprovals(),
+        api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.listInboxItems()
       ]);
       setApprovals(nextApprovals);
+      setApprovalThreads(nextApprovalThreads);
       setInboxItems(nextInboxItems);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
@@ -1668,6 +1697,7 @@ export function App() {
       return (
         <ApprovalsPage
           approvals={approvals}
+          approvalThreads={approvalThreads}
           inboxItems={inboxItems}
           language={language}
           t={t}

@@ -214,6 +214,94 @@ describe("run state sync", () => {
     });
   });
 
+  it("restores lifecycle approval replies from thread facts", () => {
+    const runView = createRunView("succeeded");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-plan-2",
+        threadId: "approval-thread-2",
+        kind: "iteration_requirement_plan",
+        status: "replied",
+        title: "Round 2 Execution Plan v2",
+        body: "Updated plan"
+      })
+    ];
+    runView.approvalReplies = [
+      {
+        id: "reply-fact-1",
+        threadId: "approval-thread-2",
+        approvalRequestId: "approval-plan-2",
+        actor: "user",
+        body: "Keep this as a comment only.",
+        createdAt: "2026-05-21T01:06:00.000Z"
+      }
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]).toMatchObject({
+      approvalRequestId: "approval-plan-2",
+      approvalThreadId: "approval-thread-2",
+      replies: [
+        {
+          id: "reply-fact-1",
+          role: "user",
+          body: "Keep this as a comment only.",
+          createdAt: "2026-05-21T01:06:00.000Z"
+        }
+      ]
+    });
+  });
+
+  it("prefers thread facts over duplicate node output replies", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent",
+        body: "draft answer"
+      })
+    ];
+    runView.approvalReplies = [
+      {
+        id: "reply-fact-1",
+        threadId: "approval-thread-agent-1",
+        approvalRequestId: "approval-agent-1",
+        actor: "user",
+        body: "Give me a shippable version.",
+        createdAt: "2026-05-21T01:06:00.000Z"
+      }
+    ];
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      output: {
+        approvalType: "agent",
+        reviewOutput: "draft answer",
+        replies: [
+          {
+            id: "approval-reply-node-1",
+            role: "user",
+            body: "Give me a shippable version.",
+            createdAt: "2026-05-21T01:06:01.000Z"
+          }
+        ]
+      }
+    };
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.replies).toEqual([
+      {
+        id: "reply-fact-1",
+        role: "user",
+        body: "Give me a shippable version.",
+        createdAt: "2026-05-21T01:06:00.000Z"
+      }
+    ]);
+  });
+
   it("keeps an approved approval visible but non-actionable after completion", () => {
     const existing: PendingApprovalItem[] = [
       {

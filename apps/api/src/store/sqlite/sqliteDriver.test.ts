@@ -24,6 +24,32 @@ describe("SqliteDriver schema migrations", () => {
     const v1 = sqliteMigrations[0]!;
     for (const statement of v1.up) first.db.exec(statement);
     first.db.prepare(
+      `INSERT INTO approval_requests (
+        id, run_id, kind, status, title, body, revision, capabilities_json, requested_by_json, requested_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      "approval-v1",
+      "run-v1",
+      "agent_proposal",
+      "pending",
+      "Review v1 output",
+      "Approve the v1 output.",
+      1,
+      JSON.stringify({ approve: true, reject: true, reply: true, complete: false, terminate: false }),
+      JSON.stringify({ type: "node", label: "Agent" }),
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z"
+    );
+    first.db.prepare(
+      "INSERT INTO approval_replies (id, approval_request_id, message, actor, created_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(
+      "reply-v1",
+      "approval-v1",
+      "Please revise.",
+      "user",
+      "2026-05-29T00:01:00.000Z"
+    );
+    first.db.prepare(
       "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)"
     ).run(v1.version, v1.name, new Date().toISOString(), v1.checksum);
     expect(first.currentSchemaVersion()).toBe(1);
@@ -34,6 +60,23 @@ describe("SqliteDriver schema migrations", () => {
     expect(upgraded.currentSchemaVersion()).toBe(sqliteSchemaVersion);
     expect(listColumnNames(upgraded, "artifacts")).toContain("declared_node_run_id");
     expect(listColumnNames(upgraded, "release_report_artifacts")).toContain("position");
+    expect(listColumnNames(upgraded, "approval_replies")).toContain("thread_id");
+    expect(listColumnNames(upgraded, "approval_replies")).toContain("metadata_json");
+    expect(upgraded.db.prepare("SELECT status, current_request_id FROM approval_threads WHERE id = ?").get("approval-v1")).toMatchObject({
+      status: "open",
+      current_request_id: "approval-v1"
+    });
+    expect(upgraded.db.prepare("SELECT thread_id FROM approval_replies WHERE id = ?").get("reply-v1")).toMatchObject({
+      thread_id: "approval-v1"
+    });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "message_only",
+      requestKind: "agent_proposal"
+    });
     upgraded.close();
   });
 

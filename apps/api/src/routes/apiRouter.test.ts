@@ -810,6 +810,72 @@ describe("apiRouter", () => {
     }
   });
 
+  it("exposes approval threads and replies through request-compatible API facades", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "threaded-approval");
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const replyBody = await readOkJson<{
+          approvalRequest: ApprovalRequest;
+          approvalThread?: { id: string; status: string; currentRequestId?: string };
+          approvalReplies?: Array<{ threadId: string; approvalRequestId?: string; body: string }>;
+        }>(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Keep this as a thread comment." })
+        }));
+
+        expect(replyBody.approvalRequest).toMatchObject({ id: approval.id, status: "pending" });
+        expect(replyBody.approvalThread).toMatchObject({
+          id: approval.threadId,
+          status: "open",
+          currentRequestId: approval.id
+        });
+        expect(replyBody.approvalReplies).toEqual([
+          expect.objectContaining({
+            threadId: approval.threadId,
+            approvalRequestId: approval.id,
+            body: "Keep this as a thread comment."
+          })
+        ]);
+
+        const requestBody = await readOkJson<{
+          approvalRequest: ApprovalRequest;
+          approvalThread?: { id: string };
+          approvalReplies?: Array<{ body: string }>;
+        }>(await fetch(`${baseUrl}/api/approval-requests/${approval.id}`));
+        expect(requestBody.approvalRequest.id).toBe(approval.id);
+        expect(requestBody.approvalThread?.id).toBe(approval.threadId);
+        expect(requestBody.approvalReplies?.[0]?.body).toBe("Keep this as a thread comment.");
+
+        const listBody = await readOkJson<{ approvalThreads: Array<{ id: string; status: string }> }>(
+          await fetch(`${baseUrl}/api/approval-threads?runId=${encodeURIComponent(approval.runId)}`)
+        );
+        expect(listBody.approvalThreads).toEqual([
+          expect.objectContaining({ id: approval.threadId, status: "open" })
+        ]);
+
+        const threadBody = await readOkJson<{
+          approvalThread: { id: string };
+          approvalRequests: ApprovalRequest[];
+          approvalReplies: Array<{ body: string }>;
+          approvalDecisions: Array<{ action: string }>;
+        }>(await fetch(`${baseUrl}/api/approval-threads/${encodeURIComponent(approval.threadId ?? approval.id)}`));
+        expect(threadBody.approvalThread.id).toBe(approval.threadId);
+        expect(threadBody.approvalRequests.map((request) => request.id)).toEqual([approval.id]);
+        expect(threadBody.approvalReplies.map((reply) => reply.body)).toEqual(["Keep this as a thread comment."]);
+        expect(threadBody.approvalDecisions.map((decision) => decision.action)).toEqual(["reply"]);
+
+        const repliesBody = await readOkJson<{ approvalReplies: Array<{ body: string }> }>(
+          await fetch(`${baseUrl}/api/approval-threads/${encodeURIComponent(approval.threadId ?? approval.id)}/replies`)
+        );
+        expect(repliesBody.approvalReplies.map((reply) => reply.body)).toEqual(["Keep this as a thread comment."]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("serves published HTML artifact download URLs from the configured store data directory", async () => {
     const fixture = await createStoreFixture();
     try {

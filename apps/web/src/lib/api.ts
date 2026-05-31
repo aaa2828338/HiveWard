@@ -24,6 +24,9 @@ import type {
   HermesConfigResponse,
   ApplyHivewardUpdateResponse,
   ApplyHivewardUpdateRequest,
+  ApprovalThread,
+  ApprovalThreadRepliesResponse,
+  ApprovalThreadResponse,
   ApprovalRequest,
   ApprovalRequestResponse,
   HivewardUpdateResponse,
@@ -34,6 +37,7 @@ import type {
   ListPendingApprovalsResponse,
   ListApprovalMessagesResponse,
   ListApprovalRequestsResponse,
+  ListApprovalThreadsResponse,
   ListBlueprintRunSummariesResponse,
   ListBlueprintsResponse,
   OpenClawConfigResponse,
@@ -438,6 +442,26 @@ export const api = {
   async listApprovalRequests(): Promise<ApprovalRequest[]> {
     const response = await request<ListApprovalRequestsResponse>("/api/approval-requests");
     return response.approvalRequests;
+  },
+
+  async listApprovalThreads(filter: { runId?: string; status?: ApprovalThread["status"] } = {}): Promise<ApprovalThread[]> {
+    const params = new URLSearchParams();
+    if (filter.runId) params.set("runId", filter.runId);
+    if (filter.status) params.set("status", filter.status);
+    const query = params.toString();
+    const response = await request<ListApprovalThreadsResponse>(`/api/approval-threads${query ? `?${query}` : ""}`);
+    return response.approvalThreads;
+  },
+
+  async getApprovalThread(approvalThreadId: string): Promise<ApprovalThreadResponse> {
+    return request<ApprovalThreadResponse>(`/api/approval-threads/${encodeURIComponent(approvalThreadId)}`);
+  },
+
+  async listApprovalThreadReplies(approvalThreadId: string): Promise<ApprovalThreadRepliesResponse["approvalReplies"]> {
+    const response = await request<ApprovalThreadRepliesResponse>(
+      `/api/approval-threads/${encodeURIComponent(approvalThreadId)}/replies`
+    );
+    return response.approvalReplies;
   },
 
   async listApprovalMessages(): Promise<ListApprovalMessagesResponse["messages"]> {
