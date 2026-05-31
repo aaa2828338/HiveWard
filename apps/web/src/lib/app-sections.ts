@@ -41,7 +41,15 @@ export const appSystemLabels = {
 export const appSectionGroups = [
   {
     id: "hiveward",
-    sections: ["company", "chat", "blueprint", "runs", "approvals", "schedule"]
+    sections: ["chat", "blueprint", "runs", "approvals", "schedule"]
+  },
+  {
+    id: "codex",
+    sections: ["codexConfig"]
+  },
+  {
+    id: "claudeCode",
+    sections: ["claudeCodeConfig", "claudeCodeModels"]
   },
   {
     id: "openclaw",
@@ -50,14 +58,6 @@ export const appSectionGroups = [
   {
     id: "hermes",
     sections: ["hermesConfig", "hermesModels", "hermesAgents", "hermesSkills", "hermesChannels"]
-  },
-  {
-    id: "claudeCode",
-    sections: ["claudeCodeConfig", "claudeCodeModels"]
-  },
-  {
-    id: "codex",
-    sections: ["codexConfig"]
   },
   {
     id: "google",

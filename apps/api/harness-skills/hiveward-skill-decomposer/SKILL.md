@@ -21,8 +21,9 @@ The decomposer does not install arbitrary user skills as global HiveWard skills.
 6. Build Skill IR.
 7. Validate Skill IR.
 8. Map Skill IR to a blueprint proposal.
-9. Explain unresolved assumptions.
-10. Submit to inbox only when the user asks for formal approval.
+9. Validate the proposal against the current HiveWard blueprint and inbox contracts.
+10. Explain unresolved assumptions.
+11. Submit to inbox only when the user asks for formal approval.
 
 ## Core Rules
 
@@ -35,6 +36,7 @@ The decomposer does not install arbitrary user skills as global HiveWard skills.
 - Split only on real work boundaries: independent inputs/outputs, distinct tools or permissions, meaningful validation, safe parallelism, retry/failure branches, script side effects, or decision points.
 - Record phase difficulty, model class, desired thinking effort, and parallelism hints in Skill IR.
 - Do not claim per-node thinking effort is enforced until HiveWard runtime schema supports it.
+- Preserve HiveWard platform boundaries: deterministic routing, lifecycle, persistence, permissions, and artifact publication belong to HiveWard; model judgment and content belong in prompts, role contracts, schemas, and examples.
 - Do not claim a blueprint changed until inbox approval/import confirms it.
 
 ## Blueprint Mapping
@@ -46,6 +48,15 @@ Use current HiveWard node types: `agent`, `manager`, `manager_slot`, `condition`
 - Multi-phase or script-backed skills can use a manager with slots and a final summary.
 - Scripts remain files or path references; they do not become a new node type.
 - Script-aware agents must state script path, working directory, command template, inputs, outputs, permissions, validation, approval needs, and side effects.
+- Runtime ids for blueprint nodes are `codex`, `claude`, `openclaw`, `hermes`, `google`, `cursor`, and `opencode`. Prefer the operator priority order Codex, Claude Code, OpenClaw, Hermes, then other CLI harnesses unless the source skill or user requires a specific harness.
+- Use node-level `runtimeId`; never place `runtimeId` inside `config`. Use `claude` for Claude Code blueprint nodes and `claudeCode` only when discussing harness/status APIs.
+- For OpenClaw `agent` and runnable `manager` nodes, include `config.openclawAgentId` only when the target Agent is known or intentionally selected, and include `config.modelId` only when the OpenClaw model choice is intentional. Non-OpenClaw nodes must not carry `openclawAgentId` or OpenClaw `send` config. Hermes nodes may use `profileId`.
+- Manager modes are explicit field pairs: sequential is `lifecycleMode: "none"` plus `dispatchMode: "sequential"`, self-dispatch is `lifecycleMode: "none"` plus `dispatchMode: "self_dispatch"`, and self-iteration is `lifecycleMode: "self_iteration"` plus `dispatchMode: "self_dispatch"`.
+- Manager slots are containers, not ordinary chain nodes. Child nodes inside a slot must set `parentId` to the slot id. Do not connect manager slots to each other as a sequence.
+- Standard Manager/slot handles are `manager-out-N` -> `manager-slot-in`, `manager-slot-out` -> `manager-in-N`, `manager-slot-inner-out` from slot to first child, and `manager-slot-inner-in` from last child back to slot.
+- Use `resultRole: "final"` for the intended deliverable, `resultRole: "ignore"` for internal Manager-slot workers, and omitted/`auto` for normal terminal outputs.
+- Use `summary.config.mode: "structured_merge"` for deterministic aggregation and `harness_summary` only when a runtime summary agent is genuinely needed.
+- A formal proposal must end with exactly one strict `hiveward-inbox` JSON block using schema `hiveward.inbox-submission/v1`; its `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`.
 
 ## References
 

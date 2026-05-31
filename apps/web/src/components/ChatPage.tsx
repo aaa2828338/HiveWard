@@ -38,6 +38,7 @@ import type {
   ChatAttachment,
   ChatMode,
   ChatPermissionMode,
+  ChatRuntimeActivity,
   ChatRoleScope,
   ChatRuntimeRef,
   ChatStreamEvent,
@@ -64,6 +65,7 @@ type ChatMessage = HivewardChatMessage & {
   status?: "sent" | "streaming" | "failed";
   runtimeRef?: ChatRuntimeRef;
   runtimeStatus?: ChatRuntimeStatusView;
+  runtimeActivities?: ChatRuntimeActivity[];
   progressText?: string;
   speakerLabel?: string;
   agentId?: string;
@@ -103,7 +105,8 @@ export function ChatPage({
   roleDirectory,
   language,
   harnessPermissionModes,
-  onInboxItemCreated
+  onInboxItemCreated,
+  onInboxItemsRefreshNeeded
 }: {
   catalog?: CatalogSnapshot;
   openClawConfig?: OpenClawConfigState;
@@ -116,6 +119,7 @@ export function ChatPage({
   language: Language;
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   onInboxItemCreated?: (item: InboxItem) => void;
+  onInboxItemsRefreshNeeded?: () => void | Promise<void>;
 }) {
   const copy = chatCopy(language);
   const openClawModelOptions = useMemo(() => buildOpenClawModelOptions(catalog, openClawConfig), [catalog, openClawConfig]);
@@ -585,13 +589,13 @@ export function ChatPage({
   const harnessOptions = useMemo<SelectOption[]>(
     () =>
       ([
-        "openclaw",
         "codex",
+        "claudeCode",
+        "openclaw",
+        "hermes",
         "google",
         "cursor",
-        "opencode",
-        "hermes",
-        "claudeCode"
+        "opencode"
       ] as const).map((value) => {
         const status = harnessStatuses.find((item) => item.id === value);
         return {
@@ -853,6 +857,7 @@ export function ChatPage({
     } finally {
       if (progressTimer !== undefined) window.clearInterval(progressTimer);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
+      void onInboxItemsRefreshNeeded?.();
       setIsSending(false);
     }
   };
@@ -1089,6 +1094,7 @@ export function ChatPage({
                 messages.map((message) => {
                   const visibleContent =
                     message.role === "assistant" ? stripHivewardInboxSubmissionBlocks(message.content) : message.content;
+                  const runtimeActivities = message.runtimeActivities ?? message.runtimeRef?.activity ?? [];
                   return (
                     <article
                       key={message.id}
@@ -1109,6 +1115,18 @@ export function ChatPage({
                               <span>{formatChatRuntimeStatusTitle(message.runtimeStatus, copy)}</span>
                               <span className="chat-runtime-label">{message.runtimeStatus.label}</span>
                             </span>
+                          </div>
+                        ) : null}
+                        {runtimeActivities.length > 0 ? (
+                          <div className="chat-runtime-activity-list" aria-label={copy.runtimeActivity}>
+                            {runtimeActivities.map((activity) => (
+                              <div key={activity.id} className={`chat-runtime-activity chat-runtime-activity-${activity.phase}`}>
+                                {activity.phase === "command" ? <Square size={12} /> : activity.phase === "tool" ? <Wrench size={12} /> : <Brain size={12} />}
+                                <span className="chat-runtime-activity-time">{formatRuntimeActivityTime(activity.updatedAt)}</span>
+                                <span className="chat-runtime-activity-title">{formatChatRuntimeStatusTitle(activity, copy)}</span>
+                                <span className="chat-runtime-activity-label">{activity.label}</span>
+                              </div>
+                            ))}
                           </div>
                         ) : null}
                         {!visibleContent && !shouldShowRuntimeStatus(message) ? (
@@ -1375,7 +1393,7 @@ function applyChatEvent(
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
-          ? { ...message, runtimeStatus: toChatRuntimeStatus(event) }
+          ? updateMessageRuntimeActivity(message, event)
           : message
       )
     );
@@ -1391,7 +1409,8 @@ function applyChatEvent(
               ...message,
               progressText: message.content ? undefined : copy.acceptedWaiting(harnessLabel),
               runtimeStatus: undefined,
-              runtimeRef: toRuntimeRef(event)
+              runtimeRef: toRuntimeRef(event, message.runtimeActivities ?? message.runtimeRef?.activity),
+              runtimeActivities: message.runtimeActivities ?? message.runtimeRef?.activity
             }
           : message
       )
@@ -1409,7 +1428,8 @@ function applyChatEvent(
               runtimeStatus: undefined,
               content: message.content || event.output || event.error || "",
               status: event.status === "failed" || event.status === "cancelled" ? "failed" : "sent",
-              runtimeRef: toRuntimeRef(event)
+              runtimeRef: toRuntimeRef(event, message.runtimeActivities ?? message.runtimeRef?.activity),
+              runtimeActivities: message.runtimeActivities ?? message.runtimeRef?.activity
             }
           : message
       )
@@ -1429,6 +1449,44 @@ function applyChatEvent(
         : message
     )
   );
+}
+
+function updateMessageRuntimeActivity(
+  message: ChatMessage,
+  event: Extract<ChatStreamEvent, { type: "runtime_state" }>
+): ChatMessage {
+  const runtimeStatus = toChatRuntimeStatus(event);
+  const activity = toRuntimeActivity(event);
+  const runtimeActivities = upsertRuntimeActivity(message.runtimeActivities ?? message.runtimeRef?.activity ?? [], activity);
+  return {
+    ...message,
+    runtimeStatus,
+    runtimeActivities,
+    runtimeRef: message.runtimeRef
+      ? {
+          ...message.runtimeRef,
+          activity: runtimeActivities,
+          updatedAt: activity.updatedAt
+        }
+      : message.runtimeRef
+  };
+}
+
+function toRuntimeActivity(event: Extract<ChatStreamEvent, { type: "runtime_state" }>): ChatRuntimeActivity {
+  return {
+    id: event.id ?? `${event.source}:${event.phase}:${event.label}`,
+    source: event.source,
+    phase: event.phase,
+    label: event.label,
+    status: event.status ?? "updated",
+    updatedAt: event.updatedAt ?? new Date().toISOString()
+  };
+}
+
+function upsertRuntimeActivity(current: ChatRuntimeActivity[], activity: ChatRuntimeActivity): ChatRuntimeActivity[] {
+  const index = current.findIndex((item) => item.id === activity.id);
+  if (index < 0) return [...current, activity];
+  return current.map((item, itemIndex) => itemIndex === index ? { ...item, ...activity } : item);
 }
 
 function formatChatStreamError(event: Extract<ChatStreamEvent, { type: "error" }>, copy: ReturnType<typeof chatCopy>): string {
@@ -1454,6 +1512,12 @@ function formatChatRuntimeStatusTitle(status: ChatRuntimeStatusView, copy: Retur
   if (status.phase === "command") return copy.runtimeCommand;
   if (status.phase === "tool") return copy.runtimeTool;
   return copy.runtimeThinking;
+}
+
+function formatRuntimeActivityTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: ReturnType<typeof chatCopy>): string {
@@ -1483,7 +1547,10 @@ function stripHivewardInboxSubmissionBlocks(content: string): string {
     .trim();
 }
 
-function toRuntimeRef(event: Extract<ChatStreamEvent, { type: "started" | "done" }>): ChatRuntimeRef {
+function toRuntimeRef(
+  event: Extract<ChatStreamEvent, { type: "started" | "done" }>,
+  activity?: ChatRuntimeActivity[]
+): ChatRuntimeRef {
   return {
     taskId: event.taskId,
     runId: event.runId,
@@ -1493,7 +1560,8 @@ function toRuntimeRef(event: Extract<ChatStreamEvent, { type: "started" | "done"
     updatedAt: event.updatedAt,
     error: "error" in event ? event.error : undefined,
     usage: "usage" in event ? event.usage : undefined,
-    timings: "timings" in event ? event.timings : undefined
+    timings: "timings" in event ? event.timings : undefined,
+    activity: activity?.length ? activity : undefined
   };
 }
 
@@ -1501,6 +1569,7 @@ function decorateHivewardMessage(message: HivewardChatMessage, copy: ReturnType<
   return {
     ...message,
     status: message.status,
+    runtimeActivities: message.runtimeRef?.activity,
     speakerLabel: message.role === "user" ? copy.you : formatHarnessLabel(message.harnessId)
   };
 }
@@ -1945,6 +2014,7 @@ function chatCopy(language: Language) {
       runtimeThinking: "\u6b63\u5728\u5904\u7406...",
       runtimeTool: "\u6b63\u5728\u4f7f\u7528\u5de5\u5177...",
       runtimeCommand: "\u6b63\u5728\u6267\u884c\u547d\u4ee4...",
+      runtimeActivity: "\u8fd0\u884c\u6d3b\u52a8",
       usageSummary: "\u6a21\u578b\u548c Token \u6d88\u8017",
       usageModel: "\u6a21\u578b",
       usageTokens: "Token \u6d88\u8017",
@@ -2052,6 +2122,7 @@ function chatCopy(language: Language) {
     runtimeThinking: "Working...",
     runtimeTool: "Using tools...",
     runtimeCommand: "Running command...",
+    runtimeActivity: "Runtime activity",
     usageSummary: "Model and token usage",
     usageModel: "Model",
     usageTokens: "Token usage",

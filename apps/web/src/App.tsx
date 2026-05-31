@@ -134,10 +134,12 @@ const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
-const harnessSkillHarnessIds: HarnessId[] = ["openclaw", "claudeCode", "codex", "google", "cursor", "opencode", "hermes"];
+const harnessSkillHarnessIds: HarnessId[] = ["codex", "claudeCode", "openclaw", "hermes", "google", "cursor", "opencode"];
 
 type AppTheme = "light" | "dark";
 type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes">;
+const CHAT_PERMISSION_MODES_STORAGE_KEY = "hiveward-chat-permission-modes";
+const CHAT_PERMISSION_MODES_STORAGE_VERSION = 2;
 
 function AppSystemLabel({ systemId }: { systemId: AppSystemId }) {
   if (isHarnessId(systemId)) {
@@ -281,7 +283,13 @@ export function App() {
   }, [language]);
 
   useEffect(() => {
-    localStorage.setItem("hiveward-chat-permission-modes", JSON.stringify(chatPermissionModes));
+    localStorage.setItem(
+      CHAT_PERMISSION_MODES_STORAGE_KEY,
+      JSON.stringify({
+        version: CHAT_PERMISSION_MODES_STORAGE_VERSION,
+        modes: chatPermissionModes
+      })
+    );
   }, [chatPermissionModes]);
 
   useEffect(() => {
@@ -678,31 +686,41 @@ export function App() {
     setSection("runs");
   }, []);
 
-  const sidebarMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
+  const sidebarActivityMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
     () => ({
-      company: companies.length,
-      blueprint: blueprints.length,
-      runs: activeTaskCount,
-      approvals: pendingApprovalCount + pendingInboxCount,
-      models: openClawConfig?.configuredModels.length ?? 0,
-      agents: openClawConfig?.configuredAgents.length ?? 0,
-      skills: catalog?.tools.length ?? 0,
-      schedule: runs.length + pendingApprovalCount + pendingInboxCount,
-      channels: openClawConfig?.configuredChannels.length ?? 0,
-      claudeCodeModels: countConfiguredClaudeCodeModels(claudeCodeModelConfig)
+      blueprint: activeCountOrUndefined(dirtyBlueprintIds.size),
+      runs: activeCountOrUndefined(activeTaskCount),
+      approvals: activeCountOrUndefined(pendingApprovalCount + pendingInboxCount),
+      schedule: activeCountOrUndefined(activeTaskCount + pendingApprovalCount + pendingInboxCount),
+      openclaw: activeCountOrUndefined(countHarnessStatusActivity(openClawHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.openclaw)),
+      claudeCodeConfig: activeCountOrUndefined(countHarnessStatusActivity(claudeCodeHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.claudeCode)),
+      codexConfig: activeCountOrUndefined(countHarnessStatusActivity(codexHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.codex)),
+      googleConfig: activeCountOrUndefined(countHarnessStatusActivity(googleHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.google)),
+      cursorConfig: activeCountOrUndefined(countHarnessStatusActivity(cursorHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.cursor)),
+      opencodeConfig: activeCountOrUndefined(countHarnessStatusActivity(opencodeHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.opencode)),
+      hermesConfig: activeCountOrUndefined(countHarnessStatusActivity(hermesHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.hermes)),
+      skills: activeCountOrUndefined(countHarnessSkillActivity(harnessSkillStatuses.openclaw)),
+      hermesSkills: activeCountOrUndefined(countHarnessSkillActivity(harnessSkillStatuses.hermes))
     }),
     [
-      companies.length,
+      dirtyBlueprintIds.size,
       pendingApprovalCount,
       pendingInboxCount,
       activeTaskCount,
-      openClawConfig?.configuredModels.length,
-      openClawConfig?.configuredAgents.length,
-      openClawConfig?.configuredChannels.length,
-      claudeCodeModelConfig,
-      catalog?.tools.length,
-      runs.length,
-      blueprints.length
+      openClawHarnessStatus,
+      claudeCodeHarnessStatus,
+      codexHarnessStatus,
+      googleHarnessStatus,
+      cursorHarnessStatus,
+      opencodeHarnessStatus,
+      hermesHarnessStatus,
+      harnessSkillStatuses.openclaw,
+      harnessSkillStatuses.claudeCode,
+      harnessSkillStatuses.codex,
+      harnessSkillStatuses.google,
+      harnessSkillStatuses.cursor,
+      harnessSkillStatuses.opencode,
+      harnessSkillStatuses.hermes
     ]
   );
 
@@ -1340,6 +1358,19 @@ export function App() {
     [blueprint?.id, hydrateWorkspace, withBusy]
   );
 
+  const refreshInboxAndApprovals = useCallback(async () => {
+    try {
+      const [nextApprovals, nextInboxItems] = await Promise.all([
+        api.listPendingApprovals(),
+        api.listInboxItems()
+      ]);
+      setApprovals(nextApprovals);
+      setInboxItems(nextInboxItems);
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
+    }
+  }, []);
+
   const handleChatInboxItemCreated = useCallback(
     (item: InboxItem) => {
       setInboxItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
@@ -1556,6 +1587,7 @@ export function App() {
           language={language}
           harnessPermissionModes={chatPermissionModes}
           onInboxItemCreated={handleChatInboxItemCreated}
+          onInboxItemsRefreshNeeded={refreshInboxAndApprovals}
         />
       );
     }
@@ -1920,13 +1952,15 @@ export function App() {
           {appSectionGroups.map((group) => {
             const expanded = expandedSystems[group.id];
             const groupActive = group.sections.some((item) => item === section);
+            const groupActivityCount = group.sections.reduce((count, item) => count + (sidebarActivityMeta[item] ?? 0), 0);
+            const groupHasHiddenActivity = !expanded && groupActivityCount > 0;
             const systemChildrenId = `sidebar-system-${group.id}`;
             const SystemChevron = expanded ? ChevronDown : ChevronRight;
             return (
               <section key={group.id} className={`nav-system-group ${groupActive ? "active" : ""}`}>
                 <button
                   type="button"
-                  className={`nav-system-toggle ${groupActive ? "active" : ""}`}
+                  className={`nav-system-toggle ${groupActive ? "active" : ""} ${groupHasHiddenActivity ? "has-activity" : ""}`}
                   aria-expanded={expanded}
                   aria-controls={group.sections.length > 0 ? systemChildrenId : undefined}
                   onClick={() => toggleSystemGroup(group.id)}
@@ -1935,16 +1969,19 @@ export function App() {
                     <SystemChevron size={14} />
                     <AppSystemLabel systemId={group.id} />
                   </span>
+                  {groupHasHiddenActivity && <span className="nav-count nav-system-count">{groupActivityCount}</span>}
                 </button>
                 {expanded && group.sections.length > 0 && (
                   <div id={systemChildrenId} className="nav-system-children">
                     {group.sections.map((item) => {
                       const Icon = sidebarIcons[item];
+                      const activityCount = sidebarActivityMeta[item] ?? 0;
+                      const hasActivity = activityCount > 0;
                       return (
                         <button
                           key={item}
                           type="button"
-                          className={`nav-item ${section === item ? "active" : ""}`}
+                          className={`nav-item ${section === item ? "active" : ""} ${hasActivity ? "has-activity" : ""}`}
                           onClick={() => {
                             setSection(item);
                             setSystemMenuOpen(false);
@@ -1954,7 +1991,7 @@ export function App() {
                             <Icon size={16} />
                             <span className="nav-item-label">{t.navigation[item] ?? fallbackNavigationLabel(item, language)}</span>
                           </span>
-                          {sidebarMeta[item] !== undefined && <span className="nav-count">{sidebarMeta[item]}</span>}
+                          {hasActivity && <span className="nav-count">{activityCount}</span>}
                         </button>
                       );
                     })}
@@ -2257,7 +2294,22 @@ function OpenClawControlPanelPage({
         </div>
       </div>
 
-      <HarnessStatusBlock status={harnessStatus} language={language} fallbackLabel={harnessDisplayLabel("openclaw")} fallbackHarnessId="openclaw" />
+      <HarnessStatusBlock
+        status={harnessStatus}
+        language={language}
+        fallbackLabel={harnessDisplayLabel("openclaw")}
+        fallbackHarnessId="openclaw"
+        skillsCard={
+          <HarnessSkillsCard
+            variant="summary"
+            ui={ui}
+            skillStatus={skillStatus}
+            language={language}
+            busy={skillBusy}
+            onInstallSkills={onInstallSkills}
+          />
+        }
+      />
 
       <div className="openclaw-control-grid">
         <div className="content-card stack-card openclaw-control-section">
@@ -2287,14 +2339,6 @@ function OpenClawControlPanelPage({
           <OpenClawPanelRow label={ui.lastChecked} value={formatDateTimeLabel(openClawVersion?.resolvedAt, language, ui.none)} />
         </div>
       </div>
-
-      <HarnessSkillsCard
-        ui={ui}
-        skillStatus={skillStatus}
-        language={language}
-        busy={skillBusy}
-        onInstallSkills={onInstallSkills}
-      />
     </section>
   );
 }
@@ -2354,7 +2398,22 @@ function HarnessConfigPage({
         </div>
       </div>
 
-      <HarnessStatusBlock status={status} language={language} fallbackLabel={fallbackLabel} fallbackHarnessId={fallbackHarnessId} />
+      <HarnessStatusBlock
+        status={status}
+        language={language}
+        fallbackLabel={fallbackLabel}
+        fallbackHarnessId={fallbackHarnessId}
+        skillsCard={
+          <HarnessSkillsCard
+            variant="summary"
+            ui={skillUi}
+            skillStatus={skillStatus}
+            language={language}
+            busy={skillBusy}
+            onInstallSkills={onInstallSkills}
+          />
+        }
+      />
 
       {permissionMode && onPermissionModeChange ? (
         <div className="content-card stack-card harness-permission-card">
@@ -2384,14 +2443,6 @@ function HarnessConfigPage({
       ) : null}
 
       {children}
-
-      <HarnessSkillsCard
-        ui={skillUi}
-        skillStatus={skillStatus}
-        language={language}
-        busy={skillBusy}
-        onInstallSkills={onInstallSkills}
-      />
     </section>
   );
 }
@@ -3199,6 +3250,26 @@ function modelOptionsWithCurrent(options: ClaudeCodeModelOptionEntry[], currentM
   return [[current, current], ...options];
 }
 
+function activeCountOrUndefined(count: number): number | undefined {
+  return count > 0 ? count : undefined;
+}
+
+function countHarnessStatusActivity(status: HarnessStatus | undefined): number {
+  if (!status) return 0;
+  const checkIssues = status.checks.filter((check) => check.status === "warning" || check.status === "fail").length;
+  if (checkIssues > 0) return checkIssues;
+  let count = 0;
+  if (!status.installed) count += 1;
+  if (!status.environmentOk) count += 1;
+  if (status.connectionState !== "connected" && status.connectionState !== "available") count += 1;
+  return count;
+}
+
+function countHarnessSkillActivity(status: HarnessSkillStatusResponse | undefined): number {
+  if (!status?.supported) return 0;
+  return status.skills.filter((skill) => skill.status === "missing" || skill.status === "stale" || skill.status === "error").length;
+}
+
 function buildConfiguredClaudeCodeModels(config: ClaudeCodeModelConfig | undefined, presets: ClaudeCodeModelPreset[], language: Language): Array<{
   id: string;
   label: string;
@@ -3231,39 +3302,38 @@ function buildConfiguredClaudeCodeModels(config: ClaudeCodeModelConfig | undefin
   ].filter((model): model is { id: string; label: string; modelField: ClaudeCodeModelSlotField; providerId: string; providerName: string } => Boolean(model.id));
 }
 
-function countConfiguredClaudeCodeModels(config: ClaudeCodeModelConfig | undefined): number {
-  return [
-    config?.sonnetModelId,
-    config?.opusModelId,
-    config?.haikuModelId,
-    config?.fallbackModelId
-  ].filter(Boolean).length;
-}
-
 type HarnessSkillsCardCopy = Pick<
   OpenClawPanelCopy,
   "skills" | "skillsReady" | "skillsMissing" | "skillsUnsupported" | "installSkills" | "installingSkills" | "skillStatus"
 >;
+
+type HarnessSkillsCardVariant = "card" | "summary";
 
 function HarnessSkillsCard({
   ui,
   skillStatus,
   language,
   busy,
-  onInstallSkills
+  onInstallSkills,
+  variant = "card"
 }: {
   ui: HarnessSkillsCardCopy;
   skillStatus?: HarnessSkillStatusResponse;
   language: Language;
   busy: boolean;
   onInstallSkills: () => void;
+  variant?: HarnessSkillsCardVariant;
 }) {
   const supported = Boolean(skillStatus?.supported);
   const skills = skillStatus?.skills ?? [];
   const installed = supported && skills.length > 0 && skills.every((skill) => skill.status === "installed");
   const description = !supported ? ui.skillsUnsupported : installed ? ui.skillsReady : ui.skillsMissing;
+  const className =
+    variant === "summary"
+      ? "harness-skills-card harness-skills-card-summary"
+      : "content-card stack-card openclaw-control-section harness-skills-card";
   return (
-    <div className="content-card stack-card openclaw-control-section harness-skills-card">
+    <div className={className}>
       <div className="card-title-block harness-skills-card-head">
         <div>
           <h3>{ui.skills}</h3>
@@ -3567,12 +3637,14 @@ function HarnessStatusBlock({
   status,
   language,
   fallbackLabel,
-  fallbackHarnessId
+  fallbackHarnessId,
+  skillsCard
 }: {
   status?: HarnessStatus;
   language: Language;
   fallbackLabel: string;
   fallbackHarnessId?: HarnessId;
+  skillsCard?: ReactNode;
 }) {
   const copy = harnessStatusCopy(language);
   const labelParts = status ? harnessDisplayParts(status.id) : fallbackHarnessId ? harnessDisplayParts(fallbackHarnessId) : { label: fallbackLabel };
@@ -3598,6 +3670,7 @@ function HarnessStatusBlock({
             <p>{status?.summary ?? copy.notChecked}</p>
           </div>
           <OpenClawPanelRow label={copy.checkedAt} value={formatDateTimeLabel(status?.checkedAt, language, "-")} />
+          {skillsCard}
         </div>
 
         <div className="content-card stack-card openclaw-control-section">
@@ -3742,25 +3815,34 @@ function getInitialTheme(): AppTheme {
 }
 
 function getInitialChatPermissionModes(): Record<SdkChatHarnessId, ChatPermissionMode> {
+  const defaultMode: ChatPermissionMode = "full_access";
   const fallback: Record<SdkChatHarnessId, ChatPermissionMode> = {
-    claudeCode: "safe",
-    codex: "safe",
-    google: "safe",
-    cursor: "safe",
-    opencode: "safe",
-    hermes: "safe"
+    claudeCode: defaultMode,
+    codex: defaultMode,
+    google: defaultMode,
+    cursor: defaultMode,
+    opencode: defaultMode,
+    hermes: defaultMode
   };
-  const stored = localStorage.getItem("hiveward-chat-permission-modes");
+  const readMode = (value: unknown): ChatPermissionMode => (value === "safe" || value === "full_access" ? value : defaultMode);
+  const stored = localStorage.getItem(CHAT_PERMISSION_MODES_STORAGE_KEY);
   if (!stored) return fallback;
   try {
-    const parsed = JSON.parse(stored) as Partial<Record<SdkChatHarnessId, ChatPermissionMode>>;
+    const parsed = JSON.parse(stored) as unknown;
+    if (!parsed || typeof parsed !== "object") return fallback;
+    const storedModes = parsed as {
+      version?: number;
+      modes?: Partial<Record<SdkChatHarnessId, ChatPermissionMode>>;
+    };
+    if (storedModes.version !== CHAT_PERMISSION_MODES_STORAGE_VERSION || !storedModes.modes) return fallback;
+    const modes = storedModes.modes;
     return {
-      claudeCode: parsed.claudeCode === "full_access" ? "full_access" : "safe",
-      codex: parsed.codex === "full_access" ? "full_access" : "safe",
-      google: parsed.google === "full_access" ? "full_access" : "safe",
-      cursor: parsed.cursor === "full_access" ? "full_access" : "safe",
-      opencode: parsed.opencode === "full_access" ? "full_access" : "safe",
-      hermes: parsed.hermes === "full_access" ? "full_access" : "safe"
+      claudeCode: readMode(modes.claudeCode),
+      codex: readMode(modes.codex),
+      google: readMode(modes.google),
+      cursor: readMode(modes.cursor),
+      opencode: readMode(modes.opencode),
+      hermes: readMode(modes.hermes)
     };
   } catch {
     return fallback;

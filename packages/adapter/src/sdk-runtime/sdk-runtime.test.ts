@@ -960,7 +960,9 @@ describe("agent SDK runtime", () => {
     ]);
     expect(events).toEqual([
       expect.objectContaining({ type: "started", source: "google", status: "running" }),
+      expect.objectContaining({ type: "runtime_state", source: "google", phase: "command", label: "gemini", status: "started" }),
       { type: "delta", text: "hello from gemini" },
+      expect.objectContaining({ type: "runtime_state", source: "google", phase: "command", label: "gemini", status: "completed" }),
       expect.objectContaining({
         type: "done",
         source: "google",
@@ -998,7 +1000,9 @@ describe("agent SDK runtime", () => {
     expect(calls[0]?.args).not.toContain("--resume");
     expect(events).toEqual([
       expect.objectContaining({ type: "started", source: "google", status: "running", sessionKey: "" }),
+      expect.objectContaining({ type: "runtime_state", source: "google", phase: "command", label: "gemini", status: "started" }),
       { type: "delta", text: "hello without native session" },
+      expect.objectContaining({ type: "runtime_state", source: "google", phase: "command", label: "gemini", status: "completed" }),
       expect.objectContaining({
         type: "done",
         source: "google",
@@ -1065,8 +1069,10 @@ describe("agent SDK runtime", () => {
     ]);
     expect(events).toEqual([
       expect.objectContaining({ type: "started", source: "cursor", status: "running" }),
+      expect.objectContaining({ type: "runtime_state", source: "cursor", phase: "command", label: "cursor-agent", status: "started" }),
       { type: "delta", text: "Hel" },
       { type: "delta", text: "lo" },
+      expect.objectContaining({ type: "runtime_state", source: "cursor", phase: "command", label: "cursor-agent", status: "completed" }),
       expect.objectContaining({
         type: "done",
         source: "cursor",
@@ -1164,7 +1170,9 @@ describe("agent SDK runtime", () => {
     ]);
     expect(events).toEqual([
       expect.objectContaining({ type: "started", source: "hermes", status: "running" }),
+      expect.objectContaining({ type: "runtime_state", source: "hermes", phase: "command", label: "hermes", status: "started" }),
       { type: "delta", text: "hello from hermes" },
+      expect.objectContaining({ type: "runtime_state", source: "hermes", phase: "command", label: "hermes", status: "completed" }),
       expect.objectContaining({
         type: "done",
         source: "hermes",

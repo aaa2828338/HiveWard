@@ -113,6 +113,52 @@ class ChatOutputAdapter extends TrackingAdapter {
   }
 }
 
+class ChatRuntimeActivityAdapter extends TrackingAdapter {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+    this.lastChatStreamInput = input;
+    const now = new Date().toISOString();
+    const runId = input.idempotencyKey;
+    onEvent({
+      type: "started",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey || "codex-chat-session-test",
+      source: "codex",
+      status: "running",
+      updatedAt: now
+    });
+    onEvent({
+      type: "runtime_state",
+      source: "codex",
+      phase: "tool",
+      label: "repo.search apps/api",
+      id: "tool-1",
+      status: "started",
+      updatedAt: now
+    });
+    onEvent({ type: "delta", text: "First visible sentence." });
+    onEvent({
+      type: "runtime_state",
+      source: "codex",
+      phase: "tool",
+      label: "repo.search apps/api",
+      id: "tool-1",
+      status: "completed",
+      updatedAt: now
+    });
+    onEvent({
+      type: "done",
+      taskId: runId,
+      runId,
+      sessionKey: input.sessionKey || "codex-chat-session-test",
+      source: "codex",
+      status: "succeeded",
+      output: "First visible sentence.",
+      updatedAt: now
+    });
+  }
+}
+
 class ChatHistoryAdapter extends TrackingAdapter {
   constructor(private readonly messages: ChatHistoryMessage[]) {
     super();
@@ -1113,6 +1159,51 @@ describe("apiRouter", () => {
       restoreEnv("CLAUDE_CODE_DEFAULT_MODEL", previousClaudeDefault);
       restoreEnv("HIVEWARD_CLAUDE_CODE_MODELS", previousHivewardClaudeModels);
       restoreEnv("CLAUDE_CODE_MODELS", previousClaudeModels);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("orders harness status by node priority and exposes OpenClaw models and agents", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/harness-status`);
+        const body = await readOkJson<{
+          statuses: Array<{
+            id: string;
+            defaultModelId?: string;
+            models?: Array<{ id: string; label: string; provider?: string; isDefault?: boolean }>;
+            profiles?: Array<{ id: string; label: string; modelId?: string; workspace?: string; isDefault?: boolean }>;
+          }>;
+        }>(response);
+        const openClawStatus = body.statuses.find((status) => status.id === "openclaw");
+
+        expect(body.statuses.slice(0, 4).map((status) => status.id)).toEqual([
+          "codex",
+          "claudeCode",
+          "openclaw",
+          "hermes"
+        ]);
+        expect(openClawStatus?.defaultModelId).toBe("openclaw/default");
+        expect(openClawStatus?.models).toEqual([
+          expect.objectContaining({
+            id: "openclaw/default",
+            label: "OpenClaw Default",
+            provider: "openclaw",
+            isDefault: true
+          })
+        ]);
+        expect(openClawStatus?.profiles).toEqual([
+          expect.objectContaining({
+            id: "main",
+            label: "main",
+            modelId: "openclaw/default",
+            workspace: "D:\\hiveward-test",
+            isDefault: true
+          })
+        ]);
+      });
+    } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -2309,7 +2400,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("reports and installs HiveWard skills into the OpenClaw home skill root", async () => {
+  it("reports and installs HiveWard skills into the OpenClaw workspace skill root", async () => {
     const fixture = await createStoreFixture();
     const openClawWorkspace = join(fixture.dir, "openclaw-workspace");
     const openClawHome = join(fixture.dir, "openclaw-home");
@@ -2331,9 +2422,9 @@ describe("apiRouter", () => {
           }>(initialResponse);
 
           expect(initialBody.supported).toBe(true);
-          expect(initialBody.installRoot).toBe(join(openClawHome, "skills"));
+          expect(initialBody.installRoot).toBe(join(openClawHome, "workspace", "skills"));
           expect(initialBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
-            root: join(openClawHome, "skills"),
+            root: join(openClawHome, "workspace", "skills"),
             source: "environment",
             hasHiveWardSkills: false
           });
@@ -2355,13 +2446,13 @@ describe("apiRouter", () => {
             ["hiveward-skill-decomposer", "installed", true]
           ]);
           expect(installBody.installCandidates?.find((candidate) => candidate.selected)).toMatchObject({
-            root: join(openClawHome, "skills"),
+            root: join(openClawHome, "workspace", "skills"),
             source: "environment",
             hasHiveWardSkills: true
           });
-          expect(existsSync(join(openClawHome, "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
-          expect(existsSync(join(openClawHome, "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
-          expect(existsSync(join(openClawHome, "skills", "hiveward-skill-decomposer", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(openClawHome, "workspace", "skills", "hiveward-ceo", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(openClawHome, "workspace", "skills", "hiveward-leader", "SKILL.md"))).toBe(true);
+          expect(existsSync(join(openClawHome, "workspace", "skills", "hiveward-skill-decomposer", "SKILL.md"))).toBe(true);
         },
         new TrackingAdapter(),
         openClawConfigStore
@@ -2780,12 +2871,163 @@ describe("apiRouter", () => {
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
         expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
         expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
-        expect(adapter.lastChatStreamInput?.message).toContain("end the response with one hiveward-inbox fenced block");
+        expect(adapter.lastChatStreamInput?.message).toContain("End the response with one hiveward-inbox fenced block");
         expect(adapter.lastChatStreamInput?.message).toContain("A self_dispatch manager is itself a runnable decision node");
         expect(adapter.lastChatStreamInput?.message).toContain("Use the current chat harness runtime");
       }, adapter);
     } finally {
       restoreEnv("CODEX_HOME", previousCodexHome);
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes the inbox submission contract by default in blueprint build mode", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "把这套收件箱审批线程逻辑整理成下一阶段可落地方案。",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "blueprint",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).toContain("End the response with one hiveward-inbox fenced block");
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams runtime activity events and stores the visible partial output", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new ChatRuntimeActivityAdapter();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await streamSessionChat(baseUrl, {
+          harnessId: "codex",
+          message: "Show runtime activity.",
+          attachments: [],
+          modelId: "codex/test-default",
+          thinkingEffort: "medium",
+          mode: "chat",
+          roleScope: {
+            role: "ceo"
+          }
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(text).toContain("event: runtime_state");
+        expect(text).toContain("First visible sentence.");
+        const session = (await fixture.store.listChatSessions())[0]!;
+        const messages = await fixture.store.listChatMessages(session.id);
+        const assistant = messages.find((message) => message.role === "assistant");
+        expect(assistant).toMatchObject({
+          status: "sent",
+          content: "First visible sentence."
+        });
+        expect(assistant?.runtimeRef?.activity).toEqual([
+          expect.objectContaining({
+            id: "tool-1",
+            phase: "tool",
+            label: "repo.search apps/api",
+            status: "completed"
+          })
+        ]);
+      }, adapter);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-rebuilds Codex chat context instead of resuming a heavy native session", async () => {
+    const fixture = await createStoreFixture();
+    const adapter = new TrackingAdapter();
+    try {
+      const now = new Date().toISOString();
+      const session = await fixture.store.createChatSession({
+        harnessId: "codex",
+        title: "Heavy Codex session",
+        nativeSessionId: "codex-heavy-session",
+        modelId: "codex/test-default",
+        permissionMode: "full_access",
+        mode: "blueprint",
+        roleScope: { role: "ceo" }
+      });
+      await fixture.store.appendChatMessage({
+        sessionId: session.id,
+        role: "user",
+        content: "先分析当前蓝图逻辑。",
+        attachments: [],
+        harnessId: "codex",
+        modelId: "codex/test-default",
+        status: "sent"
+      });
+      await fixture.store.appendChatMessage({
+        sessionId: session.id,
+        role: "assistant",
+        content: "Heavy analysis summary.",
+        harnessId: "codex",
+        modelId: "codex/test-default",
+        status: "sent",
+        runtimeRef: {
+          taskId: "heavy-task",
+          runId: "heavy-run",
+          sessionKey: "codex-heavy-session",
+          source: "codex",
+          status: "succeeded",
+          updatedAt: now,
+          usage: {
+            id: "usage-heavy",
+            modelId: "gpt-5.5",
+            inputTokens: 5_000_000,
+            outputTokens: 10_000,
+            costUsd: 0,
+            recordedAt: now
+          },
+          timings: {
+            totalMs: 900_000,
+            hivewardPreprocessMs: 10,
+            runtimeMs: 899_000,
+            hivewardPostprocessMs: 10
+          }
+        }
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${session.id}/messages/stream`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            message: "开始构建发邮件吧",
+            attachments: [],
+            modelId: "codex/test-default",
+            thinkingEffort: "medium",
+            permissionMode: "full_access",
+            mode: "blueprint",
+            roleScope: { role: "ceo" }
+          })
+        });
+        const text = await response.text();
+
+        expect(response.status, text).toBe(200);
+        expect(adapter.lastChatStreamInput?.sessionKey).toBe("");
+        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard visible conversation history:");
+        expect(adapter.lastChatStreamInput?.message).toContain("Heavy analysis summary.");
+        const updated = await fixture.store.getChatSession(session.id);
+        expect(updated?.nativeSessionId).toBeUndefined();
+      }, adapter);
+    } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });

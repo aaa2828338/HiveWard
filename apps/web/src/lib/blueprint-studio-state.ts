@@ -68,12 +68,12 @@ export function isBlueprintSelectorDisabled(input: {
 export function buildAgentHarnessOptions(): BlueprintRuntimeOption[] {
   return ([
     "codex",
+    "claude",
+    "openclaw",
+    "hermes",
     "google",
     "cursor",
-    "opencode",
-    "hermes",
-    "openclaw",
-    "claude"
+    "opencode"
   ] as const).map((value) => ({ value, ...runtimeDisplayParts(value) }));
 }
 

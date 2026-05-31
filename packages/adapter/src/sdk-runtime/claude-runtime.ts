@@ -369,12 +369,26 @@ function shouldEmitClaudeRuntimeEvent(message: SDKMessage): boolean {
 }
 
 function toClaudeRuntimeState(message: SDKMessage): ChatStreamEvent {
+  const record = message as Record<string, unknown>;
   return {
     type: "runtime_state",
     source: "claude",
     phase: claudeRuntimePhaseForMessage(message),
-    label: claudeRuntimeLabelForMessage(message)
+    label: claudeRuntimeLabelForMessage(message),
+    id: readRuntimeMessageId(record),
+    status: "updated",
+    updatedAt: new Date().toISOString()
   };
+}
+
+function readRuntimeMessageId(record: Record<string, unknown>): string | undefined {
+  return (
+    readString(record.id) ??
+    readString(record.tool_use_id) ??
+    readString(record.toolUseId) ??
+    readString(record.parent_tool_use_id) ??
+    readString(record.parentToolUseId)
+  );
 }
 
 function claudeRuntimePhaseForMessage(message: SDKMessage): Extract<ChatStreamEvent, { type: "runtime_state" }>["phase"] {

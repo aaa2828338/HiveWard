@@ -57,6 +57,7 @@ import type {
   ChatHistoryMessage,
   ChatMode,
   ChatPermissionMode,
+  ChatRuntimeActivity,
   ChatRuntimeRef,
   ChatSessionStatus,
   ChatThinkingEffort,
@@ -1760,7 +1761,9 @@ async function streamHivewardChatSession({
     hermes: harnessDefaults.hermes
   };
   const messagesBefore = await store.listChatMessages(session.id);
-  const shouldRebuildFromHivewardHistory = "rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory === true;
+  const shouldRebuildFromHivewardHistory =
+    ("rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory === true) ||
+    shouldAutoRebuildChatFromHivewardHistory(session, messagesBefore);
   const rebuildContext = shouldRebuildFromHivewardHistory ? buildHivewardHistoryContext(messagesBefore) : undefined;
   if (shouldRebuildFromHivewardHistory) {
     session = await store.updateChatSession(session.id, {
@@ -1803,6 +1806,7 @@ async function streamHivewardChatSession({
     modelId: requestBody.modelId,
     status: "streaming"
   });
+  const persistedSessionId = session.id;
   session = await store.updateChatSession(session.id, {
     modelId: requestBody.modelId,
     agentId,
@@ -1829,9 +1833,47 @@ async function streamHivewardChatSession({
   let streamedOutput = "";
   let runtimeAcceptedAtMs: number | undefined;
   let runtimeFirstDeltaAtMs: number | undefined;
+  const runtimeActivities: ChatRuntimeActivity[] = [];
+  let runtimeRefDraft: ChatRuntimeRef | undefined;
   let nativeSessionKey = requestBody.nativeSessionKey ?? "";
   const attemptedNativeResume = Boolean(nativeSessionKey) && !shouldRebuildFromHivewardHistory;
   const runtimeStartedAtMs = Date.now();
+  const maxPersistedStreamingChars = 200_000;
+  let streamingPersistTimer: ReturnType<typeof setTimeout> | undefined;
+  let streamingPersistPromise: Promise<unknown> = Promise.resolve();
+
+  const queueStreamingPersist = () => {
+    if (streamingPersistTimer) return;
+    streamingPersistTimer = setTimeout(() => {
+      streamingPersistTimer = undefined;
+      const content =
+        streamedOutput.length > maxPersistedStreamingChars
+          ? streamedOutput.slice(streamedOutput.length - maxPersistedStreamingChars)
+          : streamedOutput;
+      const runtimeRef = runtimeRefDraft;
+      streamingPersistPromise = streamingPersistPromise
+        .then(() => store.updateChatMessage(persistedSessionId, assistantMessage.id, {
+          content,
+          status: "streaming",
+          ...(runtimeRef ? { runtimeRef } : {})
+        }))
+        .catch(() => undefined);
+    }, 750);
+  };
+
+  const flushStreamingPersist = async () => {
+    if (streamingPersistTimer) {
+      clearTimeout(streamingPersistTimer);
+      streamingPersistTimer = undefined;
+    }
+    await streamingPersistPromise.catch(() => undefined);
+    if (!streamedOutput && !runtimeRefDraft) return;
+    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
+      content: streamedOutput,
+      status: "streaming",
+      ...(runtimeRefDraft ? { runtimeRef: runtimeRefDraft } : {})
+    });
+  };
 
   try {
     if (requestBody.harnessId === "openclaw" && !nativeSessionKey) {
@@ -1867,22 +1909,37 @@ async function streamHivewardChatSession({
       (event) => {
         if (event.type === "started") {
           runtimeAcceptedAtMs ??= Date.now();
+          runtimeRefDraft = toChatRuntimeRefFromStart(event, runtimeActivities);
+          queueStreamingPersist();
         }
         if (event.type === "done") {
           doneEvent = event;
           return;
         }
+        if (event.type === "runtime_state") {
+          const activity = upsertChatRuntimeActivity(runtimeActivities, event);
+          if (runtimeRefDraft) {
+            runtimeRefDraft = {
+              ...runtimeRefDraft,
+              activity: runtimeActivities.length ? [...runtimeActivities] : undefined,
+              updatedAt: activity.updatedAt
+            };
+          }
+          queueStreamingPersist();
+        }
         if (event.type === "delta") {
           runtimeFirstDeltaAtMs ??= Date.now();
           streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
+          queueStreamingPersist();
         }
         writeChatStreamEvent(res, event, isClosed);
       }
     );
   } catch (error) {
+    await flushStreamingPersist();
     const message = error instanceof Error ? error.message : "Chat request failed.";
     const code = isRuntimeAdapterError(error) ? error.code : undefined;
-    await store.updateChatMessage(session.id, assistantMessage.id, {
+    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
       content: message,
       status: "failed"
     });
@@ -1898,8 +1955,9 @@ async function streamHivewardChatSession({
   const runtimeFinishedAtMs = Date.now();
   const postprocessStartedAtMs = Date.now();
   if (!doneEvent) {
+    await flushStreamingPersist();
     const message = "Chat request completed without a final runtime event.";
-    await store.updateChatMessage(session.id, assistantMessage.id, {
+    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
       content: streamedOutput || message,
       status: streamedOutput ? "sent" : "failed"
     });
@@ -1909,6 +1967,7 @@ async function streamHivewardChatSession({
   }
 
   const finalOutput = doneEvent.output ?? streamedOutput;
+  await flushStreamingPersist();
   const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
   let submission: ChatInboxSubmissionResult | undefined;
   let inboxSubmissionMs: number | undefined;
@@ -1955,9 +2014,9 @@ async function streamHivewardChatSession({
     runtimeAcceptedAtMs,
     runtimeFirstDeltaAtMs
   );
-  const runtimeRef = toChatRuntimeRef(finalEventWithTimings);
+  const runtimeRef = toChatRuntimeRef(finalEventWithTimings, runtimeActivities);
   const nativeMissing = attemptedNativeResume && finalEventWithTimings.status === "failed" && isNativeResumeFailure(finalEventWithTimings.error);
-  await store.updateChatMessage(session.id, assistantMessage.id, {
+  await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
     content: assistantOutput,
     status: finalEventWithTimings.status === "failed" || finalEventWithTimings.status === "cancelled" ? "failed" : "sent",
     runtimeRef,
@@ -2319,14 +2378,15 @@ const hivewardPlatformContext = [
 ].join("\n");
 
 const hivewardBlueprintDraftingGuidance = [
-  "Blueprint drafting mode:",
-  "When the user asks for a blueprint change, first align on direction in chat. When they ask to create, generate, build, import, or submit a blueprint, produce a concrete importable content package with proposal text, JSON or patch details, preview, and diff summary for Hiveward inbox approval unless they explicitly ask for a draft only.",
+  "Blueprint build mode:",
+  "The user selected HiveWard Build blueprint mode. Treat the turn as a request to produce a governed blueprint proposal unless they explicitly ask for draft-only, discussion-only, or read-only work.",
+  "If there is enough information, produce a concrete importable blueprint package with proposal text, JSON or patch details, preview, and diff summary for Hiveward inbox approval. If essential information is missing, ask for that information instead of fabricating the package.",
   "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed."
 ].join("\n");
 
 const hivewardBlueprintSubmissionContext = [
   hivewardBlueprintDraftingGuidance,
-  "If the user asks to create, generate, build, import, or submit a blueprint proposal/package for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
+  "End the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item. Do not omit the block after only describing the proposal.",
   "",
   hivewardInboxSubmissionContract
 ].join("\n");
@@ -2365,9 +2425,9 @@ const hivewardSkillSplitSubmissionContext = [
 ].join("\n");
 
 function buildBlueprintDraftingContext(message: string): string {
-  return shouldIncludeBlueprintSubmissionContract(message)
-    ? hivewardBlueprintSubmissionContext
-    : hivewardBlueprintDraftingGuidance;
+  return shouldSuppressBlueprintSubmissionContract(message)
+    ? hivewardBlueprintDraftingGuidance
+    : hivewardBlueprintSubmissionContext;
 }
 
 function buildSkillSplitContext(message: string): string {
@@ -2378,55 +2438,54 @@ function buildSkillSplitContext(message: string): string {
 
 function shouldIncludeBlueprintSubmissionContract(message: string): boolean {
   const normalized = message.toLowerCase();
-  const asksDraftOnly =
-    normalized.includes("draft only") ||
-    normalized.includes("do not submit") ||
-    normalized.includes("don't submit") ||
-    normalized.includes("without submitting") ||
-    message.includes("只要草稿") ||
-    message.includes("只生成草稿") ||
-    message.includes("先别提交") ||
-    message.includes("不要提交") ||
-    message.includes("不用提交") ||
-    message.includes("别放收件箱") ||
-    message.includes("不要放收件箱");
-  if (asksDraftOnly) return false;
+  if (shouldSuppressBlueprintSubmissionContract(message)) return false;
 
-  const asksBlueprintCreation =
-    normalized.includes("create blueprint") ||
-    normalized.includes("generate blueprint") ||
-    normalized.includes("build blueprint") ||
-    normalized.includes("design blueprint") ||
-    normalized.includes("new blueprint") ||
-    normalized.includes("blueprint package") ||
-    (
-      message.includes("蓝图") &&
-      (
-        message.includes("创建") ||
-        message.includes("生成") ||
-        message.includes("新建") ||
-        message.includes("设计") ||
-        message.includes("搭建") ||
-        message.includes("做一个") ||
-        message.includes("建一个")
-      )
-    );
+  const asksBlueprintCreation = includesAny(normalized, [
+    "create blueprint",
+    "generate blueprint",
+    "build blueprint",
+    "design blueprint",
+    "new blueprint",
+    "blueprint package"
+  ]) || (
+    message.includes("蓝图") &&
+    includesAny(message, ["创建", "生成", "新建", "设计", "构建", "搭建", "做一个", "建一个"])
+  );
 
   return (
     asksBlueprintCreation ||
-    normalized.includes("submit") ||
-    normalized.includes("approval") ||
-    normalized.includes("approve") ||
-    normalized.includes("inbox") ||
-    normalized.includes("proposal") ||
-    normalized.includes("import") ||
-    message.includes("提交") ||
-    message.includes("审批") ||
-    message.includes("批准") ||
-    message.includes("收件箱") ||
-    message.includes("提案") ||
-    message.includes("导入")
+    includesAny(normalized, ["submit", "approval", "approve", "inbox", "proposal", "import"]) ||
+    includesAny(message, ["提交", "审批", "批准", "收件箱", "提案", "导入", "邮件"])
   );
+}
+
+function shouldSuppressBlueprintSubmissionContract(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return includesAny(normalized, [
+    "draft only",
+    "do not submit",
+    "don't submit",
+    "without submitting",
+    "discussion only",
+    "read-only",
+    "read only"
+  ]) || includesAny(message, [
+    "只要草稿",
+    "只生成草稿",
+    "先别提交",
+    "不要提交",
+    "不用提交",
+    "别放收件箱",
+    "不要放收件箱",
+    "不发邮件",
+    "先讨论",
+    "只讨论",
+    "只读"
+  ]);
+}
+
+function includesAny(value: string, needles: string[]): boolean {
+  return needles.some((needle) => value.includes(needle));
 }
 
 function writeChatStreamEvent(
@@ -2437,6 +2496,7 @@ function writeChatStreamEvent(
   if (isClosed()) return false;
   res.write(`event: ${event.type}\n`);
   res.write(`data: ${JSON.stringify(event)}\n\n`);
+  (res as Response & { flush?: () => void }).flush?.();
   return !isClosed();
 }
 
@@ -2465,7 +2525,22 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
   };
 }
 
-function toChatRuntimeRef(event: ChatDoneEvent): ChatRuntimeRef {
+function toChatRuntimeRefFromStart(
+  event: Extract<ChatStreamEvent, { type: "started" }>,
+  activity: ChatRuntimeActivity[] = []
+): ChatRuntimeRef {
+  return {
+    taskId: event.taskId,
+    runId: event.runId,
+    sessionKey: event.sessionKey,
+    source: event.source,
+    status: event.status,
+    updatedAt: event.updatedAt,
+    activity: activity.length ? [...activity] : undefined
+  };
+}
+
+function toChatRuntimeRef(event: ChatDoneEvent, activity: ChatRuntimeActivity[] = []): ChatRuntimeRef {
   return {
     taskId: event.taskId,
     runId: event.runId,
@@ -2475,8 +2550,31 @@ function toChatRuntimeRef(event: ChatDoneEvent): ChatRuntimeRef {
     updatedAt: event.updatedAt,
     error: event.error,
     usage: event.usage,
-    timings: event.timings
+    timings: event.timings,
+    activity: activity.length ? [...activity] : undefined
   };
+}
+
+function upsertChatRuntimeActivity(
+  activities: ChatRuntimeActivity[],
+  event: Extract<ChatStreamEvent, { type: "runtime_state" }>
+): ChatRuntimeActivity {
+  const updatedAt = event.updatedAt ?? new Date().toISOString();
+  const activity: ChatRuntimeActivity = {
+    id: event.id ?? `${event.source}:${event.phase}:${event.label}`,
+    source: event.source,
+    phase: event.phase,
+    label: event.label,
+    status: event.status ?? "updated",
+    updatedAt
+  };
+  const index = activities.findIndex((item) => item.id === activity.id);
+  if (index >= 0) {
+    activities[index] = { ...activities[index]!, ...activity };
+  } else {
+    activities.push(activity);
+  }
+  return activity;
 }
 
 function buildHivewardHistoryContext(messages: HivewardChatMessage[]): string {
@@ -2494,8 +2592,21 @@ function buildHivewardHistoryContext(messages: HivewardChatMessage[]): string {
     "HiveWard visible conversation history:",
     history || "[no prior visible messages]",
     "",
-    "The native provider session was not recoverable. Use this explicit HiveWard transcript only as user-visible context; do not describe this as native recovery."
+    "Use this explicit HiveWard transcript as the current context. Do not assume unseen native provider memory unless the current turn loads it."
   ].join("\n");
+}
+
+function shouldAutoRebuildChatFromHivewardHistory(
+  session: HivewardChatSession,
+  messagesBefore: HivewardChatMessage[]
+): boolean {
+  if (session.harnessId !== "codex" || !session.nativeSessionId) return false;
+  const lastAssistant = [...messagesBefore].reverse().find((message) => message.role === "assistant" && message.runtimeRef);
+  const runtimeRef = lastAssistant?.runtimeRef;
+  if (!runtimeRef || runtimeRef.source !== "codex" || runtimeRef.sessionKey !== session.nativeSessionId) return false;
+  const inputTokens = runtimeRef.usage?.inputTokens ?? 0;
+  const runtimeMs = runtimeRef.timings?.runtimeMs ?? runtimeRef.timings?.totalMs ?? 0;
+  return inputTokens >= 500_000 || runtimeMs >= 120_000;
 }
 
 function isNativeResumeFailure(message: string | undefined): boolean {
@@ -2686,23 +2797,34 @@ function buildHarnessSkillInstallCandidates(
     return candidates;
   }
 
-  addEnvHomeSkillCandidate(candidates, "OPENCLAW_STATE_DIR", "OpenClaw OPENCLAW_STATE_DIR skills");
-  addEnvHomeSkillCandidate(candidates, "OPENCLAW_HOME", "OpenClaw OPENCLAW_HOME skills");
-  addConfigSiblingSkillCandidate(candidates, config.configPath, "OpenClaw config-adjacent skills");
-  addPersonalSkillCandidate(candidates, join(home, ".openclaw", "skills"), "OpenClaw personal skills");
-  addProjectSkillCandidate(candidates, join(repositoryRoot, ".openclaw", "skills"), "OpenClaw project skills");
+  addEnvHomeSkillCandidate(candidates, "OPENCLAW_STATE_DIR", "OpenClaw OPENCLAW_STATE_DIR workspace skills", [
+    "workspace",
+    "skills"
+  ]);
+  addEnvHomeSkillCandidate(candidates, "OPENCLAW_HOME", "OpenClaw OPENCLAW_HOME workspace skills", ["workspace", "skills"]);
+  addPersonalSkillCandidate(candidates, join(config.defaultWorkspace, "skills"), "OpenClaw default workspace skills");
+  for (const agent of config.configuredAgents) {
+    addPersonalSkillCandidate(
+      candidates,
+      join(agent.workspace, "skills"),
+      `OpenClaw ${agent.name || agent.id} workspace skills`
+    );
+  }
+  addPersonalSkillCandidate(candidates, join(home, ".openclaw", "workspace", "skills"), "OpenClaw personal workspace skills");
+  addProjectSkillCandidate(candidates, join(repositoryRoot, ".openclaw", "workspace", "skills"), "OpenClaw project workspace skills");
   return candidates;
 }
 
 function addEnvHomeSkillCandidate(
   candidates: HarnessSkillInstallCandidate[],
   envName: string,
-  label: string
+  label: string,
+  pathSegments: string[] = ["skills"]
 ): void {
   const envHome = readEnvString(process.env, envName);
   if (!envHome) return;
   addHarnessSkillInstallCandidate(candidates, {
-    root: join(expandHomePath(envHome), "skills"),
+    root: join(expandHomePath(envHome), ...pathSegments),
     source: "environment",
     label
   });
@@ -2730,21 +2852,6 @@ function addProjectSkillCandidate(
   addHarnessSkillInstallCandidate(candidates, {
     root,
     source: "project",
-    label
-  });
-}
-
-function addConfigSiblingSkillCandidate(
-  candidates: HarnessSkillInstallCandidate[],
-  configPath: string | undefined,
-  label: string
-): void {
-  if (!configPath) return;
-  const resolvedConfigPath = resolve(expandHomePath(configPath));
-  if (!fileExists(resolvedConfigPath) && !fileExists(dirname(resolvedConfigPath))) return;
-  addHarnessSkillInstallCandidate(candidates, {
-    root: join(dirname(resolvedConfigPath), "skills"),
-    source: "existing_root",
     label
   });
 }
@@ -3305,9 +3412,19 @@ function buildHarnessStatuses(
 ): HarnessStatus[] {
   const checkedAt = new Date().toISOString();
   return [
-    buildOpenClawHarnessStatus(version, config, checkedAt),
-    buildClaudeCodeHarnessStatus(checkedAt, defaults.claude, defaults.claudeModels),
     buildCodexHarnessStatus(checkedAt, defaults.codex, defaults.codexModels),
+    buildClaudeCodeHarnessStatus(checkedAt, defaults.claude, defaults.claudeModels),
+    buildOpenClawHarnessStatus(version, config, checkedAt),
+    buildCliHarnessStatus({
+      id: "hermes",
+      label: "Hermes",
+      cliLabel: "Hermes CLI",
+      command: "hermes",
+      checkedAt,
+      defaultModelId: defaults.hermes,
+      models: defaults.hermesModels,
+      profiles: readHermesProfiles()
+    }),
     buildCliHarnessStatus({
       id: "google",
       label: "Google CLI",
@@ -3334,16 +3451,6 @@ function buildHarnessStatuses(
       checkedAt,
       defaultModelId: defaults.opencode,
       models: defaults.opencodeModels
-    }),
-    buildCliHarnessStatus({
-      id: "hermes",
-      label: "Hermes",
-      cliLabel: "Hermes CLI",
-      command: "hermes",
-      checkedAt,
-      defaultModelId: defaults.hermes,
-      models: defaults.hermesModels,
-      profiles: readHermesProfiles()
     })
   ];
 }
@@ -3361,6 +3468,21 @@ function buildOpenClawHarnessStatus(
     id: "openclaw",
     label: "OpenClaw",
     defaultModelId: config.defaultModelId,
+    models: config.configuredModels.map((model) => ({
+      id: model.id,
+      label: model.label || model.id,
+      provider: model.provider,
+      thinkingLevels: model.thinkingLevels,
+      isDefault: config.defaultModelId ? model.id === config.defaultModelId : undefined
+    })),
+    profiles: config.configuredAgents.map((agent) => ({
+      id: agent.id,
+      label: agent.name || agent.id,
+      modelId: agent.modelId,
+      path: agent.agentDir,
+      workspace: agent.workspace,
+      isDefault: agent.isDefault
+    })),
     installed,
     environmentOk,
     connectionState,

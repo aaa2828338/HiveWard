@@ -353,11 +353,15 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
 }
 
 function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): ChatStreamEvent {
+  const item = event.item as Record<string, unknown>;
   return {
     type: "runtime_state",
     source: "codex",
     phase: codexRuntimePhaseForItem(event.item.type),
-    label: runtimeLabelFromRecord(event.item as Record<string, unknown>, event.item.type)
+    label: runtimeLabelFromRecord(item, event.item.type),
+    id: typeof event.item.id === "string" && event.item.id.trim() ? event.item.id : undefined,
+    status: event.type === "item.started" ? "started" : event.type === "item.completed" ? "completed" : "updated",
+    updatedAt: new Date().toISOString()
   };
 }
 
