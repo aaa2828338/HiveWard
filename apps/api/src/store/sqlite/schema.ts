@@ -503,6 +503,15 @@ const sqliteApprovalThreadStatements = [
   `CREATE INDEX IF NOT EXISTS idx_approval_replies_thread_created ON approval_replies(thread_id, created_at)`
 ];
 
+const sqliteApprovalReplyMetadataStatements = [
+  "ALTER TABLE approval_replies ADD COLUMN metadata_json TEXT",
+  `UPDATE approval_replies
+   SET metadata_json = '{"legacySource":"approval_replies_v1","legacyAction":"reply","legacyMeaning":"message_only","requestKind":"'
+     || COALESCE((SELECT kind FROM approval_requests WHERE approval_requests.id = approval_replies.approval_request_id), 'unknown')
+     || '"}'
+   WHERE metadata_json IS NULL`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -531,6 +540,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "approval_threads",
     checksum: checksumStatements(sqliteApprovalThreadStatements),
     up: sqliteApprovalThreadStatements
+  },
+  {
+    version: 5,
+    name: "approval_reply_metadata",
+    checksum: checksumStatements(sqliteApprovalReplyMetadataStatements),
+    up: sqliteApprovalReplyMetadataStatements
   }
 ];
 
@@ -546,7 +561,7 @@ export const sqliteRequiredSchema = {
   node_run_payloads: ["node_run_id", "input_json", "output_json", "raw_result_json", "updated_at"],
   run_events: ["id", "run_id", "node_run_id", "sequence", "type", "message", "created_at"],
   approval_threads: ["id", "kind", "status", "title", "current_revision", "capabilities_json", "created_at", "updated_at"],
-  approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "created_at"],
+  approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "created_at", "metadata_json"],
   approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "requested_by_json", "requested_at"],
   approval_decisions: ["id", "approval_request_id", "action", "actor", "resulting_status", "created_at"],
   inbox_items: ["id", "company_id", "type", "status", "title", "summary", "created_by_role_id", "created_at", "updated_at"],

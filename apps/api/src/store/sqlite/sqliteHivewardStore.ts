@@ -1176,21 +1176,23 @@ export class SqliteHivewardStore implements HivewardStore {
 
   private appendApprovalReplySync(reply: ApprovalReply): void {
     this.driver.db.prepare(
-      `INSERT INTO approval_replies (id, approval_request_id, thread_id, message, actor, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO approval_replies (id, approval_request_id, thread_id, message, actor, created_at, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          approval_request_id = excluded.approval_request_id,
          thread_id = excluded.thread_id,
          message = excluded.message,
          actor = excluded.actor,
-         created_at = excluded.created_at`
+         created_at = excluded.created_at,
+         metadata_json = excluded.metadata_json`
     ).run(
       reply.id,
       reply.approvalRequestId ?? null,
       reply.threadId,
       reply.body,
       reply.actor,
-      reply.createdAt
+      reply.createdAt,
+      reply.metadata ? stringifyJson(reply.metadata) : null
     );
     this.driver.db.prepare(
       "UPDATE approval_threads SET updated_at = ? WHERE id = ? AND updated_at < ?"
@@ -2976,13 +2978,15 @@ function approvalThreadFromRow(row: Row): ApprovalThread {
 }
 
 function approvalReplyFromRow(row: Row): ApprovalReply {
+  const metadata = parseOptionalJson(row.metadata_json);
   return {
     id: requireString(row.id),
     threadId: requireString(row.thread_id),
     approvalRequestId: readString(row.approval_request_id),
     actor: requireString(row.actor) as ApprovalReply["actor"],
     body: requireString(row.message),
-    createdAt: requireString(row.created_at)
+    createdAt: requireString(row.created_at),
+    ...(isRecord(metadata) ? { metadata } : {})
   };
 }
 
@@ -3009,7 +3013,14 @@ function approvalReplyFromDecision(decision: ApprovalDecision, request: Approval
     approvalRequestId: request.id,
     actor: decision.actor,
     body,
-    createdAt: decision.createdAt
+    createdAt: decision.createdAt,
+    metadata: {
+      source: "approval_decision",
+      decisionId: decision.id,
+      action: decision.action,
+      requestKind: request.kind,
+      resultingStatus: decision.resultingStatus
+    }
   };
 }
 

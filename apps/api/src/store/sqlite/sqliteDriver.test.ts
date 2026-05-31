@@ -61,12 +61,21 @@ describe("SqliteDriver schema migrations", () => {
     expect(listColumnNames(upgraded, "artifacts")).toContain("declared_node_run_id");
     expect(listColumnNames(upgraded, "release_report_artifacts")).toContain("position");
     expect(listColumnNames(upgraded, "approval_replies")).toContain("thread_id");
+    expect(listColumnNames(upgraded, "approval_replies")).toContain("metadata_json");
     expect(upgraded.db.prepare("SELECT status, current_request_id FROM approval_threads WHERE id = ?").get("approval-v1")).toMatchObject({
       status: "open",
       current_request_id: "approval-v1"
     });
     expect(upgraded.db.prepare("SELECT thread_id FROM approval_replies WHERE id = ?").get("reply-v1")).toMatchObject({
       thread_id: "approval-v1"
+    });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "message_only",
+      requestKind: "agent_proposal"
     });
     upgraded.close();
   });

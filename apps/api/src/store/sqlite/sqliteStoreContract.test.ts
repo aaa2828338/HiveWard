@@ -127,7 +127,15 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expect.objectContaining({ id: approval.id, status: "closed" })
       ]);
       await expect(store.listApprovalReplies({ approvalRequestId: approval.id })).resolves.toEqual([
-        expect.objectContaining({ id: "reply-approval-decision-contract", threadId: approval.id })
+        expect.objectContaining({
+          id: "reply-approval-decision-contract",
+          threadId: approval.id,
+          metadata: expect.objectContaining({
+            source: "approval_decision",
+            requestKind: approval.kind,
+            resultingStatus: "replied"
+          })
+        })
       ]);
 
       const inbox = await store.createBlueprintProposal({

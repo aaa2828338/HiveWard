@@ -2041,6 +2041,7 @@ export class FileHivewardStore implements HivewardStore {
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, rawIndex.roleDirectories?.[company.id]);
     }
+    backfillApprovalProjectionFacts(index);
 
     return index;
   }
@@ -2095,6 +2096,7 @@ export class FileHivewardStore implements HivewardStore {
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, state.roleDirectories?.[company.id]);
     }
+    backfillApprovalProjectionFacts(index);
 
     await Promise.all(normalizedBlueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
     for (const run of index.runIndex) {
@@ -2377,6 +2379,36 @@ function upsertById<T extends { id: string }>(items: T[], item: T): void {
   }
 }
 
+function backfillApprovalProjectionFacts(index: HivewardStoreIndex): void {
+  for (const request of index.approvalRequests) {
+    upsertById(index.approvalThreads, approvalThreadFromRequest(request));
+  }
+  const requestsById = new Map(index.approvalRequests.map((request) => [request.id, request]));
+  for (const decision of index.approvalDecisions) {
+    appendApprovalReplyFromDecision(index, decision, requestsById.get(decision.approvalRequestId));
+  }
+  index.managerMail = buildManagerMailProjection(index.approvalRequests);
+}
+
+function buildManagerMailProjection(requests: ApprovalRequest[]): ManagerMail[] {
+  return requests
+    .map((request) => ({
+      id: `mail-${request.id}`,
+      sourceType: "approval_request" as const,
+      sourceId: request.id,
+      kind: request.kind,
+      status: request.status,
+      title: request.title,
+      body: request.body,
+      capabilities: request.capabilities,
+      relatedRunId: request.runId,
+      relatedRoundId: request.roundId,
+      createdAt: request.requestedAt,
+      updatedAt: request.updatedAt ?? request.requestedAt
+    }))
+    .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime());
+}
+
 function listApprovalThreadsFromIndex(
   index: HivewardStoreIndex,
   filter: { runId?: string; status?: ApprovalThread["status"] } = {}
@@ -2428,7 +2460,14 @@ function appendApprovalReplyFromDecision(
     approvalRequestId: request.id,
     actor: decision.actor,
     body: decision.comment.trim(),
-    createdAt: decision.createdAt
+    createdAt: decision.createdAt,
+    metadata: {
+      source: "approval_decision",
+      decisionId: decision.id,
+      action: decision.action,
+      requestKind: request.kind,
+      resultingStatus: decision.resultingStatus
+    }
   });
 }
 
