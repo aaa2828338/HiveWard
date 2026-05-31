@@ -361,7 +361,7 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("succeeded");
   });
 
-  it("does not mark a node succeeded when declared file artifact preparation fails", async () => {
+  it("keeps agent output succeeded when a declared artifact path cannot be copied", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-artifact-fail-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -387,10 +387,17 @@ describe("BlueprintWorker", () => {
     const view = await waitForRunTerminal(store, run.id);
     const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "builder");
 
-    expect(view?.run.status).toBe("failed");
-    expect(nodeRun?.status).not.toBe("succeeded");
-    expect(view?.artifacts ?? []).toHaveLength(0);
-    expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(true);
+    expect(view?.run.status).toBe("succeeded");
+    expect(nodeRun?.status).toBe("succeeded");
+    expect(view?.agentHumanReports?.[0]?.bodyMd).toContain("The file path is invalid.");
+    expect(view?.artifacts ?? []).toEqual([
+      expect.objectContaining({
+        kind: "json",
+        title: "Missing artifact",
+        downloadUrl: expect.stringContaining("/artifacts/")
+      })
+    ]);
+    expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(false);
   });
 
   it("keeps resumed SDK agent nodes running when task lookup is temporarily unavailable", async () => {
@@ -695,18 +702,16 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("100-150");
     expect(adapter.calls[0]?.prompt).toContain("do not describe internal program phases");
     expect(adapter.calls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
-    expect(adapter.calls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
-    expect(adapter.calls[0]?.prompt).toContain("complete single-file HTML");
-    expect(adapter.calls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
-    expect(adapter.calls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(adapter.calls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
-    expect(adapter.calls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
+    expect(adapter.calls[0]?.prompt).toContain("Top-level artifacts[] is a publication hint and link/address index");
+    expect(adapter.calls[0]?.prompt).toContain("One step may declare many artifacts");
+    expect(adapter.calls[0]?.prompt).toContain("For generated deliverables, create or update files and return path");
+    expect(adapter.calls[0]?.prompt).toContain("Do not paste artifact source");
     expect(adapter.calls[0]?.outputSchema).toMatchObject({
       properties: {
         artifacts: {
           items: {
             properties: {
-              content: { description: expect.stringContaining("Inline artifact content") },
+              content: { description: expect.stringContaining("Compatibility") },
               path: { description: expect.stringContaining("generated file") }
             }
           }
@@ -3325,12 +3330,10 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("## 摘要");
     expect(managerDecisionCalls[0]?.prompt).toContain("100-150");
     expect(managerDecisionCalls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
-    expect(managerDecisionCalls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
-    expect(managerDecisionCalls[0]?.prompt).toContain("complete single-file HTML");
-    expect(managerDecisionCalls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
-    expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(managerDecisionCalls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
-    expect(managerDecisionCalls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Top-level artifacts[] is a publication hint and link/address index");
+    expect(managerDecisionCalls[0]?.prompt).toContain("One step may declare many artifacts");
+    expect(managerDecisionCalls[0]?.prompt).toContain("For generated deliverables, create or update files and return path");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Do not paste artifact source");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(managerDecisionCalls[0]?.prompt).toContain("Round lifecycle contract:");
     expect(managerDecisionCalls[0]?.prompt).toContain("input.manager.roundNumber is platform lifecycle state");

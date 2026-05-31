@@ -960,11 +960,12 @@ export function buildCurrentOutputDisplayBody({
   const body = localizeHumanReportBody(bodyMd.trim(), language);
   const summarySplit = splitSummarySection(body);
   const deliverySplit = splitDeliverySection(summarySplit.bodyWithoutSummary);
+  const artifactSplit = splitArtifactSections(deliverySplit.bodyWithoutDelivery);
   const deliveryItems = collectDeliveryItems(artifacts, language);
   const deliveryBody = deliveryItems.length ? formatDeliveryItems(deliveryItems) : noneText(language);
   const artifactBody = artifacts.length ? formatArtifactSummaryItems(artifacts) : noneText(language);
   const managerReason = actorKind === "manager" ? conciseSectionBody(reason, language) : undefined;
-  const freeOutputSplit = splitPromotedOutputSections(deliverySplit.bodyWithoutDelivery);
+  const freeOutputSplit = splitPromotedOutputSections(artifactSplit.bodyWithoutArtifacts);
   const freeOutputParts = [
     freeOutputSplit.freeBody.trim(),
     ...timelineDetails.filter((detail) => detail.trim())
@@ -1098,7 +1099,7 @@ function isArtifactHeading(line: string): boolean {
 }
 
 function formatDeliveryItems(items: Array<{ label: string; location: string }>): string {
-  return items.map((item) => `- ${item.label}: ${item.location}`).join("\n");
+  return items.map((item) => `- ${item.label}: ${formatLocationAsLink(item.location)}`).join("\n");
 }
 
 function formatArtifactSummaryItems(artifacts: RunArtifact[]): string {
@@ -1111,6 +1112,17 @@ function formatArtifactSummaryItems(artifacts: RunArtifact[]): string {
     const previewPolicy = artifact.previewPolicy && artifact.previewPolicy !== "none" ? ` · ${artifact.previewPolicy}` : "";
     return `- ${linkedLabel}${kind || previewPolicy ? ` (${kind}${previewPolicy})` : ""}`;
   }).join("\n");
+}
+
+function formatLocationAsLink(location: string): string {
+  if (!isMarkdownLinkTarget(location)) return location;
+  const label = location.replace(/]/g, "\\]");
+  const href = location.replace(/\)/g, "%29");
+  return `[${label}](${href})`;
+}
+
+function isMarkdownLinkTarget(location: string): boolean {
+  return /^(?:https?:\/\/|\/|#|mailto:|localhost\b|127\.0\.0\.1\b)/i.test(location);
 }
 
 function noneText(language: Language): string {

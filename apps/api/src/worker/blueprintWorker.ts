@@ -99,22 +99,22 @@ const flexibleJsonObjectSchema: Record<string, unknown> = {
 };
 const agentArtifactPayloadSchema: Record<string, unknown> = {
   type: "array",
+  description: "Optional address index for deliverables produced by this step. One agent may return many artifact items; prefer file paths or URLs so HiveWard can present them as links without expanding artifact bodies in reports.",
   items: {
     type: "object",
-    description: "Top-level published artifact declaration. Use only for a new artifact produced by this exact step. Review, QA, acceptance, validation, summary, or routing steps must not publish upstream artifacts here. Use exactly one source field: path for generated files, content/body for small inline artifacts, or url for links.",
-    required: ["kind", "title"],
+    description: "Top-level artifact address declaration. Prefer kind, title, path, or url when available; content/body are compatibility fallbacks for small inline payloads only, not the normal deliverable channel.",
     properties: {
       id: { type: "string" },
       slot: { type: "string" },
       title: { type: "string" },
-      kind: { type: "string", enum: ["html", "markdown", "json", "file", "link"], description: "Artifact type. For generated HTML files, use kind html with path pointing to the file." },
+      kind: { type: "string", description: "Artifact type hint, such as html, markdown, json, file, or link." },
       format: { type: "string" },
       previewPolicy: { type: "string", enum: ["none", "source", "sandboxed_iframe"] },
       trusted: { type: "boolean" },
-      content: { type: "string", description: "Inline artifact content. Use only when there is no path or url. If you wrote a file, do not include content." },
-      body: { type: "string", description: "Alias for content. Inline artifact content only. If you wrote a file, do not include body." },
-      path: { type: "string", description: "Path to an actual generated file produced by this exact step and intended to publish, including generated HTML files. Do not use paths from upstream, previousResults, reviewed objects, or another agent's workspace. If path is present, do not include content or body for the same artifact." },
-      url: { type: "string", description: "Only for kind link. Do not use url for html, markdown, json, or file artifacts." }
+      content: { type: "string", description: "Compatibility fallback for small inline payloads only. Do not put full deliverables here; write a file and return path or url instead." },
+      body: { type: "string", description: "Alias for content, with the same compatibility-only guidance." },
+      path: { type: "string", description: "Path to a generated file when available." },
+      url: { type: "string", description: "External or local URL when available." }
     }
   }
 };
@@ -173,28 +173,16 @@ const agentOutputContractLines = [
   "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
   "- humanReportMd must be literal human-readable Markdown, not a JSON-encoded string, not an escaped string, and not a dump of the output envelope. Do not include visible escape sequences such as \\n, \\t, or JSON braces unless the task itself is to show JSON.",
   "- humanReportMd must start with a visible summary section. For Chinese reports, use \"## \u6458\u8981\"; for English reports, use \"## Summary\". Write the summary yourself in plain human language, target 100-150 Chinese characters or similarly brief English, and do not describe internal program phases, raw workflow status, or generic process labels.",
-  "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
+  "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. Do not paste the deliverable body in this section. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result while keeping humanReportMd readable.",
   "- When the task schema allows it, include concise hard fields in result such as status, summary, artifacts, and handoff. Do not embed large file bodies there.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
-  "- If you created a concrete deliverable file or preview, declare it in top-level artifacts[]. Do not hide deliverables inside humanReportMd, result, result.artifacts, or handoffJson.",
-  "- Only top-level artifacts[] creates openable artifact records. The platform will not infer artifacts from humanReportMd, result, titles, timeline text, or delivery prose.",
-  "- A top-level artifacts[] item is a claim that this exact step produced a new publishable artifact. Do not put reviewed, consumed, inspected, or upstream files there.",
-  "- result.artifacts and handoffJson.artifacts are only handoff metadata. They do not publish UI artifacts and they are not substitutes for top-level artifacts[].",
-  "- Each top-level artifacts[] item must include kind, title, and exactly one source field. Use path for generated files, including HTML files written under input.agentWorkspace.artifactsPath. Use content/body only when you are not writing a file and are returning the artifact body inline. Use url only for kind link. The delivery-location section must point to the same concrete artifact, not just repeat a title.",
-  "- For file-backed deliverables, especially kind \"html\", declare only artifacts[].path. Put prose descriptions, summaries, labels, QA notes, or review comments in humanReportMd or handoffJson, not in artifacts[].content/body.",
-  "- For kind \"html\", publish the actual complete single-file HTML document containing <html>...</html>. Prefer writing the file and declaring its path in top-level artifacts[].path. If you use content/body instead, it must contain the complete HTML because there is no file path for that artifact.",
-  "- If you reference artifacts[0], artifacts[1], etc. in humanReportMd, those same entries must exist in artifacts[] in the same output envelope.",
-  "- Writing an HTML file under input.agentWorkspace.artifactsPath is not enough to publish an HTML preview. To publish it, declare that file path in top-level artifacts[].path with kind \"html\".",
-  "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath. Mention durable paths in delivery-location and use the same path in top-level artifacts[].path when the file is the deliverable.",
-  "- No Agent or Manager may redeclare upstream, reviewed, consumed, or referenced artifacts in top-level artifacts[] unless this exact step produced a new complete artifact.",
-  "- If this step only inspects, validates, reviews, summarizes, compares, cites, or relies on another node's file, URL, preview, or artifact, top-level artifacts[] must be omitted or empty.",
-  "- For review/QA/acceptance/validation steps, a tested HTML file, preview URL, screenshot, or upstream artifact is a referenced object, not this step's deliverable. In that case the delivery-location section must be exactly \"\u65e0\" for Chinese or \"None\" for English.",
-  "- If an earlier role prompt asks a reviewer or QA agent to list a preview URL or file path, treat that as a request for a separate \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\" section and handoffJson.referencedArtifact(s), not as permission to fill top-level artifacts[] or delivery location.",
-  "- Do not copy upstream artifact paths, download URLs, or storage paths into top-level artifacts[].path/url. Only the node that created the file may publish it there.",
-  "- Before returning, audit every top-level artifacts[] item. If its path, url, content, or body came from input, upstream, previousResults, a review target, or another node/agent workspace, remove that item from artifacts[] and record it only as handoffJson.referencedArtifacts or a humanReportMd \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\".",
-  "- Do not use handoffJson.artifacts for reviewed or upstream objects. Use handoffJson.referencedArtifacts for those references so downstream nodes know they are not newly produced deliverables.",
-  "- Correct QA/review pattern: artifacts: []; delivery-location: \"\u65e0\"/\"None\"; referenced objects may be listed separately as references only.",
+  "- If you created or referenced concrete deliverables, summarize them naturally in humanReportMd and declare their addresses in top-level artifacts[]. The report should point to artifacts, not contain their full bodies.",
+  "- One step may declare many artifacts, including mixed HTML, Markdown, JSON, files, links, notes, and manifests. Use the shape that best represents your output.",
+  "- Top-level artifacts[] is a publication hint and link/address index, not a quality gate. HiveWard will preserve declared artifacts when possible; Manager and downstream agents judge whether the content is useful.",
+  "- For generated deliverables, create or update files and return path. For external or browser-openable references, return url. content/body are compatibility fallbacks for small inline snippets only; do not use them for full documents, HTML, source code, reports, or other long artifacts.",
+  "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath when that fits the task.",
+  "- Do not paste artifact source, artifact HTML, long Markdown deliverables, source code deliverables, or other artifact bodies directly into humanReportMd or chat text. Put the content behind a file path or URL and give the human the link/address.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];

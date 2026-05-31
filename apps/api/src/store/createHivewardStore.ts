@@ -31,6 +31,7 @@ export async function createHivewardStore(env: NodeJS.ProcessEnv = process.env):
   if (backend === "sqlite") {
     const readonlyFallback = readBoolean(env.HIVEWARD_JSON_READONLY_FALLBACK);
     const migrationMode = readMigrationMode(env.HIVEWARD_JSON_MIGRATION_MODE);
+    const repairFromJson = readBoolean(env.HIVEWARD_SQLITE_REPAIR_FROM_JSON);
     try {
       await enforceSqliteStartupGate({
         dataDir,
@@ -42,7 +43,7 @@ export async function createHivewardStore(env: NodeJS.ProcessEnv = process.env):
       if (!readonlyFallback) throw error;
       return readonlyStore(new FileHivewardStore(join(dataDir, "hiveward-store.json"), { seedDefaults: false }));
     }
-    return selfHealingSqliteStore({ dataDir, sqlitePath, migrationMode });
+    return selfHealingSqliteStore({ dataDir, sqlitePath, migrationMode, repairFromJson });
   }
 
   const fileStore = new FileHivewardStore(join(dataDir, "hiveward-store.json"), {
@@ -98,9 +99,9 @@ async function enforceSqliteStartupGate(input: {
   const state = await detectRuntimeStoreState(input.dataDir, input.sqlitePath);
   const hasLegacyJson = state.hasLegacyIndex || state.hasLegacyChat || state.hasLegacyRunArchive;
 
-  if (!hasLegacyJson) return;
+  if (state.hasSqliteDb) return;
 
-  if (state.hasSqliteDb && state.hasAppliedMigrationManifest) return;
+  if (!hasLegacyJson) return;
 
   if (input.migrationMode === "dry-run") {
     const dryRun = await migrateJsonToSqlite({ dataDir: input.dataDir, sqlitePath: input.sqlitePath, dryRun: true });
@@ -114,13 +115,6 @@ async function enforceSqliteStartupGate(input: {
   if (input.migrationMode === "auto") {
     await runVerifiedMigration(input, state, "JSON to SQLite");
     return;
-  }
-
-  if (state.hasSqliteDb && !state.hasAppliedMigrationManifest) {
-    throw migrationGateError(
-      state,
-      "Legacy JSON and SQLite both exist, but no applied migration manifest was found. Refusing to trust mixed runtime state."
-    );
   }
 
   if (input.readonlyFallback) {
@@ -150,6 +144,7 @@ function selfHealingSqliteStore(input: {
   dataDir: string;
   sqlitePath: string;
   migrationMode: JsonMigrationMode;
+  repairFromJson: boolean;
 }): HivewardStore {
   let store = new SqliteHivewardStore(input.sqlitePath);
   return new Proxy({} as HivewardStore, {
@@ -159,7 +154,15 @@ function selfHealingSqliteStore(input: {
           try {
             await store.init();
           } catch (error) {
-            if (!await shouldRepairSqliteStartupError(error, input)) throw error;
+            if (isSqliteBusyOrLocked(error)) {
+              throw sqliteStartupLockedError(input.sqlitePath, error);
+            }
+            if (!await shouldRepairSqliteStartupError(error, input)) {
+              if (isRecoverableSqliteStartupError(error)) {
+                throw sqliteStartupRepairRequiredError(input.sqlitePath, error);
+              }
+              throw error;
+            }
             store.close();
             await repairSqliteFromLegacyJson(input);
             store = new SqliteHivewardStore(input.sqlitePath);
@@ -177,8 +180,9 @@ async function shouldRepairSqliteStartupError(error: unknown, input: {
   dataDir: string;
   sqlitePath: string;
   migrationMode: JsonMigrationMode;
+  repairFromJson: boolean;
 }): Promise<boolean> {
-  if (input.migrationMode !== "auto") return false;
+  if (!input.repairFromJson) return false;
   if (!isRecoverableSqliteStartupError(error)) return false;
   const state = await detectRuntimeStoreState(input.dataDir, input.sqlitePath);
   return state.hasLegacyIndex || state.hasLegacyChat || state.hasLegacyRunArchive;
@@ -187,6 +191,35 @@ async function shouldRepairSqliteStartupError(error: unknown, input: {
 function isRecoverableSqliteStartupError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return message.includes("SQLite schema migration checksum mismatch");
+}
+
+function sqliteStartupRepairRequiredError(sqlitePath: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error([
+    `SQLite schema repair is required for ${sqlitePath}.`,
+    "Normal dev startup will not repair, delete, or rebuild an existing live SQLite database.",
+    "Set HIVEWARD_SQLITE_REPAIR_FROM_JSON=true only for an explicit repair from legacy JSON, or run: npm run migrate:sqlite -- --apply",
+    "Run: npm run doctor:sqlite-lock",
+    `Original error: ${detail}`
+  ].join("\n"));
+}
+
+function sqliteStartupLockedError(sqlitePath: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error([
+    `SQLite database is locked or busy: ${sqlitePath}`,
+    "Startup did not repair, delete, or rebuild the live SQLite database.",
+    "Run: npm run doctor:sqlite-lock",
+    `Original error: ${detail}`
+  ].join("\n"));
+}
+
+function isSqliteBusyOrLocked(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const code = "code" in error ? String(error.code) : "";
+  if (["SQLITE_BUSY", "SQLITE_LOCKED", "EBUSY", "EPERM", "EACCES"].includes(code)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /busy|locked|resource busy|being used by another process/i.test(message);
 }
 
 async function repairSqliteFromLegacyJson(input: {
