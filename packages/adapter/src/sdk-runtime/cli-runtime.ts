@@ -83,6 +83,16 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         cwd: this.options.workspaceRoot,
         signal: abortController.signal
       });
+      const commandActivityId = `${runId}:command`;
+      onEvent({
+        type: "runtime_state",
+        source: this.harnessId,
+        phase: "command",
+        label: command,
+        id: commandActivityId,
+        status: "started",
+        updatedAt: new Date().toISOString()
+      });
       const result = await this.runCliCommand({
         command,
         args: buildCliChatArgs(this.harnessId, {
@@ -106,6 +116,15 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
       if (result.exitCode !== 0) {
         throw new Error(formatCliFailure(result));
       }
+      onEvent({
+        type: "runtime_state",
+        source: this.harnessId,
+        phase: "command",
+        label: command,
+        id: commandActivityId,
+        status: "completed",
+        updatedAt: new Date().toISOString()
+      });
 
       const parsed = streamParser.finish(result.stdout);
       const output = parsed.output;

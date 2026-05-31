@@ -2615,6 +2615,8 @@ function NodeConfigForm({
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const profileOptions = buildHermesProfileOptions(runtimeId, harnessStatuses, t);
     const agentOptions = configuredAgents ?? [];
+    const openClawAgentOptions = buildOpenClawAgentSelectOptions(agentOptions, config.openclawAgentId, t.common.defaultOption);
+    const openClawAgentSelectValue = resolveOpenClawAgentSelectValue(config.openclawAgentId, openClawAgentOptions);
     const approvalEnabled = config.approval?.enabled === true;
     const sendEnabled = runtimeId === "openclaw" && config.send?.enabled === true;
     const sendConfig = config.send ?? {
@@ -2673,6 +2675,17 @@ function NodeConfigForm({
               />
             )}
           </label>
+          {runtimeId === "openclaw" && (
+            <label>
+              <span>{t.fields.openclawAgent}</span>
+              <BlueprintSelect
+                value={openClawAgentSelectValue}
+                options={openClawAgentOptions}
+                ariaLabel={t.fields.openclawAgent}
+                onChange={(value) => onPatchConfig({ openclawAgentId: value || undefined })}
+              />
+            </label>
+          )}
           <RuntimeAccessPolicyFields
             runtimeId={runtimeId}
             config={config}
@@ -2819,6 +2832,8 @@ function NodeConfigForm({
     const runtimeModelOptions = buildBlueprintRuntimeModelOptions(runtimeId, models, harnessStatuses);
     const profileOptions = buildHermesProfileOptions(runtimeId, harnessStatuses, t);
     const agentOptions = configuredAgents ?? [];
+    const openClawAgentOptions = buildOpenClawAgentSelectOptions(agentOptions, config.openclawAgentId, t.common.defaultOption);
+    const openClawAgentSelectValue = resolveOpenClawAgentSelectValue(config.openclawAgentId, openClawAgentOptions);
     const managerMode = resolveManagerPanelMode(config);
     const isSelfIterationManager = managerMode === "self_iteration";
     const binaryOptions: BlueprintSelectOption[] = [
@@ -2879,6 +2894,17 @@ function NodeConfigForm({
             />
           )}
         </label>
+        {runtimeId === "openclaw" && (
+          <label>
+            <span>{t.fields.openclawAgent}</span>
+            <BlueprintSelect
+              value={openClawAgentSelectValue}
+              options={openClawAgentOptions}
+              ariaLabel={t.fields.openclawAgent}
+              onChange={(value) => onPatchConfig({ openclawAgentId: value || undefined })}
+            />
+          </label>
+        )}
         <RuntimeAccessPolicyFields
           runtimeId={runtimeId}
           config={config}
@@ -3337,9 +3363,10 @@ function buildRuntimeConfigPatch(
   };
   const permissionPatch = buildHarnessPermissionRuntimePatch(config, runtimeId, harnessPermissionModes);
   if (runtimeId === "openclaw") {
+    const defaultOpenClawAgentId = agentOptions.find((agent) => agent.isDefault)?.id ?? agentOptions[0]?.id ?? "main";
     return {
       ...patch,
-      openclawAgentId: config.openclawAgentId ?? agentOptions[0]?.id ?? "main",
+      openclawAgentId: config.openclawAgentId ?? defaultOpenClawAgentId,
       runtimeAccessPolicy: permissionPatch.runtimeAccessPolicy,
       permissionProfile: permissionPatch.permissionProfile,
       profileId: undefined
@@ -3400,6 +3427,32 @@ function buildHermesProfileOptions(
   });
 }
 
+function buildOpenClawAgentSelectOptions(
+  agents: OpenClawConfiguredAgent[],
+  selectedAgentId: string | undefined,
+  defaultBadgeLabel: string
+): BlueprintSelectOption[] {
+  const options = agents.map((agent) => ({
+    value: agent.id,
+    label: agent.name && agent.name !== agent.id ? `${agent.name} (${agent.id})` : agent.id,
+    badgeLabel: agent.isDefault ? defaultBadgeLabel : undefined
+  }));
+
+  if (selectedAgentId && !options.some((option) => option.value === selectedAgentId)) {
+    return [{ value: selectedAgentId, label: selectedAgentId }, ...options];
+  }
+
+  return options.length > 0 ? options : [{ value: selectedAgentId ?? "main", label: selectedAgentId ?? "main" }];
+}
+
+function resolveOpenClawAgentSelectValue(
+  selectedAgentId: string | undefined,
+  options: BlueprintSelectOption[]
+): string {
+  if (selectedAgentId) return selectedAgentId;
+  return options.find((option) => option.badgeLabel)?.value ?? options[0]?.value ?? "main";
+}
+
 function buildBlueprintRuntimeModelOptions(
   runtimeId: AgentRuntimeId,
   models: NonNullable<CatalogSnapshot["models"]>,
@@ -3408,11 +3461,21 @@ function buildBlueprintRuntimeModelOptions(
   const harnessStatus = harnessStatuses?.find((status) => status.id === runtimeHarnessId(runtimeId));
 
   if (runtimeId === "openclaw") {
-    return models.map((model) => ({
-      id: model.id,
-      label: model.label,
-      isDefault: harnessStatus?.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined
-    }));
+    return mergeBlueprintRuntimeModelOptions(
+      [
+        ...(harnessStatus?.models?.map((model) => ({
+          id: model.id,
+          label: model.label || model.id,
+          isDefault: model.isDefault
+        })) ?? []),
+        ...models.map((model) => ({
+          id: model.id,
+          label: model.label,
+          isDefault: harnessStatus?.defaultModelId ? model.id === harnessStatus.defaultModelId : undefined
+        }))
+      ],
+      harnessStatus?.defaultModelId
+    );
   }
 
   if (harnessStatus?.models?.length) {
@@ -3425,6 +3488,27 @@ function buildBlueprintRuntimeModelOptions(
   return harnessStatus?.defaultModelId && harnessStatus.defaultModelId !== "inherit"
     ? [{ id: harnessStatus.defaultModelId, label: harnessStatus.defaultModelId, isDefault: true }]
     : [];
+}
+
+function mergeBlueprintRuntimeModelOptions(
+  models: BlueprintRuntimeModelOption[],
+  defaultModelId: string | undefined
+): BlueprintRuntimeModelOption[] {
+  const merged: BlueprintRuntimeModelOption[] = [];
+  const seen = new Set<string>();
+  for (const model of models) {
+    if (!model.id || seen.has(model.id)) continue;
+    seen.add(model.id);
+    merged.push({
+      id: model.id,
+      label: model.label || model.id,
+      isDefault: defaultModelId ? model.id === defaultModelId : model.isDefault
+    });
+  }
+  if (merged.length === 0 && defaultModelId && defaultModelId !== "inherit") {
+    return [{ id: defaultModelId, label: defaultModelId, isDefault: true }];
+  }
+  return merged;
 }
 
 function buildBlueprintRuntimeSkillOptions(

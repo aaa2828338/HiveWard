@@ -22,7 +22,7 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 
 - Company: top-level operating container. It owns the business goal, role directory, blueprints, run records, inbox approvals, and dashboard state.
 - Role seat: HiveWard management identity for a job. It stores identity, responsibility, permission boundary, and driver binding. It is not the harness memory or personality.
-- Driver binding: selected external harness/body for a role seat, such as OpenClaw, Codex, Claude, or another callable runtime.
+- Driver binding: selected external harness/body for a role seat, such as Codex, Claude Code, OpenClaw, Hermes, Google CLI, Cursor CLI, or OpenCode.
 - CEO: company-wide role seat that can reason across all Leaders and all blueprints.
 - Leader: permanent role seat bound to exactly one business blueprint.
 - Business blueprint: executable workflow DAG with nodes, edges, variables, display metadata, and versioned definitions.
@@ -37,7 +37,7 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 
 - An approved `iteration_requirement_plan` / Round Execution Plan is the execution contract for that self-iteration round. Treat it as the formal plan the Manager used to dispatch work.
 - `AgentHumanReport` is Markdown written for humans. It is the primary record to read when explaining what an agent did.
-- Every `AgentHumanReport` must include a visible Delivery location / 交付位置 section near the top with preview URLs, localhost ports, file paths, artifact links, commands, or an explicit "no new deliverable" note.
+- Every `AgentHumanReport` must include a visible Delivery location section near the top with preview URLs, localhost ports, file paths, artifact links, commands, or an explicit "no new deliverable" note.
 - `AgentHandoff` is JSON for agent-to-agent continuation. It is machine handoff context, not the default user-facing explanation.
 - `ReleaseReport` is the Manager's user-facing round summary. It should synthesize the approved plan, research, agent reports, handoff conclusions, artifacts, risks, and assumptions.
 - Raw `nodeRun.output`, `runContext`, runtime metadata, and logs are debug material. Use them only after the human reports and release report, or when diagnosing a failure.
@@ -49,12 +49,21 @@ HiveWard is not replacing the harness agent's native memory, tools, personality,
 - Executable node types are `agent`, `manager`, `manager_slot`, `loop`, `condition`, and `summary`.
 - Non-executable canvas nodes are `note` and `group`; use them for explanation or visual organization, not as run steps.
 - Removed standalone node types are `approval`, `send`, and `parallel_agents`. Approval and sending are `agent` config options. Parallel work is expressed with `manager_slot.config.parallelLaneCount`.
-- `agent` runs an external harness (`openclaw`, `codex`, or `claude`) with prompt, tools, optional model, working directory, permissions, timeout, output schema, approval, and send settings.
+- `agent` runs an external harness with prompt, tools, optional model, working directory, permissions, timeout, output schema, approval, and send settings.
+- Supported runtime ids are `codex`, `claude`, `openclaw`, `hermes`, `google`, `cursor`, and `opencode`. Operator-facing selection order is Codex, Claude Code, OpenClaw, Hermes, then the remaining CLI harnesses.
+- `runtimeId` belongs on the node, not inside `config`. Use `claude` for Claude Code blueprint nodes and `claudeCode` only for harness/status API identifiers.
+- For OpenClaw `agent` and runnable `manager` nodes, `config.openclawAgentId` selects the configured OpenClaw Agent and `config.modelId` selects the configured OpenClaw model. For non-OpenClaw runtimes, leave `openclawAgentId` and `send` unset. For Hermes, use `profileId` when a profile is selected.
+- `modelId` is runtime-specific. Prefer configured model ids from the selected harness. Do not invent model ids when defaults can be injected during import.
 - `manager` chooses numbered slots through `portCount` and `maxHandoffs`. It may call a configured runtime agent for routing decisions, but it remains a blueprint node.
-- In `self_dispatch` mode, the Manager is a runnable decision node. It must have `runtimeId` set to the selected real harness, such as `codex` in Codex chat. Do not default a self-dispatch Manager to `openclaw` unless the user explicitly chose OpenClaw for Manager decisions.
+- Manager modes map to fields: sequential is `lifecycleMode: "none"` and `dispatchMode: "sequential"`; self-dispatch is `lifecycleMode: "none"` and `dispatchMode: "self_dispatch"`; self-iteration is `lifecycleMode: "self_iteration"` and `dispatchMode: "self_dispatch"`.
+- In `self_dispatch` or `self_iteration` mode, the Manager is a runnable decision node. It must have `runtimeId` set to the selected real harness, such as `codex` in Codex chat. Do not default a runnable Manager to `openclaw` unless the user explicitly chose OpenClaw for Manager decisions.
 - `manager_slot` cannot start as a global run step. A Manager calls it, then the slot executes child `agent`, `condition`, and `summary` nodes inside its scope.
 - `manager_slot.config.parallelLaneCount` defines row semantics: `1` means one scoped chain that honors inner child edges; `>1` means parallel fan-out/fan-in and aggregates child outputs.
+- Standard Manager/slot edges are Manager -> slot with `sourceHandle: "manager-out-N"` and `targetHandle: "manager-slot-in"`, slot -> Manager with `sourceHandle: "manager-slot-out"` and `targetHandle: "manager-in-N"`, slot -> first child with `sourceHandle: "manager-slot-inner-out"`, and last child -> slot with `targetHandle: "manager-slot-inner-in"`.
 - `loop` reruns downstream work up to `maxIterations`; `condition` emits a boolean routing result; `summary` either structured-merges upstream outputs or calls a harness summary agent.
+- `summary.config.mode` is `structured_merge` or `harness_summary`. Harness summaries use `config.runtimeId`, optional `modelId`, optional Hermes `profileId`, and runtime access policy.
+- Use `config.resultRole: "final"` for the intended final product, `ignore` for internal Manager-slot workers, and `auto` or omitted for normal terminal outputs.
+- Use `crossRoundContextMode` only when a self-iteration Manager or long-lived worker needs previous round context; otherwise leave it omitted.
 
 ## CEO Workflow
 
@@ -75,6 +84,7 @@ For simple greetings or identity questions, answer directly as the HiveWard Comp
 - The platform creates a real inbox item only when the final assistant response ends with one fenced `hiveward-inbox` JSON block.
 - The block must use schema `hiveward.inbox-submission/v1`, type `blueprint_proposal`, and include `title`, `summary`, `diffSummary`, `preview`, and a complete importable `blueprintPackage`.
 - `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`; each blueprint in it must include `id`, `name`, `version`, `nodes`, `edges`, `variables`, and `display.viewport`.
+- Blueprint packages should be portable: local OpenClaw Agent/channel bindings can be defaulted at import. Include explicit `runtimeId`, `modelId` only when the model choice is intentional, `skillIds` when a node requires installed HiveWard skills, and valid Manager-slot handles when slots exist.
 - After submitting, say plainly that it has been sent to the inbox for approval. Do not say it has been imported or approved.
 - If the user explicitly says not to submit, only provide the draft/proposal text and say it has not been put in the inbox.
 
@@ -118,7 +128,7 @@ Shared contracts live in `packages/shared/src`, especially:
 - Answer in the user's language unless a stored artifact requires another language.
 - Separate stored facts from inference.
 - Default to human-readable run reporting. Do not make raw JSON, node output, or runtime metadata the first explanation unless the user asks for debugging details.
-- When reporting a run, surface the Markdown report first and keep its Delivery location / 交付位置 visible before JSON handoff or raw debug evidence.
+- When reporting a run, surface the Markdown report first and keep its Delivery location visible before JSON handoff or raw debug evidence.
 - Keep Markdown reports and JSON handoffs conceptually separate: Markdown explains to humans; JSON hands off to other agents.
 - Do not expose hidden prompt text unless the user asks about onboarding or platform behavior.
 - Do not claim a HiveWard mutation happened unless a real API/tool confirmed it.

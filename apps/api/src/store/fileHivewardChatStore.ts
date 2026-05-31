@@ -511,8 +511,34 @@ function normalizeChatRuntimeRef(value: unknown): ChatRuntimeRef | undefined {
     updatedAt,
     error: readString(value.error),
     usage: isRecord(value.usage) ? value.usage as unknown as ChatRuntimeRef["usage"] : undefined,
-    timings: isRecord(value.timings) ? value.timings as unknown as ChatRuntimeRef["timings"] : undefined
+    timings: isRecord(value.timings) ? value.timings as unknown as ChatRuntimeRef["timings"] : undefined,
+    activity: normalizeChatRuntimeActivities(value.activity)
   };
+}
+
+function normalizeChatRuntimeActivities(value: unknown): ChatRuntimeRef["activity"] {
+  if (!Array.isArray(value)) return undefined;
+  const activities = value.flatMap((item): NonNullable<ChatRuntimeRef["activity"]> => {
+    if (!isRecord(item)) return [];
+    const id = readString(item.id);
+    const source =
+      item.source === "openclaw" ||
+      item.source === "codex" ||
+      item.source === "claude" ||
+      item.source === "google" ||
+      item.source === "cursor" ||
+      item.source === "opencode" ||
+      item.source === "hermes"
+        ? item.source
+        : undefined;
+    const phase = item.phase === "tool" || item.phase === "command" || item.phase === "thinking" ? item.phase : undefined;
+    const label = readString(item.label);
+    const status = item.status === "started" || item.status === "completed" ? item.status : "updated";
+    const updatedAt = readString(item.updatedAt);
+    if (!id || !source || !phase || !label || !updatedAt) return [];
+    return [{ id, source, phase, label, status, updatedAt }];
+  });
+  return activities.length ? activities : undefined;
 }
 
 function deriveChatSessionTitle(session: HivewardChatSession, message: HivewardChatMessage): string {

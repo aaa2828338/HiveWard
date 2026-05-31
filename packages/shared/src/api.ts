@@ -475,6 +475,18 @@ export interface ChatRuntimeRef {
   error?: string;
   usage?: RuntimeUsageFact;
   timings?: ChatStreamTimings;
+  activity?: ChatRuntimeActivity[];
+}
+
+export type ChatRuntimeActivityStatus = "started" | "updated" | "completed";
+
+export interface ChatRuntimeActivity {
+  id: string;
+  source: RuntimeObjectSource;
+  phase: "thinking" | "tool" | "command";
+  label: string;
+  status: ChatRuntimeActivityStatus;
+  updatedAt: string;
 }
 
 export interface HivewardChatSession {
@@ -616,6 +628,9 @@ export type ChatStreamEvent =
       source: RuntimeObjectSource;
       phase: "thinking" | "tool" | "command";
       label: string;
+      id?: string;
+      status?: ChatRuntimeActivityStatus;
+      updatedAt?: string;
     }
   | {
       type: "done";

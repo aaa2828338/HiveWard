@@ -5,10 +5,10 @@ describe("appSectionGroups", () => {
   it("orders harness groups by operator priority", () => {
     expect(appSectionGroups.map((group) => group.id)).toEqual([
       "hiveward",
+      "codex",
+      "claudeCode",
       "openclaw",
       "hermes",
-      "claudeCode",
-      "codex",
       "google",
       "cursor",
       "opencode"
@@ -19,6 +19,12 @@ describe("appSectionGroups", () => {
     const claudeCodeGroup = appSectionGroups.find((group) => group.id === "claudeCode");
 
     expect(claudeCodeGroup?.sections).toEqual(["claudeCodeConfig", "claudeCodeModels"]);
+  });
+
+  it("keeps the company directory out of the primary Hiveward navigation group", () => {
+    const hivewardGroup = appSectionGroups.find((group) => group.id === "hiveward");
+
+    expect(hivewardGroup?.sections).toEqual(["chat", "blueprint", "runs", "approvals", "schedule"]);
   });
 
   it("gives Hermes the same operator-facing sections as OpenClaw", () => {

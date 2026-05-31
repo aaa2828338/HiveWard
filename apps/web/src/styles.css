@@ -6858,7 +6858,8 @@ button.sidebar-system-version.active {
   min-width: 0;
   min-height: 32px;
   padding: 0 8px;
-  justify-content: flex-start;
+  justify-content: space-between;
+  gap: 8px;
   border: 0;
   border-radius: var(--radius-sm);
   color: #7e8999;
@@ -6883,6 +6884,11 @@ button.sidebar-system-version.active {
   box-shadow: none;
   outline: 0;
   transform: none;
+}
+
+.sidebar-nav .nav-system-toggle.has-activity,
+.sidebar-nav .nav-item.has-activity {
+  animation: hiveward-version-update-breathe 1.8s ease-in-out infinite;
 }
 
 .sidebar-nav .nav-system-toggle:focus-visible {
@@ -6952,6 +6958,16 @@ button.sidebar-system-version.active {
 
 .sidebar-nav .nav-count {
   border-color: transparent;
+  background: rgb(245 154 11 / 0.18);
+  color: #ffd28d;
+  font-weight: 760;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-nav .nav-system-toggle.has-activity,
+  .sidebar-nav .nav-item.has-activity {
+    animation: none;
+  }
 }
 
 html[data-theme="light"] .sidebar-nav .nav-system-toggle {
@@ -7044,6 +7060,14 @@ html[data-theme="light"] .sidebar-nav .nav-system-toggle:focus-visible {
 
 .harness-skills-card {
   min-width: 0;
+}
+
+.harness-skills-card-summary {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
 }
 
 .harness-skills-card-head {
@@ -11079,6 +11103,57 @@ html[data-theme="light"] .trace-issue-column.trace-run-frame-failed {
   line-height: 1.45;
   overflow-wrap: anywhere;
   opacity: 0.82;
+}
+
+.chat-runtime-activity-list {
+  display: grid;
+  gap: 4px;
+  max-height: 190px;
+  overflow: auto;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px solid rgb(148 163 184 / 0.14);
+  border-radius: var(--radius-sm);
+  background: rgb(15 23 42 / 0.18);
+}
+
+.chat-runtime-activity {
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.chat-runtime-activity svg {
+  color: rgb(148 163 184 / 0.72);
+}
+
+.chat-runtime-activity-tool svg {
+  color: rgb(56 189 248 / 0.82);
+}
+
+.chat-runtime-activity-command svg {
+  color: rgb(63 185 121 / 0.82);
+}
+
+.chat-runtime-activity-time {
+  color: rgb(148 163 184 / 0.72);
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-runtime-activity-title {
+  color: var(--muted-strong, var(--muted));
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.chat-runtime-activity-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .chat-message-status {
