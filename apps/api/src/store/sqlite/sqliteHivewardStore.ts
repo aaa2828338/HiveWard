@@ -10,7 +10,9 @@ import type {
   AgentRuntimeId,
   ArchitectureBlueprintView,
   ApprovalDecision,
+  ApprovalReply,
   ApprovalRequest,
+  ApprovalThread,
   Artifact,
   BlueprintDefinition,
   BlueprintImportDefaults,
@@ -56,6 +58,8 @@ import {
   readBlueprintNodeRunRuntimeRef,
   readBlueprintRunRuntimeRefs,
   readPortableBlueprintPackage,
+  approvalThreadFromRequest,
+  approvalThreadIdForRequest,
   resolveFinalRunResult
 } from "@hiveward/shared";
 import {
@@ -243,6 +247,8 @@ export class SqliteHivewardStore implements HivewardStore {
             counts.approvals += 1;
           }
           for (const decision of view.approvalDecisions ?? []) this.appendApprovalDecisionSync(decision);
+          for (const thread of view.approvalThreads ?? []) this.upsertApprovalThreadSync(thread);
+          for (const reply of view.approvalReplies ?? []) this.appendApprovalReplySync(reply);
           for (const artifact of view.artifacts ?? []) {
             this.upsertArtifactSync(artifact);
             counts.artifacts += 1;
@@ -741,6 +747,7 @@ export class SqliteHivewardStore implements HivewardStore {
             "UPDATE approval_requests SET updated_at = ? WHERE id = ? AND status = 'pending'"
           ).run(now, input.approvalRequestId);
           if (requestResult.changes !== 1) return { status: "conflict", item };
+          if (request) this.upsertApprovalThreadSync(approvalThreadFromRequest({ ...request, updatedAt: now }));
           if (input.approvalDecision) this.appendApprovalDecisionSync(input.approvalDecision);
           if (input.approvalTimelineItem) this.appendRunTimelineItemSync(input.approvalTimelineItem);
         }
@@ -793,6 +800,14 @@ export class SqliteHivewardStore implements HivewardStore {
           input.approvalRequestId
         );
         if (result.changes !== 1) return { status: "conflict", item };
+        if (request) {
+          this.upsertApprovalThreadSync(approvalThreadFromRequest({
+            ...request,
+            status: nextStatus,
+            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+            updatedAt: now
+          }));
+        }
         if (input.approvalDecision) this.appendApprovalDecisionSync(input.approvalDecision);
         if (input.approvalTimelineItem) this.appendRunTimelineItemSync(input.approvalTimelineItem);
       }
@@ -1024,6 +1039,66 @@ export class SqliteHivewardStore implements HivewardStore {
       .map(approvalRequestFromRow);
   }
 
+  async listApprovalThreads(filter: { runId?: string; status?: ApprovalThread["status"] } = {}): Promise<ApprovalThread[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runId) {
+      clauses.push("run_id = ?");
+      values.push(filter.runId);
+    }
+    if (filter.status) {
+      clauses.push("status = ?");
+      values.push(filter.status);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM approval_threads ${where} ORDER BY updated_at DESC`).all(...values) as Row[])
+      .map(approvalThreadFromRow);
+  }
+
+  async upsertApprovalThread(thread: ApprovalThread): Promise<ApprovalThread> {
+    return this.upsertApprovalThreadSync(thread);
+  }
+
+  private upsertApprovalThreadSync(thread: ApprovalThread): ApprovalThread {
+    this.driver.db.prepare(
+      `INSERT INTO approval_threads (
+        id, kind, status, title, run_id, round_id, node_run_id, source_type, source_id,
+        current_request_id, current_revision, capabilities_json, created_at, updated_at, closed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        kind = excluded.kind,
+        status = excluded.status,
+        title = excluded.title,
+        run_id = excluded.run_id,
+        round_id = excluded.round_id,
+        node_run_id = excluded.node_run_id,
+        source_type = excluded.source_type,
+        source_id = excluded.source_id,
+        current_request_id = excluded.current_request_id,
+        current_revision = excluded.current_revision,
+        capabilities_json = excluded.capabilities_json,
+        updated_at = excluded.updated_at,
+        closed_at = excluded.closed_at`
+    ).run(
+      thread.id,
+      thread.kind,
+      thread.status,
+      thread.title,
+      thread.runId,
+      thread.roundId,
+      thread.nodeRunId,
+      thread.sourceRef?.type,
+      thread.sourceRef?.id,
+      thread.currentRequestId,
+      thread.currentRevision,
+      stringifyJson(thread.capabilities),
+      thread.createdAt,
+      thread.updatedAt,
+      thread.closedAt
+    );
+    return thread;
+  }
+
   async getApprovalRequest(id: string): Promise<ApprovalRequest | undefined> {
     return this.getApprovalRequestSync(id);
   }
@@ -1072,7 +1147,59 @@ export class SqliteHivewardStore implements HivewardStore {
       request.requestedAt,
       request.updatedAt
     );
+    this.upsertApprovalThreadSync(approvalThreadFromRequest(request));
     return request;
+  }
+
+  async appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply> {
+    this.appendApprovalReplySync(reply);
+    return reply;
+  }
+
+  private appendApprovalReplySync(reply: ApprovalReply): void {
+    this.driver.db.prepare(
+      `INSERT INTO approval_replies (id, approval_request_id, thread_id, message, actor, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         approval_request_id = excluded.approval_request_id,
+         thread_id = excluded.thread_id,
+         message = excluded.message,
+         actor = excluded.actor,
+         created_at = excluded.created_at`
+    ).run(
+      reply.id,
+      reply.approvalRequestId ?? null,
+      reply.threadId,
+      reply.body,
+      reply.actor,
+      reply.createdAt
+    );
+    this.driver.db.prepare(
+      "UPDATE approval_threads SET updated_at = ? WHERE id = ? AND updated_at < ?"
+    ).run(reply.createdAt, reply.threadId, reply.createdAt);
+  }
+
+  async listApprovalReplies(filter: { runId?: string; threadId?: string; approvalRequestId?: string } = {}): Promise<ApprovalReply[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.threadId) {
+      clauses.push("thread_id = ?");
+      values.push(filter.threadId);
+    }
+    if (filter.approvalRequestId) {
+      clauses.push("approval_request_id = ?");
+      values.push(filter.approvalRequestId);
+    }
+    if (filter.runId) {
+      clauses.push(`(
+        thread_id IN (SELECT id FROM approval_threads WHERE run_id = ?)
+        OR approval_request_id IN (SELECT id FROM approval_requests WHERE run_id = ?)
+      )`);
+      values.push(filter.runId, filter.runId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM approval_replies ${where} ORDER BY created_at`).all(...values) as Row[])
+      .map(approvalReplyFromRow);
   }
 
   async appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision> {
@@ -1103,11 +1230,10 @@ export class SqliteHivewardStore implements HivewardStore {
       decision.resultingStatus,
       decision.createdAt
     );
-    if (decision.action === "reply" && decision.comment?.trim()) {
-      this.driver.db.prepare(
-        `INSERT OR IGNORE INTO approval_replies (id, approval_request_id, message, actor, created_at) VALUES (?, ?, ?, ?, ?)`
-      ).run(`reply-${decision.id}`, decision.approvalRequestId, decision.comment, decision.actor, decision.createdAt);
-    }
+    const request = decision.action === "reply" && decision.comment?.trim()
+      ? this.getApprovalRequestSync(decision.approvalRequestId)
+      : undefined;
+    if (request) this.appendApprovalReplySync(approvalReplyFromDecision(decision, request));
   }
 
   async applyApprovalDecision(input: ApplyApprovalDecisionInput): Promise<ApplyApprovalDecisionResult> {
@@ -1133,6 +1259,7 @@ export class SqliteHivewardStore implements HivewardStore {
       if (result.changes !== 1) {
         return { status: "conflict", approvalRequest: this.getApprovalRequestSync(input.approvalRequestId) };
       }
+      this.upsertApprovalThreadSync(approvalThreadFromRequest(input.nextRequest));
       this.appendApprovalDecisionSync(input.decision);
       if (input.nextApprovalRequest) this.upsertApprovalRequestSync(input.nextApprovalRequest);
       if (input.releaseReport) this.upsertReleaseReportSync(input.releaseReport);
@@ -1940,6 +2067,8 @@ export class SqliteHivewardStore implements HivewardStore {
       inboxItems,
       iterationSessions: (this.driver.db.prepare("SELECT * FROM iteration_sessions").all() as Row[]).map(iterationSessionFromRow),
       iterationRounds: (this.driver.db.prepare("SELECT * FROM iteration_rounds").all() as Row[]).map(iterationRoundFromRow),
+      approvalThreads: (this.driver.db.prepare("SELECT * FROM approval_threads").all() as Row[]).map(approvalThreadFromRow),
+      approvalReplies: (this.driver.db.prepare("SELECT * FROM approval_replies").all() as Row[]).map(approvalReplyFromRow),
       approvalRequests: (this.driver.db.prepare("SELECT * FROM approval_requests").all() as Row[]).map(approvalRequestFromRow),
       approvalDecisions: (this.driver.db.prepare("SELECT * FROM approval_decisions").all() as Row[]).map(approvalDecisionFromRow),
       artifacts: (this.driver.db.prepare("SELECT * FROM artifacts").all() as Row[]).map(artifactFromRow),
@@ -2411,6 +2540,9 @@ export class SqliteHivewardStore implements HivewardStore {
     const runId = archive.run.id;
     const approvalRequests = (this.driver.db.prepare("SELECT * FROM approval_requests WHERE run_id = ?").all(runId) as Row[]).map(approvalRequestFromRow);
     const approvalIds = new Set(approvalRequests.map((request) => request.id));
+    const approvalThreads = (this.driver.db.prepare("SELECT * FROM approval_threads WHERE run_id = ? ORDER BY updated_at DESC").all(runId) as Row[])
+      .map(approvalThreadFromRow);
+    const approvalThreadIds = new Set(approvalThreads.map((thread) => thread.id));
     return {
       run: archive.run,
       nodeRuns: archive.nodeRuns,
@@ -2422,6 +2554,10 @@ export class SqliteHivewardStore implements HivewardStore {
       approvalDecisions: (this.driver.db.prepare("SELECT * FROM approval_decisions ORDER BY created_at").all() as Row[])
         .map(approvalDecisionFromRow)
         .filter((decision) => approvalIds.has(decision.approvalRequestId)),
+      approvalThreads,
+      approvalReplies: (this.driver.db.prepare("SELECT * FROM approval_replies ORDER BY created_at").all() as Row[])
+        .map(approvalReplyFromRow)
+        .filter((reply) => approvalThreadIds.has(reply.threadId) || (reply.approvalRequestId !== undefined && approvalIds.has(reply.approvalRequestId))),
       artifacts: (this.driver.db.prepare("SELECT * FROM artifacts WHERE run_id = ?").all(runId) as Row[]).map(artifactFromRow),
       releaseReports: (this.driver.db.prepare("SELECT * FROM release_reports WHERE run_id = ?").all(runId) as Row[]).map((reportRow) => this.releaseReportFromRow(reportRow)),
       agentHumanReports: (this.driver.db.prepare("SELECT * FROM agent_human_reports WHERE run_id = ?").all(runId) as Row[]).map(agentHumanReportFromRow),
@@ -2797,6 +2933,51 @@ function approvalDecisionFromRow(row: Row): ApprovalDecision {
     selectedReplyId: readString(row.selected_reply_id),
     resultingStatus: requireString(row.resulting_status) as ApprovalDecision["resultingStatus"],
     createdAt: requireString(row.created_at)
+  };
+}
+
+function approvalThreadFromRow(row: Row): ApprovalThread {
+  const sourceType = readString(row.source_type) as NonNullable<ApprovalThread["sourceRef"]>["type"] | undefined;
+  const sourceId = readString(row.source_id);
+  return {
+    id: requireString(row.id),
+    kind: requireString(row.kind) as ApprovalThread["kind"],
+    status: requireString(row.status) as ApprovalThread["status"],
+    title: requireString(row.title),
+    runId: readString(row.run_id),
+    roundId: readString(row.round_id),
+    nodeRunId: readString(row.node_run_id),
+    sourceRef: sourceType && sourceId ? { type: sourceType, id: sourceId } : undefined,
+    currentRequestId: readString(row.current_request_id),
+    currentRevision: readNumber(row.current_revision, 1),
+    capabilities: readJson(row.capabilities_json),
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at),
+    closedAt: readString(row.closed_at)
+  };
+}
+
+function approvalReplyFromRow(row: Row): ApprovalReply {
+  return {
+    id: requireString(row.id),
+    threadId: requireString(row.thread_id),
+    approvalRequestId: readString(row.approval_request_id),
+    actor: requireString(row.actor) as ApprovalReply["actor"],
+    body: requireString(row.message),
+    createdAt: requireString(row.created_at)
+  };
+}
+
+function approvalReplyFromDecision(decision: ApprovalDecision, request: ApprovalRequest): ApprovalReply {
+  const body = decision.comment?.trim();
+  if (!body) throw new Error("Approval reply decision is missing a comment.");
+  return {
+    id: `reply-${decision.id}`,
+    threadId: approvalThreadIdForRequest(request),
+    approvalRequestId: request.id,
+    actor: decision.actor,
+    body,
+    createdAt: decision.createdAt
   };
 }
 

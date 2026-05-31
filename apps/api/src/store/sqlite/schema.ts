@@ -439,6 +439,70 @@ const sqliteManagerReportRoundNumberStatements = [
   "ALTER TABLE agent_human_reports ADD COLUMN manager_round_number INTEGER"
 ];
 
+const sqliteApprovalThreadStatements = [
+  `CREATE TABLE IF NOT EXISTS approval_threads (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('open','closed')),
+    title TEXT NOT NULL,
+    run_id TEXT,
+    round_id TEXT,
+    node_run_id TEXT,
+    source_type TEXT,
+    source_id TEXT,
+    current_request_id TEXT,
+    current_revision INTEGER NOT NULL,
+    capabilities_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
+  )`,
+  `INSERT OR IGNORE INTO approval_threads (
+     id, kind, status, title, run_id, round_id, node_run_id, source_type, source_id,
+     current_request_id, current_revision, capabilities_json, created_at, updated_at, closed_at
+   )
+   SELECT
+     COALESCE(thread_id, id),
+     kind,
+     CASE WHEN status = 'pending' THEN 'open' ELSE 'closed' END,
+     title,
+     run_id,
+     round_id,
+     node_run_id,
+     source_type,
+     source_id,
+     CASE WHEN status = 'pending' THEN id ELSE NULL END,
+     revision,
+     capabilities_json,
+     requested_at,
+     COALESCE(updated_at, requested_at),
+     CASE WHEN status = 'pending' THEN NULL ELSE COALESCE(updated_at, requested_at) END
+   FROM approval_requests`,
+  `CREATE TABLE IF NOT EXISTS approval_replies_next (
+    id TEXT PRIMARY KEY,
+    approval_request_id TEXT REFERENCES approval_requests(id) ON DELETE SET NULL,
+    thread_id TEXT NOT NULL REFERENCES approval_threads(id) ON DELETE CASCADE,
+    message TEXT NOT NULL,
+    actor TEXT NOT NULL DEFAULT 'user',
+    created_at TEXT NOT NULL
+  )`,
+  `INSERT OR IGNORE INTO approval_replies_next (id, approval_request_id, thread_id, message, actor, created_at)
+   SELECT
+     approval_replies.id,
+     approval_replies.approval_request_id,
+     COALESCE(approval_requests.thread_id, approval_replies.approval_request_id),
+     approval_replies.message,
+     approval_replies.actor,
+     approval_replies.created_at
+   FROM approval_replies
+   LEFT JOIN approval_requests ON approval_requests.id = approval_replies.approval_request_id
+   WHERE COALESCE(approval_requests.thread_id, approval_replies.approval_request_id) IS NOT NULL`,
+  "DROP TABLE approval_replies",
+  "ALTER TABLE approval_replies_next RENAME TO approval_replies",
+  `CREATE INDEX IF NOT EXISTS idx_approval_threads_run_status ON approval_threads(run_id, status, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_approval_replies_thread_created ON approval_replies(thread_id, created_at)`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -461,6 +525,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "manager_report_round_number",
     checksum: checksumStatements(sqliteManagerReportRoundNumberStatements),
     up: sqliteManagerReportRoundNumberStatements
+  },
+  {
+    version: 4,
+    name: "approval_threads",
+    checksum: checksumStatements(sqliteApprovalThreadStatements),
+    up: sqliteApprovalThreadStatements
   }
 ];
 
@@ -475,6 +545,8 @@ export const sqliteRequiredSchema = {
   node_runs: ["id", "run_id", "blueprint_id", "node_id", "node_label", "node_type", "status", "lease_owner", "worker_epoch", "row_version", "updated_at"],
   node_run_payloads: ["node_run_id", "input_json", "output_json", "raw_result_json", "updated_at"],
   run_events: ["id", "run_id", "node_run_id", "sequence", "type", "message", "created_at"],
+  approval_threads: ["id", "kind", "status", "title", "current_revision", "capabilities_json", "created_at", "updated_at"],
+  approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "created_at"],
   approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "requested_by_json", "requested_at"],
   approval_decisions: ["id", "approval_request_id", "action", "actor", "resulting_status", "created_at"],
   inbox_items: ["id", "company_id", "type", "status", "title", "summary", "created_by_role_id", "created_at", "updated_at"],
@@ -494,6 +566,8 @@ export const sqliteRequiredIndexes = {
   node_runs: ["idx_node_runs_run_status", "idx_node_runs_run_round_node"],
   run_events: ["idx_run_events_run_created"],
   run_timeline_items: ["idx_run_timeline_run_created"],
+  approval_threads: ["idx_approval_threads_run_status"],
+  approval_replies: ["idx_approval_replies_thread_created"],
   approval_requests: ["idx_approval_requests_status_created", "idx_approval_requests_run_round"],
   artifacts: ["idx_artifacts_run_round_node"],
   release_reports: ["idx_release_reports_run_round"]
@@ -511,6 +585,8 @@ export const sqliteRequiredForeignKeys = [
   { table: "run_events", from: "run_id", targetTable: "runs", to: "id" },
   { table: "run_timeline_items", from: "run_id", targetTable: "runs", to: "id" },
   { table: "approval_decisions", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
+  { table: "approval_replies", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
+  { table: "approval_replies", from: "thread_id", targetTable: "approval_threads", to: "id" },
   { table: "artifacts", from: "run_id", targetTable: "runs", to: "id" },
   { table: "release_reports", from: "run_id", targetTable: "runs", to: "id" },
   { table: "release_report_artifacts", from: "artifact_id", targetTable: "artifacts", to: "id" }
@@ -520,6 +596,7 @@ export const sqliteRequiredChecks = [
   { table: "runs", contains: "status IN ('queued','running','succeeded','failed','cancelled','skipped','waiting_approval')" },
   { table: "node_runs", contains: "status IN ('queued','running','succeeded','failed','cancelled','skipped','waiting_approval')" },
   { table: "approval_requests", contains: "status IN ('pending','approved','rejected','replied','completed','terminated','superseded')" },
+  { table: "approval_threads", contains: "status IN ('open','closed')" },
   { table: "approval_decisions", contains: "actor IN ('user','system','manager')" },
   { table: "artifacts", contains: "kind IN ('html','markdown','json','file','link')" },
   { table: "artifacts", contains: "preview_policy IN ('none','source','sandboxed_iframe')" },

@@ -32,7 +32,9 @@ import type {
   AgentHandoff,
   AgentHumanReport,
   ApprovalDecision,
+  ApprovalReply,
   ApprovalRequest,
+  ApprovalThread,
   Artifact,
   IterationRound,
   IterationSession,
@@ -57,6 +59,8 @@ import {
   readBlueprintNodeRunRuntimeRef,
   readBlueprintRunRuntimeRefs,
   readPortableBlueprintPackage,
+  approvalThreadFromRequest,
+  approvalThreadIdForRequest,
   resolveApprovalCapabilities,
   resolveFinalRunResult
 } from "@hiveward/shared";
@@ -119,6 +123,8 @@ export interface HivewardStoreIndex {
   inboxItems: Record<string, InboxItem[]>;
   iterationSessions: IterationSession[];
   iterationRounds: IterationRound[];
+  approvalThreads: ApprovalThread[];
+  approvalReplies: ApprovalReply[];
   approvalRequests: ApprovalRequest[];
   approvalDecisions: ApprovalDecision[];
   artifacts: Artifact[];
@@ -233,6 +239,8 @@ export class FileHivewardStore implements HivewardStore {
           },
           iterationSessions: [],
           iterationRounds: [],
+          approvalThreads: [],
+          approvalReplies: [],
           approvalRequests: [],
           approvalDecisions: [],
           artifacts: [],
@@ -807,8 +815,11 @@ export class FileHivewardStore implements HivewardStore {
         items[itemIndex] = replied;
         index.inboxItems[companyId] = items;
         if (requestIndex >= 0 && request) {
-          index.approvalRequests[requestIndex] = { ...request, updatedAt: now };
+          const updatedRequest = { ...request, updatedAt: now };
+          index.approvalRequests[requestIndex] = updatedRequest;
+          upsertById(index.approvalThreads, approvalThreadFromRequest(updatedRequest));
           if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
+          if (input.approvalDecision) appendApprovalReplyFromDecision(index, input.approvalDecision, updatedRequest);
           if (input.approvalTimelineItem) {
             upsertById(index.runTimeline, {
               ...input.approvalTimelineItem,
@@ -846,6 +857,7 @@ export class FileHivewardStore implements HivewardStore {
           capabilities: resolveApprovalCapabilities(request.kind, input.action === "approve" ? "approved" : "rejected"),
           updatedAt: now
         };
+        upsertById(index.approvalThreads, approvalThreadFromRequest(index.approvalRequests[requestIndex]!));
         if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
         if (input.approvalTimelineItem) {
           upsertById(index.runTimeline, {
@@ -1247,6 +1259,19 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
+  async listApprovalThreads(filter: { runId?: string; status?: ApprovalThread["status"] } = {}): Promise<ApprovalThread[]> {
+    return this.enqueue(async () => listApprovalThreadsFromIndex(await this.readIndexUnlocked(), filter));
+  }
+
+  async upsertApprovalThread(thread: ApprovalThread): Promise<ApprovalThread> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.approvalThreads, thread);
+      await this.writeIndexUnlocked(index);
+      return thread;
+    });
+  }
+
   async getApprovalRequest(id: string): Promise<ApprovalRequest | undefined> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -1258,15 +1283,31 @@ export class FileHivewardStore implements HivewardStore {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       upsertById(index.approvalRequests, request);
+      upsertById(index.approvalThreads, approvalThreadFromRequest(request));
       await this.writeIndexUnlocked(index);
       return request;
     });
+  }
+
+  async appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      appendApprovalReplyToIndex(index, reply);
+      await this.writeIndexUnlocked(index);
+      return reply;
+    });
+  }
+
+  async listApprovalReplies(filter: { runId?: string; threadId?: string; approvalRequestId?: string } = {}): Promise<ApprovalReply[]> {
+    return this.enqueue(async () => listApprovalRepliesFromIndex(await this.readIndexUnlocked(), filter));
   }
 
   async appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       upsertById(index.approvalDecisions, decision);
+      const request = index.approvalRequests.find((candidate) => candidate.id === decision.approvalRequestId);
+      appendApprovalReplyFromDecision(index, decision, request);
       await this.writeIndexUnlocked(index);
       return decision;
     });
@@ -1281,8 +1322,13 @@ export class FileHivewardStore implements HivewardStore {
         return { status: "conflict", approvalRequest: current };
       }
       index.approvalRequests[requestIndex] = input.nextRequest;
+      upsertById(index.approvalThreads, approvalThreadFromRequest(input.nextRequest));
       upsertById(index.approvalDecisions, input.decision);
-      if (input.nextApprovalRequest) upsertById(index.approvalRequests, input.nextApprovalRequest);
+      appendApprovalReplyFromDecision(index, input.decision, input.nextRequest);
+      if (input.nextApprovalRequest) {
+        upsertById(index.approvalRequests, input.nextApprovalRequest);
+        upsertById(index.approvalThreads, approvalThreadFromRequest(input.nextApprovalRequest));
+      }
       if (input.releaseReport) upsertById(index.releaseReports, input.releaseReport);
       if (input.timelineItem) {
         upsertById(index.runTimeline, {
@@ -1668,6 +1714,8 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: {},
       iterationSessions: [],
       iterationRounds: [],
+      approvalThreads: [],
+      approvalReplies: [],
       approvalRequests: [],
       approvalDecisions: [],
       artifacts: [],
@@ -1974,6 +2022,8 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(rawIndex.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(rawIndex.iterationRounds),
+      approvalThreads: normalizeArray<ApprovalThread>(rawIndex.approvalThreads),
+      approvalReplies: normalizeArray<ApprovalReply>(rawIndex.approvalReplies),
       approvalRequests: normalizeArray<ApprovalRequest>(rawIndex.approvalRequests),
       approvalDecisions: normalizeArray<ApprovalDecision>(rawIndex.approvalDecisions),
       artifacts: normalizeArray<Artifact>(rawIndex.artifacts),
@@ -2026,6 +2076,8 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: normalizeInboxItems(state.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(state.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(state.iterationRounds),
+      approvalThreads: normalizeArray<ApprovalThread>(state.approvalThreads),
+      approvalReplies: normalizeArray<ApprovalReply>(state.approvalReplies),
       approvalRequests: normalizeArray<ApprovalRequest>(state.approvalRequests),
       approvalDecisions: normalizeArray<ApprovalDecision>(state.approvalDecisions),
       artifacts: normalizeArray<Artifact>(state.artifacts),
@@ -2070,6 +2122,8 @@ export class FileHivewardStore implements HivewardStore {
       approvalDecisions: index.approvalDecisions.filter((item) =>
         index.approvalRequests.some((request) => request.runId === runId && request.id === item.approvalRequestId)
       ),
+      approvalThreads: listApprovalThreadsFromIndex(index, { runId }),
+      approvalReplies: listApprovalRepliesFromIndex(index, { runId }),
       artifacts: index.artifacts.filter((item) => item.runId === runId),
       releaseReports: index.releaseReports.filter((item) => item.runId === runId),
       agentHumanReports: index.agentHumanReports.filter((item) => item.runId === runId),
@@ -2316,6 +2370,75 @@ function upsertById<T extends { id: string }>(items: T[], item: T): void {
     items[index] = item;
   } else {
     items.push(item);
+  }
+}
+
+function listApprovalThreadsFromIndex(
+  index: HivewardStoreIndex,
+  filter: { runId?: string; status?: ApprovalThread["status"] } = {}
+): ApprovalThread[] {
+  const threadsById = new Map(index.approvalThreads.map((thread) => [thread.id, thread]));
+  for (const request of index.approvalRequests) {
+    const thread = approvalThreadFromRequest(request);
+    const existing = threadsById.get(thread.id);
+    if (!existing || new Date(thread.updatedAt).getTime() >= new Date(existing.updatedAt).getTime()) {
+      threadsById.set(thread.id, {
+        ...existing,
+        ...thread
+      });
+    }
+  }
+  return [...threadsById.values()]
+    .filter((thread) => !filter.runId || thread.runId === filter.runId)
+    .filter((thread) => !filter.status || thread.status === filter.status)
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+}
+
+function listApprovalRepliesFromIndex(
+  index: HivewardStoreIndex,
+  filter: { runId?: string; threadId?: string; approvalRequestId?: string } = {}
+): ApprovalReply[] {
+  const runThreadIds = filter.runId
+    ? new Set(listApprovalThreadsFromIndex(index, { runId: filter.runId }).map((thread) => thread.id))
+    : undefined;
+  const runRequestIds = filter.runId
+    ? new Set(index.approvalRequests.filter((request) => request.runId === filter.runId).map((request) => request.id))
+    : undefined;
+  return index.approvalReplies
+    .filter((reply) => !filter.threadId || reply.threadId === filter.threadId)
+    .filter((reply) => !filter.approvalRequestId || reply.approvalRequestId === filter.approvalRequestId)
+    .filter((reply) => !runThreadIds || runThreadIds.has(reply.threadId) || (reply.approvalRequestId !== undefined && runRequestIds?.has(reply.approvalRequestId)))
+    .slice()
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+}
+
+function appendApprovalReplyFromDecision(
+  index: HivewardStoreIndex,
+  decision: ApprovalDecision,
+  request: ApprovalRequest | undefined
+): void {
+  if (decision.action !== "reply" || !decision.comment?.trim() || !request) return;
+  appendApprovalReplyToIndex(index, {
+    id: `reply-${decision.id}`,
+    threadId: approvalThreadIdForRequest(request),
+    approvalRequestId: request.id,
+    actor: decision.actor,
+    body: decision.comment.trim(),
+    createdAt: decision.createdAt
+  });
+}
+
+function appendApprovalReplyToIndex(index: HivewardStoreIndex, reply: ApprovalReply): void {
+  upsertById(index.approvalReplies, reply);
+  const threadIndex = index.approvalThreads.findIndex((thread) => thread.id === reply.threadId);
+  if (threadIndex >= 0) {
+    const thread = index.approvalThreads[threadIndex]!;
+    if (new Date(reply.createdAt).getTime() >= new Date(thread.updatedAt).getTime()) {
+      index.approvalThreads[threadIndex] = {
+        ...thread,
+        updatedAt: reply.createdAt
+      };
+    }
   }
 }
 

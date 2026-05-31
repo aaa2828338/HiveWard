@@ -4,7 +4,9 @@ import type {
   AgentRuntimeId,
   ArchitectureBlueprintView,
   ApprovalDecision,
+  ApprovalReply,
   ApprovalRequest,
+  ApprovalThread,
   Artifact,
   BlueprintDefinition,
   BlueprintImportDefaults,
@@ -214,9 +216,13 @@ export interface HivewardStore {
   listRunArchives(): Promise<BlueprintRunArchive[]>;
 
   listPendingApprovals(): Promise<import("@hiveward/shared").PendingApprovalItem[]>;
+  listApprovalThreads(filter?: { runId?: string; status?: ApprovalThread["status"] }): Promise<ApprovalThread[]>;
+  upsertApprovalThread(thread: ApprovalThread): Promise<ApprovalThread>;
   listApprovalRequests(filter?: { runId?: string; status?: ApprovalRequest["status"] }): Promise<ApprovalRequest[]>;
   getApprovalRequest(id: string): Promise<ApprovalRequest | undefined>;
   upsertApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest>;
+  appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply>;
+  listApprovalReplies(filter?: { runId?: string; threadId?: string; approvalRequestId?: string }): Promise<ApprovalReply[]>;
   appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision>;
   applyApprovalDecision(input: ApplyApprovalDecisionInput): Promise<ApplyApprovalDecisionResult>;
   listApprovalDecisions(approvalRequestId?: string): Promise<ApprovalDecision[]>;

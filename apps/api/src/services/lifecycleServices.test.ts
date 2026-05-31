@@ -57,6 +57,8 @@ describe("ApprovalService", () => {
     const result = await service.reply(request.id, "Clarify the acceptance criteria.");
     const original = await store.getApprovalRequest(request.id);
     const decisions = await store.listApprovalDecisions(request.id);
+    const replies = await store.listApprovalReplies({ approvalRequestId: request.id });
+    const threads = await store.listApprovalThreads({ runId: "run-1" });
 
     expect(original).toMatchObject({
       status: "pending",
@@ -67,6 +69,20 @@ describe("ApprovalService", () => {
       resultingStatus: "pending",
       comment: "Clarify the acceptance criteria."
     });
+    expect(replies).toEqual([
+      expect.objectContaining({
+        threadId: request.threadId ?? request.id,
+        approvalRequestId: request.id,
+        body: "Clarify the acceptance criteria."
+      })
+    ]);
+    expect(threads).toEqual([
+      expect.objectContaining({
+        id: request.threadId ?? request.id,
+        status: "open",
+        currentRequestId: request.id
+      })
+    ]);
     expect(result.approvalRequest).toMatchObject({
       id: request.id,
       status: "pending",

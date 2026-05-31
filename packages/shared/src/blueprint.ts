@@ -2,7 +2,9 @@ import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, Run
 import { normalizeRuntimeAccessPolicy } from "./lifecycle";
 import type {
   ApprovalDecision,
+  ApprovalReply,
   ApprovalRequest,
+  ApprovalThread,
   AgentHandoff,
   AgentHumanReport,
   Artifact,
@@ -397,6 +399,8 @@ export interface BlueprintRunView {
   iterationRounds?: IterationRound[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];
+  approvalThreads?: ApprovalThread[];
+  approvalReplies?: ApprovalReply[];
   artifacts?: Artifact[];
   releaseReports?: ReleaseReport[];
   agentHumanReports?: AgentHumanReport[];
@@ -423,6 +427,8 @@ export interface BlueprintRunArchive {
   iterationRounds?: IterationRound[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];
+  approvalThreads?: ApprovalThread[];
+  approvalReplies?: ApprovalReply[];
   artifacts?: Artifact[];
   releaseReports?: ReleaseReport[];
   agentHumanReports?: AgentHumanReport[];
