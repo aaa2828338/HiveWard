@@ -512,6 +512,21 @@ const sqliteApprovalReplyMetadataStatements = [
    WHERE metadata_json IS NULL`
 ];
 
+const sqliteApprovalReplyLegacyMeaningStatements = [
+  `UPDATE approval_replies
+   SET metadata_json = '{"legacySource":"approval_replies_v1","legacyAction":"reply","legacyMeaning":"'
+     || CASE COALESCE((SELECT kind FROM approval_requests WHERE approval_requests.id = approval_replies.approval_request_id), 'unknown')
+       WHEN 'agent_proposal' THEN 'legacy_agent_rerun_feedback'
+       WHEN 'iteration_requirement_plan' THEN 'legacy_requirement_revision_feedback'
+       WHEN 'manager_release_report' THEN 'legacy_release_report_feedback'
+       ELSE 'message_only'
+     END
+     || '","requestKind":"'
+     || COALESCE((SELECT kind FROM approval_requests WHERE approval_requests.id = approval_replies.approval_request_id), 'unknown')
+     || '"}'
+   WHERE metadata_json LIKE '%"legacySource":"approval_replies_v1"%'`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -546,6 +561,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "approval_reply_metadata",
     checksum: checksumStatements(sqliteApprovalReplyMetadataStatements),
     up: sqliteApprovalReplyMetadataStatements
+  },
+  {
+    version: 6,
+    name: "approval_reply_legacy_meaning",
+    checksum: checksumStatements(sqliteApprovalReplyLegacyMeaningStatements),
+    up: sqliteApprovalReplyLegacyMeaningStatements
   }
 ];
 

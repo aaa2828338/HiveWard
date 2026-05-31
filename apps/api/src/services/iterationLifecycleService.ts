@@ -138,9 +138,14 @@ export class IterationService {
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
     const zh = usesChineseText(input.body) || usesChineseText(input.managerNode.config.label);
-    const title = zh
-      ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
-      : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
+    const blocked = input.metadata?.researchStatus === "blocked";
+    const title = blocked
+      ? zh
+        ? `第 ${input.round.roundNumber} 轮问题上报${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+        : `Round ${input.round.roundNumber} Issue Report${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+      : zh
+        ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+        : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
     const request = await this.approvalService.createRequest({
       runId: input.session.runId,
       roundId: input.round.id,
@@ -158,7 +163,7 @@ export class IterationService {
       replacesRequestId: input.replacesRequestId,
       closeReplacedRequest: input.closeReplacedRequest,
       capabilities: input.metadata?.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false }
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: true }
         : undefined
     });
     await this.store.upsertIterationRound({
@@ -302,6 +307,7 @@ export class IterationService {
     }
     if (result.decision.action === "approve" || result.decision.action === "auto_approve") {
       const now = result.decision.createdAt;
+      const humanFeedback = await this.approvalService.buildApprovalHumanFeedback(result.approvalRequest, result.decision);
       await this.store.upsertIterationRound({ ...round, status: "report_approved" });
       await this.store.upsertIterationRound({ ...round, status: "completed", endedAt: now });
       await this.store.appendRunTimelineItem({
@@ -321,7 +327,7 @@ export class IterationService {
             sessionId: session.id,
             roundId: nextRound.id,
             previousReportRequestId: result.approvalRequest.id,
-            humanFeedback: result.decision.comment
+            humanFeedback
           }
         };
       }
@@ -366,6 +372,7 @@ export class IterationService {
     request: ApprovalRequest,
     kind: "requirement_published" | "release_report_published"
   ): Promise<unknown> {
+    if (!request.runId) return Promise.resolve();
     return this.store.appendRunTimelineItem({
       id: `timeline-${nanoid(10)}`,
       runId: request.runId,

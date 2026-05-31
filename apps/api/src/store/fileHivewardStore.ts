@@ -1210,7 +1210,11 @@ export class FileHivewardStore implements HivewardStore {
         await Promise.all([...runsById.keys()].map(async (runId) => [runId, await this.readRunArchiveUnlocked(runId)] as const))
       );
       return index.approvalRequests
-        .filter((request) => request.status === "pending" && runsById.has(request.runId))
+        .filter((request): request is ApprovalRequest & { runId: string } =>
+          request.status === "pending" &&
+          typeof request.runId === "string" &&
+          runsById.has(request.runId)
+        )
         .map((request) => {
           const run = runsById.get(request.runId)!;
           const nodeRun = request.nodeRunId
@@ -1245,7 +1249,9 @@ export class FileHivewardStore implements HivewardStore {
             canReject: request.capabilities.reject,
             canReply: request.capabilities.reply,
             canComplete: request.capabilities.complete,
-            canTerminate: request.capabilities.terminate
+            canTerminate: request.capabilities.terminate,
+            canRequestChanges: request.capabilities.requestChanges === true,
+            canRevise: request.capabilities.revise === true
           };
         })
         .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());

@@ -796,7 +796,7 @@ export class SqliteHivewardStore implements HivewardStore {
            WHERE id = ? AND status = 'pending'`
         ).run(
           nextStatus,
-          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false }),
+          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false, requestChanges: false, revise: false }),
           now,
           input.approvalRequestId
         );
@@ -805,7 +805,7 @@ export class SqliteHivewardStore implements HivewardStore {
           this.upsertApprovalThreadSync(approvalThreadFromRequest({
             ...request,
             status: nextStatus,
-            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false, requestChanges: false, revise: false },
             updatedAt: now
           }));
         }
@@ -1009,6 +1009,7 @@ export class SqliteHivewardStore implements HivewardStore {
       }
     }
     return rowsWithRequests.map(({ row, request }) => {
+      const requestRunId = request.runId ?? requireString(row.run_id);
       const parsedOutput = parseOptionalJson(row.node_output_json);
       const output = isRecord(parsedOutput) && parsedOutput.approvalType === "agent"
         ? parsedOutput
@@ -1019,9 +1020,9 @@ export class SqliteHivewardStore implements HivewardStore {
         approvalRequestId: request.id,
         approvalThreadId: approvalThreadIdForRequest(request),
         kind: request.kind,
-        blueprintId: readString(row.blueprint_id) ?? request.runId,
-        blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? request.runId,
-        blueprintRunId: request.runId,
+        blueprintId: readString(row.blueprint_id) ?? requestRunId,
+        blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? requestRunId,
+        blueprintRunId: requestRunId,
         nodeRunId: request.nodeRunId ?? request.id,
         nodeId: request.requestedBy.nodeId ?? readString(row.joined_node_id) ?? request.id,
         nodeLabel: request.requestedBy.label || readString(row.joined_node_label) || request.id,
@@ -1036,7 +1037,9 @@ export class SqliteHivewardStore implements HivewardStore {
         canReject: request.capabilities.reject,
         canReply: request.capabilities.reply,
         canComplete: request.capabilities.complete,
-        canTerminate: request.capabilities.terminate
+        canTerminate: request.capabilities.terminate,
+        canRequestChanges: request.capabilities.requestChanges === true,
+        canRevise: request.capabilities.revise === true
       };
     });
   }

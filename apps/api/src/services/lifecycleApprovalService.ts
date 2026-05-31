@@ -3,6 +3,7 @@ import type {
   ApprovalCapabilities,
   ApprovalDecision,
   ApprovalDecisionAction,
+  ApprovalReply,
   ApprovalRequest,
   ApprovalRequestKind,
   ApprovalRequestStatus,
@@ -19,6 +20,14 @@ export interface ApprovalActionResult {
   approvalRequest: ApprovalRequest;
   decision: ApprovalDecision;
   nextApprovalRequest?: ApprovalRequest;
+}
+
+export interface ApprovalRevisionDraft {
+  title?: string;
+  body?: string;
+  payloadRef?: string;
+  releaseReport?: ReleaseReport;
+  capabilities?: ApprovalCapabilities;
 }
 
 export interface LifecycleApprovalOutcome {
@@ -45,8 +54,44 @@ export class ApprovalConflictError extends Error {
 export class ApprovalService {
   constructor(private readonly store: HivewardStore) {}
 
+  async buildApprovalHumanFeedback(
+    request: ApprovalRequest,
+    decision?: ApprovalDecision
+  ): Promise<string | undefined> {
+    const threadId = request.threadId ?? request.id;
+    const replies = await this.store.listApprovalReplies({ threadId });
+    const entries: ApprovalFeedbackEntry[] = [];
+
+    for (const reply of replies) {
+      if (!isCurrentRequestUserReply(reply, request)) continue;
+      const body = reply.body.trim();
+      if (!body) continue;
+      entries.push({
+        source: "reply",
+        body,
+        createdAt: reply.createdAt
+      });
+    }
+
+    const actionComment = decision?.comment?.trim();
+    if (decision?.actor === "user" && decision.action !== "reply" && actionComment) {
+      entries.push({
+        source: "decision",
+        body: actionComment,
+        createdAt: decision.createdAt
+      });
+    }
+
+    const uniqueEntries = dedupeApprovalFeedback(entries)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const zh = usesChineseText(request.title) ||
+      usesChineseText(request.body) ||
+      uniqueEntries.some((entry) => usesChineseText(entry.body));
+    return formatApprovalHumanFeedback(uniqueEntries, zh);
+  }
+
   async createRequest(input: {
-    runId: string;
+    runId?: string;
     roundId?: string;
     nodeRunId?: string;
     kind: ApprovalRequestKind;
@@ -92,17 +137,19 @@ export class ApprovalService {
     }
 
     await this.store.upsertApprovalRequest(request);
-    await this.store.appendRunTimelineItem({
-      id: `timeline-${nanoid(10)}`,
-      runId: input.runId,
-      createdAt: now,
-      actorNodeId: input.requestedBy.nodeId,
-      actorLabel: input.requestedBy.label,
-      kind: "approval_created",
-      title: input.title,
-      body: input.body,
-      payloadRef: input.payloadRef
-    });
+    if (input.runId && await this.store.getBlueprintRun(input.runId)) {
+      await this.store.appendRunTimelineItem({
+        id: `timeline-${nanoid(10)}`,
+        runId: input.runId,
+        createdAt: now,
+        actorNodeId: input.requestedBy.nodeId,
+        actorLabel: input.requestedBy.label,
+        kind: "approval_created",
+        title: input.title,
+        body: input.body,
+        payloadRef: input.payloadRef
+      });
+    }
     return request;
   }
 
@@ -122,16 +169,81 @@ export class ApprovalService {
     return this.decide(id, "terminate", "terminated", { comment });
   }
 
+  async requestChanges(id: string, comment: string): Promise<ApprovalActionResult> {
+    const trimmed = comment.trim();
+    if (!trimmed) throw new Error("Approval request_changes comment is required.");
+    const current = await this.requirePendingRequest(id, "request_changes");
+    const now = new Date().toISOString();
+    const updated: ApprovalRequest = { ...current, updatedAt: now };
+    const decision = this.buildDecision(current.id, "request_changes", "pending", "user", trimmed, now);
+    return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
+  }
+
+  async markSupersededByRevision(id: string, supersededByRequestId: string): Promise<ApprovalRequest> {
+    const current = await this.requireRequest(id);
+    if (current.status !== "pending") {
+      throw new ApprovalConflictError("Approval request is already closed.");
+    }
+    const superseded: ApprovalRequest = {
+      ...current,
+      status: "superseded",
+      supersededByRequestId,
+      capabilities: { ...emptyApprovalCapabilities },
+      updatedAt: new Date().toISOString()
+    };
+    return this.store.upsertApprovalRequest(superseded);
+  }
+
+  async revise(id: string, message: string, revisionOverride: ApprovalRevisionDraft = {}): Promise<ApprovalActionResult> {
+    const feedback = message.trim();
+    if (!feedback) throw new Error("Approval revision message is required.");
+
+    const current = await this.requirePendingRequest(id, "revise");
+    const revision = current.revision + 1;
+    const draft = await this.buildDecisionRevision(current, feedback, revision, revisionOverride);
+    const now = new Date().toISOString();
+    const nextApprovalRequestId = `approval-${nanoid(10)}`;
+    const nextApprovalRequest: ApprovalRequest = {
+      ...current,
+      id: nextApprovalRequestId,
+      status: "pending",
+      title: draft.title,
+      body: draft.body,
+      payloadRef: draft.payloadRef,
+      revision,
+      replacesRequestId: current.id,
+      supersededByRequestId: undefined,
+      capabilities: draft.capabilities,
+      requestedAt: now,
+      updatedAt: now
+    };
+    const releaseReport = draft.releaseReport
+      ? {
+          ...draft.releaseReport,
+          approvalRequestId: nextApprovalRequestId,
+          createdAt: draft.releaseReport.createdAt || now
+        }
+      : undefined;
+    const decision = this.buildDecision(current.id, "revise", "superseded", "user", feedback, now);
+    const superseded: ApprovalRequest = {
+      ...current,
+      status: "superseded",
+      supersededByRequestId: nextApprovalRequestId,
+      capabilities: { ...emptyApprovalCapabilities },
+      updatedAt: now
+    };
+    return this.applyDecisionOrThrow({
+      approvalRequest: superseded,
+      decision,
+      nextApprovalRequest,
+      releaseReport
+    });
+  }
+
   async reply(
     id: string,
     message: string,
-    revisionOverride: {
-      title?: string;
-      body?: string;
-      payloadRef?: string;
-      releaseReport?: ReleaseReport;
-      capabilities?: ApprovalCapabilities;
-    } = {}
+    revisionOverride: ApprovalRevisionDraft = {}
   ): Promise<ApprovalActionResult> {
     void revisionOverride;
     return this.recordPendingReply(id, message);
@@ -292,7 +404,7 @@ export class ApprovalService {
       decision: input.decision,
       nextApprovalRequest: input.nextApprovalRequest,
       releaseReport: input.releaseReport,
-      timelineItem: await this.store.getBlueprintRun(input.approvalRequest.runId)
+      timelineItem: input.approvalRequest.runId && await this.store.getBlueprintRun(input.approvalRequest.runId)
         ? this.buildDecisionTimelineItem(input.approvalRequest, input.decision)
         : undefined
     });
@@ -303,6 +415,7 @@ export class ApprovalService {
   }
 
   private appendDecisionTimeline(request: ApprovalRequest, decision: ApprovalDecision): Promise<unknown> {
+    if (!request.runId) return Promise.resolve();
     return this.store.appendRunTimelineItem(this.buildDecisionTimelineItem(request, decision));
   }
 
@@ -310,6 +423,7 @@ export class ApprovalService {
     request: ApprovalRequest,
     decision: ApprovalDecision
   ): Omit<RunTimelineItem, "sequence"> & { sequence?: number } {
+    if (!request.runId) throw new Error("Approval decision timeline requires a blueprint run id.");
     return {
       id: `timeline-${nanoid(10)}`,
       runId: request.runId,
@@ -323,17 +437,32 @@ export class ApprovalService {
     };
   }
 
-  private async buildReplyRevision(
+  private async buildDecisionRevision(
     current: ApprovalRequest,
     message: string,
-    revision: number
+    revision: number,
+    override: ApprovalRevisionDraft
   ): Promise<{
     title: string;
     body: string;
     payloadRef?: string;
     releaseReport?: ReleaseReport;
+    capabilities: ApprovalCapabilities;
   }> {
+    if (override.title || override.body || override.payloadRef || override.releaseReport || override.capabilities) {
+      return {
+        title: override.title ?? appendRevisionSuffix(current.title, revision),
+        body: override.body ?? current.body,
+        payloadRef: override.payloadRef ?? current.payloadRef,
+        releaseReport: override.releaseReport,
+        capabilities: override.capabilities ?? current.capabilities
+      };
+    }
+
     if (current.kind === "manager_release_report" && current.roundId) {
+      if (!current.runId) {
+        throw new Error("Release report revision requires a blueprint run.");
+      }
       const reports = (await this.store.listReleaseReports(current.runId)).filter((report) => report.roundId === current.roundId);
       const currentReport = reports.find((report) => report.approvalRequestId === current.id || report.id === current.payloadRef) ?? reports.at(-1);
       const round = (await this.store.listIterationRounds({ runId: current.runId }))
@@ -356,6 +485,7 @@ export class ApprovalService {
         title,
         body: `${summary}\n\nArtifacts:\n${artifactBody}`,
         payloadRef: reportId,
+        capabilities: current.capabilities,
         releaseReport: {
           id: reportId,
           runId: current.runId,
@@ -383,11 +513,53 @@ export class ApprovalService {
         "Revised request:",
         `${current.body}\n\nRequested adjustment: ${message}`
       ].join("\n\n"),
-      payloadRef: current.payloadRef
+      payloadRef: current.payloadRef,
+      capabilities: current.capabilities
     };
   }
 }
 
 function appendRevisionSuffix(title: string, revision: number): string {
   return `${title.replace(/\s+v\d+$/i, "")} v${revision}`;
+}
+
+type ApprovalFeedbackEntry = {
+  source: "reply" | "decision";
+  body: string;
+  createdAt: string;
+};
+
+function isCurrentRequestUserReply(reply: ApprovalReply, request: ApprovalRequest): boolean {
+  if (reply.actor !== "user") return false;
+  if (reply.approvalRequestId) return reply.approvalRequestId === request.id;
+  return reply.threadId === (request.threadId ?? request.id);
+}
+
+function dedupeApprovalFeedback(entries: ApprovalFeedbackEntry[]): ApprovalFeedbackEntry[] {
+  const seen = new Set<string>();
+  const unique: ApprovalFeedbackEntry[] = [];
+  for (const entry of entries) {
+    const key = entry.body.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(entry);
+  }
+  return unique;
+}
+
+function formatApprovalHumanFeedback(entries: ApprovalFeedbackEntry[], zh: boolean): string | undefined {
+  if (entries.length === 0) return undefined;
+  return [
+    zh ? "Human feedback / 用户验收反馈:" : "Human feedback / user acceptance feedback:",
+    ...entries.map((entry, index) => `${index + 1}. ${approvalFeedbackSourceLabel(entry.source, zh)}: ${entry.body}`)
+  ].join("\n");
+}
+
+function approvalFeedbackSourceLabel(source: ApprovalFeedbackEntry["source"], zh: boolean): string {
+  if (zh) return source === "reply" ? "审批留言" : "审批动作备注";
+  return source === "reply" ? "Approval message" : "Approval action note";
+}
+
+function usesChineseText(value: string | undefined): boolean {
+  return /[\u3400-\u9fff]/.test(value ?? "");
 }

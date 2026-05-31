@@ -357,7 +357,7 @@ export class RoundPreflightService {
         throw new RoundPreflightBlockedError(`Requirement agent ${requirementAgent.config.label} returned no usable plan output.`, requirementAgent.config.label, executed.artifactIds);
       }
       return {
-        source: input.previousRequirement ? "revised_from_reply" : "agent_generated",
+        source: input.previousRequirement ? "revised_from_feedback" : "agent_generated",
         body: parsed.text,
         assumptions: parsed.assumptions ?? defaultAssumptions(input.research),
         risks: parsed.risks ?? defaultRisks(input.research)
@@ -378,7 +378,7 @@ export class RoundPreflightService {
       throw new RoundPreflightBlockedError("Manager plan fallback returned no usable plan output.", "manager_fallback", executed.artifactIds);
     }
     return {
-      source: input.previousRequirement ? "revised_from_reply" : "manager_fallback",
+      source: input.previousRequirement ? "revised_from_feedback" : "manager_fallback",
       body: parsed.text,
       assumptions: parsed.assumptions ?? defaultAssumptions(input.research),
       risks: parsed.risks ?? defaultRisks(input.research)
@@ -510,7 +510,7 @@ export class RoundPreflightService {
       risks
     });
     return {
-      body: formatBlockedRoundPlan({
+      body: formatBlockedRoundIssueReport({
         roundNumber: input.round.roundNumber,
         revision: input.revision ?? 1,
         blocker,
@@ -551,7 +551,7 @@ function formatRoundExecutionPlan(input: {
     return [
       `# 第 ${input.roundNumber} 轮执行计划${input.revision > 1 ? ` v${input.revision}` : ""}`,
       "",
-      "前期准备工作已完成。请确认本轮执行计划；确认后会开始后续 Agent 工作。如需调整，请直接回复修改意见。",
+      "前期准备工作已完成。请确认本轮执行计划；确认后会开始后续 Agent 工作。留言只记录评论；如需调整，请使用显式重新生成动作。",
       "",
       `调研来源：${input.research.status}（${input.research.source}）`,
       `计划来源：${input.planSource}`,
@@ -604,6 +604,54 @@ function formatRoundExecutionPlan(input: {
   ].filter((part) => part !== undefined).join("\n");
 }
 
+function formatBlockedRoundIssueReport(input: {
+  roundNumber: number;
+  revision: number;
+  blocker: RoundPreflightBlockedError;
+  context: RoundStartContext;
+}): string {
+  const zh = usesChineseText([
+    input.blocker.humanReportMd,
+    input.blocker.message,
+    input.context.humanFeedback
+  ].filter((value): value is string => Boolean(value)).join("\n"));
+  const technicalDetail = input.blocker.humanReportMd ?? input.blocker.message;
+  if (zh) {
+    return [
+      `# 第 ${input.roundNumber} 轮问题上报${input.revision > 1 ? ` v${input.revision}` : ""}`,
+      "本轮还没有生成可审批的执行计划。Manager 在预检阶段发现上游交付不满足平台要求，所以先暂停执行并上报问题。",
+      input.context.humanFeedback ? `用户补充：${input.context.humanFeedback}` : undefined,
+      "",
+      "## 发生了什么",
+      "上游 Agent 的输出没有达到当前节点继续执行所需的交付格式。平台没有把它当作有效交付物发布，因此后续计划不能安全进入执行。",
+      "",
+      "## 你现在可以怎么做",
+      "- 如果你认为方向没问题，点击“重新生成”，让相关 Agent 按当前要求重新产出。",
+      "- 如果你要补充目标、范围或限制，请先留言说明，再重新生成。",
+      "- 如果这轮不应该继续，点击“驳回”终止这次计划。",
+      "",
+      "## 技术详情",
+      technicalDetail
+    ].filter((part) => part !== undefined).join("\n");
+  }
+  return [
+    `# Round ${input.roundNumber} Issue Report${input.revision > 1 ? ` v${input.revision}` : ""}`,
+    "No approvable execution plan was generated for this round. The Manager paused execution because an upstream deliverable did not satisfy the platform contract.",
+    input.context.humanFeedback ? `Human feedback: ${input.context.humanFeedback}` : undefined,
+    "",
+    "## What happened",
+    "An upstream Agent output was not publishable as the required deliverable, so the next execution plan cannot safely proceed.",
+    "",
+    "## What you can do",
+    "- Use Regenerate to ask the responsible Agent to produce the deliverable again.",
+    "- Leave a comment first if you want to add goals, scope, constraints, or corrections.",
+    "- Use Reject if this round should not continue.",
+    "",
+    "## Technical detail",
+    technicalDetail
+  ].filter((part) => part !== undefined).join("\n");
+}
+
 function formatBlockedRoundPlan(input: {
   roundNumber: number;
   revision: number;
@@ -626,7 +674,8 @@ function formatBlockedRoundPlan(input: {
       input.blocker.humanReportMd ?? input.blocker.message,
       "",
       "## 需要用户处理",
-      "- 请回复缺失的凭据、权限、事实或修订指令。",
+      "- 请留言补充缺失的凭据、权限、事实或修订指令。",
+      "- 信息补齐后，请使用显式重新生成动作来生成修订计划。",
       "- 在修订计划生成前，本审批不能直接批准进入执行。"
     ].filter((part) => part !== undefined).join("\n");
   }
@@ -640,7 +689,8 @@ function formatBlockedRoundPlan(input: {
     input.blocker.humanReportMd ?? input.blocker.message,
     "",
     "## Required Action",
-    "- Reply with missing credentials, permissions, facts, or revised instructions.",
+    "- Leave a comment with missing credentials, permissions, facts, or revised instructions.",
+    "- Use the explicit revise action after the missing information is available.",
     "- This approval cannot be approved into execution until a revised plan is generated."
   ].filter((part) => part !== undefined).join("\n");
 }

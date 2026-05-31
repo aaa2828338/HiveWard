@@ -111,7 +111,7 @@ describe("run state sync", () => {
     ]);
   });
 
-  it("keeps an approval visible while a reply rerun is in progress", () => {
+  it("keeps a legacy harness approval visible while the node is running", () => {
     const runView = createRunView("running");
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
@@ -211,6 +211,51 @@ describe("run state sync", () => {
           createdAt: "2026-05-21T01:05:00.000Z"
         }
       ]
+    });
+  });
+
+  it("maps explicit request-change and revision capabilities into pending approval items", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-change",
+        kind: "agent_proposal",
+        status: "pending",
+        capabilities: {
+          approve: true,
+          reject: true,
+          reply: true,
+          complete: false,
+          terminate: false,
+          requestChanges: true,
+          revise: false
+        }
+      }),
+      createApprovalRequest({
+        id: "approval-plan-revise",
+        kind: "iteration_requirement_plan",
+        status: "pending",
+        capabilities: {
+          approve: true,
+          reject: true,
+          reply: true,
+          complete: false,
+          terminate: false,
+          requestChanges: false,
+          revise: true
+        }
+      })
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-agent-change")).toMatchObject({
+      canRequestChanges: true,
+      canRevise: false
+    });
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-plan-revise")).toMatchObject({
+      canRequestChanges: false,
+      canRevise: true
     });
   });
 

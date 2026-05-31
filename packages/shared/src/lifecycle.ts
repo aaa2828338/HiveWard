@@ -124,7 +124,7 @@ export interface ApprovalReply {
 
 export interface ApprovalRequest {
   id: string;
-  runId: string;
+  runId?: string;
   roundId?: string;
   nodeRunId?: string;
   kind: ApprovalRequestKind;
@@ -208,7 +208,7 @@ export interface IterationRound {
   researchStatus?: "not_required" | "user_provided" | "context_sufficient" | "agent_generated" | "manager_fallback" | "assumption_based" | "blocked";
   researchSummary?: string;
   researchArtifactIds?: string[];
-  planSource?: "user_provided" | "agent_generated" | "manager_fallback" | "revised_from_reply";
+  planSource?: "user_provided" | "agent_generated" | "manager_fallback" | "revised_from_feedback";
   contextSnapshotId?: string;
   startedAt: string;
   endedAt?: string;
@@ -371,7 +371,9 @@ export const emptyApprovalCapabilities = Object.freeze({
   reject: false,
   reply: false,
   complete: false,
-  terminate: false
+  terminate: false,
+  requestChanges: false,
+  revise: false
 }) satisfies ApprovalCapabilities;
 
 export function resolveApprovalCapabilities(
@@ -383,16 +385,18 @@ export function resolveApprovalCapabilities(
 
   switch (kind) {
     case "iteration_requirement_plan":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: true };
     case "agent_proposal":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, requestChanges: true, revise: false };
+    case "manager_release_report":
+      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false, requestChanges: false, revise: true };
     case "blueprint_proposal":
     case "leader_delegation":
     case "company_config":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: false };
-    case "manager_release_report":
-      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false };
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: false };
     case "run_request":
     case "generic_message":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: true };
+      return { approve: true, reject: true, reply: true, complete: false, terminate: true, requestChanges: false, revise: false };
   }
 }
 

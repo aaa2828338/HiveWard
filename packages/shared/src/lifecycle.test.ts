@@ -21,15 +21,22 @@ describe("lifecycle contracts", () => {
     expect(approvalActionCanTriggerWorkflow("reject")).toBe(false);
   });
 
-  it("does not enable future request-change actions through the default capability matrix", () => {
+  it("declares explicit request-change and revision capabilities by request kind", () => {
     const requirement = resolveApprovalCapabilities("iteration_requirement_plan", "pending");
     const release = resolveApprovalCapabilities("manager_release_report", "pending");
+    const agent = resolveApprovalCapabilities("agent_proposal", "pending");
+    const delegation = resolveApprovalCapabilities("leader_delegation", "pending");
 
     expect(capabilitiesAllow(requirement, "reply")).toBe(true);
     expect(capabilitiesAllow(requirement, "request_changes")).toBe(false);
-    expect(capabilitiesAllow(requirement, "revise")).toBe(false);
+    expect(capabilitiesAllow(requirement, "revise")).toBe(true);
     expect(capabilitiesAllow(release, "complete")).toBe(true);
     expect(capabilitiesAllow(release, "request_changes")).toBe(false);
+    expect(capabilitiesAllow(release, "revise")).toBe(true);
+    expect(capabilitiesAllow(agent, "request_changes")).toBe(true);
+    expect(capabilitiesAllow(agent, "revise")).toBe(false);
+    expect(capabilitiesAllow(delegation, "request_changes")).toBe(false);
+    expect(capabilitiesAllow(delegation, "revise")).toBe(false);
   });
 
   it("derives thread state from request lifecycle without splitting revisions into facts", () => {

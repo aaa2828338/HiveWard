@@ -67,7 +67,7 @@ import type {
   BlueprintRunView,
   ChatPermissionMode
 } from "@hiveward/shared";
-import { api } from "./lib/api";
+import { api, isClosedApprovalConflictError } from "./lib/api";
 import { appSectionGroups, appSystemLabels, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { harnessDisplayLabel, harnessDisplayParts, isHarnessId } from "./lib/harness-labels";
@@ -763,6 +763,27 @@ export function App() {
     }
   }, []);
 
+  const withApprovalRequestBusy = useCallback(async <T,>(action: string, work: () => Promise<T>): Promise<T | undefined> => {
+    setBusyAction(action);
+    setError(undefined);
+    try {
+      return await work();
+    } catch (actionError) {
+      if (isClosedApprovalConflictError(actionError)) {
+        try {
+          await hydrateWorkspace({ blueprintId: blueprintRef.current?.id });
+        } catch (refreshError) {
+          setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
+        }
+        return undefined;
+      }
+      setError(actionError instanceof Error ? actionError.message : errorMessageForAction(action, messageRef.current));
+      return undefined;
+    } finally {
+      setBusyAction(undefined);
+    }
+  }, [hydrateWorkspace]);
+
   const applyRunView = useCallback((runView: BlueprintRunView) => {
     setRunDetailsById((current) => ({ ...current, [runView.run.id]: runView }));
     setRunSummaries((current) => upsertRunSummary(current, runView.run));
@@ -1309,39 +1330,57 @@ export function App() {
 
   const approveApprovalRequest = useCallback(
     (approvalRequestId: string, comment?: string, selectedReplyId?: string) => {
-      void withBusy("approveApprovalRequest", async () => {
+      void withApprovalRequestBusy("approveApprovalRequest", async () => {
         await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment, selectedReplyId));
       });
     },
-    [applyApprovalRequestResponse, withBusy]
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
   const rejectApprovalRequest = useCallback(
     (approvalRequestId: string, comment?: string) => {
-      void withBusy("rejectApprovalRequest", async () => {
+      void withApprovalRequestBusy("rejectApprovalRequest", async () => {
         await applyApprovalRequestResponse(await api.rejectApprovalRequest(approvalRequestId, comment));
       });
     },
-    [applyApprovalRequestResponse, withBusy]
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
   const replyToApprovalRequest = useCallback(
     (approvalRequestId: string, message: string) => {
-      void withBusy("replyApprovalRequest", async () => {
+      void withApprovalRequestBusy("replyApprovalRequest", async () => {
         await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
       });
     },
-    [applyApprovalRequestResponse, withBusy]
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
+  );
+
+  const requestChangesApprovalRequest = useCallback(
+    (approvalRequestId: string, comment: string) => {
+      void withApprovalRequestBusy("requestChangesApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.requestChangesApprovalRequest(approvalRequestId, comment));
+      });
+    },
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
+  );
+
+  const reviseApprovalRequest = useCallback(
+    (approvalRequestId: string, message: string) => {
+      void withApprovalRequestBusy("reviseApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.reviseApprovalRequest(approvalRequestId, message));
+      });
+    },
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
   const completeRunApproval = useCallback(
     (approvalRequestId: string, comment?: string) => {
-      void withBusy("completeRunApproval", async () => {
+      void withApprovalRequestBusy("completeRunApproval", async () => {
         const response = await api.completeApprovalRequest(approvalRequestId, comment);
         await applyApprovalRequestResponse(response);
       });
     },
-    [applyApprovalRequestResponse, withBusy]
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
   const selectRunApprovalReply = useCallback(
@@ -1701,6 +1740,7 @@ export function App() {
           inboxItems={inboxItems}
           language={language}
           t={t}
+          actionPending={isApprovalInboxActionBusy(busyAction)}
           onApprove={approveRun}
           onApproveApprovalRequest={approveApprovalRequest}
           onComplete={completeRunApproval}
@@ -1708,6 +1748,8 @@ export function App() {
           onRejectApprovalRequest={rejectApprovalRequest}
           onReply={replyToRunApproval}
           onReplyApprovalRequest={replyToApprovalRequest}
+          onRequestChangesApprovalRequest={requestChangesApprovalRequest}
+          onReviseApprovalRequest={reviseApprovalRequest}
           onSelectApprovalReply={selectRunApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
@@ -3989,4 +4031,22 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "configureOpenClawChannel") return t.errors.catalog;
   if (action === "refreshCatalog") return t.errors.catalog;
   return t.errors.load;
+}
+
+function isApprovalInboxActionBusy(action: string | undefined): boolean {
+  return Boolean(action && (
+    action === "approveRun" ||
+    action === "rejectRunApproval" ||
+    action === "replyRunApproval" ||
+    action === "approveApprovalRequest" ||
+    action === "rejectApprovalRequest" ||
+    action === "replyApprovalRequest" ||
+    action === "requestChangesApprovalRequest" ||
+    action === "reviseApprovalRequest" ||
+    action === "completeRunApproval" ||
+    action === "selectRunApprovalReply" ||
+    action === "approveInboxItem" ||
+    action === "rejectInboxItem" ||
+    action === "replyInboxItem"
+  ));
 }

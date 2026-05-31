@@ -1211,6 +1211,7 @@ export function ApprovalsPage({
   inboxItems,
   language,
   t,
+  actionPending = false,
   onApprove,
   onApproveApprovalRequest,
   onComplete,
@@ -1218,6 +1219,8 @@ export function ApprovalsPage({
   onRejectApprovalRequest,
   onReply,
   onReplyApprovalRequest,
+  onRequestChangesApprovalRequest,
+  onReviseApprovalRequest,
   onSelectApprovalReply,
   onReplyInboxItem,
   onApproveInboxItem,
@@ -1228,6 +1231,7 @@ export function ApprovalsPage({
   inboxItems: InboxItem[];
   language: Language;
   t: Messages;
+  actionPending?: boolean;
   onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string, selectedReplyId?: string) => void;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string, selectedReplyId?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
@@ -1235,6 +1239,8 @@ export function ApprovalsPage({
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
+  onRequestChangesApprovalRequest: (approvalRequestId: string, comment: string) => void;
+  onReviseApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSelectApprovalReply: (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
@@ -1272,12 +1278,13 @@ export function ApprovalsPage({
       : undefined;
   const selectedApproval = selectedApprovalThread?.approval;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
-  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
-  const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
+  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved && !actionPending);
+  const canReplyToSelection = Boolean(!actionPending && (selectedApproval?.canReply || selectedInboxOperable));
   const canApproveSelection = Boolean(
-    selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable
+    !actionPending && (selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable)
   );
-  const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
+  const canRejectSelection = Boolean(!actionPending && ((selectedApproval && selectedApproval.canReject) || selectedInboxOperable));
+  const canRequestChangesSelection = Boolean(!actionPending && selectedApproval?.approvalRequestId && (selectedApproval.canRequestChanges || selectedApproval.canRevise));
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
   const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
   const selectedMessages = useMemo(
@@ -1445,6 +1452,17 @@ export function ApprovalsPage({
     clearReplyDraft();
   };
 
+  const requestChangesSelectedThread = () => {
+    const feedback = selectedReplyDraft.trim();
+    if (!selectedApproval?.approvalRequestId || !feedback) return;
+    if (selectedApproval.canRequestChanges) {
+      onRequestChangesApprovalRequest(selectedApproval.approvalRequestId, feedback);
+    } else if (selectedApproval.canRevise) {
+      onReviseApprovalRequest(selectedApproval.approvalRequestId, feedback);
+    }
+    clearReplyDraft();
+  };
+
   return (
     <section className="page-grid trace-page-grid inbox-page-grid">
       <div className="trace-page-title inbox-page-title">
@@ -1526,7 +1544,7 @@ export function ApprovalsPage({
                             className="inbox-row-action primary-action"
                             title={processed ? inboxCopy.processedAction : t.actions.approve}
                             aria-label={t.actions.approve}
-                            disabled={processed}
+                            disabled={processed || actionPending}
                             onClick={() => onApproveInboxItem(item.id)}
                           >
                             <BadgeCheck size={16} />
@@ -1536,7 +1554,7 @@ export function ApprovalsPage({
                             className="inbox-row-action danger-action"
                             title={processed ? inboxCopy.processedAction : inboxCopy.reject}
                             aria-label={inboxCopy.reject}
-                            disabled={processed}
+                            disabled={processed || actionPending}
                             onClick={() => onRejectInboxItem(item.id)}
                           >
                             <Trash2 size={15} />
@@ -1584,7 +1602,7 @@ export function ApprovalsPage({
                           className="inbox-row-action primary-action"
                           title={canApproveOrComplete ? approveOrCompleteLabel : inboxCopy.processedAction}
                           aria-label={approveOrCompleteLabel}
-                          disabled={!canApproveOrComplete}
+                          disabled={!canApproveOrComplete || actionPending}
                           onClick={() => {
                             if (approval.canApprove === false && approval.canComplete && approval.approvalRequestId) {
                               onComplete(approval.approvalRequestId);
@@ -1604,7 +1622,7 @@ export function ApprovalsPage({
                           className="inbox-row-action danger-action"
                           title={inboxCopy.reject}
                           aria-label={inboxCopy.reject}
-                          disabled={!approval.canReject}
+                          disabled={!approval.canReject || actionPending}
                           onClick={() => {
                             if (approval.approvalRequestId) {
                               onRejectApprovalRequest(approval.approvalRequestId);
@@ -1640,11 +1658,14 @@ export function ApprovalsPage({
             canApprove={canApproveSelection}
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
+            canRequestChanges={canRequestChangesSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
+            onRequestChanges={requestChangesSelectedThread}
             onSelectSolution={selectApprovalSolution}
             onSendReply={sendLocalReply}
             replyDraft={selectedReplyDraft}
+            requestChangesLabel={selectedApproval?.canRevise ? inboxCopy.regenerate : inboxCopy.requestChanges}
           />
         </div>
       </section>
@@ -1728,11 +1749,14 @@ function InboxConversationPanel({
   canApprove,
   canReject,
   canReply,
+  canRequestChanges,
   onApprove,
   onReject,
   onReplyDraftChange,
+  onRequestChanges,
   onSelectSolution,
-  onSendReply
+  onSendReply,
+  requestChangesLabel
 }: {
   approval?: PendingApprovalItem;
   approveLabel: string;
@@ -1744,14 +1768,20 @@ function InboxConversationPanel({
   canApprove: boolean;
   canReject: boolean;
   canReply: boolean;
+  canRequestChanges: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
+  onRequestChanges: () => void;
   onSelectSolution: (solutionId: string) => void;
   onSendReply: () => void;
+  requestChangesLabel: string;
 }) {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const hasSelection = Boolean(inboxItem || approval);
+  const requestChangesDescription = requestChangesLabel === copy.regenerate
+    ? copy.regenerateDescription
+    : copy.requestChangesDescription;
   const title = inboxItem?.title ?? (approval ? approvalSubject(approval) : copy.noSelectionTitle);
   const subtitle = inboxItem
     ? inboxItem.blueprintName ?? inboxItem.targetRoleId ?? inboxItem.createdByRoleId
@@ -1829,8 +1859,8 @@ function InboxConversationPanel({
       <div className="chat-composer inbox-conversation-composer">
         <textarea
           value={replyDraft}
-          disabled={!canReply}
-          placeholder={!hasSelection ? copy.noSelectionBody : canReply ? copy.replyPlaceholder : copy.processedPlaceholder}
+          disabled={!canReply && !canRequestChanges}
+          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canRequestChanges ? copy.replyPlaceholder : copy.processedPlaceholder}
           onChange={(event) => onReplyDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -1843,6 +1873,16 @@ function InboxConversationPanel({
           <button type="button" disabled={!canReply || !replyDraft.trim()} onClick={onSendReply}>
             <Send size={15} />
             {copy.sendReply}
+          </button>
+          <button
+            type="button"
+            disabled={!canRequestChanges || !replyDraft.trim()}
+            title={requestChangesDescription}
+            aria-label={requestChangesDescription}
+            onClick={onRequestChanges}
+          >
+            <RefreshCw size={15} />
+            {requestChangesLabel}
           </button>
           <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
@@ -1882,8 +1922,12 @@ type InboxCopy = {
   payload: string;
   processedAction: string;
   processedPlaceholder: string;
+  regenerate: string;
+  regenerateDescription: string;
   reject: string;
   replyPlaceholder: string;
+  requestChanges: string;
+  requestChangesDescription: string;
   sendReply: string;
   solutionSelected: string;
   status: string;
@@ -1922,23 +1966,27 @@ function getInboxCopy(language: Language): InboxCopy {
       listTitle: "\u6536\u4ef6",
       listMetric: (visibleCount, totalCount, pendingCount) =>
         `显示 ${visibleCount}/${totalCount} 封，${pendingCount} 封待处理`,
-      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u56de\u590d\u6846\u3002",
+      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u7559\u8a00\u6846\u3002",
       noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
       noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
       openedAt: "\u53d1\u8d77\u65f6\u95f4",
       payload: "\u8be6\u7ec6\u5185\u5bb9",
       processedAction: "已处理，不能重复操作",
-      processedPlaceholder: "这封收件已经处理，不能继续回复或再次审批。",
+      processedPlaceholder: "这封收件已经处理，不能继续留言或再次审批。",
+      regenerate: "\u91cd\u65b0\u751f\u6210",
+      regenerateDescription: "\u91cd\u65b0\u8fd0\u884c\u5e76\u751f\u6210\u65b0\u7248\u672c",
       reject: "\u9a73\u56de",
-      replyPlaceholder: "\u8f93\u5165\u56de\u590d\uff0cShift+Enter \u6362\u884c...",
-      sendReply: "\u56de\u590d",
+      replyPlaceholder: "\u8f93\u5165\u7559\u8a00\uff0c\u4e0d\u4f1a\u6539\u53d8\u6d41\u7a0b\uff1bShift+Enter \u6362\u884c...",
+      requestChanges: "\u8bf7\u6c42\u4fee\u6539",
+      requestChangesDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u65b0\u7248\u672c",
+      sendReply: "\u7559\u8a00",
       solutionSelected: "\u5df2\u9009\u7528",
       status: "状态",
       system: "HiveWard",
       timeFilter: "时间",
       to: "\u53d1\u7ed9",
       useSolution: "\u4f7f\u7528\u6b64\u65b9\u6848",
-      waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u56de\u590d...`,
+      waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u8f93\u51fa...`,
       you: "\u4f60",
       youAvatar: "\u4f60"
     };
@@ -1962,23 +2010,27 @@ function getInboxCopy(language: Language): InboxCopy {
     listTitle: "Messages",
     listMetric: (visibleCount, totalCount, pendingCount) =>
       `${visibleCount}/${totalCount} shown, ${pendingCount} pending`,
-    noSelectionBody: "Select a message on the left to show its conversation and reply box here.",
+    noSelectionBody: "Select a message on the left to show its conversation and comment box here.",
     noSelectionTitle: "Select a message",
     noUpstreamOutput: "No previous node output was captured.",
     openedAt: "Opened",
     payload: "Payload",
     processedAction: "Already processed",
     processedPlaceholder: "This inbox item has already been processed.",
+    regenerate: "Regenerate",
+    regenerateDescription: "Rerun this step and generate a new version",
     reject: "Reject",
-    replyPlaceholder: "Reply, Shift+Enter for a new line...",
-    sendReply: "Reply",
+    replyPlaceholder: "Add a comment; comments do not change the workflow. Shift+Enter for a new line...",
+    requestChanges: "Request changes",
+    requestChangesDescription: "Ask the Agent to create a revised version from this comment",
+    sendReply: "Comment",
     solutionSelected: "Selected",
     status: "Status",
     system: "HiveWard",
     timeFilter: "Time",
     to: "To",
     useSolution: "Use this option",
-    waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel}...`,
+    waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel} output...`,
     you: "You",
     youAvatar: "You"
   };
@@ -2111,19 +2163,19 @@ function approvalStatusLabel(approval: PendingApprovalItem, language: Language, 
     if (approval.status === "approved") return "已批准";
     if (approval.status === "completed") return "已完成";
     if (approval.status === "rejected") return "已驳回";
-    if (approval.status === "replied") return "已回复";
+    if (approval.status === "replied") return "已留言";
     if (approval.status === "terminated") return "已终止";
     if (approval.status === "superseded") return "已替换";
-    if (approval.status === "replying") return "回复中";
+    if (approval.status === "replying") return "处理中";
     return "待处理";
   }
   if (approval.status === "approved") return "Approved";
   if (approval.status === "completed") return "Completed";
   if (approval.status === "rejected") return "Rejected";
-  if (approval.status === "replied") return "Replied";
+  if (approval.status === "replied") return "Commented";
   if (approval.status === "terminated") return "Terminated";
   if (approval.status === "superseded") return "Superseded";
-  if (approval.status === "replying") return "Replying";
+  if (approval.status === "replying") return "Working";
   return t.status.waiting_approval;
 }
 
@@ -2171,7 +2223,10 @@ function formalInboxTypeLabel(type: InboxItem["type"], language: Language): stri
 }
 
 function approvalSubject(approval: PendingApprovalItem): string {
-  if (approval.kind === "iteration_requirement_plan") return "Round Execution Plan";
+  if (approval.kind === "iteration_requirement_plan") {
+    if (approval.canApprove === false && (approval.canRevise || approval.canRequestChanges)) return "问题上报";
+    return "计划确认";
+  }
   return approval.nodeLabel || approval.blueprintName;
 }
 
@@ -4694,7 +4749,7 @@ function buildRequirementApprovalTimelineBody(activeRun: BlueprintRunView, timel
     `## ${zh ? "\u5f85\u786e\u8ba4\u4e8b\u9879" : "Approval needed"}`,
     "",
     pending
-      ? (zh ? "\u8bf7\u5728\u5ba1\u6279/\u6536\u4ef6\u7bb1\u4e2d\u786e\u8ba4\u672c\u8f6e\u6267\u884c\u8ba1\u5212\uff0c\u6216\u56de\u590d\u4fee\u6539\u610f\u89c1\u3002" : "Review the execution plan in approvals/inbox, then approve it or reply with changes.")
+      ? (zh ? "\u8bf7\u5728\u5ba1\u6279/\u6536\u4ef6\u7bb1\u4e2d\u786e\u8ba4\u672c\u8f6e\u6267\u884c\u8ba1\u5212\uff0c\u7559\u8a00\u4ec5\u4f5c\u8bc4\u8bba\uff1b\u5982\u9700\u4fee\u8ba2\u8bf7\u4f7f\u7528\u91cd\u65b0\u751f\u6210\u52a8\u4f5c\u3002" : "Review the execution plan in approvals/inbox. Comments stay as messages; use Regenerate to request a revised plan.")
       : (zh ? "\u65e0\uff0c\u8be5\u8ba1\u5212\u5df2\u5904\u7406\u3002" : "None; this plan has already been handled.")
   ].join("\n");
 }

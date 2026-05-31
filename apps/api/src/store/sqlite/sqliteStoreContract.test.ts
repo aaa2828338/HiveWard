@@ -188,7 +188,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expectedStatus: "pending",
         nextRequest: approvedRequest,
         decision,
-        timelineItem: createDecisionTimeline("timeline-approval-once", approval.runId, decision)
+        timelineItem: createDecisionTimeline("timeline-approval-once", run.id, decision)
       })).resolves.toMatchObject({ status: "applied" });
       await expect(store.applyApprovalDecision({
         approvalRequestId: approval.id,

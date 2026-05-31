@@ -24,6 +24,7 @@ import {
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
 import { SqliteHivewardStore } from "../store/sqlite/sqliteHivewardStore";
+import { ApprovalService } from "../services/lifecycleApprovalService";
 import { BlueprintWorker } from "./blueprintWorker";
 
 class ScriptedAdapter implements RuntimeAdapter {
@@ -843,6 +844,223 @@ describe("BlueprintWorker", () => {
     });
     expect(adapter.calls).toHaveLength(1);
     expect(adapter.sendCalls).toHaveLength(0);
+  });
+
+  it("reruns an Agent approval only through explicit request_changes", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-agent-change-1"),
+      createStartedAgentTask("task-agent-change-2")
+    ], [
+      createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "request_changes", {
+      comment: "Regenerate with sources."
+    });
+
+    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const revisedRequest = revisedView.approvalRequests
+      ?.filter((request) => request.kind === "agent_proposal" && request.status === "pending")
+      .at(-1);
+    const revisedNode = revisedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.input).toMatchObject({
+      approvalRevision: expect.objectContaining({
+        requestedChanges: "Regenerate with sources."
+      })
+    });
+    expect(originalRequest).toMatchObject({
+      status: "superseded",
+      supersededByRequestId: revisedRequest?.id
+    });
+    expect(revisedRequest).toMatchObject({
+      status: "pending",
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: 2
+    });
+    expect(revisedNode?.status).toBe("waiting_approval");
+    expect(revisedNode?.output).toMatchObject({
+      approvalType: "agent",
+      reviewOutput: "revised answer"
+    });
+    expect(revisedView.approvalDecisions?.map((decision) => decision.action)).toEqual(["request_changes"]);
+  });
+
+  it("keeps original approval actionable when request_changes rerun fails or returns empty output", async () => {
+    const cases: Array<{ label: string; result: AgentTaskResult }> = [
+      { label: "failed", result: createCompletedAgentTask("task-agent-change-2", "failed", undefined, "model failed") },
+      { label: "empty", result: createCompletedAgentTask("task-agent-change-2", "succeeded", undefined) }
+    ];
+
+    for (const testCase of cases) {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), `hiveward-worker-request-changes-${testCase.label}-`));
+      const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+      await store.init();
+
+      const delivery = createAgentNode("delivery", "Delivery");
+      delivery.config = {
+        ...delivery.config,
+        approval: {
+          enabled: true
+        }
+      };
+      const blueprint = createBlueprint([delivery], []);
+      const adapter = new ScriptedAdapter([
+        createStartedAgentTask("task-agent-change-1"),
+        createStartedAgentTask("task-agent-change-2")
+      ], [
+        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
+        testCase.result
+      ]);
+      const worker = new BlueprintWorker(store, adapter);
+
+      const run = await worker.startRun(blueprint, "test-user");
+      const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+      const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+      const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+      if (!approvalRequest || !waitingNode) throw new Error("Expected agent approval request.");
+
+      await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "request_changes", {
+        comment: "Regenerate with sources."
+      })).rejects.toThrow();
+
+      const restoredView = await store.getRunView(run.id);
+      const originalRequest = restoredView?.approvalRequests?.find((request) => request.id === approvalRequest.id);
+      const revisedRequests = restoredView?.approvalRequests
+        ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id) ?? [];
+      const restoredNode = restoredView?.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id);
+
+      expect(restoredView?.run.status).toBe("waiting_approval");
+      expect(originalRequest).toMatchObject({
+        status: "pending",
+        capabilities: expect.objectContaining({ approve: true, reply: true, requestChanges: true })
+      });
+      expect(revisedRequests).toHaveLength(0);
+      expect(restoredNode).toMatchObject({
+        status: "waiting_approval",
+        output: expect.objectContaining({ reviewOutput: "draft answer" })
+      });
+      expect(restoredView?.approvalDecisions?.filter((decision) => decision.action === "request_changes")).toHaveLength(1);
+    }
+  });
+
+  it("persists approval revision context across worker restart and creates revised Agent approval in the same thread after restored rerun", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-restored-revision-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const firstWorker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([
+        createStartedAgentTask("task-agent-change-1")
+      ], [
+        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer")
+      ]),
+      { nodeRunLeaseMs: 10 }
+    );
+
+    const run = await firstWorker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest || !waitingNode || !isAgentApprovalWaitingOutputForTest(waitingNode.output)) {
+      throw new Error("Expected agent approval request.");
+    }
+
+    await new ApprovalService(store).requestChanges(approvalRequest.id, "Regenerate with sources.");
+    const revisionContext = {
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: approvalRequest.revision + 1,
+      requestedChanges: "Regenerate with sources."
+    };
+    const now = new Date().toISOString();
+    await store.upsertNodeRun({
+      ...waitingNode,
+      status: "running",
+      input: {
+        originalInput: waitingNode.input,
+        approvalRevisionContext: revisionContext,
+        approvalRevision: {
+          previousOutput: waitingNode.output.reviewOutput,
+          previousReplies: waitingNode.output.replies,
+          requestedChanges: revisionContext.requestedChanges
+        }
+      },
+      output: undefined,
+      runtimeRef: {
+        source: "openclaw",
+        sourceId: "task-agent-change-2",
+        sourceUpdatedAt: now,
+        taskId: "task-agent-change-2",
+        runId: "task-agent-change-2-run",
+        sessionKey: "agent:main:main"
+      },
+      startedAt: now,
+      endedAt: undefined,
+      error: undefined
+    });
+    await store.updateBlueprintRun({ ...waitingView.run, status: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const restoredWorker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([], [
+        createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
+      ])
+    );
+    await restoredWorker.resumeActiveRuns();
+
+    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const revisedRequest = revisedView.approvalRequests
+      ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id)
+      .at(-1);
+
+    expect(originalRequest).toMatchObject({
+      status: "superseded",
+      supersededByRequestId: revisedRequest?.id
+    });
+    expect(revisedRequest).toMatchObject({
+      status: "pending",
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: approvalRequest.revision + 1
+    });
+    expect(revisedView.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id)).toMatchObject({
+      status: "waiting_approval",
+      output: expect.objectContaining({ reviewOutput: "revised answer" })
+    });
   });
 
   it("keeps approvalRequestId Agent approval replies append-only until approval", async () => {
@@ -2586,12 +2804,13 @@ describe("BlueprintWorker", () => {
     const round1SnapshotCall = adapter.calls.find((call) =>
       isRecord(call.input) &&
       call.input.roundNumber === 1 &&
-      call.input.humanFeedback === "Carry keyboard controls into the next round." &&
+      typeof call.input.humanFeedback === "string" &&
+      call.input.humanFeedback.includes("Carry keyboard controls into the next round.") &&
       isRecord(call.input.runContext) &&
       call.input.runContext.mode === "context_snapshot"
     );
     expect(round1SnapshotCall?.input).toMatchObject({
-      humanFeedback: "Carry keyboard controls into the next round.",
+      humanFeedback: expect.stringContaining("Carry keyboard controls into the next round."),
       runContext: expect.objectContaining({ mode: "context_snapshot" })
     });
 
@@ -2935,7 +3154,8 @@ describe("BlueprintWorker", () => {
       status: "pending",
       capabilities: expect.objectContaining({ approve: false, reply: true, reject: true })
     });
-    expect(request?.body).toContain("Preflight Blocked");
+    expect(request?.body).toContain("Issue Report");
+    expect(request?.body).toContain("What you can do");
     expect(request?.body).toContain("missing research credential");
 
     const currentRun = await store.getBlueprintRun(run.id);
@@ -3223,7 +3443,7 @@ describe("BlueprintWorker", () => {
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement1) throw new Error("Expected initial requirement approval.");
 
-    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "reply", {
+    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "revise", {
       message: "Tighten the execution plan."
     });
     const replyView = await store.getRunView(run.id);
@@ -3242,14 +3462,14 @@ describe("BlueprintWorker", () => {
 
     expect(round).toMatchObject({
       approvedRequirementRequestId: requirement2.id,
-      approvedRequirementRevision: 1
+      approvedRequirementRevision: 2
     });
     expect(managerRunInput).toMatchObject({
       runContext: expect.objectContaining({
         currentPlan: expect.objectContaining({
           requestId: requirement2.id,
-          revision: 1,
-          body: expect.stringContaining("initial dispatch plan")
+          revision: 2,
+          body: expect.stringContaining("approved revised dispatch plan")
         })
       })
     });
@@ -3410,6 +3630,102 @@ describe("BlueprintWorker", () => {
     expect(replyView?.run.status).toBe("waiting_approval");
     expect(replyView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["approve", "reply"]);
   });
+
+  it("carries release report approval replies into next round context when later approved", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 2 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-report-feedback-research-1"),
+      createStartedAgentTask("task-report-feedback-plan-1"),
+      createStartedAgentTask("task-report-feedback-build-1"),
+      createStartedAgentTask("task-report-feedback-release-1"),
+      createStartedAgentTask("task-report-feedback-snapshot-1"),
+      createStartedAgentTask("task-report-feedback-research-2"),
+      createStartedAgentTask("task-report-feedback-plan-2")
+    ], [
+      createCompletedAgentTask("task-report-feedback-research-1", "succeeded", "round 1 research"),
+      createCompletedAgentTask("task-report-feedback-plan-1", "succeeded", "round 1 plan"),
+      createCompletedAgentTask("task-report-feedback-build-1", "succeeded", htmlArtifactOutput("feedback round")),
+      createCompletedAgentTask("task-report-feedback-release-1", "succeeded", releaseReportOutput("feedback round")),
+      createCompletedAgentTask("task-report-feedback-snapshot-1", "succeeded", JSON.stringify({
+        completedItems: ["Round 1 feedback artifact completed."],
+        keyDecisions: ["Carry feedback into round 2."],
+        validatedFacts: ["feedback artifact exists"],
+        openQuestions: [],
+        activeRisks: [],
+        assumptions: [],
+        recommendedNextStep: "plan",
+        summary: "feedback snapshot"
+      })),
+      createCompletedAgentTask("task-report-feedback-research-2", "succeeded", "round 2 research with feedback"),
+      createCompletedAgentTask("task-report-feedback-plan-2", "succeeded", "round 2 plan with feedback fixes")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
+    const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
+    const currentRun1 = await store.getBlueprintRun(run.id);
+    if (!currentRun1 || !requirement) throw new Error("Expected requirement approval.");
+    await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
+
+    const reportView = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
+      (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
+    );
+    const report = reportView.approvalRequests?.find((request) =>
+      request.kind === "manager_release_report" && request.status === "pending"
+    );
+    const currentRun2 = await store.getBlueprintRun(run.id);
+    if (!currentRun2 || !report) throw new Error("Expected release report.");
+
+    await worker.applyApprovalRequest(blueprint, currentRun2, report.id, "reply", {
+      message: "Mouse clicks do not break blocks."
+    });
+    expect((await store.listApprovalReplies({ approvalRequestId: report.id })).map((reply) => reply.body)).toEqual([
+      "Mouse clicks do not break blocks."
+    ]);
+
+    const currentRun3 = await store.getBlueprintRun(run.id);
+    if (!currentRun3) throw new Error("Expected current run after reply.");
+    await worker.applyApprovalRequest(blueprint, currentRun3, report.id, "approve", {
+      comment: "Continue and fix character drift."
+    });
+
+    const nextRoundView = await waitForRunView(store, run.id, (view) =>
+      (view.iterationRounds ?? []).some((round) => round.roundNumber === 2 && round.status === "requirement_pending")
+    );
+    const round2 = nextRoundView.iterationRounds?.find((round) => round.roundNumber === 2);
+    const requirement2 = nextRoundView.approvalRequests?.find((request) => request.id === round2?.requirementRequestId);
+    const round2ResearchCall = adapter.calls.find((call) =>
+      isRecord(call.input) &&
+      call.input.roundNumber === 2 &&
+      typeof call.input.humanFeedback === "string" &&
+      call.input.humanFeedback.includes("Mouse clicks do not break blocks.") &&
+      call.input.humanFeedback.includes("Continue and fix character drift.")
+    );
+
+    expect(requirement2?.body).toContain("Mouse clicks do not break blocks.");
+    expect(requirement2?.body).toContain("Continue and fix character drift.");
+    expect(round2ResearchCall?.input).toMatchObject({
+      humanFeedback: expect.stringContaining("Mouse clicks do not break blocks."),
+      runContext: expect.objectContaining({
+        mode: "research_resolution",
+        lastRound: expect.objectContaining({
+          humanFeedback: expect.stringContaining("Continue and fix character drift."),
+          report: expect.objectContaining({
+            approvalRequestId: report.id,
+            artifactRefs: expect.arrayContaining([
+              expect.objectContaining({ title: expect.stringContaining("feedback round") })
+            ])
+          })
+        })
+      })
+    });
+  }, 30_000);
 
   it("keeps requirement approval replies as comments without rerunning the requirement agent", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
@@ -3920,6 +4236,14 @@ function createCompletedAgentTask(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAgentApprovalWaitingOutputForTest(value: unknown): value is {
+  approvalType: "agent";
+  reviewOutput: unknown;
+  replies: Array<{ id: string; body: string }>;
+} {
+  return isRecord(value) && value.approvalType === "agent" && Array.isArray(value.replies);
 }
 
 async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {

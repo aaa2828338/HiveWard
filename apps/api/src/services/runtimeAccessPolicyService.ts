@@ -26,16 +26,26 @@ export class MigrationService {
     runId: string;
     nodeRun: BlueprintNodeRun;
     requestedByLabel: string;
+    threadId?: string;
+    replacesRequestId?: string;
+    revision?: number;
   }): Promise<ApprovalRequest | undefined> {
     if (input.nodeRun.status !== "waiting_approval") return undefined;
-    const existing = (await this.store.listApprovalRequests({ runId: input.runId, status: "pending" }))
-      .find((request) => request.nodeRunId === input.nodeRun.id);
+    const pendingRequests = await this.store.listApprovalRequests({ runId: input.runId, status: "pending" });
+    const existing = pendingRequests.find((request) =>
+      request.nodeRunId === input.nodeRun.id &&
+      (!input.replacesRequestId || request.id !== input.replacesRequestId) &&
+      (!input.replacesRequestId || request.replacesRequestId === input.replacesRequestId)
+    );
     const body = stringifyHumanBody(input.nodeRun.output);
     if (existing) {
       const updated: ApprovalRequest = {
         ...existing,
         body,
         sourceRef: { type: "node_run", id: input.nodeRun.id },
+        threadId: input.threadId ?? existing.threadId,
+        replacesRequestId: input.replacesRequestId ?? existing.replacesRequestId,
+        revision: input.revision ?? existing.revision,
         capabilities: resolveApprovalCapabilities("agent_proposal", "pending"),
         updatedAt: new Date().toISOString()
       };
@@ -49,6 +59,10 @@ export class MigrationService {
       title: `${input.nodeRun.nodeLabel} approval`,
       body,
       sourceRef: { type: "node_run", id: input.nodeRun.id },
+      threadId: input.threadId,
+      replacesRequestId: input.replacesRequestId,
+      closeReplacedRequest: false,
+      revision: input.revision,
       requestedBy: {
         type: "node",
         label: input.requestedByLabel,

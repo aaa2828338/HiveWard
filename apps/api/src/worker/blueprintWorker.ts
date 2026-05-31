@@ -33,7 +33,7 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService, type ApprovalActionResult, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import { ApprovalService, type ApprovalActionResult, type ApprovalRevisionDraft, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -304,6 +304,17 @@ interface ApprovedAgentOutputEnvelope {
   };
 }
 
+interface PendingApprovalRevisionContext {
+  threadId?: string;
+  replacesRequestId?: string;
+  revision?: number;
+  requestedChanges?: string;
+}
+
+interface RequirementRevisionDraft extends ApprovalRevisionDraft {
+  metadata: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
+}
+
 interface ManagerSlotContext {
   manager: {
     nodeId: string;
@@ -398,6 +409,7 @@ export class BlueprintWorker {
   private readonly workerId: string;
   private readonly nodeRunLeaseMs: number;
   private readonly nodeRunClaims = new Map<string, { owner: string; workerEpoch: number }>();
+  private readonly pendingApprovalRevisionContexts = new Map<string, PendingApprovalRevisionContext>();
 
   constructor(
     private readonly store: HivewardStore,
@@ -461,7 +473,7 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     approvalRequestId: string,
-    action: "approve" | "reject" | "reply" | "complete" | "terminate",
+    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise",
     input: { comment?: string; message?: string; selectedReplyId?: string } = {}
   ): Promise<BlueprintRun> {
     const request = await this.store.getApprovalRequest(approvalRequestId);
@@ -486,18 +498,48 @@ export class BlueprintWorker {
       return waiting;
     }
 
-    let result;
+    let requirementRevisionMetadata: RequirementRevisionDraft["metadata"] | undefined;
+    let result: ApprovalActionResult;
     if (action === "approve") {
       result = await this.approvalService.approve(approvalRequestId, input.comment, input.selectedReplyId);
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
+    } else if (action === "request_changes") {
+      result = await this.approvalService.requestChanges(approvalRequestId, input.comment ?? input.message ?? "");
+      if (request.kind === "agent_proposal" && request.nodeRunId) {
+        await this.rerunAgentApprovalForRequestedChanges(blueprint, currentRun, request, result.approvalRequest, input.comment ?? input.message ?? "");
+        await this.managerMailProjector.refresh(run.id);
+        const latestRun = await this.store.getBlueprintRun(run.id);
+        const waiting = { ...(latestRun ?? currentRun), status: "waiting_approval" as const };
+        await this.store.updateBlueprintRun(waiting);
+        return waiting;
+      }
+    } else if (action === "revise") {
+      const message = input.message ?? input.comment ?? "";
+      if (request.kind === "iteration_requirement_plan") {
+        const draft = await this.buildRequirementDecisionRevision(blueprint, currentRun, request, message);
+        requirementRevisionMetadata = draft.metadata;
+        result = await this.approvalService.revise(approvalRequestId, message, draft);
+      } else {
+        result = await this.approvalService.revise(approvalRequestId, message);
+      }
     } else {
       result = await this.approvalService.terminate(approvalRequestId, input.comment);
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    if (requirementRevisionMetadata && result.nextApprovalRequest?.roundId) {
+      const round = (await this.store.listIterationRounds({ runId: result.nextApprovalRequest.runId }))
+        .find((candidate) => candidate.id === result.nextApprovalRequest?.roundId);
+      if (round) {
+        await this.store.upsertIterationRound({
+          ...round,
+          ...requirementRevisionMetadata
+        });
+      }
+    }
     await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
     await this.managerMailProjector.refresh(run.id);
 
@@ -659,6 +701,7 @@ export class BlueprintWorker {
     if (!session) return;
 
     const releaseReport = await this.releaseReportForApprovalRequest(run.id, result.approvalRequest);
+    const humanFeedback = await this.approvalService.buildApprovalHumanFeedback(result.approvalRequest, result.decision);
     const managerSummary = releaseReport
       ? await this.buildManagerSnapshotDraft(
         blueprint,
@@ -667,7 +710,7 @@ export class BlueprintWorker {
         round,
         topManager,
         releaseReport,
-        result.decision.comment
+        humanFeedback
       )
       : undefined;
     const latestRound = (await this.store.listIterationRounds({ runId: run.id }))
@@ -678,7 +721,7 @@ export class BlueprintWorker {
       session,
       round: latestRound,
       releaseReport,
-      humanFeedback: result.decision.comment,
+      humanFeedback,
       managerSummary
     });
     await this.store.upsertIterationRound({ ...latestRound, contextSnapshotId: snapshot.id });
@@ -1129,31 +1172,31 @@ export class BlueprintWorker {
       "This is the base release report step for the current self-iteration round. It is one Manager run.",
       "Write the report yourself from the provided structured facts. Do not mechanically concatenate each node report, do not dump every Agent output, and do not expose raw JSON/logs as the human report.",
       "This report is before human confirmation. Do not include post-confirmation review deposition, future memory, or human feedback that is not present in the input.",
-      "The report should help a human decide whether to approve continuing, complete the run, or reply with changes. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
+      "The report should help a human decide whether to approve continuing, complete the run, leave a comment, or use an explicit revise action. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
       "The release report itself belongs in humanReportMd. Do not declare top-level artifacts[] unless this Manager run actually creates a separate new file.",
       ...agentOutputContractLines,
       "- Return an AgentOutputEnvelope JSON object. humanReportMd is the release report. result may contain concise status, summary, recommendation, and risk fields. handoffJson may contain compact structured facts for later confirmation and review deposition."
     ].join("\n");
   }
 
-  private async buildRequirementReplyRevision(
+  private async buildRequirementDecisionRevision(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     request: ApprovalRequest,
     message: string
-  ): Promise<ApprovalRequest | undefined> {
+  ): Promise<RequirementRevisionDraft> {
     const feedback = message.trim();
-    if (!feedback) return undefined;
+    if (!feedback) throw new Error("Approval revision message is required.");
 
     const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-    if (!topManager) return undefined;
+    if (!topManager) throw new Error("Self-iteration manager not found.");
 
     const round = request.roundId
       ? (await this.store.listIterationRounds({ runId: run.id })).find((candidate) => candidate.id === request.roundId)
       : undefined;
-    if (!round) return undefined;
+    if (!round) throw new Error("Iteration round not found for requirement revision.");
     const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === round.sessionId);
-    if (!session) return undefined;
+    if (!session) throw new Error("Iteration session not found for requirement revision.");
     const revision = request.revision + 1;
     const preflight = await this.roundPreflightService.prepareRoundPlan({
       blueprint,
@@ -1166,22 +1209,18 @@ export class BlueprintWorker {
       revision,
       executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
     });
-    return this.iterationService.requestRoundPlan({
-      session,
-      round,
-      managerNode: topManager,
+    return {
       body: preflight.body,
-      revision,
-      threadId: request.threadId,
-      replacesRequestId: request.id,
-      closeReplacedRequest: false,
+      capabilities: preflight.researchStatus === "blocked"
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: true }
+        : request.capabilities,
       metadata: {
         researchStatus: preflight.researchStatus,
         researchSummary: preflight.researchSummary,
         researchArtifactIds: preflight.researchArtifactIds,
-        planSource: "revised_from_reply"
+        planSource: "revised_from_feedback"
       }
-    });
+    };
   }
 
   async approveRun(
@@ -1291,6 +1330,106 @@ export class BlueprintWorker {
     const nextRun = { ...run, status: "waiting_approval" as const };
     await this.store.updateBlueprintRun(nextRun);
     return nextRun;
+  }
+
+  private async rerunAgentApprovalForRequestedChanges(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    request: ApprovalRequest,
+    pendingRequest: ApprovalRequest,
+    message: string
+  ): Promise<void> {
+    void pendingRequest;
+    const feedback = message.trim();
+    if (!feedback) throw new Error("Approval request_changes comment is required.");
+    if (!request.nodeRunId) throw new Error("Agent approval request is missing nodeRunId.");
+
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === request.nodeRunId);
+    if (!waiting) throw new Error("Requested approval is no longer waiting.");
+    if (!isAgentApprovalWaitingOutput(waiting.output)) {
+      throw new Error("Only Agent approval requests can be regenerated.");
+    }
+    const node = blueprint.nodes.find((candidate) => candidate.id === waiting.nodeId);
+    if (!node || !isAgentBlueprintNode(node)) {
+      throw new Error("Agent approval node was not found.");
+    }
+
+    const revisionContext: PendingApprovalRevisionContext = {
+      threadId: request.threadId,
+      replacesRequestId: request.id,
+      revision: request.revision + 1,
+      requestedChanges: feedback
+    };
+    this.pendingApprovalRevisionContexts.set(waiting.id, revisionContext);
+    const revisionInput = buildAgentApprovalRevisionInput(
+      waiting.input,
+      waiting.output.reviewOutput,
+      waiting.output.replies,
+      feedback,
+      revisionContext
+    );
+    const rerunNodeRun = await this.store.createQueuedNodeRun({
+      ...waiting,
+      input: revisionInput,
+      output: undefined,
+      runtimeRef: undefined,
+      usage: undefined
+    });
+    let rerunResult: AgentTaskResult;
+    try {
+      rerunResult = await this.executeAgentNodeWithInput(
+        blueprint,
+        run,
+        node,
+        rerunNodeRun,
+        revisionInput
+      );
+    } catch (error) {
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    } finally {
+      this.pendingApprovalRevisionContexts.delete(waiting.id);
+    }
+
+    if (rerunResult.status !== "succeeded") {
+      const error = new Error(rerunResult.error ?? "Agent revision failed before creating a new approval request.");
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    }
+
+    const nextRequest = (await this.store.listApprovalRequests({ runId: run.id, status: "pending" }))
+      .find((candidate) => candidate.replacesRequestId === request.id && candidate.nodeRunId === request.nodeRunId);
+    if (!nextRequest) {
+      const error = new Error("Agent revision completed without creating a new pending approval request.");
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    }
+    await this.supersedeOriginalApprovalIfPending(request.id, nextRequest.id);
+  }
+
+  private async supersedeOriginalApprovalIfPending(replacesRequestId: string, nextRequestId: string): Promise<void> {
+    const current = await this.store.getApprovalRequest(replacesRequestId);
+    if (!current) return;
+    if (current.status === "pending") {
+      await this.approvalService.markSupersededByRevision(replacesRequestId, nextRequestId);
+      return;
+    }
+    if (current.status === "superseded" && current.supersededByRequestId !== nextRequestId) {
+      throw new Error(`Approval request ${replacesRequestId} was superseded by ${current.supersededByRequestId}, not ${nextRequestId}.`);
+    }
+  }
+
+  private async restoreOriginalAgentApprovalAfterRevisionFailure(
+    run: BlueprintRun,
+    waiting: BlueprintNodeRun,
+    error: unknown
+  ): Promise<void> {
+    await this.store.upsertNodeRun(waiting);
+    await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" });
+    const message = error instanceof Error ? error.message : String(error);
+    await this.event(run.id, "node.run.waiting_approval", `${waiting.nodeLabel} revision failed; original approval remains pending: ${message}`, waiting.id);
+    await this.managerMailProjector.refresh(run.id);
   }
 
   private async recordAgentApprovalComment(
@@ -3460,11 +3599,18 @@ export class BlueprintWorker {
     await this.store.upsertNodeRun(waiting);
     this.nodeRunClaims.delete(nodeRun.id);
     await this.event(nodeRun.blueprintRunId, "node.run.waiting_approval", `${nodeRun.nodeLabel} is waiting for approval.`, nodeRun.id);
-    await this.migrationService.migratePendingNodeApproval({
+    const revisionContext = readApprovalRevisionContext(nodeRun.input) ?? this.pendingApprovalRevisionContexts.get(nodeRun.id);
+    const migratedRequest = await this.migrationService.migratePendingNodeApproval({
       runId: nodeRun.blueprintRunId,
       nodeRun: waiting,
-      requestedByLabel: nodeRun.nodeLabel
+      requestedByLabel: nodeRun.nodeLabel,
+      threadId: revisionContext?.threadId,
+      replacesRequestId: revisionContext?.replacesRequestId,
+      revision: revisionContext?.revision
     });
+    if (revisionContext?.replacesRequestId && migratedRequest?.id) {
+      await this.supersedeOriginalApprovalIfPending(revisionContext.replacesRequestId, migratedRequest.id);
+    }
     await this.managerMailProjector.refresh(nodeRun.blueprintRunId);
   }
 
@@ -4655,6 +4801,51 @@ function buildAgentApprovalReplyInput(
       instruction
     }
   };
+}
+
+function buildAgentApprovalRevisionInput(
+  originalInput: unknown,
+  previousOutput: unknown,
+  previousReplies: AgentApprovalReply[],
+  requestedChanges: string,
+  revisionContext: PendingApprovalRevisionContext
+): Record<string, unknown> {
+  const instruction = [
+    "This node is being rerun because the human explicitly selected request_changes.",
+    "Treat requestedChanges as required revision feedback, not as a casual chat reply.",
+    "Produce a revised output for the original task while preserving useful parts of the previous output.",
+    "Do not claim the approval is complete or approved; the platform will create a new pending approval for the revised output."
+  ].join(" ");
+
+  return {
+    originalInput,
+    approvalReplies: previousReplies,
+    approvalRevisionContext: revisionContext,
+    approvalRevision: {
+      previousOutput,
+      previousReplies,
+      requestedChanges,
+      instruction
+    },
+    humanApproval: {
+      previousOutput,
+      previousReplies,
+      requestedChanges,
+      instruction
+    }
+  };
+}
+
+function readApprovalRevisionContext(input: unknown): PendingApprovalRevisionContext | undefined {
+  if (!isRecord(input)) return undefined;
+  const raw = input.approvalRevisionContext;
+  if (!isRecord(raw)) return undefined;
+  const context: PendingApprovalRevisionContext = {};
+  if (typeof raw.threadId === "string" && raw.threadId.trim()) context.threadId = raw.threadId;
+  if (typeof raw.replacesRequestId === "string" && raw.replacesRequestId.trim()) context.replacesRequestId = raw.replacesRequestId;
+  if (typeof raw.revision === "number" && Number.isInteger(raw.revision) && raw.revision > 0) context.revision = raw.revision;
+  if (typeof raw.requestedChanges === "string" && raw.requestedChanges.trim()) context.requestedChanges = raw.requestedChanges;
+  return context.threadId || context.replacesRequestId || context.revision ? context : undefined;
 }
 
 function buildApprovedAgentOutput(

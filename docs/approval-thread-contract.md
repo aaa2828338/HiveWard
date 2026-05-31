@@ -23,7 +23,8 @@ This document records the architecture, API surface, migration notes, test matri
 | `complete` | Mark the approval target complete. | End the relevant round, session, run, or approval thread when the request kind permits it. |
 | `terminate` | Explicitly stop the workflow. | Record the reason and end the related run, session, or thread. |
 | `reject` | Deny the current request. | Close the current request. Do not implicitly rerun, revise, or continue execution. |
-| `request_changes` / `revise` | Future explicit change request actions. | May generate revised requests or rerun work only after the action is modeled end to end in shared types, store, API, worker, UI, and tests. |
+| `request_changes` | Explicitly request changes to an Agent proposal. | May supersede the current request and rerun the Agent node into a new pending request in the same thread when the request kind permits it. |
+| `revise` | Explicitly ask the platform to regenerate a governed plan or report. | May supersede the current request and create a revised requirement plan or release report in the same thread when the request kind permits it. |
 
 `reply` must not call a harness, schedule a worker, create the next round, generate a revised request, import a blueprint, complete a run, terminate a run, or return a resume signal.
 
@@ -42,6 +43,10 @@ Request actions:
 - `POST /api/approval-requests/:approvalRequestId/reply` appends a thread reply and returns the still-current request, thread, replies, and decisions.
 - `POST /api/approval-requests/:approvalRequestId/complete` completes a request when the capability allows it.
 - `POST /api/approval-requests/:approvalRequestId/terminate` terminates a request when the capability allows it.
+- `POST /api/approval-requests/:approvalRequestId/request-changes` explicitly requests changes when `requestChanges` is allowed.
+- `POST /api/approval-requests/:approvalRequestId/revise` explicitly regenerates the request when `revise` is allowed.
+
+Thread endpoints are read and aggregation surfaces. Request endpoints are the only lifecycle action write surface; clients must not infer that a thread-level read API can mutate approval lifecycle.
 
 Compatibility facades:
 
@@ -90,4 +95,4 @@ Role agents must not:
 - Claim a blueprint, run, round, approval, or inbox item changed unless HiveWard confirms the platform action.
 - Hide lifecycle changes inside report prose, reply text, or Manager reasoning.
 
-If a human provides feedback but no explicit lifecycle action exists, the correct statement is that the feedback was recorded and the approval remains pending. If the product needs "reject and change" behavior, it must be implemented as an explicit `request_changes` or `revise` action across shared types, store, API, worker, UI, and tests.
+If a human provides feedback without using an explicit lifecycle action, the correct statement is that the feedback was recorded and the approval remains pending. If the product needs "reject and change" behavior, it must use the explicit capability-gated `request_changes` or `revise` action; natural-language feedback alone is never a lifecycle action.

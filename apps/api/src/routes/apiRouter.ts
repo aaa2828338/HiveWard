@@ -99,6 +99,7 @@ import { approvalThreadIdForRequest, claudeCodeModelPresets, createPortableBluep
 import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
+import { InboxSubmissionService } from "../services/inboxSubmissionService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import { isRuntimeAdapterError, type RuntimeAdapter } from "@hiveward/adapter";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -134,6 +135,15 @@ interface HarnessModelDefaults extends Pick<RunModelDefaults, "codex" | "claude"
   hermesModels: HarnessModelOption[];
 }
 
+class ApiConflictError extends Error {
+  readonly statusCode = 409;
+
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ApiConflictError";
+  }
+}
+
 type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
 
 type ChatInboxSubmissionResult = {
@@ -154,6 +164,7 @@ type StreamHivewardChatSessionInput = {
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   res: Response;
+  inboxSubmissionService: InboxSubmissionService;
 };
 
 type ResolvedChatSessionMessage = {
@@ -214,6 +225,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const router = Router();
   const approvalService = new ApprovalService(store);
   const managerMailProjector = new ManagerMailProjector(store);
+  const inboxSubmissionService = new InboxSubmissionService(store, approvalService, managerMailProjector);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
 
   router.get("/healthz", (_req, res) => {
@@ -784,6 +796,22 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  router.post(["/api/approval-requests/:approvalRequestId/request-changes", "/api/approval-requests/:approvalRequestId/request_changes"], async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("request_changes", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/revise", async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("revise", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/api/approval-requests/:approvalRequestId/complete", async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("complete", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
@@ -836,8 +864,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.post("/api/inbox/delegations", async (req, res, next) => {
     try {
       const body = normalizeCreateLeaderDelegationRequest(req.body);
-      const item = await store.createLeaderDelegationRequest(body);
-      await createInboxApprovalRequest(item, "leader_delegation");
+      const { item } = await inboxSubmissionService.submitLeaderDelegation(body);
       res.status(201).json({ item });
     } catch (error) {
       next(error);
@@ -847,8 +874,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.post("/api/inbox/blueprint-proposals", async (req, res, next) => {
     try {
       const body = normalizeCreateBlueprintProposalRequest(req.body);
-      const item = await store.createBlueprintProposal(body);
-      await createInboxApprovalRequest(item, "blueprint_proposal");
+      const { item } = await inboxSubmissionService.submitBlueprintProposal(body);
       res.status(201).json({ item });
     } catch (error) {
       next(error);
@@ -860,7 +886,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       const body = normalizeApproveInboxItemRequest(req.body);
       const config = await openClawConfigStore.getState();
       const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await findPendingInboxApprovalRequest(itemId);
+      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
       const decision = request ? buildApprovalDecision(request, "approve", "approved", body.comment) : undefined;
       const result = await store.applyInboxDecision({
         inboxItemId: itemId,
@@ -885,7 +911,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const body = normalizeRejectInboxItemRequest(req.body);
       const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await findPendingInboxApprovalRequest(itemId);
+      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
       const decision = request ? buildApprovalDecision(request, "reject", "rejected", body.comment) : undefined;
       const result = await store.applyInboxDecision({
         inboxItemId: itemId,
@@ -909,7 +935,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const body = normalizeReplyInboxItemRequest(req.body);
       const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await findPendingInboxApprovalRequest(itemId);
+      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
       const decision = request ? buildApprovalDecision(request, "reply", "pending", body.message) : undefined;
       const result = await store.applyInboxDecision({
         inboxItemId: itemId,
@@ -1084,7 +1110,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       store,
       openClawConfigStore,
       adapter,
-      res
+      res,
+      inboxSubmissionService
     });
   });
 
@@ -1159,7 +1186,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
 
     try {
       const messages = await adapter.getSessionMessages(sessionKey);
-      res.json(await syncChatHistoryInboxSubmissions(store, messages));
+      res.json(await syncChatHistoryInboxSubmissions(store, messages, inboxSubmissionService));
     } catch (error) {
       res.status(502).json({
         error: {
@@ -1302,7 +1329,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   });
 
   async function applyApprovalRequestRouteAction(
-    action: "approve" | "reject" | "reply" | "complete" | "terminate",
+    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise",
     approvalRequestId: string,
     rawBody: unknown
   ): Promise<ApprovalRequestResponse> {
@@ -1311,10 +1338,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       throw new Error(`Approval request not found: ${approvalRequestId}`);
     }
     const body = isPlainRecord(rawBody) ? rawBody : {};
-    const run = await store.getBlueprintRun(approvalRequest.runId);
+    const run = approvalRequest.runId ? await store.getBlueprintRun(approvalRequest.runId) : undefined;
     if (run) {
-      if (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled") {
-        throw new Error("Run is already finished.");
+      if (isTerminalRunStatus(run.status)) {
+        if (!canApplyTerminalApprovalRequestAction(action)) {
+          throw new ApiConflictError("run_already_finished", "Run is already finished.");
+        }
+        await applyTerminalApprovalRequestAction(action, approvalRequestId, body);
+        await managerMailProjector.refresh(run.id);
+        return buildApprovalRequestResponse(approvalRequestId, run.id);
       }
       const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
@@ -1332,6 +1364,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reply") {
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
+    } else if (action === "request_changes") {
+      await approvalService.requestChanges(approvalRequestId, readOptionalString(body.comment) ?? readOptionalString(body.message) ?? "");
+    } else if (action === "revise") {
+      await approvalService.revise(approvalRequestId, readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "");
     } else if (action === "complete") {
       await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
     } else {
@@ -1346,6 +1382,28 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     return archive?.blueprintSnapshot ?? store.getBlueprint(run.blueprintId);
   }
 
+  async function applyTerminalApprovalRequestAction(
+    action: "reply" | "complete" | "terminate" | "reject",
+    approvalRequestId: string,
+    body: Record<string, unknown>
+  ): Promise<void> {
+    if (action === "reply") {
+      await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
+    } else if (action === "complete") {
+      await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
+    } else if (action === "terminate") {
+      await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+    } else {
+      await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
+    }
+  }
+
+  function canApplyTerminalApprovalRequestAction(
+    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise"
+  ): action is "reply" | "complete" | "terminate" | "reject" {
+    return action === "reply" || action === "complete" || action === "terminate" || action === "reject";
+  }
+
   async function buildApprovalRequestResponse(approvalRequestId: string, runId?: string): Promise<ApprovalRequestResponse> {
     const approvalRequest = await store.getApprovalRequest(approvalRequestId);
     if (!approvalRequest) {
@@ -1353,10 +1411,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
     const decisions = await store.listApprovalDecisions(approvalRequestId);
     const threadId = approvalThreadIdForRequest(approvalRequest);
-    const approvalThread = (await store.listApprovalThreads({ runId: approvalRequest.runId }))
+    const approvalFilter = approvalRequest.runId ? { runId: approvalRequest.runId } : undefined;
+    const approvalThread = (await store.listApprovalThreads(approvalFilter))
       .find((thread) => thread.id === threadId);
     const approvalReplies = await store.listApprovalReplies({ threadId });
-    const nextApprovalRequest = (await store.listApprovalRequests({ runId: approvalRequest.runId }))
+    const nextApprovalRequest = (await store.listApprovalRequests(approvalFilter))
       .find((request) => request.replacesRequestId === approvalRequestId);
     return {
       approvalRequest,
@@ -1391,30 +1450,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
 
   function isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
     return status === "succeeded" || status === "failed" || status === "cancelled";
-  }
-
-  async function createInboxApprovalRequest(item: InboxItem, kind: "leader_delegation" | "blueprint_proposal"): Promise<void> {
-    const existing = await findPendingInboxApprovalRequest(item.id);
-    if (existing) return;
-    await approvalService.createRequest({
-      runId: item.id,
-      kind,
-      title: item.title,
-      body: item.summary,
-      payloadRef: item.id,
-      sourceRef: { type: "inbox_item", id: item.id },
-      requestedBy: {
-        type: "role",
-        label: item.createdByRoleId,
-        roleId: item.createdByRoleId
-      }
-    });
-    await managerMailProjector.refresh();
-  }
-
-  async function findPendingInboxApprovalRequest(itemId: string): Promise<ApprovalRequest | undefined> {
-    const requests = await store.listApprovalRequests({ status: "pending" });
-    return requests.find((request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === itemId);
   }
 
   function buildApprovalDecision(
@@ -1807,7 +1842,8 @@ async function streamHivewardChatSession({
   store,
   openClawConfigStore,
   adapter,
-  res
+  res,
+  inboxSubmissionService
 }: StreamHivewardChatSessionInput): Promise<void> {
   let session = await store.getChatSession(sessionId);
   if (!session) {
@@ -2056,7 +2092,12 @@ async function streamHivewardChatSession({
   if (doneEvent.status === "succeeded" && submissionBlock) {
     try {
       const submissionStartedAtMs = Date.now();
-      submission = await materializeChatInboxSubmission(store, resolvedRequestBody, finalOutput, submissionBlock);
+      submission = await materializeChatInboxSubmission(
+        inboxSubmissionService,
+        resolvedRequestBody,
+        finalOutput,
+        submissionBlock
+      );
       inboxSubmissionMs = Date.now() - submissionStartedAtMs;
     } catch (submissionError) {
       const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
@@ -2173,7 +2214,8 @@ async function buildSelectedBlueprintDraftingContext(
 
 async function syncChatHistoryInboxSubmissions(
   store: HivewardStore,
-  messages: ChatHistoryMessage[]
+  messages: ChatHistoryMessage[],
+  inboxSubmissionService: InboxSubmissionService
 ): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
   let knownInboxItems: InboxItem[] | undefined;
   const syncedItems = new Map<string, InboxItem>();
@@ -2196,6 +2238,10 @@ async function syncChatHistoryInboxSubmissions(
       knownInboxItems ??= await store.listInboxItems();
       const existing = findExistingChatInboxSubmission(knownInboxItems, parsed);
       if (existing) {
+        const type = readOptionalString(parsed.type);
+        if (type === "leader_delegation" || type === "blueprint_proposal") {
+          await inboxSubmissionService.ensureApprovalRequest(existing, type);
+        }
         syncedItems.set(existing.id, existing);
         const output = buildChatInboxSubmissionSuccessOutput(stripChatInboxSubmissionBlock(message.content, block.fullMatch), existing);
         syncedMessages.push({ ...message, content: output });
@@ -2203,7 +2249,7 @@ async function syncChatHistoryInboxSubmissions(
       }
 
       const submission = await materializeChatInboxSubmission(
-        store,
+        inboxSubmissionService,
         buildHistoryInboxChatRequest(parsed),
         message.content,
         block
@@ -2286,7 +2332,7 @@ function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefine
 }
 
 async function materializeChatInboxSubmission(
-  store: HivewardStore,
+  inboxSubmissionService: InboxSubmissionService,
   chatRequest: ResolvedChatSessionMessage,
   output: string,
   block = extractChatInboxSubmissionBlock(output)
@@ -2303,7 +2349,7 @@ async function materializeChatInboxSubmission(
   const outputWithoutBlock = stripChatInboxSubmissionBlock(output, block.fullMatch);
 
   if (type === "leader_delegation") {
-    const item = await store.createLeaderDelegationRequest(normalizeCreateLeaderDelegationRequest({
+    const { item } = await inboxSubmissionService.submitLeaderDelegation(normalizeCreateLeaderDelegationRequest({
       ...parsed,
       blueprintId,
       createdByRoleId
@@ -2312,7 +2358,7 @@ async function materializeChatInboxSubmission(
   }
 
   if (type === "blueprint_proposal") {
-    const item = await store.createBlueprintProposal(normalizeCreateBlueprintProposalRequest({
+    const { item } = await inboxSubmissionService.submitBlueprintProposal(normalizeCreateBlueprintProposalRequest({
       ...parsed,
       blueprintId,
       createdByRoleId,

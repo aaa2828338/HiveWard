@@ -99,6 +99,8 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
+        onRequestChangesApprovalRequest={() => undefined}
+        onReviseApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
         onReplyInboxItem={() => undefined}
         onApproveInboxItem={() => undefined}
@@ -112,6 +114,103 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("old body");
   });
 
+  it("renders comment and explicit change-request actions as separate controls", () => {
+    const html = renderToStaticMarkup(
+      <ApprovalsPage
+        approvals={[createPendingApproval({
+          canRequestChanges: true,
+          canRevise: false
+        } as Partial<PendingApprovalItem>)]}
+        approvalThreads={[]}
+        inboxItems={[]}
+        language="en"
+        t={messages.en}
+        onApprove={() => undefined}
+        onApproveApprovalRequest={() => undefined}
+        onComplete={() => undefined}
+        onReject={() => undefined}
+        onRejectApprovalRequest={() => undefined}
+        onReply={() => undefined}
+        onReplyApprovalRequest={() => undefined}
+        onRequestChangesApprovalRequest={() => undefined}
+        onReviseApprovalRequest={() => undefined}
+        onSelectApprovalReply={() => undefined}
+        onReplyInboxItem={() => undefined}
+        onApproveInboxItem={() => undefined}
+        onRejectInboxItem={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Comment");
+    expect(html).toContain("Request changes");
+    expect(html).not.toMatch(/reply with changes/i);
+  });
+
+  it("approval action disables approve button while request is pending", () => {
+    const html = renderToStaticMarkup(
+      <ApprovalsPage
+        approvals={[createPendingApproval()]}
+        approvalThreads={[]}
+        inboxItems={[]}
+        language="en"
+        t={messages.en}
+        actionPending
+        onApprove={() => undefined}
+        onApproveApprovalRequest={() => undefined}
+        onComplete={() => undefined}
+        onReject={() => undefined}
+        onRejectApprovalRequest={() => undefined}
+        onReply={() => undefined}
+        onReplyApprovalRequest={() => undefined}
+        onRequestChangesApprovalRequest={() => undefined}
+        onReviseApprovalRequest={() => undefined}
+        onSelectApprovalReply={() => undefined}
+        onReplyInboxItem={() => undefined}
+        onApproveInboxItem={() => undefined}
+        onRejectInboxItem={() => undefined}
+      />
+    );
+
+    expect(extractButtonByAriaLabel(html, "Approve")).toContain("disabled");
+  });
+
+  it("processed approval shows read-only composer and no active approve action", () => {
+    const html = renderToStaticMarkup(
+      <ApprovalsPage
+        approvals={[createPendingApproval({
+          status: "approved",
+          canApprove: false,
+          canReject: false,
+          canReply: false,
+          canComplete: false,
+          canRequestChanges: false,
+          canRevise: false
+        })]}
+        approvalThreads={[]}
+        inboxItems={[]}
+        language="en"
+        t={messages.en}
+        onApprove={() => undefined}
+        onApproveApprovalRequest={() => undefined}
+        onComplete={() => undefined}
+        onReject={() => undefined}
+        onRejectApprovalRequest={() => undefined}
+        onReply={() => undefined}
+        onReplyApprovalRequest={() => undefined}
+        onRequestChangesApprovalRequest={() => undefined}
+        onReviseApprovalRequest={() => undefined}
+        onSelectApprovalReply={() => undefined}
+        onReplyInboxItem={() => undefined}
+        onApproveInboxItem={() => undefined}
+        onRejectInboxItem={() => undefined}
+      />
+    );
+
+    expect(extractButtonByAriaLabel(html, "Approve")).toContain("disabled");
+    expect(html).toContain("This inbox item has already been processed.");
+    expect(html).toMatch(/<textarea[^>]*disabled/);
+  });
+
   it("does not wait for a harness reply for request-backed approval comments", () => {
     const legacyApproval = createPendingApproval({ kind: "agent_proposal" });
     delete legacyApproval.approvalRequestId;
@@ -122,6 +221,13 @@ describe("ApprovalsPage", () => {
     expect(shouldAwaitApprovalHarnessReply(legacyApproval)).toBe(true);
   });
 });
+
+function extractButtonByAriaLabel(html: string, label: string): string {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = html.match(new RegExp(`<button[^>]+aria-label="${escaped}"[^>]*>`));
+  if (!match) throw new Error(`Button with aria-label "${label}" was not rendered.`);
+  return match[0];
+}
 
 describe("RunsPage", () => {
   it("renders structured artifact links with clean titles", () => {

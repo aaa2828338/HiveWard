@@ -73,6 +73,8 @@ export interface PendingApprovalItem {
   canReject?: boolean;
   canComplete?: boolean;
   canTerminate?: boolean;
+  canRequestChanges?: boolean;
+  canRevise?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
 }
 
