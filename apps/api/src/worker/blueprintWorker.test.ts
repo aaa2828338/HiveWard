@@ -25,7 +25,12 @@ import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
 import { SqliteHivewardStore } from "../store/sqlite/sqliteHivewardStore";
 import { ApprovalService } from "../services/lifecycleApprovalService";
-import { BlueprintWorker } from "./blueprintWorker";
+import {
+  BlueprintWorker,
+  buildRunCommandKey,
+  buildRunCommandStepKey,
+  stablePreflightNodeRunId
+} from "./blueprintWorker";
 
 class ScriptedAdapter implements RuntimeAdapter {
   readonly calls: StartAgentTaskInput[] = [];
@@ -2936,6 +2941,180 @@ describe("BlueprintWorker", () => {
       agentName: "research",
       input: expect.objectContaining({ runId: run.id })
     });
+  });
+
+  it("records initial self-iteration preparation as one durable command with stable revision-zero steps", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-command-research"),
+      createStartedAgentTask("task-command-plan")
+    ], [
+      createCompletedAgentTask("task-command-research", "succeeded", "command research"),
+      createCompletedAgentTask("task-command-plan", "succeeded", "command plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const command = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!command) throw new Error("Expected prepare command.");
+    const steps = await store.listRunCommandSteps({ commandId: command.id });
+    const researchStep = steps.find((step) => step.mode === "research_resolution");
+    const requirementStep = steps.find((step) => step.mode === "requirement_resolution");
+
+    expect(await store.listRunCommands({ runId: run.id })).toHaveLength(1);
+    expect(command).toMatchObject({
+      commandKey: buildRunCommandKey(run.id, view.iterationRounds?.[0]?.id, "self_iteration_prepare_round"),
+      kind: "self_iteration_prepare_round",
+      status: "waiting_approval",
+      currentRevision: 0
+    });
+    expect(steps).toHaveLength(2);
+    expect(steps.map((step) => step.revision)).toEqual([0, 0]);
+    expect(researchStep).toMatchObject({
+      stepKey: buildRunCommandStepKey(command, "research_resolution", "top-manager"),
+      nodeRunId: stablePreflightNodeRunId(buildRunCommandStepKey(command, "research_resolution", "top-manager")),
+      status: "succeeded"
+    });
+    expect(requirementStep).toMatchObject({
+      stepKey: buildRunCommandStepKey(command, "requirement_resolution", "top-manager"),
+      nodeRunId: stablePreflightNodeRunId(buildRunCommandStepKey(command, "requirement_resolution", "top-manager")),
+      status: "succeeded"
+    });
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id.startsWith("preflight-"))).toHaveLength(2);
+  });
+
+  it("refreshes waiting approval commands on repeated resume without duplicating preflight facts", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-idempotent-research"),
+      createStartedAgentTask("task-idempotent-plan")
+    ], [
+      createCompletedAgentTask("task-idempotent-research", "succeeded", "idempotent research"),
+      createCompletedAgentTask("task-idempotent-plan", "succeeded", "idempotent plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+    const run = await worker.startRun(blueprint, "test-user");
+    await waitForRunStatus(store, run.id, "waiting_approval");
+
+    const recoveryAdapter = new ScriptedAdapter([], []);
+    const recoveryWorker = new BlueprintWorker(store, recoveryAdapter);
+    await recoveryWorker.resumeActiveRuns();
+    await recoveryWorker.resumeActiveRuns();
+    await recoveryWorker.resumeActiveRuns();
+
+    const view = await store.getRunView(run.id);
+    const commands = await store.listRunCommands({ runId: run.id });
+    const steps = await store.listRunCommandSteps({ commandId: commands[0]?.id });
+
+    expect(recoveryAdapter.calls).toHaveLength(0);
+    expect(recoveryAdapter.waitCalls).toHaveLength(0);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ status: "waiting_approval" });
+    expect(steps).toHaveLength(2);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.id.startsWith("preflight-"))).toHaveLength(2);
+    expect(view?.approvalRequests?.filter((request) => request.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes a running prepare command from the stored preflight step instead of starting it again", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, researchAgent: true });
+    const blockingAdapter = new BlockingAdapter(createStartedAgentTask("task-preflight-research-resume"));
+    const firstWorker = new BlueprintWorker(store, blockingAdapter, { nodeRunLeaseMs: 100 });
+    const run = await firstWorker.startRun(blueprint, "test-user");
+    const runningResearch = await waitForNodeRun(store, run.id, "research", (nodeRun) =>
+      nodeRun.status === "running" && nodeRun.runtimeRef?.taskId === "task-preflight-research-resume"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const recoveryAdapter = new ScriptedAdapter([
+      createStartedAgentTask("task-preflight-plan-resume")
+    ], [
+      createCompletedAgentTask("task-preflight-research-resume", "succeeded", "resumed research"),
+      createCompletedAgentTask("task-preflight-plan-resume", "succeeded", "resumed plan")
+    ]);
+    const recoveryWorker = new BlueprintWorker(store, recoveryAdapter);
+    await recoveryWorker.resumeActiveRuns();
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const commands = await store.listRunCommands({ runId: run.id });
+    const steps = await store.listRunCommandSteps({ commandId: commands[0]?.id });
+
+    expect(recoveryAdapter.waitCalls[0]).toMatchObject({
+      taskId: "task-preflight-research-resume",
+      nodeRunId: runningResearch.id
+    });
+    expect(recoveryAdapter.calls).toHaveLength(1);
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id === runningResearch?.id)).toHaveLength(1);
+    expect(steps.filter((step) => step.mode === "research_resolution")).toHaveLength(1);
+    expect(steps.filter((step) => step.mode === "requirement_resolution")).toHaveLength(1);
+  }, 15_000);
+
+  it("backfills legacy pending requirement approval as a waiting prepare command without rerunning", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "legacy-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "legacy-round",
+      createdAt: now
+    });
+    const round = await store.upsertIterationRound({
+      id: "legacy-round",
+      sessionId: "legacy-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "requirement_pending",
+      artifactIds: [],
+      startedAt: now
+    });
+    const request = await new ApprovalService(store).createRequest({
+      runId: run.id,
+      roundId: round.id,
+      kind: "iteration_requirement_plan",
+      title: "Legacy plan",
+      body: "Legacy pending approval",
+      sourceRef: { type: "blueprint_run", id: run.id },
+      requestedBy: { type: "node", label: "Top Manager", nodeId: "top-manager" }
+    });
+    await store.upsertIterationRound({ ...round, requirementRequestId: request.id });
+
+    const adapter = new ScriptedAdapter([], []);
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    const view = await store.getRunView(run.id);
+    const commands = await store.listRunCommands({ runId: run.id });
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      kind: "self_iteration_prepare_round",
+      status: "waiting_approval",
+      metadata: expect.objectContaining({ legacyBackfill: true })
+    });
+    expect(view?.run.status).toBe("waiting_approval");
+    expect(view?.approvalRequests?.filter((approval) => approval.kind === "iteration_requirement_plan")).toHaveLength(1);
   });
 
   it("uses configured research and round-plan agents before publishing the plan approval", async () => {
