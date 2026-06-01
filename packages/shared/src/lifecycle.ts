@@ -199,6 +199,7 @@ export type ApprovalDecisionAction =
   | "reply"
   | "complete"
   | "terminate"
+  | "return_for_revision"
   | "request_changes"
   | "revise"
   | "auto_approve"
@@ -450,6 +451,7 @@ export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: Ap
   if (action === "reply") return capabilities.reply;
   if (action === "complete") return capabilities.complete;
   if (action === "terminate") return capabilities.terminate;
+  if (action === "return_for_revision") return capabilities.requestChanges === true || capabilities.revise === true;
   if (action === "request_changes") return capabilities.requestChanges === true;
   if (action === "revise") return capabilities.revise === true;
   return false;
@@ -463,6 +465,7 @@ export function approvalActionCanTriggerWorkflow(action: ApprovalDecisionAction)
   return action === "approve" ||
     action === "complete" ||
     action === "terminate" ||
+    action === "return_for_revision" ||
     action === "request_changes" ||
     action === "revise" ||
     action === "auto_approve";

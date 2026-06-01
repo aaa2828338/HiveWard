@@ -108,6 +108,16 @@ import { listOpenClawModelUsage } from "../store/openClawUsageStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 
+type ApprovalRouteAction =
+  | "approve"
+  | "reject"
+  | "reply"
+  | "complete"
+  | "terminate"
+  | "return_for_revision"
+  | "request_changes"
+  | "revise";
+
 interface ApiRouterDeps {
   store: HivewardStore;
   openClawConfigStore: OpenClawConfigStore;
@@ -798,7 +808,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
 
   router.post(["/api/approval-requests/:approvalRequestId/request-changes", "/api/approval-requests/:approvalRequestId/request_changes"], async (req, res, next) => {
     try {
-      res.json(await applyApprovalRequestRouteAction("request_changes", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
     } catch (error) {
       next(error);
     }
@@ -806,7 +816,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
 
   router.post("/api/approval-requests/:approvalRequestId/revise", async (req, res, next) => {
     try {
-      res.json(await applyApprovalRequestRouteAction("revise", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
     } catch (error) {
       next(error);
     }
@@ -1280,7 +1290,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
         return;
       }
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reply", { message: body.message });
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reply", {
+        message: body.message,
+        discussionMode: body.discussionMode
+      });
       res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
       next(error);
@@ -1304,7 +1317,12 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
         return;
       }
-      const updated = await worker.selectApprovalReply(blueprint, run, body.nodeRunId, body.selectedReplyId);
+      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
+      if (!approvalRequest) {
+        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
+        return;
+      }
+      const updated = await worker.selectApprovalReply(blueprint, run, approvalRequest.id, body.selectedReplyId);
       const view = await store.getRunView(updated.id);
       res.json({ run: view });
     } catch (error) {
@@ -1329,7 +1347,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   });
 
   async function applyApprovalRequestRouteAction(
-    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise",
+    action: ApprovalRouteAction,
     approvalRequestId: string,
     rawBody: unknown
   ): Promise<ApprovalRequestResponse> {
@@ -1353,7 +1371,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
         comment: readOptionalString(body.comment),
         message: readOptionalString(body.message),
-        selectedReplyId: readOptionalString(body.selectedReplyId)
+        selectedReplyId: readOptionalString(body.selectedReplyId),
+        discussionMode: readInboxDiscussionMode(body.discussionMode)
       });
       return buildApprovalRequestResponse(approvalRequestId, updated.id);
     }
@@ -1366,7 +1385,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
     } else if (action === "request_changes") {
       await approvalService.requestChanges(approvalRequestId, readOptionalString(body.comment) ?? readOptionalString(body.message) ?? "");
-    } else if (action === "revise") {
+    } else if (action === "revise" || action === "return_for_revision") {
       await approvalService.revise(approvalRequestId, readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "");
     } else if (action === "complete") {
       await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
@@ -1399,7 +1418,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   }
 
   function canApplyTerminalApprovalRequestAction(
-    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise"
+    action: ApprovalRouteAction
   ): action is "reply" | "complete" | "terminate" | "reject" {
     return action === "reply" || action === "complete" || action === "terminate" || action === "reject";
   }
@@ -1520,7 +1539,7 @@ function normalizeReplyBlueprintRunApprovalRequest(value: unknown): ReplyBluepri
   if (!message) {
     throw new Error("Approval reply message is required.");
   }
-  return { nodeRunId, message };
+  return { nodeRunId, message, discussionMode: readInboxDiscussionMode(value.discussionMode) };
 }
 
 function normalizeSelectBlueprintRunApprovalRequest(value: unknown): SelectBlueprintRunApprovalRequest {
@@ -1528,14 +1547,20 @@ function normalizeSelectBlueprintRunApprovalRequest(value: unknown): SelectBluep
     throw new Error("Approval selection request must be a JSON object.");
   }
   const nodeRunId = readOptionalString(value.nodeRunId);
-  const selectedReplyId = readOptionalString(value.selectedReplyId);
+  const selectedReplyId = value.selectedReplyId === null ? null : readOptionalString(value.selectedReplyId);
   if (!nodeRunId) {
     throw new Error("Approval selection nodeRunId is required.");
   }
-  if (!selectedReplyId) {
+  if (selectedReplyId === undefined) {
     throw new Error("Approval selection selectedReplyId is required.");
   }
   return { nodeRunId, selectedReplyId };
+}
+
+function readInboxDiscussionMode(value: unknown): ReplyBlueprintRunApprovalRequest["discussionMode"] {
+  if (value === undefined || value === null) return undefined;
+  if (value === "reply" || value === "candidate") return value;
+  throw new Error("Approval discussionMode must be reply or candidate.");
 }
 
 function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {

@@ -179,9 +179,11 @@ export interface ApproveBlueprintRunRequest {
   selectedReplyId?: string;
 }
 
+export type InboxDiscussionMode = "reply" | "candidate";
+
 export interface SelectBlueprintRunApprovalRequest {
   nodeRunId: string;
-  selectedReplyId: string;
+  selectedReplyId: string | null;
 }
 
 export interface RejectBlueprintRunRequest {
@@ -192,6 +194,7 @@ export interface RejectBlueprintRunRequest {
 export interface ReplyBlueprintRunApprovalRequest {
   nodeRunId: string;
   message: string;
+  discussionMode?: InboxDiscussionMode;
 }
 
 export interface DashboardStateResponse {
