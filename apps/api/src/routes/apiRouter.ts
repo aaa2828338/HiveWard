@@ -69,6 +69,7 @@ import type {
   RejectInboxItemRequest,
   ReplyBlueprintRunApprovalRequest,
   ReplyInboxItemRequest,
+  SelectApprovalRequestReplyRequest,
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
@@ -801,6 +802,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.post("/api/approval-requests/:approvalRequestId/reply", async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("reply", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/approval-requests/:approvalRequestId/select-reply", async (req, res, next) => {
+    try {
+      const approvalRequestId = readRouteParam(req.params.approvalRequestId, "approvalRequestId");
+      const body = normalizeSelectApprovalRequestReplyRequest(req.body);
+      const updated = await approvalService.selectApprovalCandidate(approvalRequestId, body.selectedReplyId);
+      res.json(await buildApprovalRequestResponse(approvalRequestId, updated.runId));
     } catch (error) {
       next(error);
     }
@@ -1555,6 +1567,17 @@ function normalizeSelectBlueprintRunApprovalRequest(value: unknown): SelectBluep
     throw new Error("Approval selection selectedReplyId is required.");
   }
   return { nodeRunId, selectedReplyId };
+}
+
+function normalizeSelectApprovalRequestReplyRequest(value: unknown): SelectApprovalRequestReplyRequest {
+  if (!isPlainRecord(value)) {
+    throw new Error("Approval request selection must be a JSON object.");
+  }
+  const selectedReplyId = value.selectedReplyId === null ? null : readOptionalString(value.selectedReplyId);
+  if (selectedReplyId === undefined) {
+    throw new Error("Approval request selection selectedReplyId is required.");
+  }
+  return { selectedReplyId };
 }
 
 function readInboxDiscussionMode(value: unknown): ReplyBlueprintRunApprovalRequest["discussionMode"] {

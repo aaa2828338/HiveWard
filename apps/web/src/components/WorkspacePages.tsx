@@ -1250,10 +1250,10 @@ export function ApprovalsPage({
   onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
-  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
+  onReplyApprovalRequest: (approvalRequestId: string, message: string, discussionMode?: "reply" | "candidate") => void;
   onRequestChangesApprovalRequest: (approvalRequestId: string, comment: string) => void;
   onReviseApprovalRequest: (approvalRequestId: string, message: string) => void;
-  onSelectApprovalReply: (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => void;
+  onSelectApprovalReply: (approvalRequestId: string, selectedReplyId: string | null) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
   onRejectInboxItem: (itemId: string, comment?: string) => void;
@@ -1291,7 +1291,14 @@ export function ApprovalsPage({
   const selectedApproval = selectedApprovalThread?.approval;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved && !actionPending);
-  const canReplyToSelection = Boolean(!actionPending && (selectedApproval?.canReply || selectedInboxOperable));
+  const canReplyToApproval = Boolean(!actionPending && selectedApproval && canSendApprovalDiscussionReply(selectedApproval));
+  const canCreateCandidateForSelection = Boolean(
+    !actionPending &&
+    selectedApproval?.approvalRequestId &&
+    selectedApproval.discussion?.canCreateCandidate === true &&
+    isActionableApprovalThread(selectedApproval)
+  );
+  const canReplyToSelection = Boolean(canReplyToApproval || selectedInboxOperable);
   const canApproveSelection = Boolean(
     !actionPending && (selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable)
   );
@@ -1356,8 +1363,10 @@ export function ApprovalsPage({
     setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
   };
 
-  const sendLocalReply = () => {
-    if (!selectedThreadKey || !canReplyToSelection) return;
+  const sendApprovalDiscussion = (discussionMode: "reply" | "candidate") => {
+    if (!selectedThreadKey || !selectedApproval) return;
+    if (discussionMode === "reply" && !canReplyToApproval) return;
+    if (discussionMode === "candidate" && !canCreateCandidateForSelection) return;
     const body = selectedReplyDraft.trim();
     if (!body) return;
     const reply = {
@@ -1365,44 +1374,56 @@ export function ApprovalsPage({
       body,
       createdAt: new Date().toISOString()
     };
-    if (selectedApproval?.canReply) {
-      const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
-      const pendingHarnessReply = shouldWaitForHarnessReply
-        ? {
-            id: `${reply.id}:pending`,
-            harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
-            createdAt: reply.createdAt
-          }
-        : undefined;
-      flushSync(() => {
-        setLocalReplies((current) => ({
-          ...current,
-          [selectedThreadKey]: [
-            ...(current[selectedThreadKey] ?? []),
-            reply
-          ]
-        }));
-        if (pendingHarnessReply) {
-          setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
-        } else {
-          setPendingHarnessReplies((current) => {
-            if (!current[selectedThreadKey]) return current;
-            const next = { ...current };
-            delete next[selectedThreadKey];
-            return next;
-          });
+    const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
+    const pendingHarnessReply = shouldWaitForHarnessReply
+      ? {
+          id: `${reply.id}:pending`,
+          harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
+          createdAt: reply.createdAt
         }
-        setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
-      });
-      window.setTimeout(() => {
-        if (selectedApproval.approvalRequestId) {
-          onReplyApprovalRequest(selectedApproval.approvalRequestId, body);
-          return;
-        }
-        onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
-      }, 0);
+      : undefined;
+    flushSync(() => {
+      setLocalReplies((current) => ({
+        ...current,
+        [selectedThreadKey]: [
+          ...(current[selectedThreadKey] ?? []),
+          reply
+        ]
+      }));
+      if (pendingHarnessReply) {
+        setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+      } else {
+        setPendingHarnessReplies((current) => {
+          if (!current[selectedThreadKey]) return current;
+          const next = { ...current };
+          delete next[selectedThreadKey];
+          return next;
+        });
+      }
+      setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
+    });
+    window.setTimeout(() => {
+      if (selectedApproval.approvalRequestId) {
+        onReplyApprovalRequest(selectedApproval.approvalRequestId, body, discussionMode);
+        return;
+      }
+      onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
+    }, 0);
+  };
+
+  const sendLocalReply = () => {
+    if (!selectedThreadKey || !canReplyToSelection) return;
+    if (selectedApproval) {
+      sendApprovalDiscussion("reply");
       return;
     }
+    const body = selectedReplyDraft.trim();
+    if (!body) return;
+    const reply = {
+      id: makeLocalInboxReplyId(),
+      body,
+      createdAt: new Date().toISOString()
+    };
     flushSync(() => {
       setLocalReplies((current) => ({
         ...current,
@@ -1420,6 +1441,10 @@ export function ApprovalsPage({
     }
   };
 
+  const generateCandidateReply = () => {
+    sendApprovalDiscussion("candidate");
+  };
+
   const approveSelectedThread = () => {
     const comment = selectedReplyDraft.trim() || undefined;
     if (selectedInboxItem && !selectedInboxApproved) {
@@ -1429,9 +1454,9 @@ export function ApprovalsPage({
     }
     if (selectedApproval && selectedApproval.canApprove !== false) {
       if (selectedApproval.approvalRequestId) {
-        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId);
+        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId ?? undefined);
       } else {
-        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
+        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId ?? undefined);
       }
       clearReplyDraft();
       return;
@@ -1442,9 +1467,11 @@ export function ApprovalsPage({
     }
   };
 
-  const selectApprovalSolution = (solutionId: string) => {
-    if (!selectedApproval || selectedApproval.canApprove === false) return;
-    onSelectApprovalReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, solutionId);
+  const selectApprovalCandidate = (candidateReplyId: string) => {
+    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
+    const reply = (selectedApproval.replies ?? []).find((candidate) => candidate.id === candidateReplyId);
+    if (reply?.purpose !== "candidate") return;
+    onSelectApprovalReply(selectedApproval.approvalRequestId, candidateReplyId);
   };
 
   const rejectSelectedThread = () => {
@@ -1621,10 +1648,10 @@ export function ApprovalsPage({
                               return;
                             }
                             if (approval.approvalRequestId) {
-                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId);
+                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId ?? undefined);
                               return;
                             }
-                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId);
+                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId ?? undefined);
                           }}
                         >
                           <BadgeCheck size={16} />
@@ -1670,11 +1697,13 @@ export function ApprovalsPage({
             canApprove={canApproveSelection}
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
+            canCreateCandidate={canCreateCandidateForSelection}
             canRequestChanges={canRequestChangesSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
             onRequestChanges={requestChangesSelectedThread}
-            onSelectSolution={selectApprovalSolution}
+            onSelectCandidate={selectApprovalCandidate}
+            onSendCandidate={generateCandidateReply}
             onSendReply={sendLocalReply}
             replyDraft={selectedReplyDraft}
             requestChangesLabel={selectedApproval?.canRevise ? inboxCopy.regenerate : inboxCopy.requestChanges}
@@ -1716,8 +1745,6 @@ type InboxThreadListItem =
 type InboxApprovalThreadListItem = Extract<InboxThreadListItem, { kind: "approval" }>;
 
 const allInboxBlueprintFilterValue = "__all_blueprints__";
-const approvalReviewOutputSolutionId = "reviewOutput";
-
 const inboxTimeFilterOptions = [
   { value: "all" },
   { value: "today" },
@@ -1743,11 +1770,12 @@ type InboxConversationMessage = {
   speaker: string;
   body: string;
   createdAt?: string;
+  categoryLabel?: string;
   progressText?: string;
   pending?: boolean;
-  solutionId?: string;
-  selectedSolution?: boolean;
-  canUseAsSolution?: boolean;
+  candidateReplyId?: string;
+  selectedCandidate?: boolean;
+  selectedOriginal?: boolean;
 };
 
 function InboxConversationPanel({
@@ -1760,13 +1788,15 @@ function InboxConversationPanel({
   replyDraft,
   canApprove,
   canReject,
+  canCreateCandidate,
   canReply,
   canRequestChanges,
   onApprove,
   onReject,
   onReplyDraftChange,
   onRequestChanges,
-  onSelectSolution,
+  onSelectCandidate,
+  onSendCandidate,
   onSendReply,
   requestChangesLabel
 }: {
@@ -1779,13 +1809,15 @@ function InboxConversationPanel({
   replyDraft: string;
   canApprove: boolean;
   canReject: boolean;
+  canCreateCandidate: boolean;
   canReply: boolean;
   canRequestChanges: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
   onRequestChanges: () => void;
-  onSelectSolution: (solutionId: string) => void;
+  onSelectCandidate: (candidateReplyId: string) => void;
+  onSendCandidate: () => void;
   onSendReply: () => void;
   requestChangesLabel: string;
 }) {
@@ -1802,6 +1834,8 @@ function InboxConversationPanel({
       : "";
   const statusLabel = inboxItem ? inboxStatusLabel(inboxItem.status, language) : approval ? copy.approvalRequest : "";
   const typeLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : undefined;
+  const discussionUnavailable =
+    approval && !canReply && !canCreateCandidate && (!approval.discussion || approval.discussion.mode === "none");
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -1839,6 +1873,7 @@ function InboxConversationPanel({
               <div className={`chat-message chat-message-${message.role}`}>
                 <div className="chat-message-speaker">
                   <strong>{message.speaker}</strong>
+                  {message.categoryLabel && <span>{message.categoryLabel}</span>}
                   {message.createdAt && <span>{formatDateTime(message.createdAt, language)}</span>}
                 </div>
                 {message.pending ? (
@@ -1849,17 +1884,24 @@ function InboxConversationPanel({
                 ) : (
                   <MarkdownRenderer value={message.body} className="chat-message-body" />
                 )}
-                {message.canUseAsSolution && message.solutionId && (
+                {(message.selectedOriginal || message.candidateReplyId) && (
                   <div className="inbox-message-actions">
-                    <button
-                      type="button"
-                      className={`inbox-solution-button${message.selectedSolution ? " selected" : ""}`}
-                      disabled={!canApprove || message.selectedSolution}
-                      onClick={() => onSelectSolution(message.solutionId!)}
-                    >
-                      <Check size={14} />
-                      {message.selectedSolution ? copy.solutionSelected : copy.useSolution}
-                    </button>
+                    {message.selectedOriginal ? (
+                      <span className="inbox-solution-button selected">
+                        <Check size={14} />
+                        {copy.originalSelected}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className={`inbox-solution-button${message.selectedCandidate ? " selected" : ""}`}
+                        disabled={!canApprove || message.selectedCandidate}
+                        onClick={() => message.candidateReplyId && onSelectCandidate(message.candidateReplyId)}
+                      >
+                        <Check size={14} />
+                        {message.selectedCandidate ? copy.candidateSelected : copy.useCandidate}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1871,8 +1913,8 @@ function InboxConversationPanel({
       <div className="chat-composer inbox-conversation-composer">
         <textarea
           value={replyDraft}
-          disabled={!canReply && !canRequestChanges}
-          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canRequestChanges ? copy.replyPlaceholder : copy.processedPlaceholder}
+          disabled={!canReply && !canCreateCandidate && !canRequestChanges}
+          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canCreateCandidate || canRequestChanges ? copy.replyPlaceholder : copy.processedPlaceholder}
           onChange={(event) => onReplyDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -1882,9 +1924,13 @@ function InboxConversationPanel({
           }}
         />
         <div className="inbox-conversation-actions">
-          <button type="button" disabled={!canReply || !replyDraft.trim()} onClick={onSendReply}>
+          <button type="button" disabled={!canReply} onClick={onSendReply}>
             <Send size={15} />
             {copy.sendReply}
+          </button>
+          <button type="button" disabled={!canCreateCandidate} onClick={onSendCandidate}>
+            <BotMessageSquare size={15} />
+            {copy.generateCandidate}
           </button>
           <button
             type="button"
@@ -1905,6 +1951,11 @@ function InboxConversationPanel({
             {copy.reject}
           </button>
         </div>
+        {discussionUnavailable && (
+          <p className="inbox-composer-note">
+            {copy.discussionUnavailable}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -1914,39 +1965,45 @@ type InboxCopy = {
   allBlueprints: string;
   approvalRequest: string;
   approve: string;
+  candidateReply: string;
+  candidateSelected: string;
   complete: string;
   blueprintFilter: string;
   conversation: string;
   decidedAt: string;
   decisionComment: string;
   detailTitle: string;
+  discussionUnavailable: string;
   emptyFilterBody: string;
   emptyFilterTitle: string;
   emptyListBody: string;
   emptyListTitle: string;
   from: string;
+  generateCandidate: string;
   listTitle: string;
   listMetric: (visibleCount: number, totalCount: number, pendingCount: number) => string;
   noSelectionBody: string;
   noSelectionTitle: string;
   noUpstreamOutput: string;
   openedAt: string;
+  originalContent: string;
+  originalSelected: string;
   payload: string;
   processedAction: string;
   processedPlaceholder: string;
   regenerate: string;
   regenerateDescription: string;
   reject: string;
+  messageReply: string;
   replyPlaceholder: string;
   requestChanges: string;
   requestChangesDescription: string;
   sendReply: string;
-  solutionSelected: string;
   status: string;
   system: string;
   timeFilter: string;
   to: string;
-  useSolution: string;
+  useCandidate: string;
   waitingHarness: (harnessLabel: string) => string;
   you: string;
   youAvatar: string;
@@ -1964,17 +2021,21 @@ function getInboxCopy(language: Language): InboxCopy {
       allBlueprints: "全部蓝图",
       approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
       approve: "\u6279\u51c6",
+      candidateReply: "\u5019\u9009\u56de\u590d",
+      candidateSelected: "\u5df2\u9009\u7528\u5019\u9009",
       complete: "\u5b8c\u6210",
       blueprintFilter: "蓝图",
       conversation: "\u5bf9\u8bdd",
       decidedAt: "处理时间",
       decisionComment: "处理备注",
       detailTitle: "\u5bf9\u8bdd\u8be6\u60c5",
+      discussionUnavailable: "\u8fd9\u4e2a\u5386\u53f2\u5ba1\u6279\u6ca1\u6709\u53ef\u7528\u7684\u8ba8\u8bba\u80fd\u529b\u6295\u5f71\u3002",
       emptyFilterBody: "调整蓝图或时间筛选后可以继续查看历史收件。",
       emptyFilterTitle: "当前筛选没有收件",
       emptyListBody: "\u65b0\u7684\u4eba\u5de5\u5ba1\u6279\u4f1a\u6309\u65f6\u95f4\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
       emptyListTitle: "当前没有收件",
       from: "\u6765\u81ea",
+      generateCandidate: "\u751f\u6210\u5019\u9009",
       listTitle: "\u6536\u4ef6",
       listMetric: (visibleCount, totalCount, pendingCount) =>
         `显示 ${visibleCount}/${totalCount} 封，${pendingCount} 封待处理`,
@@ -1982,22 +2043,24 @@ function getInboxCopy(language: Language): InboxCopy {
       noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
       noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
       openedAt: "\u53d1\u8d77\u65f6\u95f4",
+      originalContent: "\u539f\u59cb\u5ba1\u6279\u5185\u5bb9",
+      originalSelected: "\u5df2\u9009\u539f\u59cb\u5185\u5bb9",
       payload: "\u8be6\u7ec6\u5185\u5bb9",
       processedAction: "已处理，不能重复操作",
       processedPlaceholder: "这封收件已经处理，不能继续留言或再次审批。",
       regenerate: "\u91cd\u65b0\u751f\u6210",
       regenerateDescription: "\u91cd\u65b0\u8fd0\u884c\u5e76\u751f\u6210\u65b0\u7248\u672c",
       reject: "\u9a73\u56de",
+      messageReply: "\u666e\u901a\u7559\u8a00",
       replyPlaceholder: "\u8f93\u5165\u7559\u8a00\uff0c\u4e0d\u4f1a\u6539\u53d8\u6d41\u7a0b\uff1bShift+Enter \u6362\u884c...",
       requestChanges: "\u8bf7\u6c42\u4fee\u6539",
       requestChangesDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u65b0\u7248\u672c",
       sendReply: "\u7559\u8a00",
-      solutionSelected: "\u5df2\u9009\u7528",
       status: "状态",
       system: "HiveWard",
       timeFilter: "时间",
       to: "\u53d1\u7ed9",
-      useSolution: "\u4f7f\u7528\u6b64\u65b9\u6848",
+      useCandidate: "\u4f7f\u7528\u6b64\u5019\u9009",
       waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u8f93\u51fa...`,
       you: "\u4f60",
       youAvatar: "\u4f60"
@@ -2008,17 +2071,21 @@ function getInboxCopy(language: Language): InboxCopy {
     allBlueprints: "All blueprints",
     approvalRequest: "Approval request",
     approve: "Approve",
+    candidateReply: "Candidate reply",
+    candidateSelected: "Candidate selected",
     complete: "Complete",
     blueprintFilter: "Blueprint",
     conversation: "Conversation",
     decidedAt: "Decided",
     decisionComment: "Decision note",
     detailTitle: "Conversation detail",
+    discussionUnavailable: "Discussion capability is unavailable for this legacy approval.",
     emptyFilterBody: "Change the blueprint or time filter to view more inbox history.",
     emptyFilterTitle: "No inbox items match this filter",
     emptyListBody: "New human approvals will appear here by request time.",
     emptyListTitle: "No inbox items",
     from: "From",
+    generateCandidate: "Generate candidate",
     listTitle: "Messages",
     listMetric: (visibleCount, totalCount, pendingCount) =>
       `${visibleCount}/${totalCount} shown, ${pendingCount} pending`,
@@ -2026,22 +2093,24 @@ function getInboxCopy(language: Language): InboxCopy {
     noSelectionTitle: "Select a message",
     noUpstreamOutput: "No previous node output was captured.",
     openedAt: "Opened",
+    originalContent: "Original approval content",
+    originalSelected: "Original content selected",
     payload: "Payload",
     processedAction: "Already processed",
     processedPlaceholder: "This inbox item has already been processed.",
     regenerate: "Regenerate",
     regenerateDescription: "Rerun this step and generate a new version",
     reject: "Reject",
+    messageReply: "Message reply",
     replyPlaceholder: "Add a comment; comments do not change the workflow. Shift+Enter for a new line...",
     requestChanges: "Request changes",
     requestChangesDescription: "Ask the Agent to create a revised version from this comment",
     sendReply: "Comment",
-    solutionSelected: "Selected",
     status: "Status",
     system: "HiveWard",
     timeFilter: "Time",
     to: "To",
-    useSolution: "Use this option",
+    useCandidate: "Use this option",
     waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel} output...`,
     you: "You",
     youAvatar: "You"
@@ -2157,6 +2226,12 @@ function inboxStatusLabel(status: InboxItem["status"], language: Language): stri
 
 function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
   return approval.status === undefined || approval.status === "pending";
+}
+
+function canSendApprovalDiscussionReply(approval: PendingApprovalItem): boolean {
+  if (!isActionableApprovalThread(approval)) return false;
+  const discussion = approval.discussion;
+  return Boolean(discussion && (discussion.mode === "message_only" || discussion.canStreamReply));
 }
 
 function approvalStatusClassName(approval: PendingApprovalItem): string {
@@ -2366,11 +2441,11 @@ function buildInboxConversationMessages({
           speaker: reply.role === "user" ? copy.you : approval?.nodeLabel ?? copy.system,
           body: reply.body,
           createdAt: reply.createdAt,
-          ...(reply.role === "assistant"
+          categoryLabel: reply.purpose === "candidate" ? copy.candidateReply : copy.messageReply,
+          ...(reply.purpose === "candidate"
             ? {
-                solutionId: reply.id,
-                selectedSolution: approval?.selectedReplyId === reply.id || reply.selected === true,
-                canUseAsSolution: true
+                candidateReplyId: reply.id,
+                selectedCandidate: approval?.selectedReplyId === reply.id || reply.selected === true
               }
             : {})
         }))
@@ -2461,16 +2536,15 @@ function buildApprovalConversation(
   copy: InboxCopy,
   t: Messages
 ): InboxConversationMessage[] {
-  const selectedReplyId = approval.selectedReplyId ?? approvalReviewOutputSolutionId;
+  const selectedReplyId = approval.selectedReplyId ?? null;
   return approvalContentBlocks(approval, copy, t).map((block) => ({
     id: block.key,
     role: "assistant" as const,
     speaker: block.label,
     body: block.body,
     createdAt: approval.requestedAt,
-    solutionId: approvalReviewOutputSolutionId,
-    selectedSolution: selectedReplyId === approvalReviewOutputSolutionId,
-    canUseAsSolution: true
+    categoryLabel: copy.originalContent,
+    selectedOriginal: selectedReplyId === null
   }));
 }
 
