@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ApprovalRequest, BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
 import {
   acknowledgedTerminalRunIdsStorageKey,
+  hasRunTranscriptEvents,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
   resolveRunViewStatus,
   selectRunPollingTarget,
   shouldShowBlueprintWorkspaceRunState,
+  sortedRunTranscriptEventsForDisplay,
   syncApprovalsForRun,
   writeAcknowledgedTerminalRunIds
 } from "./run-state";
@@ -657,6 +659,52 @@ describe("run state sync", () => {
 
     expect([...readAcknowledgedTerminalRunIds(storage)]).toEqual([]);
   });
+
+  it("sorts transcript events by session, sequence, and createdAt fallback", () => {
+    const runView = createRunView("succeeded");
+    runView.nodeSessionTranscriptEvents = [
+      createTranscriptEvent({
+        id: "session-b-first",
+        sessionId: "session-b",
+        sequence: 1,
+        content: "B first",
+        createdAt: "2026-05-21T01:03:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-no-sequence-late",
+        sessionId: "session-a",
+        sequence: undefined as unknown as number,
+        content: "A late",
+        createdAt: "2026-05-21T01:05:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-first",
+        sessionId: "session-a",
+        sequence: 1,
+        content: "A first",
+        createdAt: "2026-05-21T01:02:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-no-sequence-early",
+        sessionId: "session-a",
+        sequence: undefined as unknown as number,
+        content: "A early",
+        createdAt: "2026-05-21T01:04:00.000Z"
+      })
+    ];
+
+    expect(hasRunTranscriptEvents(runView)).toBe(true);
+    expect(sortedRunTranscriptEventsForDisplay(runView).map((event) => event.id)).toEqual([
+      "session-a-first",
+      "session-a-no-sequence-early",
+      "session-a-no-sequence-late",
+      "session-b-first"
+    ]);
+  });
+
+  it("detects runs without transcript facts", () => {
+    expect(hasRunTranscriptEvents(createRunView("succeeded"))).toBe(false);
+  });
 });
 
 function createRunView(
@@ -757,6 +805,23 @@ function toRunStatus(nodeStatus: "waiting_approval" | "succeeded" | "running" | 
   if (nodeStatus === "failed") return "failed";
   if (nodeStatus === "succeeded") return "succeeded";
   return nodeStatus;
+}
+
+function createTranscriptEvent(
+  overrides: Partial<NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number]>
+): NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number] {
+  return {
+    id: "transcript-event-1",
+    sessionId: "session-a",
+    sequence: 1,
+    runId: "run-1",
+    nodeRunId: "node-run-agent",
+    role: "assistant",
+    kind: "assistant_message",
+    content: "Transcript content",
+    createdAt: "2026-05-21T01:02:00.000Z",
+    ...overrides
+  };
 }
 
 function createMemoryStorage(): Pick<Storage, "getItem" | "setItem"> {

@@ -12,6 +12,7 @@ import type {
 
 export type RunPollingView = "blueprint" | "runs";
 export type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
+export type RunTranscriptEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 
 export const acknowledgedTerminalRunIdsStorageKey = "hiveward-acknowledged-terminal-run-ids";
 
@@ -55,12 +56,35 @@ export function resolveRunViewDisplayStatus(runView?: BlueprintRunView): Bluepri
   return isActiveRunView(runView) ? "running" : runView.run.status;
 }
 
+export function sortedRunTranscriptEventsForDisplay(runView: BlueprintRunView): RunTranscriptEvent[] {
+  return [...(runView.nodeSessionTranscriptEvents ?? [])].sort((left, right) => {
+    const sessionOrder = left.sessionId.localeCompare(right.sessionId);
+    if (sessionOrder !== 0) return sessionOrder;
+    const sequenceOrder = toSortableSequence(left.sequence) - toSortableSequence(right.sequence);
+    if (sequenceOrder !== 0) return sequenceOrder;
+    return toSortableTimestamp(left.createdAt) - toSortableTimestamp(right.createdAt);
+  });
+}
+
+export function hasRunTranscriptEvents(runView: BlueprintRunView): boolean {
+  return sortedRunTranscriptEventsForDisplay(runView).length > 0;
+}
+
 function hasActiveNodeRun(runView: BlueprintRunView): boolean {
   return runView.nodeRuns.some((nodeRun) => isActiveNodeRunStatus(nodeRun.status));
 }
 
 function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
+}
+
+function toSortableTimestamp(value: string): number {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function toSortableSequence(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
 function hasFailedNodeRun(runView: BlueprintRunView): boolean {
