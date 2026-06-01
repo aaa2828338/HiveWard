@@ -271,6 +271,19 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
     const session = await this.getSession();
     try {
       const idempotencyKey = createGatewayId(input.nodeRunId);
+      if (input.nativeSessionId) {
+        return {
+          taskId: idempotencyKey,
+          runId: idempotencyKey,
+          sessionKey: input.nativeSessionId,
+          nativeSessionId: input.nativeSessionId,
+          resumeMode: "started",
+          source: "openclaw",
+          status: "failed",
+          error: "native_resume_unsupported: OpenClaw gateway agent tasks do not expose a verifiable native resume path.",
+          updatedAt: new Date().toISOString()
+        };
+      }
       const modelRef = await this.resolveModelRef(session, input.modelId);
       const lifecycle = session.requestLifecycle<Record<string, unknown>>(
         "agent",
@@ -305,6 +318,8 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
             taskId: idempotencyKey,
             runId: idempotencyKey,
             sessionKey: buildAgentMainSessionKey(input.agentId),
+            nativeSessionId: buildAgentMainSessionKey(input.agentId),
+            resumeMode: "started",
             source: "openclaw",
             status: "running",
             updatedAt: new Date().toISOString(),
@@ -327,6 +342,8 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
         taskId,
         runId,
         sessionKey,
+        nativeSessionId: sessionKey,
+        resumeMode: "started",
         source: "openclaw",
         status,
         error: status === "failed" ? summarizeAgentResult(accepted) : undefined,
@@ -378,6 +395,8 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
       taskId: input.taskId,
       runId,
       sessionKey,
+      nativeSessionId: sessionKey,
+      resumeMode: "started",
       source: "openclaw",
       status,
       output,
@@ -493,7 +512,9 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
             taskId: input.taskId,
             runId: input.runId,
             sessionKey: input.sessionKey,
+            nativeSessionId: input.sessionKey,
             source: input.source,
+            resumeMode: "started",
             status: "failed",
             error: transcript.error,
             usage: transcript.usage,
@@ -509,7 +530,9 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
             taskId: input.taskId,
             runId: input.runId,
             sessionKey: input.sessionKey,
+            nativeSessionId: input.sessionKey,
             source: input.source,
+            resumeMode: "started",
             status: "succeeded",
             output: transcript.output,
             usage: transcript.usage,
@@ -525,7 +548,9 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
             taskId: input.taskId,
             runId: input.runId,
             sessionKey: input.sessionKey,
+            nativeSessionId: input.sessionKey,
             source: input.source,
+            resumeMode: "started",
             status: terminal.status,
             error: `OpenClaw session ${terminal.status}.`,
             usage: transcript?.usage,
@@ -542,7 +567,9 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
             taskId: input.taskId,
             runId: input.runId,
             sessionKey: input.sessionKey,
+            nativeSessionId: input.sessionKey,
             source: input.source,
+            resumeMode: "started",
             status: "succeeded",
             usage: transcript?.usage,
             updatedAt: terminal.updatedAt,

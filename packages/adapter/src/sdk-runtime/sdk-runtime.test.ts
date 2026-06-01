@@ -190,6 +190,77 @@ describe("agent SDK runtime", () => {
     });
   });
 
+  it("resumes Codex tasks through the native resume thread API", async () => {
+    const workspace = createWorkspace({ git: true });
+    let startCalled = false;
+    let resumedThreadId: string | undefined;
+    let resumedOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-resumed-thread",
+        onStartThread: () => {
+          startCalled = true;
+        },
+        onResumeThread: (id, options) => {
+          resumedThreadId = id;
+          resumedOptions = options;
+        },
+        finalResponse: "resumed ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        nativeSessionId: "codex-native-existing"
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(startCalled).toBe(false);
+    expect(resumedThreadId).toBe("codex-native-existing");
+    expect(resumedOptions?.model).toBe("test-model");
+    expect(started.resumeMode).toBe("resumed");
+    expect(result.resumeMode).toBe("resumed");
+    expect(result.nativeSessionId).toBe("codex-resumed-thread");
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("rejects Codex native resume when the SDK cannot prove a resume path", async () => {
+    const workspace = createWorkspace({ git: true });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => ({
+        startThread() {
+          throw new Error("startThread should not be called for native resume.");
+        }
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        nativeSessionId: "codex-native-existing"
+      })
+    );
+
+    expect(started.status).toBe("failed");
+    expect(started.resumeMode).toBe("started");
+    expect(started.error).toContain("native_resume_unsupported");
+  });
+
   it("starts Claude through the SDK without a platform auth precheck", async () => {
     const workspace = createWorkspace();
     let options: Parameters<ClaudeQueryFn>[0]["options"];
@@ -233,6 +304,57 @@ describe("agent SDK runtime", () => {
     expect(started.status).toBe("running");
     expect(started.source).toBe("claude");
     expect(options?.skills).toEqual(["hiveward-leader"]);
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("resumes Claude tasks through the native SDK resume option", async () => {
+    const workspace = createWorkspace();
+    let options: Parameters<ClaudeQueryFn>[0]["options"];
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      (params) => {
+        options = params.options;
+        return fakeClaudeQuery([
+          {
+            type: "result",
+            subtype: "success",
+            duration_ms: 1,
+            duration_api_ms: 1,
+            is_error: false,
+            num_turns: 1,
+            result: "resumed ok",
+            stop_reason: null,
+            total_cost_usd: 0,
+            usage: {},
+            modelUsage: {},
+            permission_denials: [],
+            uuid: "uuid-claude-resume",
+            session_id: "claude-native-existing"
+          } as unknown as SDKMessage
+        ])(params);
+      }
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "claude",
+        workingDirectory: workspace,
+        nativeSessionId: "claude-native-existing"
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "claude"
+    });
+
+    expect(options?.resume).toBe("claude-native-existing");
+    expect(started.resumeMode).toBe("resumed");
+    expect(result.resumeMode).toBe("resumed");
+    expect(result.nativeSessionId).toBe("claude-native-existing");
     expect(result.status).toBe("succeeded");
   });
 
@@ -1383,6 +1505,7 @@ function fakeCodexClient({
   finalResponse,
   usage,
   onStartThread,
+  onResumeThread,
   onRun,
   onRunStreamed,
   streamEvents
@@ -1391,6 +1514,7 @@ function fakeCodexClient({
   finalResponse: string;
   usage: Usage | null;
   onStartThread?: (options?: ThreadOptions) => void;
+  onResumeThread?: (id: string, options?: ThreadOptions) => void;
   onRun?: (prompt: string, options?: TurnOptions) => void;
   onRunStreamed?: (prompt: string, options?: TurnOptions) => void;
   streamEvents?: ThreadEvent[];
@@ -1421,8 +1545,8 @@ function fakeCodexClient({
       onStartThread?.(options);
       return thread;
     },
-    resumeThread(_id: string, options?: ThreadOptions) {
-      onStartThread?.(options);
+    resumeThread(id: string, options?: ThreadOptions) {
+      onResumeThread?.(id, options);
       return thread;
     }
   };

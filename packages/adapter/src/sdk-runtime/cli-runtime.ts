@@ -168,13 +168,14 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     const now = new Date().toISOString();
     const taskId = `${this.harnessId}-task-${nanoid(10)}`;
     const runId = `${this.harnessId}-run-${nanoid(10)}`;
-    const sessionKey = `${this.harnessId}-session-${input.nodeRunId}`;
+    const sessionKey = input.nativeSessionId ?? `${this.harnessId}-session-${input.nodeRunId}`;
+    const resumeMode = input.nativeSessionId ? "resumed" : "started";
 
     let workingDirectory: string;
     try {
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
     } catch (error) {
-      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId, resumeMode);
     }
 
     const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
@@ -214,6 +215,8 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: this.harnessId,
+      nativeSessionId: input.nativeSessionId,
+      resumeMode,
       status: "running",
       updatedAt: now
     };
@@ -244,6 +247,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     abortController: AbortController;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
+    const resumeMode = input.nativeSessionId ? "resumed" : "started";
     try {
       if (abortController.signal.aborted) {
         return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
@@ -264,6 +268,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           modelId: input.modelId,
           agentId: input.agentId,
           agentName: input.agentName,
+          nativeSessionId: input.nativeSessionId,
           workspaceWrite: permissionProfile === "workspace_write",
           skillIds: input.skillIds
         }),
@@ -276,6 +281,8 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           taskId,
           runId,
           sessionKey,
+          nativeSessionId: input.nativeSessionId,
+          resumeMode,
           source: this.harnessId,
           status: "failed",
           error: formatAgentSdkProviderError(formatCliHarnessLabel(this.harnessId), formatCliFailure(result))
@@ -290,6 +297,8 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           taskId,
           runId,
           sessionKey: finalSessionKey,
+          nativeSessionId: finalSessionKey,
+          resumeMode,
           source: this.harnessId,
           status: "failed",
           error: formatAgentSdkError("invalid_output", "CLI output does not match outputSchema.")
@@ -300,6 +309,8 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey: finalSessionKey,
+        nativeSessionId: finalSessionKey,
+        resumeMode,
         source: this.harnessId,
         status: "succeeded",
         output,
@@ -313,6 +324,8 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        nativeSessionId: input.nativeSessionId,
+        resumeMode,
         source: this.harnessId,
         status: "failed",
         error: formatAgentSdkProviderError(formatCliHarnessLabel(this.harnessId), error)
@@ -320,11 +333,21 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  private failedStart(taskId: string, runId: string, sessionKey: string, error: string, updatedAt: string): StartedAgentTaskResult {
+  private failedStart(
+    taskId: string,
+    runId: string,
+    sessionKey: string,
+    error: string,
+    updatedAt: string,
+    nativeSessionId?: string,
+    resumeMode: StartedAgentTaskResult["resumeMode"] = "started"
+  ): StartedAgentTaskResult {
     return {
       taskId,
       runId,
       sessionKey,
+      nativeSessionId,
+      resumeMode,
       source: this.harnessId,
       status: "failed",
       error,
@@ -337,6 +360,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
+      resumeMode: "started",
       source: this.harnessId,
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")
@@ -451,12 +475,14 @@ function buildCliTaskArgs(
     modelId?: string;
     agentId?: string;
     agentName: string;
+    nativeSessionId?: string;
     workspaceWrite: boolean;
     skillIds?: string[];
   }
 ): string[] {
   if (harnessId === "google") {
     return [
+      ...(input.nativeSessionId ? ["--resume", input.nativeSessionId] : []),
       ...modelArgs("--model", input.modelId),
       ...googleApprovalArgs(input.workspaceWrite ? "workspace_write" : "read_only"),
       "--prompt",
@@ -470,6 +496,7 @@ function buildCliTaskArgs(
       "--output-format",
       "stream-json",
       ...modelArgs("--model", input.modelId),
+      ...(input.nativeSessionId ? ["--resume", input.nativeSessionId] : []),
       ...(input.workspaceWrite ? ["--force"] : []),
       input.prompt
     ];
@@ -481,15 +508,16 @@ function buildCliTaskArgs(
       "--dir",
       input.workingDirectory,
       ...modelArgs("--model", input.modelId),
+      ...(input.nativeSessionId ? ["--session", input.nativeSessionId] : []),
       ...(input.agentId ? ["--agent", input.agentId] : []),
-      "--title",
-      input.agentName,
+      ...(input.nativeSessionId ? [] : ["--title", input.agentName]),
       ...(input.workspaceWrite ? ["--dangerously-skip-permissions"] : []),
       input.prompt
     ];
   }
 
   return [
+    ...(input.nativeSessionId ? ["--resume", input.nativeSessionId] : []),
     "chat",
     ...modelArgs("--model", input.modelId),
     ...(input.workspaceWrite ? ["--yolo"] : []),

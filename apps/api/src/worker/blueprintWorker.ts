@@ -22,9 +22,16 @@ import {
   type ManagerSlotNodeConfig,
   type RuntimeObjectRef,
   type StartAgentTaskInput,
+  type StartedAgentTaskResult,
   type Artifact,
   type ApprovalRequest,
   type ReleaseReport,
+  type NodeExecutionSession,
+  type NodeExecutionSessionPolicy,
+  type NodeExecutionSessionStatus,
+  type NodeSessionTranscriptEvent,
+  type NodeSessionTranscriptEventKind,
+  type NodeSessionTranscriptEventRole,
   type RunCommand,
   type RunCommandKind,
   type RunCommandStatus,
@@ -372,6 +379,12 @@ type UpstreamOutput = UpstreamOutputItem[];
 
 interface StandardNodeInput {
   upstream: UpstreamOutput;
+}
+
+interface ResolvedNodeExecutionSession {
+  session: NodeExecutionSession;
+  nodeRun: BlueprintNodeRun;
+  resumeNativeSessionId?: string;
 }
 
 type SelfIterationPublishResult = "none" | "continue" | "handled";
@@ -3132,7 +3145,9 @@ export class BlueprintWorker {
       taskId: runtimeRef?.taskId ?? sourceId,
       runId: runtimeRef?.runId ?? sourceId,
       sessionKey: runtimeRef?.sessionKey ?? "",
+      nativeSessionId: runtimeRef?.sessionKey,
       source: runtimeRef?.source ?? "openclaw",
+      resumeMode: "started",
       status,
       output: nodeRun.output === undefined ? undefined : stringifyManagerSlotOutput(nodeRun.output),
       error: nodeRun.error,
@@ -3286,6 +3301,7 @@ export class BlueprintWorker {
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
+      executionSessionPolicy: this.resolveExecutionSessionPolicy(node.config),
       outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
       input: crossRoundInput.input,
       skillIds: config.skillIds,
@@ -3314,6 +3330,10 @@ export class BlueprintWorker {
 
   private agentWorkspaceForNode(blueprint: BlueprintDefinition, node: BlueprintNode & { type: "agent" }): AgentWorkspaceRef {
     return agentWorkspaceRefForNode(this.store.getBlueprintWorkspacePath(blueprint.id), node);
+  }
+
+  private resolveExecutionSessionPolicy(config: Pick<AgentNodeConfig, "crossRoundContextMode">): NodeExecutionSessionPolicy {
+    return resolveCrossRoundContextMode(config) === "off" ? "refresh_per_run" : "preserve_across_rounds";
   }
 
   private async withNodeCrossRoundContext(input: {
@@ -3871,7 +3891,9 @@ export class BlueprintWorker {
       taskId: nodeRunId,
       runId: nodeRunId,
       sessionKey: `manager-slot:${nodeRunId}`,
+      nativeSessionId: `manager-slot:${nodeRunId}`,
       source: "openclaw",
+      resumeMode: "started",
       status,
       output,
       error,
@@ -4999,6 +5021,33 @@ export class BlueprintWorker {
     input: StartAgentTaskInput,
     onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
   ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
+    let sessionContext = await this.resolveNodeExecutionSession(input);
+    let attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
+    let attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
+
+    if (sessionContext && this.shouldFallbackNativeResume(attemptInput, attempt.result)) {
+      sessionContext = await this.createFallbackNodeExecutionSession(sessionContext, attempt.result.error);
+      attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
+      attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
+    }
+
+    return attempt;
+  }
+
+  private async executeAgentTaskAttempt(
+    input: StartAgentTaskInput,
+    sessionContext: ResolvedNodeExecutionSession | undefined,
+    onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
+  ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
+    if (sessionContext) {
+      await this.appendExecutionTranscriptEvent(sessionContext.session, "runtime", "runtime_started", "Runtime task started.", {
+        source: input.source,
+        resumeMode: input.nativeSessionId ? "resumed" : "started",
+        nativeSessionId: input.nativeSessionId,
+        executionSessionPolicy: sessionContext.session.policy
+      });
+    }
+
     const started = await this.adapter.startAgentTask(input);
     const source = started.source;
     const runtimeRef: RuntimeObjectRef = {
@@ -5010,15 +5059,22 @@ export class BlueprintWorker {
       sessionKey: started.sessionKey,
       usageRef: undefined
     };
+    if (sessionContext) {
+      sessionContext.session = await this.markNodeExecutionSessionStarted(sessionContext.session, started, runtimeRef);
+    }
     await onStarted?.(runtimeRef);
 
     if (started.status === "failed" || started.status === "cancelled") {
+      const result: AgentTaskResult = {
+        ...started,
+        output: undefined,
+        usage: undefined
+      };
+      if (sessionContext) {
+        await this.markNodeExecutionSessionDone(sessionContext.session, result, runtimeRef);
+      }
       return {
-        result: {
-          ...started,
-          output: undefined,
-          usage: undefined
-        },
+        result,
         runtimeRef
       };
     }
@@ -5032,19 +5088,254 @@ export class BlueprintWorker {
       agentId: input.agentId,
       modelId: input.modelId
     });
+    const finalRuntimeRef: RuntimeObjectRef = {
+      ...runtimeRef,
+      sourceId: result.taskId,
+      sourceUpdatedAt: result.updatedAt,
+      taskId: result.taskId,
+      runId: result.runId,
+      sessionKey: result.sessionKey,
+      usageRef: result.usage?.id
+    };
+    if (sessionContext) {
+      await this.markNodeExecutionSessionDone(sessionContext.session, result, finalRuntimeRef);
+    }
 
     return {
       result,
-      runtimeRef: {
-        ...runtimeRef,
-        sourceId: result.taskId,
-        sourceUpdatedAt: result.updatedAt,
-        taskId: result.taskId,
-        runId: result.runId,
-        sessionKey: result.sessionKey,
-        usageRef: result.usage?.id
-      }
+      runtimeRef: finalRuntimeRef
     };
+  }
+
+  private async resolveNodeExecutionSession(input: StartAgentTaskInput): Promise<ResolvedNodeExecutionSession | undefined> {
+    const nodeRun = await this.findNodeRunById(input.blueprintRunId, input.nodeRunId);
+    if (!nodeRun) return undefined;
+
+    const policy = input.executionSessionPolicy ?? "refresh_per_run";
+    const usableStatuses: NodeExecutionSessionStatus[] = ["active", "fallback", "paused"];
+    const current = (await this.store.listNodeExecutionSessions({
+      runId: input.blueprintRunId,
+      nodeRunId: input.nodeRunId,
+      statuses: usableStatuses
+    })).at(-1);
+    if (current) {
+      return {
+        session: current,
+        nodeRun,
+        resumeNativeSessionId: current.status === "fallback" ? undefined : current.nativeSessionId
+      };
+    }
+
+    const agentSeatId = this.nodeExecutionAgentSeatId(input);
+    const previous = policy === "preserve_across_rounds"
+      ? this.findPreviousNodeExecutionSession(
+          await this.store.listNodeExecutionSessions({
+            runId: input.blueprintRunId,
+            nodeId: nodeRun.nodeId
+          }),
+          input,
+          agentSeatId
+        )
+      : undefined;
+    const now = new Date().toISOString();
+    const session: NodeExecutionSession = {
+      id: deterministicFactId("node-session", [
+        input.blueprintRunId,
+        input.nodeRunId,
+        input.source,
+        agentSeatId ?? "agent",
+        policy,
+        previous?.id ?? "new"
+      ].join(":")),
+      runId: input.blueprintRunId,
+      nodeRunId: input.nodeRunId,
+      nodeId: nodeRun.nodeId,
+      agentSeatId,
+      harnessId: input.source,
+      policy,
+      status: "active",
+      resumedFromSessionId: previous?.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    return {
+      session: await this.store.createNodeExecutionSession(session),
+      nodeRun,
+      resumeNativeSessionId: previous?.nativeSessionId
+    };
+  }
+
+  private findPreviousNodeExecutionSession(
+    sessions: NodeExecutionSession[],
+    input: StartAgentTaskInput,
+    agentSeatId: string | undefined
+  ): NodeExecutionSession | undefined {
+    return sessions
+      .filter((session) =>
+        session.nodeRunId !== input.nodeRunId &&
+        session.harnessId === input.source &&
+        session.policy === "preserve_across_rounds" &&
+        session.nativeSessionId &&
+        session.status !== "unavailable" &&
+        session.agentSeatId === agentSeatId
+      )
+      .sort((left, right) =>
+        new Date(right.lastUsedAt ?? right.updatedAt).getTime() - new Date(left.lastUsedAt ?? left.updatedAt).getTime()
+      )[0];
+  }
+
+  private withResolvedExecutionSessionInput(
+    input: StartAgentTaskInput,
+    sessionContext: ResolvedNodeExecutionSession | undefined
+  ): StartAgentTaskInput {
+    if (!sessionContext) return input;
+    return {
+      ...input,
+      nativeSessionId: sessionContext.resumeNativeSessionId,
+      executionSessionPolicy: sessionContext.session.policy
+    };
+  }
+
+  private shouldFallbackNativeResume(input: StartAgentTaskInput, result: AgentTaskResult): boolean {
+    if (!input.nativeSessionId || result.status !== "failed") return false;
+    const error = result.error ?? "";
+    return error.includes("native_resume_unsupported") ||
+      error.includes("native_resume_unavailable") ||
+      error.includes("Native session could not be resumed") ||
+      error.includes("cannot prove native");
+  }
+
+  private async createFallbackNodeExecutionSession(
+    context: ResolvedNodeExecutionSession,
+    reason: string | undefined
+  ): Promise<ResolvedNodeExecutionSession> {
+    const statusReason = reason?.trim() || "Native session could not be resumed.";
+    const now = new Date().toISOString();
+    const unavailable = await this.store.updateNodeExecutionSession({
+      id: context.session.id,
+      status: "unavailable",
+      statusReason,
+      updatedAt: now
+    });
+    await this.appendExecutionTranscriptEvent(
+      unavailable,
+      "system",
+      "system_note",
+      "Native session could not be resumed; a fallback session was started.",
+      { reason: statusReason }
+    );
+    const fallback: NodeExecutionSession = {
+      id: deterministicFactId("node-session", `${context.session.id}:fallback`),
+      runId: context.session.runId,
+      nodeRunId: context.session.nodeRunId,
+      nodeId: context.session.nodeId,
+      agentSeatId: context.session.agentSeatId,
+      harnessId: context.session.harnessId,
+      policy: context.session.policy,
+      status: "fallback",
+      fallbackOfSessionId: context.session.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    return {
+      session: await this.store.createNodeExecutionSession(fallback),
+      nodeRun: context.nodeRun,
+      resumeNativeSessionId: undefined
+    };
+  }
+
+  private async markNodeExecutionSessionStarted(
+    session: NodeExecutionSession,
+    started: StartedAgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<NodeExecutionSession> {
+    const now = started.updatedAt ?? new Date().toISOString();
+    return this.store.updateNodeExecutionSession({
+      id: session.id,
+      nativeSessionId: started.nativeSessionId ?? session.nativeSessionId,
+      runtimeRef,
+      status: session.status === "fallback" ? "fallback" : "active",
+      statusReason: undefined,
+      lastUsedAt: now,
+      updatedAt: now
+    });
+  }
+
+  private async markNodeExecutionSessionDone(
+    session: NodeExecutionSession,
+    result: AgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<NodeExecutionSession> {
+    if (result.output !== undefined && result.status === "succeeded") {
+      await this.appendExecutionTranscriptEvent(
+        session,
+        "assistant",
+        "assistant_message",
+        formatTranscriptContent(result.output),
+        { status: result.status },
+        runtimeRef
+      );
+    }
+    await this.appendExecutionTranscriptEvent(
+      session,
+      "runtime",
+      "runtime_done",
+      result.status === "succeeded" ? "Runtime task completed." : `Runtime task ${result.status}.`,
+      {
+        status: result.status,
+        error: result.error,
+        resumeMode: result.resumeMode,
+        nativeSessionId: result.nativeSessionId
+      },
+      runtimeRef
+    );
+    const endedStatus: NodeExecutionSessionStatus = session.status === "fallback"
+      ? "fallback"
+      : result.status === "succeeded"
+        ? "completed"
+        : result.status === "cancelled"
+          ? "paused"
+          : "failed";
+    const now = result.updatedAt ?? new Date().toISOString();
+    return this.store.updateNodeExecutionSession({
+      id: session.id,
+      nativeSessionId: result.nativeSessionId ?? session.nativeSessionId,
+      runtimeRef,
+      status: endedStatus,
+      statusReason: result.status === "succeeded" ? undefined : result.error,
+      lastUsedAt: now,
+      updatedAt: now
+    });
+  }
+
+  private async appendExecutionTranscriptEvent(
+    session: NodeExecutionSession,
+    role: NodeSessionTranscriptEventRole,
+    kind: NodeSessionTranscriptEventKind,
+    content?: string,
+    metadata?: Record<string, unknown>,
+    runtimeRef?: RuntimeObjectRef
+  ): Promise<NodeSessionTranscriptEvent> {
+    const events = await this.store.listNodeSessionTranscriptEvents({ sessionId: session.id });
+    const sequence = events.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
+    return this.store.appendNodeSessionTranscriptEvent({
+      id: `node-transcript-${nanoid(10)}`,
+      sessionId: session.id,
+      sequence,
+      runId: session.runId,
+      nodeRunId: session.nodeRunId,
+      role,
+      kind,
+      content,
+      runtimeRef,
+      metadata,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  private nodeExecutionAgentSeatId(input: StartAgentTaskInput): string | undefined {
+    const seat = input.profileId ?? input.agentId ?? input.agentName;
+    return seat ? `${input.source}:${seat}` : input.source;
   }
 
   private async event(
@@ -5182,7 +5473,9 @@ function agentTaskResultFromNodeRun(nodeRun: BlueprintNodeRun): AgentTaskResult 
     taskId: runtimeRef?.taskId ?? runtimeRef?.sourceId ?? nodeRun.id,
     runId: runtimeRef?.runId ?? runtimeRef?.sourceId ?? nodeRun.id,
     sessionKey: runtimeRef?.sessionKey ?? nodeRun.id,
+    nativeSessionId: runtimeRef?.sessionKey ?? nodeRun.id,
     source: runtimeRef?.source ?? "openclaw",
+    resumeMode: "started",
     status: nodeRun.status === "succeeded" || nodeRun.status === "failed" || nodeRun.status === "cancelled"
       ? nodeRun.status
       : "running",
@@ -5203,6 +5496,15 @@ function runtimeRefFromAgentTaskResult(result: AgentTaskResult, fallback?: Runti
     sessionKey: result.sessionKey,
     usageRef: result.usage?.id ?? fallback?.usageRef
   };
+}
+
+function formatTranscriptContent(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
 }
 
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {

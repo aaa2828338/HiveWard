@@ -4334,6 +4334,250 @@ describe("BlueprintWorker", () => {
       upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", humanReportMd: "brief ready again" })]
     });
   });
+
+  it("binds agent node runs to native execution sessions and transcript events", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-session"),
+        sessionKey: "runtime-session",
+        nativeSessionId: "native-start"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-session", "succeeded", "brief ready"),
+        sessionKey: "runtime-session",
+        nativeSessionId: "native-done"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
+    if (!nodeRun) throw new Error("Expected brief node run.");
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id });
+    const events = await store.listNodeSessionTranscriptEvents({ sessionId: sessions[0]?.id });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      runId: run.id,
+      nodeRunId: nodeRun.id,
+      nodeId: "brief",
+      harnessId: "openclaw",
+      nativeSessionId: "native-done",
+      policy: "refresh_per_run",
+      status: "completed",
+      runtimeRef: expect.objectContaining({
+        taskId: "task-session",
+        sessionKey: "runtime-session"
+      })
+    });
+    expect(events.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+    expect(events[0]?.metadata).toMatchObject({ resumeMode: "started" });
+    expect(events[1]?.content).toBe("brief ready");
+    expect(events[2]?.metadata).toMatchObject({
+      status: "succeeded",
+      nativeSessionId: "native-done"
+    });
+  });
+
+  it("creates a new preserved session row that resumes the previous native session", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-preserve-1"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-preserve-1"
+      },
+      {
+        ...createStartedAgentTask("task-preserve-2"),
+        sessionKey: "runtime-session-2",
+        nativeSessionId: "native-preserve-2",
+        resumeMode: "resumed"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-preserve-1", "succeeded", "brief ready"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-preserve-1"
+      },
+      {
+        ...createCompletedAgentTask("task-preserve-2", "succeeded", "brief ready again"),
+        sessionKey: "runtime-session-2",
+        nativeSessionId: "native-preserve-2",
+        resumeMode: "resumed"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls[0]?.nativeSessionId).toBeUndefined();
+    expect(adapter.calls[1]?.nativeSessionId).toBe("native-preserve-1");
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]).toMatchObject({
+      policy: "preserve_across_rounds",
+      status: "completed",
+      nativeSessionId: "native-preserve-1"
+    });
+    expect(sessions[1]).toMatchObject({
+      policy: "preserve_across_rounds",
+      status: "completed",
+      nativeSessionId: "native-preserve-2",
+      resumedFromSessionId: sessions[0]?.id
+    });
+  });
+
+  it("marks unsupported native resume unavailable and starts an explicit fallback session", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-fallback-1"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        taskId: "task-fallback-resume",
+        runId: "task-fallback-resume-run",
+        sessionKey: "runtime-session-resume",
+        nativeSessionId: "native-original",
+        source: "openclaw",
+        resumeMode: "started",
+        status: "failed",
+        error: "native_resume_unsupported: test runtime cannot prove native resume.",
+        updatedAt: new Date().toISOString()
+      },
+      {
+        ...createStartedAgentTask("task-fallback-new"),
+        sessionKey: "runtime-session-fallback",
+        nativeSessionId: "native-fallback"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-fallback-1", "succeeded", "first pass"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createCompletedAgentTask("task-fallback-new", "succeeded", "fallback pass"),
+        sessionKey: "runtime-session-fallback",
+        nativeSessionId: "native-fallback"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    const unavailableEvents = unavailable
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
+      : [];
+    const fallbackEvents = fallback
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
+      : [];
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-original",
+      undefined
+    ]);
+    expect(sessions).toHaveLength(3);
+    expect(unavailable).toMatchObject({
+      nativeSessionId: "native-original",
+      statusReason: expect.stringContaining("native_resume_unsupported")
+    });
+    expect(fallback).toMatchObject({
+      nativeSessionId: "native-fallback",
+      fallbackOfSessionId: unavailable?.id
+    });
+    expect(unavailableEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        kind: "system_note",
+        content: "Native session could not be resumed; a fallback session was started.",
+        metadata: expect.objectContaining({
+          reason: expect.stringContaining("native_resume_unsupported")
+        })
+      })
+    ]));
+    expect(fallbackEvents.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+  });
 });
 
 function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["source"] = "openclaw"): StartedAgentTaskResult {
@@ -4341,7 +4585,9 @@ function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    nativeSessionId: "agent:main:main",
     source,
+    resumeMode: "started",
     status: "running",
     updatedAt: new Date().toISOString()
   };
@@ -4408,7 +4654,9 @@ function createCompletedAgentTask(
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    nativeSessionId: "agent:main:main",
     source,
+    resumeMode: "started",
     status,
     output,
     error,
