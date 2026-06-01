@@ -3,6 +3,13 @@ import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type {
+  ApprovalDiscussionBinding,
+  NodeExecutionSession,
+  NodeSessionTranscriptEvent,
+  RunCommand,
+  RunCommandStep
+} from "@hiveward/shared";
 import type { HivewardStore } from "../hivewardStore";
 import { FileHivewardStore } from "../fileHivewardStore";
 import {
@@ -84,11 +91,128 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await store.upsertIterationSession(session);
       await store.upsertIterationRound(round);
 
+      const command: RunCommand = {
+        id: "run-command-contract",
+        commandKey: `run:${run.id}:round:${round.id}:execute`,
+        blueprintId: run.blueprintId,
+        runId: run.id,
+        roundId: round.id,
+        kind: "self_iteration_execute_round",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        metadata: { source: "contract" },
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createRunCommandIfAbsent(command)).resolves.toMatchObject({ created: true });
+      await expect(store.createRunCommandIfAbsent({ ...command, id: "run-command-duplicate" })).resolves.toMatchObject({
+        created: false,
+        command: expect.objectContaining({ id: command.id })
+      });
+
+      const commandStep: RunCommandStep = {
+        id: "run-command-step-contract",
+        commandId: command.id,
+        stepKey: `${command.commandKey}:node:${nodeRun.id}`,
+        runId: run.id,
+        roundId: round.id,
+        revision: 1,
+        mode: "node_execution",
+        nodeId: nodeRun.nodeId,
+        nodeRunId: nodeRun.id,
+        status: "succeeded",
+        runtimeRef: {
+          source: "codex",
+          sourceId: "task-contract",
+          sourceUpdatedAt: contractNow,
+          taskId: "task-contract"
+        },
+        metadata: { source: "contract" },
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createRunCommandStepIfAbsent(commandStep)).resolves.toMatchObject({ created: true });
+      await expect(store.createRunCommandStepIfAbsent({ ...commandStep, id: "run-command-step-duplicate" })).resolves.toMatchObject({
+        created: false,
+        step: expect.objectContaining({ id: commandStep.id })
+      });
+
+      const executionSession: NodeExecutionSession = {
+        id: "node-execution-session-contract",
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        nodeId: nodeRun.nodeId,
+        agentSeatId: "contract-agent-seat",
+        harnessId: "codex",
+        nativeSessionId: "native-session-contract",
+        runtimeRef: {
+          source: "codex",
+          sourceId: "native-session-contract",
+          sourceUpdatedAt: contractNow,
+          sessionKey: "native-session-contract"
+        },
+        policy: "preserve_across_rounds",
+        status: "active",
+        createdAt: contractNow,
+        updatedAt: contractNow,
+        lastUsedAt: contractNow
+      };
+      await expect(store.createNodeExecutionSession(executionSession)).resolves.toMatchObject({ id: executionSession.id });
+
+      const transcriptEvent: NodeSessionTranscriptEvent = {
+        id: "node-session-transcript-contract-1",
+        sessionId: executionSession.id,
+        sequence: 1,
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        role: "user",
+        kind: "user_message",
+        content: "Run the contract task.",
+        metadata: { source: "contract" },
+        createdAt: contractNow
+      };
+      await expect(store.appendNodeSessionTranscriptEvent(transcriptEvent)).resolves.toMatchObject({ id: transcriptEvent.id });
+      await expect(store.appendNodeSessionTranscriptEvent({ ...transcriptEvent, id: "node-session-transcript-duplicate" }))
+        .rejects.toThrow(/Transcript sequence 1 already exists/);
+
       const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+      await store.appendApprovalReply({
+        id: "approval-reply-candidate-contract",
+        threadId: approval.id,
+        approvalRequestId: approval.id,
+        actor: "agent",
+        purpose: "candidate",
+        body: "Candidate approval response.",
+        createdAt: contractNow
+      });
+      const discussionBinding: ApprovalDiscussionBinding = {
+        approvalRequestId: approval.id,
+        threadId: approval.id,
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: nodeRun.nodeId,
+        executorNodeRunId: nodeRun.id,
+        executorSessionId: executionSession.id,
+        runtimeId: "codex",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createApprovalDiscussionBindingIfAbsent(discussionBinding)).resolves.toMatchObject({ created: true });
+      await expect(store.createApprovalDiscussionBindingIfAbsent({ ...discussionBinding, reason: "duplicate" })).resolves.toMatchObject({
+        created: false,
+        binding: expect.objectContaining({ approvalRequestId: approval.id })
+      });
       await store.appendApprovalDecision(createContractDecision(approval.id));
       await store.upsertApprovalRequest({
         ...approval,
         status: "replied",
+        selectedReplyId: "approval-reply-candidate-contract",
         capabilities: resolveClosedCapabilities(),
         updatedAt: contractNow
       });
@@ -104,14 +228,27 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       expect(view).toMatchObject({
         run: { id: run.id, blueprintName: "Contract Blueprint" },
         nodeRuns: [expect.objectContaining({ id: nodeRun.id, status: "succeeded", output })],
-        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied" })],
+        runCommands: [expect.objectContaining({ id: command.id, commandKey: command.commandKey })],
+        runCommandSteps: [expect.objectContaining({ id: commandStep.id, stepKey: commandStep.stepKey })],
+        nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id, nativeSessionId: "native-session-contract" })],
+        nodeSessionTranscriptEvents: [expect.objectContaining({ id: transcriptEvent.id, sequence: 1 })],
+        approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id, mode: "executor" })],
+        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied", selectedReplyId: "approval-reply-candidate-contract" })],
         approvalThreads: [expect.objectContaining({ id: approval.id, status: "closed", currentRevision: 1 })],
-        approvalReplies: [expect.objectContaining({
-          id: "reply-approval-decision-contract",
-          threadId: approval.id,
-          approvalRequestId: approval.id,
-          body: "Please tighten the report."
-        })],
+        approvalReplies: expect.arrayContaining([
+          expect.objectContaining({
+            id: "reply-approval-decision-contract",
+            threadId: approval.id,
+            approvalRequestId: approval.id,
+            purpose: "message",
+            body: "Please tighten the report."
+          }),
+          expect.objectContaining({
+            id: "approval-reply-candidate-contract",
+            purpose: "candidate",
+            body: "Candidate approval response."
+          })
+        ]),
         artifacts: [expect.objectContaining({ id: artifact.id, slot: "deliverable" })],
         agentHumanReports: [expect.objectContaining({ nodeRunId: nodeRun.id, bodyMd: expect.stringContaining("Contract Report") })],
         agentHandoffs: [expect.objectContaining({ nodeRunId: nodeRun.id, payload: { next: "manager", facts: ["contract complete"] } })],
@@ -119,6 +256,13 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         runTimeline: [expect.objectContaining({ id: "timeline-contract", sequence: 1 })]
       });
       expect(view?.events.map((event) => event.id)).toEqual(["event-contract-1", "event-contract-2"]);
+      await expect(store.getRunArchive(run.id)).resolves.toMatchObject({
+        runCommands: [expect.objectContaining({ id: command.id })],
+        runCommandSteps: [expect.objectContaining({ id: commandStep.id })],
+        nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id })],
+        nodeSessionTranscriptEvents: [expect.objectContaining({ id: transcriptEvent.id })],
+        approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id })]
+      });
 
       await expect(store.listRunSummaries()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: run.id })]));
       await expect(store.listPendingApprovals()).resolves.toEqual([]);
@@ -126,17 +270,26 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listApprovalThreads({ runId: run.id })).resolves.toEqual([
         expect.objectContaining({ id: approval.id, status: "closed" })
       ]);
-      await expect(store.listApprovalReplies({ approvalRequestId: approval.id })).resolves.toEqual([
+      await expect(store.listApprovalReplies({ approvalRequestId: approval.id })).resolves.toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: "reply-approval-decision-contract",
+          purpose: "message",
           threadId: approval.id,
           metadata: expect.objectContaining({
             source: "approval_decision",
             requestKind: approval.kind,
             resultingStatus: "replied"
           })
+        }),
+        expect.objectContaining({
+          id: "approval-reply-candidate-contract",
+          purpose: "candidate"
         })
-      ]);
+      ]));
+      await expect(store.getApprovalDiscussionBinding(approval.id)).resolves.toMatchObject({
+        mode: "executor",
+        executorSessionId: executionSession.id
+      });
 
       const inbox = await store.createBlueprintProposal({
         title: "Import proposal",

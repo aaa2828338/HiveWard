@@ -527,6 +527,105 @@ const sqliteApprovalReplyLegacyMeaningStatements = [
    WHERE metadata_json LIKE '%"legacySource":"approval_replies_v1"%'`
 ];
 
+const sqliteExecutionFactsStatements = [
+  `CREATE TABLE IF NOT EXISTS run_commands (
+    id TEXT PRIMARY KEY,
+    command_key TEXT NOT NULL UNIQUE,
+    blueprint_id TEXT NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    round_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('self_iteration_prepare_round','self_iteration_execute_round','self_iteration_release_report','regular_run')),
+    status TEXT NOT NULL CHECK (status IN ('queued','running','waiting_approval','succeeded','failed','cancelled')),
+    current_revision INTEGER NOT NULL DEFAULT 0 CHECK (current_revision >= 0),
+    current_step TEXT,
+    started_at TEXT,
+    ended_at TEXT,
+    error TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS run_command_steps (
+    id TEXT PRIMARY KEY,
+    command_id TEXT NOT NULL REFERENCES run_commands(id) ON DELETE CASCADE,
+    step_key TEXT NOT NULL UNIQUE,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    round_id TEXT,
+    revision INTEGER NOT NULL DEFAULT 0 CHECK (revision >= 0),
+    mode TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    node_run_id TEXT REFERENCES node_runs(id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued','running','succeeded','failed','cancelled')),
+    started_at TEXT,
+    ended_at TEXT,
+    error TEXT,
+    runtime_ref_json TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS node_execution_sessions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    node_run_id TEXT NOT NULL REFERENCES node_runs(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL,
+    agent_seat_id TEXT,
+    harness_id TEXT NOT NULL,
+    native_session_id TEXT,
+    runtime_ref_json TEXT,
+    policy TEXT NOT NULL CHECK (policy IN ('refresh_per_run','refresh_per_round','preserve_across_rounds')),
+    status TEXT NOT NULL CHECK (status IN ('active','paused','completed','failed','unavailable','fallback')),
+    status_reason TEXT,
+    fallback_of_session_id TEXT,
+    resumed_from_session_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_used_at TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS node_session_transcript_events (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES node_execution_sessions(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    node_run_id TEXT NOT NULL REFERENCES node_runs(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user','assistant','system','runtime')),
+    kind TEXT NOT NULL CHECK (kind IN ('user_message','assistant_delta','assistant_message','runtime_started','runtime_state','runtime_done','system_note')),
+    content TEXT,
+    runtime_ref_json TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(session_id, sequence)
+  )`,
+  `CREATE TABLE IF NOT EXISTS approval_discussion_bindings (
+    approval_request_id TEXT PRIMARY KEY REFERENCES approval_requests(id) ON DELETE CASCADE,
+    thread_id TEXT,
+    mode TEXT NOT NULL CHECK (mode IN ('none','message_only','executor')),
+    route TEXT NOT NULL,
+    executor_actor TEXT,
+    executor_kind TEXT,
+    executor_node_id TEXT,
+    executor_node_run_id TEXT,
+    executor_session_id TEXT,
+    runtime_id TEXT,
+    can_stream_reply INTEGER NOT NULL CHECK (can_stream_reply IN (0,1)),
+    can_create_candidate INTEGER NOT NULL CHECK (can_create_candidate IN (0,1)),
+    reason TEXT,
+    resolver_version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  "ALTER TABLE approval_requests ADD COLUMN selected_reply_id TEXT",
+  "ALTER TABLE approval_replies ADD COLUMN purpose TEXT NOT NULL DEFAULT 'message'",
+  `CREATE INDEX IF NOT EXISTS idx_run_commands_run_status ON run_commands(run_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_commands_round_kind ON run_commands(run_id, round_id, kind)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_command_steps_command_status ON run_command_steps(command_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_command_steps_node_run ON run_command_steps(node_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_execution_sessions_run_node ON node_execution_sessions(run_id, node_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_execution_sessions_native ON node_execution_sessions(harness_id, native_session_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_transcript_session_seq ON node_session_transcript_events(session_id, sequence)`,
+  `CREATE INDEX IF NOT EXISTS idx_approval_discussion_bindings_mode ON approval_discussion_bindings(mode)`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -567,6 +666,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "approval_reply_legacy_meaning",
     checksum: checksumStatements(sqliteApprovalReplyLegacyMeaningStatements),
     up: sqliteApprovalReplyLegacyMeaningStatements
+  },
+  {
+    version: 7,
+    name: "execution_facts",
+    checksum: checksumStatements(sqliteExecutionFactsStatements),
+    up: sqliteExecutionFactsStatements
   }
 ];
 
@@ -580,10 +685,15 @@ export const sqliteRequiredSchema = {
   run_sequence_counters: ["run_id", "scope", "last_sequence", "updated_at"],
   node_runs: ["id", "run_id", "blueprint_id", "node_id", "node_label", "node_type", "status", "lease_owner", "worker_epoch", "row_version", "updated_at"],
   node_run_payloads: ["node_run_id", "input_json", "output_json", "raw_result_json", "updated_at"],
+  run_commands: ["id", "command_key", "blueprint_id", "run_id", "kind", "status", "current_revision", "created_at", "updated_at"],
+  run_command_steps: ["id", "command_id", "step_key", "run_id", "revision", "mode", "node_id", "status", "created_at", "updated_at"],
+  node_execution_sessions: ["id", "run_id", "node_run_id", "node_id", "harness_id", "policy", "status", "created_at", "updated_at"],
+  node_session_transcript_events: ["id", "session_id", "sequence", "run_id", "node_run_id", "role", "kind", "created_at"],
+  approval_discussion_bindings: ["approval_request_id", "mode", "route", "can_stream_reply", "can_create_candidate", "resolver_version", "created_at", "updated_at"],
   run_events: ["id", "run_id", "node_run_id", "sequence", "type", "message", "created_at"],
   approval_threads: ["id", "kind", "status", "title", "current_revision", "capabilities_json", "created_at", "updated_at"],
-  approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "created_at", "metadata_json"],
-  approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "requested_by_json", "requested_at"],
+  approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "purpose", "created_at", "metadata_json"],
+  approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "selected_reply_id", "requested_by_json", "requested_at"],
   approval_decisions: ["id", "approval_request_id", "action", "actor", "resulting_status", "created_at"],
   inbox_items: ["id", "company_id", "type", "status", "title", "summary", "created_by_role_id", "created_at", "updated_at"],
   agent_outputs: ["id", "run_id", "round_id", "node_run_id", "node_id", "envelope_json", "created_at"],
@@ -600,6 +710,11 @@ export const sqliteRequiredSchema = {
 export const sqliteRequiredIndexes = {
   runs: ["idx_runs_company_started", "idx_runs_blueprint_started", "idx_runs_status_updated"],
   node_runs: ["idx_node_runs_run_status", "idx_node_runs_run_round_node"],
+  run_commands: ["idx_run_commands_run_status", "idx_run_commands_round_kind"],
+  run_command_steps: ["idx_run_command_steps_command_status", "idx_run_command_steps_node_run"],
+  node_execution_sessions: ["idx_node_execution_sessions_run_node", "idx_node_execution_sessions_native"],
+  node_session_transcript_events: ["idx_node_transcript_session_seq"],
+  approval_discussion_bindings: ["idx_approval_discussion_bindings_mode"],
   run_events: ["idx_run_events_run_created"],
   run_timeline_items: ["idx_run_timeline_run_created"],
   approval_threads: ["idx_approval_threads_run_status"],
@@ -611,6 +726,9 @@ export const sqliteRequiredIndexes = {
 
 export const sqliteRequiredUniqueConstraints = [
   { table: "run_events", columns: ["run_id", "sequence"] },
+  { table: "run_commands", columns: ["command_key"] },
+  { table: "run_command_steps", columns: ["step_key"] },
+  { table: "node_session_transcript_events", columns: ["session_id", "sequence"] },
   { table: "run_timeline_items", columns: ["run_id", "sequence"] },
   { table: "agent_outputs", columns: ["node_run_id"] }
 ];
@@ -618,6 +736,16 @@ export const sqliteRequiredUniqueConstraints = [
 export const sqliteRequiredForeignKeys = [
   { table: "runs", from: "company_id", targetTable: "companies", to: "id" },
   { table: "node_runs", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "run_commands", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "run_command_steps", from: "command_id", targetTable: "run_commands", to: "id" },
+  { table: "run_command_steps", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "run_command_steps", from: "node_run_id", targetTable: "node_runs", to: "id" },
+  { table: "node_execution_sessions", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "node_execution_sessions", from: "node_run_id", targetTable: "node_runs", to: "id" },
+  { table: "node_session_transcript_events", from: "session_id", targetTable: "node_execution_sessions", to: "id" },
+  { table: "node_session_transcript_events", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "node_session_transcript_events", from: "node_run_id", targetTable: "node_runs", to: "id" },
+  { table: "approval_discussion_bindings", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
   { table: "run_events", from: "run_id", targetTable: "runs", to: "id" },
   { table: "run_timeline_items", from: "run_id", targetTable: "runs", to: "id" },
   { table: "approval_decisions", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
@@ -631,6 +759,13 @@ export const sqliteRequiredForeignKeys = [
 export const sqliteRequiredChecks = [
   { table: "runs", contains: "status IN ('queued','running','succeeded','failed','cancelled','skipped','waiting_approval')" },
   { table: "node_runs", contains: "status IN ('queued','running','succeeded','failed','cancelled','skipped','waiting_approval')" },
+  { table: "run_commands", contains: "status IN ('queued','running','waiting_approval','succeeded','failed','cancelled')" },
+  { table: "run_command_steps", contains: "status IN ('queued','running','succeeded','failed','cancelled')" },
+  { table: "node_execution_sessions", contains: "policy IN ('refresh_per_run','refresh_per_round','preserve_across_rounds')" },
+  { table: "node_execution_sessions", contains: "status IN ('active','paused','completed','failed','unavailable','fallback')" },
+  { table: "node_session_transcript_events", contains: "role IN ('user','assistant','system','runtime')" },
+  { table: "node_session_transcript_events", contains: "kind IN ('user_message','assistant_delta','assistant_message','runtime_started','runtime_state','runtime_done','system_note')" },
+  { table: "approval_discussion_bindings", contains: "mode IN ('none','message_only','executor')" },
   { table: "approval_requests", contains: "status IN ('pending','approved','rejected','replied','completed','terminated','superseded')" },
   { table: "approval_threads", contains: "status IN ('open','closed')" },
   { table: "approval_decisions", contains: "actor IN ('user','system','manager')" },
