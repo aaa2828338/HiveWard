@@ -235,7 +235,7 @@ describe("BlueprintWorker", () => {
         reply: true,
         complete: false,
         terminate: true,
-        requestChanges: true
+        returnForRevision: true
       },
       requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
       requestedAt: now,

@@ -187,10 +187,6 @@ export class ApprovalService {
     return this.decide(id, "terminate", "terminated", { comment });
   }
 
-  async requestChanges(id: string, comment: string): Promise<ApprovalActionResult> {
-    return this.returnForRevision(id, comment, { mode: "keep_current_request" });
-  }
-
   async returnForRevision(
     id: string,
     message: string,
@@ -221,10 +217,6 @@ export class ApprovalService {
       updatedAt: new Date().toISOString()
     };
     return this.store.upsertApprovalRequest(superseded);
-  }
-
-  async revise(id: string, message: string, revisionOverride: ApprovalRevisionDraft = {}): Promise<ApprovalActionResult> {
-    return this.returnForRevision(id, message, { mode: "supersede_request", revisionOverride });
   }
 
   private async createSupersedingRevision(

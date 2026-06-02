@@ -149,7 +149,7 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("old body");
   });
 
-  it("renders comment and explicit change-request actions as separate controls", () => {
+  it("renders comment and explicit return-for-revision actions as separate controls", () => {
     const html = renderToStaticMarkup(
       <ApprovalsPage
         approvals={[createPendingApproval({
@@ -175,7 +175,8 @@ describe("ApprovalsPage", () => {
     );
 
     expect(html).toContain("Comment");
-    expect(html).toContain("Request changes");
+    expect(html).toContain("Return for revision");
+    expect(html).not.toContain("Request changes");
     expect(html).not.toMatch(/reply with changes/i);
   });
 

@@ -123,7 +123,7 @@ describe("ApprovalService", () => {
 
     expect(original).toMatchObject({
       status: "superseded",
-      capabilities: expect.objectContaining({ approve: false, reply: false, revise: false })
+      capabilities: expect.objectContaining({ approve: false, reply: false, returnForRevision: false })
     });
     expect(result.nextApprovalRequest).toMatchObject({
       status: "pending",
