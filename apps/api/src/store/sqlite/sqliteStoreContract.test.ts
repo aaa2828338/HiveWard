@@ -137,6 +137,10 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         created: false,
         step: expect.objectContaining({ id: commandStep.id })
       });
+      await expect(store.updateRunCommandStep({ id: commandStep.id, status: "waiting_approval" })).resolves.toMatchObject({
+        id: commandStep.id,
+        status: "waiting_approval"
+      });
 
       const executionSession: NodeExecutionSession = {
         id: "node-execution-session-contract",
