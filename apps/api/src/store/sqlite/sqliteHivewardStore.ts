@@ -140,6 +140,7 @@ export class SqliteHivewardStore implements HivewardStore {
     if (this.seedDefaultsOnInit && this.countRows("companies") === 0) {
       await this.seedDefaults();
     }
+    this.backfillApprovalDiscussionBindings();
   }
 
   close(): void {
@@ -3277,6 +3278,42 @@ export class SqliteHivewardStore implements HivewardStore {
     );
   }
 
+  private backfillApprovalDiscussionBindings(): void {
+    const rows = this.driver.db.prepare(
+      `SELECT approval_requests.id, approval_requests.thread_id, approval_requests.kind,
+        approval_requests.requested_at, approval_requests.updated_at
+       FROM approval_requests
+       LEFT JOIN approval_discussion_bindings ON approval_discussion_bindings.approval_request_id = approval_requests.id
+       WHERE approval_requests.status = 'pending'
+        AND approval_discussion_bindings.approval_request_id IS NULL`
+    ).all() as Row[];
+    if (!rows.length) return;
+
+    const insert = this.driver.db.prepare(
+      `INSERT INTO approval_discussion_bindings (
+        approval_request_id, thread_id, mode, route, can_stream_reply, can_create_candidate,
+        reason, resolver_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, ?)`
+    );
+    const now = new Date().toISOString();
+    this.driver.transaction(() => {
+      for (const row of rows) {
+        const kind = requireString(row.kind) as ApprovalRequest["kind"];
+        const timestamp = readString(row.updated_at) ?? readString(row.requested_at) ?? now;
+        const messageOnly = approvalKindBackfillsMessageOnly(kind);
+        insert.run(
+          requireString(row.id),
+          readString(row.thread_id),
+          messageOnly ? "message_only" : "none",
+          messageOnly ? "message_only" : "none",
+          messageOnly ? "message_only_approval_kind" : "historical_discussion_binding_unavailable",
+          timestamp,
+          timestamp
+        );
+      }
+    });
+  }
+
   private nextEventSequence(runId: string): number {
     return this.claimRunSequence(runId, "event");
   }
@@ -4314,6 +4351,13 @@ function normalizeInboxItemType(value: unknown): InboxItemType {
   return value === "leader_delegation" || value === "blueprint_proposal" || value === "run_request" || value === "report" || value === "company_config"
     ? value
     : "report";
+}
+
+function approvalKindBackfillsMessageOnly(kind: ApprovalRequest["kind"]): boolean {
+  return kind === "blueprint_proposal" ||
+    kind === "leader_delegation" ||
+    kind === "run_request" ||
+    kind === "company_config";
 }
 
 function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): HarnessId {

@@ -81,6 +81,55 @@ describe("JSON to SQLite migration", () => {
     });
   });
 
+  it("backfills historical pending approvals with canonical unavailable discussion bindings", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-approval-binding-backfill-"));
+    const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await source.init();
+    const blueprint = await source.saveBlueprint(createContractBlueprint());
+    const run = await source.createBlueprintRun(blueprint, "migration-user");
+    const nodeRun = createContractNodeRun(run, { result: { migrated: true } }, "waiting_approval");
+    await source.upsertNodeRun(nodeRun);
+    const approval = await source.upsertApprovalRequest({
+      ...createContractApproval(run.id, nodeRun.id),
+      id: "approval-missing-discussion-binding",
+      threadId: "thread-missing-discussion-binding"
+    });
+
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+
+    const sqlite = new SqliteHivewardStore(sqlitePath, { seedDefaults: false });
+    await sqlite.init();
+    try {
+      const view = await sqlite.getRunView(run.id);
+      expect(view?.approvalDiscussionBindings).toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          threadId: approval.threadId,
+          mode: "none",
+          route: "none",
+          canStreamReply: false,
+          canCreateCandidate: false,
+          reason: "historical_discussion_binding_unavailable",
+          resolverVersion: 1
+        })
+      ]);
+      expect(view?.approvalRequestDiscussions).toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          discussion: {
+            mode: "none",
+            canStreamReply: false,
+            canCreateCandidate: false,
+            reason: "historical_discussion_binding_unavailable"
+          }
+        })
+      ]);
+    } finally {
+      sqlite.close();
+    }
+  });
+
   it("fails verification when migrated execution facts are missing", async () => {
     const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-execution-fact-drift-"));
     const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));

@@ -225,7 +225,7 @@ export class FileHivewardStore implements HivewardStore {
         return;
       }
       try {
-        const { index, legacyChat } = await this.readIndexWithLegacyChatUnlocked();
+        const { index, legacyChat } = await this.readIndexWithLegacyChatUnlocked({ backfillApprovalDiscussionBindings: true });
         await this.chatStore.init(index.companies, legacyChat);
         await this.ensureBlueprintWorkspacesUnlocked(index);
         await this.writeIndexUnlocked(index);
@@ -2031,7 +2031,9 @@ export class FileHivewardStore implements HivewardStore {
     return (await this.readIndexWithLegacyChatUnlocked()).index;
   }
 
-  private async readIndexWithLegacyChatUnlocked(): Promise<{
+  private async readIndexWithLegacyChatUnlocked(
+    options: { backfillApprovalDiscussionBindings?: boolean } = {}
+  ): Promise<{
     index: HivewardStoreIndex;
     legacyChat?: LegacyHivewardChatState;
   }> {
@@ -2045,12 +2047,12 @@ export class FileHivewardStore implements HivewardStore {
     const parsed = JSON.parse(raw) as LegacyHivewardStoreState;
     if (parsed.schema === storeIndexSchema) {
       return {
-        index: this.normalizeIndex(parsed as RawHivewardStoreIndex),
+        index: this.normalizeIndex(parsed as RawHivewardStoreIndex, options),
         legacyChat: extractLegacyChatState(parsed)
       };
     }
     return {
-      index: await this.migrateLegacyStateUnlocked(parsed),
+      index: await this.migrateLegacyStateUnlocked(parsed, options),
       legacyChat: extractLegacyChatState(parsed)
     };
   }
@@ -2365,7 +2367,10 @@ export class FileHivewardStore implements HivewardStore {
     return join(this.runsDir, `${id}.json`);
   }
 
-  private normalizeIndex(rawIndex: RawHivewardStoreIndex): HivewardStoreIndex {
+  private normalizeIndex(
+    rawIndex: RawHivewardStoreIndex,
+    options: { backfillApprovalDiscussionBindings?: boolean } = {}
+  ): HivewardStoreIndex {
     const now = new Date().toISOString();
     const companies = normalizeCompanies(rawIndex.companies, now);
     const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
@@ -2409,12 +2414,15 @@ export class FileHivewardStore implements HivewardStore {
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, rawIndex.roleDirectories?.[company.id]);
     }
-    backfillApprovalProjectionFacts(index);
+    backfillApprovalProjectionFacts(index, options);
 
     return index;
   }
 
-  private async migrateLegacyStateUnlocked(state: LegacyHivewardStoreState): Promise<HivewardStoreIndex> {
+  private async migrateLegacyStateUnlocked(
+    state: LegacyHivewardStoreState,
+    options: { backfillApprovalDiscussionBindings?: boolean } = {}
+  ): Promise<HivewardStoreIndex> {
     const now = new Date().toISOString();
     const companies = normalizeCompanies(state.companies, now);
     const primaryCompanyId = companies[0]?.id ?? defaultCompanyId;
@@ -2469,7 +2477,7 @@ export class FileHivewardStore implements HivewardStore {
     for (const company of companies) {
       index.roleDirectories[company.id] = buildRoleDirectory(index, company.id, now, state.roleDirectories?.[company.id]);
     }
-    backfillApprovalProjectionFacts(index);
+    backfillApprovalProjectionFacts(index, options);
 
     await Promise.all(normalizedBlueprints.map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
     for (const run of index.runIndex) {
@@ -2767,15 +2775,67 @@ function upsertById<T extends { id: string }>(items: T[], item: T): void {
   }
 }
 
-function backfillApprovalProjectionFacts(index: HivewardStoreIndex): void {
+function backfillApprovalProjectionFacts(
+  index: HivewardStoreIndex,
+  options: { backfillApprovalDiscussionBindings?: boolean } = {}
+): void {
   for (const request of index.approvalRequests) {
     upsertById(index.approvalThreads, approvalThreadFromRequest(request));
+  }
+  if (options.backfillApprovalDiscussionBindings) {
+    backfillApprovalDiscussionBindings(index);
   }
   const requestsById = new Map(index.approvalRequests.map((request) => [request.id, request]));
   for (const decision of index.approvalDecisions) {
     appendApprovalReplyFromDecision(index, decision, requestsById.get(decision.approvalRequestId));
   }
   index.managerMail = buildManagerMailProjection(index.approvalRequests);
+}
+
+function backfillApprovalDiscussionBindings(index: HivewardStoreIndex): void {
+  const boundRequestIds = new Set(index.approvalDiscussionBindings.map((binding) => binding.approvalRequestId));
+  for (const request of index.approvalRequests) {
+    if (request.status !== "pending" || boundRequestIds.has(request.id)) continue;
+    index.approvalDiscussionBindings.push(buildHistoricalApprovalDiscussionBinding(request));
+    boundRequestIds.add(request.id);
+  }
+}
+
+function buildHistoricalApprovalDiscussionBinding(request: ApprovalRequest): ApprovalDiscussionBinding {
+  const timestamp = request.updatedAt ?? request.requestedAt;
+  if (approvalKindBackfillsMessageOnly(request.kind)) {
+    return {
+      approvalRequestId: request.id,
+      threadId: request.threadId,
+      mode: "message_only",
+      route: "message_only",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "message_only_approval_kind",
+      resolverVersion: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+  }
+  return {
+    approvalRequestId: request.id,
+    threadId: request.threadId,
+    mode: "none",
+    route: "none",
+    canStreamReply: false,
+    canCreateCandidate: false,
+    reason: "historical_discussion_binding_unavailable",
+    resolverVersion: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+}
+
+function approvalKindBackfillsMessageOnly(kind: ApprovalRequest["kind"]): boolean {
+  return kind === "blueprint_proposal" ||
+    kind === "leader_delegation" ||
+    kind === "run_request" ||
+    kind === "company_config";
 }
 
 function buildManagerMailProjection(requests: ApprovalRequest[]): ManagerMail[] {

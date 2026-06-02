@@ -37,7 +37,7 @@ export function resolveApprovalDiscussion(input: ResolveApprovalDiscussionInput)
     return noneResolution("approval_not_pending", binding);
   }
   if (!binding) {
-    return noneResolution("legacy_binding_missing");
+    return noneResolution("discussion_binding_missing");
   }
   if (binding.mode === "none") {
     return noneResolution(binding.reason ?? "discussion_disabled", binding);

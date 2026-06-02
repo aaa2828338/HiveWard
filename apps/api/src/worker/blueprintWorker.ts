@@ -2046,7 +2046,9 @@ export class BlueprintWorker {
       executorNodeId: nodeRun.nodeId,
       executorNodeRunId: nodeRun.id,
       session,
-      missingReason: "agent_approval_session_missing"
+      missingReason: "agent_approval_session_missing",
+      canStreamReply: true,
+      canCreateCandidate: true
     });
   }
 
@@ -2072,7 +2074,9 @@ export class BlueprintWorker {
       executorNodeId,
       executorNodeRunId: nodeRunId,
       session,
-      missingReason: "requirement_executor_session_missing"
+      missingReason: "requirement_executor_session_missing",
+      canStreamReply: true,
+      canCreateCandidate: false
     });
   }
 
@@ -2083,8 +2087,8 @@ export class BlueprintWorker {
     executorNodeRunId?: string;
     session?: NodeExecutionSession;
     missingReason: string;
-    canStreamReply?: boolean;
-    canCreateCandidate?: boolean;
+    canStreamReply: boolean;
+    canCreateCandidate: boolean;
   }): ApprovalDiscussionBindingDraft {
     const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session && input.session.status !== "unavailable");
     return {
@@ -2096,8 +2100,8 @@ export class BlueprintWorker {
       executorNodeRunId: input.executorNodeRunId,
       executorSessionId: input.session?.id,
       runtimeId: input.session?.harnessId as AgentRuntimeId | undefined,
-      canStreamReply: hasExecutor && input.canStreamReply !== false,
-      canCreateCandidate: hasExecutor && input.canCreateCandidate !== false,
+      canStreamReply: hasExecutor && input.canStreamReply,
+      canCreateCandidate: hasExecutor && input.canCreateCandidate,
       reason: hasExecutor ? undefined : input.missingReason,
       resolverVersion: 1
     };
@@ -2684,7 +2688,9 @@ export class BlueprintWorker {
         executorNodeId: managerNode.id,
         executorNodeRunId: nodeRun.id,
         session,
-        missingReason: "release_report_executor_session_missing"
+        missingReason: "release_report_executor_session_missing",
+        canStreamReply: true,
+        canCreateCandidate: false
       })
     };
   }
