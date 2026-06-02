@@ -190,6 +190,50 @@ describe("agent SDK runtime", () => {
     });
   });
 
+  it("prefers explicit runtime access policy over legacy permission profiles", async () => {
+    const workspace = createWorkspace({ git: true });
+    let threadOptions: ThreadOptions | undefined;
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-policy-over-legacy-thread",
+        onStartThread: (options) => {
+          threadOptions = options;
+        },
+        finalResponse: "policy ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        permissionProfile: "workspace_write",
+        runtimeAccessPolicy: {
+          filesystem: "read_only",
+          network: "enabled",
+          webSearch: "disabled"
+        }
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(threadOptions).toMatchObject({
+      sandboxMode: "read-only",
+      networkAccessEnabled: true,
+      webSearchMode: "disabled"
+    });
+  });
+
   it("resumes Codex tasks through the native resume thread API", async () => {
     const workspace = createWorkspace({ git: true });
     let startCalled = false;
@@ -1246,6 +1290,79 @@ describe("agent SDK runtime", () => {
         output: "hello without native session"
       })
     ]);
+  });
+
+  it("maps CLI runtime access policy filesystem into native task permissions for every harness", async () => {
+    const cases = [
+      { source: "google", expectedFlag: ["--approval-mode", "auto_edit"] },
+      { source: "cursor", expectedFlag: ["--force"] },
+      { source: "opencode", expectedFlag: ["--dangerously-skip-permissions"] },
+      { source: "hermes", expectedFlag: ["--yolo"] }
+    ] as const;
+
+    for (const { source, expectedFlag } of cases) {
+      const workspace = createWorkspace();
+      const calls: CliCommandInput[] = [];
+      const runtime = new CliAgentSdkRuntime(
+        new AgentSdkTaskRegistry(2),
+        { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+        source,
+        fakeCliRunner(calls, { stdout: "ok" })
+      );
+
+      const started = await runtime.startTask(
+        createStartInput({
+          source,
+          workingDirectory: workspace,
+          modelId: "inherit",
+          runtimeAccessPolicy: {
+            filesystem: "workspace_write",
+            network: "enabled",
+            webSearch: "disabled"
+          }
+        })
+      );
+      const result = await runtime.waitForTask({
+        nodeRunId: "node-run-1",
+        taskId: started.taskId,
+        runId: started.runId,
+        sessionKey: started.sessionKey,
+        source
+      });
+
+      expect(result.status).toBe("succeeded");
+      expect(calls[0]?.args).toEqual(expect.arrayContaining([...expectedFlag]));
+    }
+  });
+
+  it("keeps legacy permissionProfile as CLI task compatibility input", async () => {
+    const workspace = createWorkspace();
+    const calls: CliCommandInput[] = [];
+    const runtime = new CliAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      "cursor",
+      fakeCliRunner(calls, { stdout: "ok" })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "cursor",
+        workingDirectory: workspace,
+        modelId: "inherit",
+        permissionProfile: "workspace_write"
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "cursor"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(calls[0]?.args).toContain("--force");
   });
 
   it("streams Cursor chat from stream-json output and carries native session ids", async () => {
