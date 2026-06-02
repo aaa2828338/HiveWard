@@ -120,7 +120,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     const now = new Date().toISOString();
     const taskId = `codex-task-${nanoid(10)}`;
     const runId = `codex-run-${nanoid(10)}`;
-    const sessionKey = `codex-session-${input.nodeRunId}`;
+    const sessionKey = input.nativeSessionId ?? `codex-session-${input.nodeRunId}`;
+    const resumeMode = input.nativeSessionId ? "resumed" : "started";
 
     let workingDirectory: string;
     try {
@@ -128,7 +129,22 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
       assertGitWorkspace(workingDirectory, this.options.workspaceRoot);
     } catch (error) {
-      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId, "started");
+    }
+
+    if (input.nativeSessionId) {
+      const codex = this.createCodexClient();
+      if (!codex.resumeThread) {
+        return this.failedStart(
+          taskId,
+          runId,
+          sessionKey,
+          "native_resume_unsupported: Codex runtime cannot prove native task resume for this session.",
+          now,
+          input.nativeSessionId,
+          "started"
+        );
+      }
     }
 
     const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
@@ -168,6 +184,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: "codex",
+      nativeSessionId: input.nativeSessionId,
+      resumeMode,
       status: "running",
       updatedAt: now
     };
@@ -209,25 +227,44 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
 
       const outputSchema = toCodexOutputSchema(input.outputSchema);
       const codex = this.createCodexClient();
-      const thread = codex.startThread({
+      const threadOptions: ThreadOptions = {
         model: input.modelId,
         workingDirectory,
         sandboxMode: mapCodexSandbox(permissionProfile),
         approvalPolicy: "never",
         networkAccessEnabled: runtimeAccessPolicy.network === "enabled",
         webSearchMode: runtimeAccessPolicy.webSearch
-      });
+      };
+      if (input.nativeSessionId && !codex.resumeThread) {
+        return createTerminalTaskResult({
+          taskId,
+          runId,
+          sessionKey,
+          nativeSessionId: input.nativeSessionId,
+          resumeMode: "started",
+          source: "codex",
+          status: "failed",
+          error: "native_resume_unsupported: Codex runtime cannot prove native task resume for this session."
+        });
+      }
+      const resumeMode = input.nativeSessionId ? "resumed" : "started";
+      const thread = input.nativeSessionId
+        ? codex.resumeThread!(input.nativeSessionId, threadOptions)
+        : codex.startThread(threadOptions);
       const turn = await thread.run(buildPromptEnvelope({ ...input, outputSchema }), {
         outputSchema,
         signal: abortController.signal
       });
       sessionKey = thread.id ?? sessionKey;
+      const nativeSessionId = thread.id ?? input.nativeSessionId ?? sessionKey;
 
       if (!validateOutputSchema(turn.finalResponse, input.outputSchema)) {
         return createTerminalTaskResult({
           taskId,
           runId,
           sessionKey,
+          nativeSessionId,
+          resumeMode,
           source: "codex",
           status: "failed",
           error: formatAgentSdkError("invalid_output", "SDK output does not match outputSchema."),
@@ -239,6 +276,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        nativeSessionId,
+        resumeMode,
         source: "codex",
         status: "succeeded",
         output: turn.finalResponse,
@@ -253,6 +292,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        nativeSessionId: input.nativeSessionId,
+        resumeMode: input.nativeSessionId ? "resumed" : "started",
         source: "codex",
         status: "failed",
         error: formatAgentSdkProviderError("Codex", error)
@@ -260,11 +301,21 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  private failedStart(taskId: string, runId: string, sessionKey: string, error: string, updatedAt: string): StartedAgentTaskResult {
+  private failedStart(
+    taskId: string,
+    runId: string,
+    sessionKey: string,
+    error: string,
+    updatedAt: string,
+    nativeSessionId?: string,
+    resumeMode: StartedAgentTaskResult["resumeMode"] = "started"
+  ): StartedAgentTaskResult {
     return {
       taskId,
       runId,
       sessionKey,
+      nativeSessionId,
+      resumeMode,
       source: "codex",
       status: "failed",
       error,
@@ -277,6 +328,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
+      resumeMode: "started",
       source: "codex",
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")

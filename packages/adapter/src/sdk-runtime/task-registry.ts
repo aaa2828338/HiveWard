@@ -59,6 +59,8 @@ export function createTerminalTaskResult({
   taskId,
   runId,
   sessionKey,
+  nativeSessionId,
+  resumeMode = "started",
   source,
   status,
   error,
@@ -69,6 +71,8 @@ export function createTerminalTaskResult({
   taskId: string;
   runId: string;
   sessionKey: string;
+  nativeSessionId?: string;
+  resumeMode?: AgentTaskResult["resumeMode"];
   source: AgentTaskResult["source"];
   status: RuntimeExecutionStatus;
   error?: string;
@@ -80,6 +84,8 @@ export function createTerminalTaskResult({
     taskId,
     runId,
     sessionKey,
+    nativeSessionId,
+    resumeMode,
     source,
     status,
     error,
