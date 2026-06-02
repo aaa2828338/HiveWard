@@ -1381,10 +1381,7 @@ export class FileHivewardStore implements HivewardStore {
             ? archive?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
             : undefined;
           const selectedReplyId = request.selectedReplyId;
-          const replies = pendingApprovalRepliesFromApprovalReplies(
-            listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }),
-            selectedReplyId ?? undefined
-          );
+          const replies = pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }));
           const binding = index.approvalDiscussionBindings.find((candidate) => candidate.approvalRequestId === request.id);
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
           const canReturnForRevision = request.capabilities.returnForRevision === true;
@@ -3319,18 +3316,14 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function pendingApprovalRepliesFromApprovalReplies(
-  replies: ApprovalReply[],
-  selectedReplyId?: string
-): PendingApprovalItem["replies"] {
+function pendingApprovalRepliesFromApprovalReplies(replies: ApprovalReply[]): PendingApprovalItem["replies"] {
   if (!replies.length) return undefined;
   return replies.map((reply) => ({
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
     purpose: reply.purpose ?? "message",
     body: reply.body,
-    createdAt: reply.createdAt,
-    ...(selectedReplyId === reply.id ? { selected: true } : {})
+    createdAt: reply.createdAt
   }));
 }
 

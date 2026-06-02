@@ -283,9 +283,8 @@ describe("ApprovalsPage", () => {
             role: "assistant",
             purpose: "candidate",
             body: "candidate answer",
-            createdAt: "2026-05-21T01:04:00.000Z",
-            selected: true
-          } as NonNullable<PendingApprovalItem["replies"]>[number] & { selected: true }
+            createdAt: "2026-05-21T01:04:00.000Z"
+          }
         ]
       })]
     });

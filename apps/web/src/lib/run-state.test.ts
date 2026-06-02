@@ -15,41 +15,15 @@ import {
 } from "./run-state";
 
 describe("run state sync", () => {
-  it("derives pending inbox items from a waiting Agent approval in run detail", () => {
+  it("does not synthesize pending approvals from legacy node output", () => {
     const runView = createRunView("waiting_approval");
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals).toEqual([
-      {
-        blueprintId: "blueprint-1",
-        blueprintName: "Blueprint 1",
-        blueprintRunId: "run-1",
-        nodeRunId: "node-run-agent",
-        nodeId: "agent",
-        nodeLabel: "Agent",
-        startedBy: "tester",
-        startedAt: "2026-05-21T01:00:00.000Z",
-        requestedAt: "2026-05-21T01:02:00.000Z",
-        status: "pending",
-        reviewOutput: "draft answer",
-        discussion: {
-          mode: "none",
-          canStreamReply: false,
-          canCreateCandidate: false,
-          reason: "legacy_node_output_read_only"
-        },
-        canApprove: false,
-        canReply: false,
-        canReject: false,
-        canComplete: false,
-        canTerminate: false,
-        canReturnForRevision: false
-      }
-    ]);
+    expect(approvals).toEqual([]);
   });
 
-  it("derives Agent approval reply state from a waiting agent node", () => {
+  it("ignores legacy node output replies when request facts are missing", () => {
     const runView = createRunView("waiting_approval");
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
@@ -78,32 +52,10 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]).toMatchObject({
-      nodeId: "delivery",
-      nodeLabel: "Delivery",
-      reviewOutput: "draft answer",
-      status: "pending",
-      canApprove: false,
-      canReply: false,
-      canReject: false,
-      replies: [
-        {
-          id: "reply-1",
-          role: "user",
-          body: "Tighten the wording.",
-          createdAt: "2026-05-21T01:03:00.000Z"
-        },
-        {
-          id: "reply-2",
-          role: "assistant",
-          body: "final answer",
-          createdAt: "2026-05-21T01:04:00.000Z"
-        }
-      ]
-    });
+    expect(approvals).toEqual([]);
   });
 
-  it("carries previous node output into pending inbox items", () => {
+  it("does not project upstream from legacy node output without approval requests", () => {
     const previousOutput = {
       title: "Launch decision",
       body: "Ship the approved HTML page to the team channel."
@@ -112,17 +64,10 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]?.upstream).toEqual([
-      {
-        nodeId: "summary",
-        nodeLabel: "Summary",
-        nodeRunId: "node-run-summary",
-        output: previousOutput
-      }
-    ]);
+    expect(approvals).toEqual([]);
   });
 
-  it("keeps a legacy harness approval visible while the node is running", () => {
+  it("does not keep a legacy harness approval visible while the node is running", () => {
     const runView = createRunView("running");
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
@@ -142,22 +87,7 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]).toMatchObject({
-      nodeRunId: "node-run-agent",
-      status: "replying",
-      reviewOutput: "draft answer",
-      canApprove: false,
-      canReply: false,
-      canReject: false,
-      replies: [
-        {
-          id: "reply-1",
-          role: "user",
-          body: "Tighten the wording.",
-          createdAt: "2026-05-21T01:03:00.000Z"
-        }
-      ]
-    });
+    expect(approvals).toEqual([]);
   });
 
   it("keeps replied lifecycle approvals distinct from rejected approvals", () => {
@@ -413,6 +343,7 @@ describe("run state sync", () => {
         createdAt: "2026-05-21T01:07:00.000Z"
       }
     ]);
+    expect(approvals[0]?.replies?.[0]).not.toHaveProperty("selected");
   });
 
   it("uses backend-projected approval discussion capabilities", () => {
@@ -549,32 +480,25 @@ describe("run state sync", () => {
     expect(approvals[0]?.selectedReplyId).toBeNull();
   });
 
-  it("keeps an approved approval visible but non-actionable after completion", () => {
-    const existing: PendingApprovalItem[] = [
-      {
-        blueprintId: "blueprint-1",
-        blueprintName: "Blueprint 1",
-        blueprintRunId: "run-1",
-        nodeRunId: "node-run-agent",
-        nodeId: "agent",
-        nodeLabel: "Agent",
-        startedBy: "tester",
-        startedAt: "2026-05-21T01:00:00.000Z",
-        requestedAt: "2026-05-21T01:02:00.000Z",
-        reviewOutput: "draft answer",
-        canApprove: true,
-        canReply: true,
-        canReject: true
-      }
-    ];
-
+  it("keeps an approved request-backed approval visible but non-actionable after completion", () => {
     const runView = createRunView("succeeded");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        kind: "agent_proposal",
+        status: "approved",
+        nodeRunId: "node-run-agent",
+        body: "draft answer",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      })
+    ];
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
       endedAt: "2026-05-21T01:05:00.000Z"
     };
 
-    expect(syncApprovalsForRun(existing, runView)[0]).toMatchObject({
+    expect(syncApprovalsForRun([], runView)[0]).toMatchObject({
+      approvalRequestId: "approval-agent-1",
       nodeRunId: "node-run-agent",
       status: "approved",
       decidedAt: "2026-05-21T01:05:00.000Z",
