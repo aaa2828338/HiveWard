@@ -60,6 +60,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     const adapterTaskOwners = methodNamesContaining(worker, "this.runAgentTask({");
     const executeNodeBody = methodBody(worker, "executeNode");
     const commandStepNodeRunBody = methodBody(worker, "createRunningNodeRunFromCommandStep");
+    const existingStepNodeRunBody = methodBody(worker, "createRunningNodeRunFromExistingStep");
 
     expect(scheduleCalls.length).toBeGreaterThan(0);
     for (const call of scheduleCalls) {
@@ -86,16 +87,19 @@ describe("execution rebuild old-path exclusion gate", () => {
     ]);
     expect(executeNodeBody).toContain("command: RunCommand");
     expect(executeNodeBody).toContain("step: RunCommandStep");
-    expect(executeNodeBody).toContain("stableNodeExecutionNodeRunId(step.stepKey)");
-    expect(executeNodeBody).toContain("await this.syncRunCommandStepFromNodeRun({ ...step, nodeRunId: nodeRun.id });");
+    expect(executeNodeBody).toContain("createRunningNodeRunFromExistingStep");
+    expect(executeNodeBody).toContain("await this.syncRunCommandStepFromNodeRun({ ...runningStep, nodeRunId: nodeRun.id });");
     expect(commandStepNodeRunBody).toContain("const step = await this.ensureNodeExecutionCommandStep(command, run, node, mode);");
-    expect(commandStepNodeRunBody).toContain("stableNodeExecutionNodeRunId(step.stepKey)");
-    expect(commandStepNodeRunBody).toContain("await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef)");
+    expect(existingStepNodeRunBody).toContain("findNodeRunById(run.id, step.nodeRunId)");
+    expect(existingStepNodeRunBody).toContain("step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey)");
+    expect(existingStepNodeRunBody).toContain("await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef)");
     expect(methodBody(worker, "runPreflightAgentTask")).toContain("const step = await this.ensurePreflightCommandStep");
     expect(methodBody(worker, "runPreflightManagerFallback")).toContain("const step = await this.ensurePreflightCommandStep");
-    expect(methodBody(worker, "writeSelfIterationReleaseReport")).toContain("await this.ensureNodeExecutionCommandStep(input.command");
-    expect(worker).toContain("legacyBootstrapCommands");
-    expect(worker).toContain("legacyBackfill");
+    expect(methodBody(worker, "writeSelfIterationReleaseReport")).toContain("createRunningNodeRunFromCommandStep");
+    expect(methodBody(worker, "writeSelfIterationReleaseReport")).toContain("\"release_report\"");
+    expect(worker).not.toContain("legacyBootstrapCommands");
+    expect(worker).not.toContain("legacyBackfill");
+    expect(worker).not.toContain("backfillLegacy");
   });
 
   it("keeps SQLite schema audit checks on execution facts", () => {

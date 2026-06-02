@@ -568,7 +568,7 @@ describe("BlueprintWorker", () => {
     expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(false);
   });
 
-  it("keeps resumed SDK agent nodes running when task lookup is temporarily unavailable", async () => {
+  it("keeps resumed command-step SDK agent nodes running when task lookup is temporarily unavailable", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
     const store = new FileHivewardStore(storePath);
@@ -601,6 +601,8 @@ describe("BlueprintWorker", () => {
       queuedAt: startedAt,
       startedAt,
       input: { upstream: [] },
+      output: "partial output must survive resume",
+      error: "preexisting runtime note",
       runtimeRef: {
         source: "codex",
         sourceId: "codex-task-1",
@@ -611,6 +613,35 @@ describe("BlueprintWorker", () => {
       }
     };
     await store.upsertNodeRun(nodeRun);
+    const { command } = await store.createRunCommandIfAbsent({
+      id: "command-sdk-resume",
+      commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      kind: "regular_run",
+      status: "running",
+      currentRevision: 0,
+      currentStep: "node_execution",
+      startedAt,
+      createdAt: startedAt,
+      updatedAt: startedAt
+    });
+    const stepKey = buildRunCommandStepKey(command, "node_execution", "brief");
+    await store.createRunCommandStepIfAbsent({
+      id: "step-sdk-resume",
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      revision: 0,
+      mode: "node_execution",
+      nodeId: "brief",
+      nodeRunId: nodeRun.id,
+      status: "running",
+      startedAt,
+      runtimeRef: nodeRun.runtimeRef,
+      createdAt: startedAt,
+      updatedAt: startedAt
+    });
 
     const missingTaskAdapter = new ScriptedAdapter([], [
       new Error("SDK task not found: codex-task-1")
@@ -623,7 +654,13 @@ describe("BlueprintWorker", () => {
     );
     expect(missingTaskAdapter.waitCalls).toHaveLength(1);
     expect(stillRunningView.run.status).toBe("running");
-    expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)?.status).toBe("running");
+    expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)).toMatchObject({
+      status: "running",
+      startedAt,
+      output: "partial output must survive resume",
+      error: "preexisting runtime note",
+      runtimeRef: expect.objectContaining({ taskId: "codex-task-1", sessionKey: "codex-thread-1" })
+    });
     expect(stillRunningView.events.some((event) => event.type === "blueprint.run.failed")).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -1241,6 +1278,14 @@ describe("BlueprintWorker", () => {
       requestedChanges: "Regenerate with sources."
     };
     const now = new Date().toISOString();
+    const runtimeRef = {
+      source: "openclaw" as const,
+      sourceId: "task-agent-change-2",
+      sourceUpdatedAt: now,
+      taskId: "task-agent-change-2",
+      runId: "task-agent-change-2-run",
+      sessionKey: "agent:main:main"
+    };
     await store.upsertNodeRun({
       ...waitingNode,
       status: "running",
@@ -1254,14 +1299,28 @@ describe("BlueprintWorker", () => {
         }
       },
       output: undefined,
-      runtimeRef: {
-        source: "openclaw",
-        sourceId: "task-agent-change-2",
-        sourceUpdatedAt: now,
-        taskId: "task-agent-change-2",
-        runId: "task-agent-change-2-run",
-        sessionKey: "agent:main:main"
-      },
+      runtimeRef,
+      startedAt: now,
+      endedAt: undefined,
+      error: undefined
+    });
+    const waitingCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    const waitingStep = waitingCommand
+      ? (await store.listRunCommandSteps({ commandId: waitingCommand.id })).find((step) => step.nodeRunId === waitingNode.id)
+      : undefined;
+    if (!waitingCommand || !waitingStep) throw new Error("Expected command step for restored revision run.");
+    await store.updateRunCommand({
+      id: waitingCommand.id,
+      status: "running",
+      currentStep: "node_execution",
+      endedAt: undefined,
+      error: undefined
+    });
+    await store.updateRunCommandStep({
+      id: waitingStep.id,
+      status: "running",
+      nodeRunId: waitingNode.id,
+      runtimeRef,
       startedAt: now,
       endedAt: undefined,
       error: undefined
@@ -3379,7 +3438,7 @@ describe("BlueprintWorker", () => {
     expect(steps.filter((step) => step.mode === "requirement_resolution")).toHaveLength(1);
   }, 15_000);
 
-  it("backfills legacy pending requirement approval as a waiting prepare command without rerunning", async () => {
+  it("does not bootstrap pending requirement approvals without a durable prepare command", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -3426,14 +3485,184 @@ describe("BlueprintWorker", () => {
     const commands = await store.listRunCommands({ runId: run.id });
 
     expect(adapter.calls).toHaveLength(0);
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      kind: "self_iteration_prepare_round",
-      status: "waiting_approval",
-      metadata: expect.objectContaining({ legacyBackfill: true })
-    });
-    expect(view?.run.status).toBe("waiting_approval");
+    expect(commands).toHaveLength(0);
+    expect(view?.run.status).toBe("running");
     expect(view?.approvalRequests?.filter((approval) => approval.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes prepare commands from command status instead of round execution state", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "command-owner-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "command-owner-round",
+      createdAt: now
+    });
+    await store.upsertIterationRound({
+      id: "command-owner-round",
+      sessionId: "command-owner-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "executing",
+      artifactIds: [],
+      startedAt: now
+    });
+    await store.createRunCommandIfAbsent({
+      id: "command-owner-prepare",
+      commandKey: buildRunCommandKey(run.id, "command-owner-round", "self_iteration_prepare_round"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: "command-owner-round",
+      kind: "self_iteration_prepare_round",
+      status: "queued",
+      currentRevision: 0,
+      currentStep: "research_resolution",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const adapter = new BlockingAdapter(createStartedAgentTask("task-command-owner-plan"));
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    await waitForCondition(() => adapter.calls.length === 1, "prepare command task to start");
+
+    const runningCommands = await store.listRunCommands({ runId: run.id });
+    expect(runningCommands.map((command) => command.kind)).toEqual(["self_iteration_prepare_round"]);
+    expect(runningCommands[0]).toMatchObject({
+      status: "running",
+      currentStep: "research_resolution"
+    });
+
+    adapter.complete(createCompletedAgentTask("task-command-owner-plan", "succeeded", "command-owned plan"));
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    expect(view.approvalRequests?.filter((approval) => approval.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes running release report commands by waiting for the stored step runtime", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "release-resume-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "release-resume-round",
+      createdAt: now
+    });
+    await store.upsertIterationRound({
+      id: "release-resume-round",
+      sessionId: "release-resume-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "executing",
+      artifactIds: [],
+      startedAt: now
+    });
+    const { command } = await store.createRunCommandIfAbsent({
+      id: "release-resume-command",
+      commandKey: buildRunCommandKey(run.id, "release-resume-round", "self_iteration_release_report"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: "release-resume-round",
+      kind: "self_iteration_release_report",
+      status: "running",
+      currentRevision: 0,
+      currentStep: "release_report",
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now
+    });
+    const stepKey = buildRunCommandStepKey(command, "release_report", "top-manager");
+    const nodeRunId = stableNodeExecutionNodeRunId(stepKey);
+    const runtimeRef = {
+      source: "openclaw" as const,
+      sourceId: "task-release-resume",
+      sourceUpdatedAt: now,
+      taskId: "task-release-resume",
+      runId: "task-release-resume-run",
+      sessionKey: "agent:main:main"
+    };
+    await store.upsertNodeRun({
+      id: nodeRunId,
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "top-manager",
+      nodeLabel: "Top Manager",
+      nodeType: "manager",
+      iterationRoundId: "release-resume-round",
+      status: "running",
+      queuedAt: now,
+      startedAt: now,
+      input: { task: "self_iteration_release_report" },
+      runtimeRef
+    });
+    await store.createRunCommandStepIfAbsent({
+      id: "release-resume-step",
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: "release-resume-round",
+      revision: 0,
+      mode: "release_report",
+      nodeId: "top-manager",
+      nodeRunId,
+      status: "running",
+      startedAt: now,
+      runtimeRef,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const adapter = new ScriptedAdapter([], [
+      createCompletedAgentTask("task-release-resume", "succeeded", releaseReportOutput("resumed release"))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const releaseCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    const releaseStep = (await store.listRunCommandSteps({ commandId: command.id }))[0];
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(adapter.waitCalls[0]).toMatchObject({
+      taskId: "task-release-resume",
+      nodeRunId
+    });
+    expect(releaseCommand).toMatchObject({
+      kind: "self_iteration_release_report",
+      status: "waiting_approval"
+    });
+    expect(releaseStep).toMatchObject({
+      mode: "release_report",
+      status: "succeeded",
+      nodeRunId
+    });
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id === nodeRunId)).toHaveLength(1);
+    expect(view.nodeRuns.find((nodeRun) => nodeRun.id === nodeRunId)).toMatchObject({
+      status: "succeeded",
+      runtimeRef: expect.objectContaining({ taskId: "task-release-resume" })
+    });
+    expect(view.approvalRequests?.filter((approval) => approval.kind === "manager_release_report")).toHaveLength(1);
   });
 
   it("uses configured research and round-plan agents before publishing the plan approval", async () => {
