@@ -4,6 +4,7 @@ import type {
   BlueprintRunStatus,
   BlueprintRunSummary,
   BlueprintRunView,
+  ApprovalDiscussionBinding,
   ApprovalReply,
   ApprovalRequest,
   PendingApprovalItem
@@ -195,7 +196,8 @@ function buildApprovalItemFromRequest(
     readApprovalDecisionReplies(runView, request.id),
     readPendingApprovalReplies(output?.replies)
   );
-  const selectedReplyId = readOptionalString(output?.selectedReplyId);
+  const selectedReplyId = request.selectedReplyId ?? null;
+  const discussion = projectRunViewApprovalDiscussion(runView, request);
   const isPending = request.status === "pending";
   return {
     approvalRequestId: request.id,
@@ -212,8 +214,9 @@ function buildApprovalItemFromRequest(
     requestedAt: request.requestedAt,
     status: isPending ? nodeRun?.status === "running" ? "replying" : "pending" : request.status,
     reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+    discussion,
     ...(replies ? { replies } : {}),
-    ...(selectedReplyId ? { selectedReplyId } : {}),
+    selectedReplyId,
     canApprove: request.capabilities.approve,
     canReject: request.capabilities.reject,
     canReply: request.capabilities.reply,
@@ -275,7 +278,8 @@ function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replie
     const body = readOptionalString(item.body);
     const createdAt = readOptionalString(item.createdAt);
     if (!id || !role || !body || !createdAt) return [];
-    return [{ id, role, body, createdAt }];
+    const purpose: "message" | "candidate" = item.purpose === "candidate" ? "candidate" : "message";
+    return [{ id, role, purpose, body, createdAt }];
   });
   return replies.length ? replies : undefined;
 }
@@ -292,6 +296,7 @@ function pendingApprovalReplyFromApprovalReply(reply: ApprovalReply): NonNullabl
   return {
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
     body: reply.body,
     createdAt: reply.createdAt
   };
@@ -303,11 +308,77 @@ function readApprovalDecisionReplies(runView: BlueprintRunView, approvalRequestI
     return [{
       id: decision.id,
       role: "user" as const,
+      purpose: "message" as const,
       body: decision.comment,
       createdAt: decision.createdAt
     }];
   });
   return replies.length ? replies : undefined;
+}
+
+function projectRunViewApprovalDiscussion(
+  runView: BlueprintRunView,
+  request: ApprovalRequest
+): PendingApprovalItem["discussion"] {
+  const binding = (runView.approvalDiscussionBindings ?? [])
+    .find((candidate) => candidate.approvalRequestId === request.id);
+  if (request.status !== "pending") return noneDiscussion("approval_not_pending");
+  if (!binding) return noneDiscussion("legacy_binding_missing");
+  if (binding.mode === "none") return noneDiscussion(binding.reason ?? "discussion_disabled");
+  if (binding.mode === "message_only") return messageOnlyDiscussion(binding, binding.reason);
+
+  if (!binding.executorNodeId || !binding.executorNodeRunId || !binding.executorSessionId) {
+    return messageOnlyDiscussion(binding, "executor_binding_incomplete");
+  }
+
+  if (!runView.nodeRuns.some((nodeRun) => nodeRun.id === binding.executorNodeRunId)) {
+    return messageOnlyDiscussion(binding, "executor_node_run_missing");
+  }
+
+  const sessions = runView.nodeExecutionSessions;
+  if (sessions) {
+    const session = sessions.find((candidate) => candidate.id === binding.executorSessionId);
+    if (!session) return messageOnlyDiscussion(binding, "executor_session_missing");
+    if (session.status === "unavailable") return messageOnlyDiscussion(binding, "executor_session_unavailable");
+  }
+
+  return {
+    mode: "executor",
+    canStreamReply: binding.canStreamReply,
+    canCreateCandidate: binding.canCreateCandidate,
+    ...(executorKindForDiscussion(binding) ? { executorKind: executorKindForDiscussion(binding) } : {}),
+    ...(binding.reason ? { reason: binding.reason } : {})
+  };
+}
+
+function noneDiscussion(reason: string): NonNullable<PendingApprovalItem["discussion"]> {
+  return {
+    mode: "none",
+    canStreamReply: false,
+    canCreateCandidate: false,
+    reason
+  };
+}
+
+function messageOnlyDiscussion(
+  binding: ApprovalDiscussionBinding,
+  reason: string | undefined
+): NonNullable<PendingApprovalItem["discussion"]> {
+  return {
+    mode: "message_only",
+    canStreamReply: false,
+    canCreateCandidate: false,
+    ...(executorKindForDiscussion(binding) ? { executorKind: executorKindForDiscussion(binding) } : {}),
+    ...(reason ? { reason } : binding.reason ? { reason: binding.reason } : {})
+  };
+}
+
+function executorKindForDiscussion(
+  binding: ApprovalDiscussionBinding
+): NonNullable<PendingApprovalItem["discussion"]>["executorKind"] | undefined {
+  const route = binding.executorKind ?? binding.route;
+  if (!route || route === "none" || route === "message_only") return undefined;
+  return route;
 }
 
 function mergePendingApprovalReplies(

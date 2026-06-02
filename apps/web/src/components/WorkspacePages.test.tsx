@@ -40,6 +40,12 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
     requestedAt: "2026-05-21T01:02:00.000Z",
     status: "pending",
     reviewOutput: "body",
+    discussion: {
+      mode: "message_only",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "message_only_approval_kind"
+    },
     canApprove: true,
     canReject: true,
     canReply: true,
@@ -47,6 +53,37 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
     canTerminate: false,
     ...overrides
   };
+}
+
+function renderApprovalsPage({
+  approvals,
+  approvalThreads = []
+}: {
+  approvals: PendingApprovalItem[];
+  approvalThreads?: ApprovalThread[];
+}): string {
+  return renderToStaticMarkup(
+    <ApprovalsPage
+      approvals={approvals}
+      approvalThreads={approvalThreads}
+      inboxItems={[]}
+      language="en"
+      t={messages.en}
+      onApprove={() => undefined}
+      onApproveApprovalRequest={() => undefined}
+      onComplete={() => undefined}
+      onReject={() => undefined}
+      onRejectApprovalRequest={() => undefined}
+      onReply={() => undefined}
+      onReplyApprovalRequest={() => undefined}
+      onRequestChangesApprovalRequest={() => undefined}
+      onReviseApprovalRequest={() => undefined}
+      onSelectApprovalReply={() => undefined}
+      onReplyInboxItem={() => undefined}
+      onApproveInboxItem={() => undefined}
+      onRejectInboxItem={() => undefined}
+    />
+  );
 }
 
 describe("ApprovalsPage", () => {
@@ -220,6 +257,79 @@ describe("ApprovalsPage", () => {
     }))).toBe(false);
     expect(shouldAwaitApprovalHarnessReply(legacyApproval)).toBe(true);
   });
+
+  it("does not enable candidate generation from kind alone", () => {
+    const html = renderApprovalsPage({
+      approvals: [createPendingApproval({
+        kind: "agent_proposal",
+        discussion: {
+          mode: "message_only",
+          canStreamReply: false,
+          canCreateCandidate: false
+        }
+      })]
+    });
+
+    expect(extractButtonByText(html, "Generate candidate")).toContain("disabled");
+  });
+
+  it("enables candidate generation only from backend discussion projection", () => {
+    const html = renderApprovalsPage({
+      approvals: [createPendingApproval({
+        discussion: {
+          mode: "executor",
+          canStreamReply: true,
+          canCreateCandidate: true,
+          executorKind: "agent_approval"
+        }
+      })]
+    });
+
+    expect(extractButtonByText(html, "Generate candidate")).not.toContain("disabled");
+  });
+
+  it("renders original content as the selected default and only candidate replies as selectable", () => {
+    const html = renderApprovalsPage({
+      approvals: [createPendingApproval({
+        selectedReplyId: null,
+        replies: [
+          {
+            id: "reply-message",
+            role: "assistant",
+            purpose: "message",
+            body: "ordinary assistant reply",
+            createdAt: "2026-05-21T01:03:00.000Z"
+          },
+          {
+            id: "reply-candidate",
+            role: "assistant",
+            purpose: "candidate",
+            body: "candidate answer",
+            createdAt: "2026-05-21T01:04:00.000Z"
+          }
+        ]
+      })]
+    });
+
+    expect(html).toContain("Original approval content");
+    expect(html).toContain("Original content selected");
+    expect(html).toContain("Message reply");
+    expect(html).toContain("Candidate reply");
+    expect(html.match(/Use this option/g) ?? []).toHaveLength(1);
+  });
+
+  it("disables discussion actions when backend projection is missing", () => {
+    const html = renderApprovalsPage({
+      approvals: [createPendingApproval({
+        discussion: undefined,
+        canReply: true
+      })]
+    });
+
+    expect(extractButtonByText(html, "Comment")).toContain("disabled");
+    expect(extractButtonByText(html, "Generate candidate")).toContain("disabled");
+    expect(html).toContain("Discussion capability is unavailable for this legacy approval.");
+  });
 });
 
 function extractButtonByAriaLabel(html: string, label: string): string {
@@ -227,6 +337,12 @@ function extractButtonByAriaLabel(html: string, label: string): string {
   const match = html.match(new RegExp(`<button[^>]+aria-label="${escaped}"[^>]*>`));
   if (!match) throw new Error(`Button with aria-label "${label}" was not rendered.`);
   return match[0];
+}
+
+function extractButtonByText(html: string, label: string): string {
+  const match = html.match(/<button\b[\s\S]*?<\/button>/g)?.find((button) => button.includes(label));
+  if (!match) throw new Error(`Button with text "${label}" was not rendered.`);
+  return match;
 }
 
 describe("RunsPage", () => {

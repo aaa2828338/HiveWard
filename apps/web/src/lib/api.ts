@@ -56,7 +56,9 @@ import type {
   ApproveBlueprintRunRequest,
   RejectBlueprintRunRequest,
   ReplyBlueprintRunApprovalRequest,
-  SelectBlueprintRunApprovalRequest,
+  ReplyApprovalRequestRequest,
+  SelectApprovalRequestReplyRequest,
+  InboxDiscussionMode,
   ReplyInboxItemRequest,
   ChatSessionHistoryResponse,
   ChatSessionMessagesResponse,
@@ -502,10 +504,24 @@ export const api = {
     });
   },
 
-  async replyToApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
+  async replyToApprovalRequest(
+    approvalRequestId: string,
+    message: string,
+    discussionMode: InboxDiscussionMode = "reply"
+  ): Promise<ApprovalRequestResponse> {
     return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/reply`, {
       method: "POST",
-      body: JSON.stringify({ message })
+      body: JSON.stringify({ message, discussionMode } satisfies ReplyApprovalRequestRequest)
+    });
+  },
+
+  async selectApprovalRequestReply(
+    approvalRequestId: string,
+    selectedReplyId: string | null
+  ): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/select-reply`, {
+      method: "POST",
+      body: JSON.stringify({ selectedReplyId } satisfies SelectApprovalRequestReplyRequest)
     });
   },
 
@@ -656,22 +672,15 @@ export const api = {
     return response.run;
   },
 
-  async replyToBlueprintRunApproval(runId: string, nodeRunId: string, message: string): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, message } satisfies ReplyBlueprintRunApprovalRequest)
-    });
-    return response.run;
-  },
-
-  async selectBlueprintRunApprovalReply(
+  async replyToBlueprintRunApproval(
     runId: string,
     nodeRunId: string,
-    selectedReplyId: string
+    message: string,
+    discussionMode: InboxDiscussionMode = "reply"
   ): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/select-approval-reply`, {
+    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reply`, {
       method: "POST",
-      body: JSON.stringify({ nodeRunId, selectedReplyId } satisfies SelectBlueprintRunApprovalRequest)
+      body: JSON.stringify({ nodeRunId, message, discussionMode } satisfies ReplyBlueprintRunApprovalRequest)
     });
     return response.run;
   },

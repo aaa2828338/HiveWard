@@ -341,10 +341,140 @@ describe("run state sync", () => {
       {
         id: "reply-fact-1",
         role: "user",
+        purpose: "message",
         body: "Give me a shippable version.",
         createdAt: "2026-05-21T01:06:00.000Z"
       }
     ]);
+  });
+
+  it("uses ApprovalRequest selectedReplyId instead of node output selection", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent",
+        selectedReplyId: "reply-candidate"
+      })
+    ];
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      output: {
+        approvalType: "agent",
+        reviewOutput: "draft answer",
+        selectedReplyId: "legacy-node-selected",
+        replies: [
+          {
+            id: "reply-message",
+            role: "assistant",
+            body: "ordinary message",
+            createdAt: "2026-05-21T01:06:00.000Z"
+          },
+          {
+            id: "reply-candidate",
+            role: "assistant",
+            purpose: "candidate",
+            body: "candidate answer",
+            createdAt: "2026-05-21T01:07:00.000Z"
+          }
+        ]
+      }
+    };
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.selectedReplyId).toBe("reply-candidate");
+    expect(approvals[0]?.replies).toEqual([
+      {
+        id: "reply-message",
+        role: "assistant",
+        purpose: "message",
+        body: "ordinary message",
+        createdAt: "2026-05-21T01:06:00.000Z"
+      },
+      {
+        id: "reply-candidate",
+        role: "assistant",
+        purpose: "candidate",
+        body: "candidate answer",
+        createdAt: "2026-05-21T01:07:00.000Z"
+      }
+    ]);
+  });
+
+  it("projects approval discussion capabilities from backend binding and session facts", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+    runView.approvalDiscussionBindings = [
+      {
+        approvalRequestId: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: "agent",
+        executorNodeRunId: "node-run-agent",
+        executorSessionId: "session-agent-1",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      }
+    ];
+    runView.nodeExecutionSessions = [
+      {
+        id: "session-agent-1",
+        runId: "run-1",
+        nodeRunId: "node-run-agent",
+        nodeId: "agent",
+        harnessId: "openclaw",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:02:00.000Z"
+      }
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "executor",
+      canStreamReply: true,
+      canCreateCandidate: true,
+      executorKind: "agent_approval"
+    });
+  });
+
+  it("marks missing approval discussion projection unavailable instead of synthesizing message-only", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-legacy-1",
+        kind: "generic_message",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "legacy_binding_missing"
+    });
+    expect(approvals[0]?.selectedReplyId).toBeNull();
   });
 
   it("keeps an approved approval visible but non-actionable after completion", () => {

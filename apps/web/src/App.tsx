@@ -50,6 +50,7 @@ import type {
   ArchitectureBlueprintView,
   ApprovalThread,
   CompanyRoleDirectory,
+  InboxDiscussionMode,
   InboxItem,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
@@ -1347,9 +1348,9 @@ export function App() {
   );
 
   const replyToApprovalRequest = useCallback(
-    (approvalRequestId: string, message: string) => {
+    (approvalRequestId: string, message: string, discussionMode: InboxDiscussionMode = "reply") => {
       void withApprovalRequestBusy("replyApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
+        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message, discussionMode));
       });
     },
     [applyApprovalRequestResponse, withApprovalRequestBusy]
@@ -1383,15 +1384,13 @@ export function App() {
     [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
-  const selectRunApprovalReply = useCallback(
-    (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => {
-      void withBusy("selectRunApprovalReply", async () => {
-        const updated = await api.selectBlueprintRunApprovalReply(blueprintRunId, nodeRunId, selectedReplyId);
-        applyRunView(updated);
-        setSelectedRunId(updated.run.id);
+  const selectApprovalReply = useCallback(
+    (approvalRequestId: string, selectedReplyId: string | null) => {
+      void withApprovalRequestBusy("selectRunApprovalReply", async () => {
+        await applyApprovalRequestResponse(await api.selectApprovalRequestReply(approvalRequestId, selectedReplyId));
       });
     },
-    [applyRunView, withBusy]
+    [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
   const replyToInboxItem = useCallback(
@@ -1750,7 +1749,7 @@ export function App() {
           onReplyApprovalRequest={replyToApprovalRequest}
           onRequestChangesApprovalRequest={requestChangesApprovalRequest}
           onReviseApprovalRequest={reviseApprovalRequest}
-          onSelectApprovalReply={selectRunApprovalReply}
+          onSelectApprovalReply={selectApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
           onRejectInboxItem={rejectInboxItem}
