@@ -274,7 +274,9 @@ export interface HivewardStore {
   }): Promise<NodeExecutionSession[]>;
   getNodeExecutionSession(id: string): Promise<NodeExecutionSession | undefined>;
   updateNodeExecutionSession(input: { id: string } & Partial<NodeExecutionSession>): Promise<NodeExecutionSession>;
-  appendNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): Promise<NodeSessionTranscriptEvent>;
+  appendNodeSessionTranscriptEvent(
+    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
+  ): Promise<NodeSessionTranscriptEvent>;
   listNodeSessionTranscriptEvents(filter?: {
     sessionId?: string;
     runId?: string;

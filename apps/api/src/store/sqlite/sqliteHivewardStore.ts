@@ -1110,17 +1110,33 @@ export class SqliteHivewardStore implements HivewardStore {
     });
   }
 
-  async appendNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): Promise<NodeSessionTranscriptEvent> {
-    return this.driver.transaction(() => {
-      const duplicate = this.driver.db.prepare(
-        "SELECT id FROM node_session_transcript_events WHERE session_id = ? AND sequence = ? AND id <> ?"
-      ).get(event.sessionId, event.sequence, event.id) as Row | undefined;
-      if (duplicate) {
-        throw new Error(`Transcript sequence ${event.sequence} already exists for session ${event.sessionId}.`);
+  async appendNodeSessionTranscriptEvent(
+    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
+  ): Promise<NodeSessionTranscriptEvent> {
+    const explicitSequence = event.sequence !== undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return this.driver.transaction(() => {
+          const transcriptEvent: NodeSessionTranscriptEvent = {
+            ...event,
+            sequence: event.sequence ?? this.nextNodeSessionTranscriptSequence(event.sessionId)
+          };
+          const duplicate = this.driver.db.prepare(
+            "SELECT id FROM node_session_transcript_events WHERE session_id = ? AND sequence = ? AND id <> ?"
+          ).get(transcriptEvent.sessionId, transcriptEvent.sequence, transcriptEvent.id) as Row | undefined;
+          if (duplicate) {
+            throw new Error(`Transcript sequence ${transcriptEvent.sequence} already exists for session ${transcriptEvent.sessionId}.`);
+          }
+          this.upsertNodeSessionTranscriptEvent(transcriptEvent);
+          return transcriptEvent;
+        });
+      } catch (error) {
+        if (explicitSequence || !isSqliteUniqueConstraintError(error)) {
+          throw error;
+        }
       }
-      this.upsertNodeSessionTranscriptEvent(event);
-      return event;
-    });
+    }
+    throw new Error(`Transcript sequence allocation failed for session ${event.sessionId}.`);
   }
 
   async listNodeSessionTranscriptEvents(filter: {
@@ -3273,6 +3289,13 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.claimRunSequence(runId, "timeline");
   }
 
+  private nextNodeSessionTranscriptSequence(sessionId: string): number {
+    const row = this.driver.db.prepare(
+      "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM node_session_transcript_events WHERE session_id = ?"
+    ).get(sessionId) as Row;
+    return readNumber(row.sequence, 1);
+  }
+
   private claimRunSequence(runId: string, scope: "event" | "timeline"): number {
     const table = scope === "event" ? "run_events" : "run_timeline_items";
     const now = new Date().toISOString();
@@ -4341,6 +4364,13 @@ function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
   return value === "openclaw" || value === "codex" || value === "claude" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
     ? value
     : undefined;
+}
+
+function isSqliteUniqueConstraintError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const code = readString(error.code);
+  const message = readString(error.message) ?? "";
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || message.includes("UNIQUE constraint failed");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

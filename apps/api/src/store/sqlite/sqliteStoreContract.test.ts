@@ -179,6 +179,16 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.appendNodeSessionTranscriptEvent(transcriptEvent)).resolves.toMatchObject({ id: transcriptEvent.id });
       await expect(store.appendNodeSessionTranscriptEvent({ ...transcriptEvent, id: "node-session-transcript-duplicate" }))
         .rejects.toThrow(/Transcript sequence 1 already exists/);
+      await expect(store.appendNodeSessionTranscriptEvent({
+        id: "node-session-transcript-contract-2",
+        sessionId: executionSession.id,
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        role: "runtime",
+        kind: "runtime_done",
+        content: "Runtime completed.",
+        createdAt: contractNow
+      })).resolves.toMatchObject({ id: "node-session-transcript-contract-2", sequence: 2 });
 
       const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
       await store.appendApprovalReply({
@@ -233,7 +243,10 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         runCommands: [expect.objectContaining({ id: command.id, commandKey: command.commandKey })],
         runCommandSteps: [expect.objectContaining({ id: commandStep.id, stepKey: commandStep.stepKey })],
         nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id, nativeSessionId: "native-session-contract" })],
-        nodeSessionTranscriptEvents: [expect.objectContaining({ id: transcriptEvent.id, sequence: 1 })],
+        nodeSessionTranscriptEvents: expect.arrayContaining([
+          expect.objectContaining({ id: transcriptEvent.id, sequence: 1 }),
+          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
+        ]),
         approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id, mode: "executor" })],
         approvalRequestDiscussions: [expect.objectContaining({
           approvalRequestId: approval.id,
@@ -269,7 +282,10 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         runCommands: [expect.objectContaining({ id: command.id })],
         runCommandSteps: [expect.objectContaining({ id: commandStep.id })],
         nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id })],
-        nodeSessionTranscriptEvents: [expect.objectContaining({ id: transcriptEvent.id })],
+        nodeSessionTranscriptEvents: expect.arrayContaining([
+          expect.objectContaining({ id: transcriptEvent.id }),
+          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
+        ]),
         approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id })]
       });
 

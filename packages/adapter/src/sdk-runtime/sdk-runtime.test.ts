@@ -199,7 +199,7 @@ describe("agent SDK runtime", () => {
       new AgentSdkTaskRegistry(2),
       { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
       () => fakeCodexClient({
-        threadId: "codex-resumed-thread",
+        threadId: "codex-native-existing",
         onStartThread: () => {
           startCalled = true;
         },
@@ -230,10 +230,56 @@ describe("agent SDK runtime", () => {
     expect(startCalled).toBe(false);
     expect(resumedThreadId).toBe("codex-native-existing");
     expect(resumedOptions?.model).toBe("test-model");
-    expect(started.resumeMode).toBe("resumed");
+    expect(started).toMatchObject({
+      resumeRequested: true,
+      resumeAttempted: true,
+      resumeProven: false,
+      resumeMode: "started",
+      resumable: false
+    });
+    expect(started.nativeSessionId).toBeUndefined();
+    expect(started.providerSessionId).toBeUndefined();
     expect(result.resumeMode).toBe("resumed");
-    expect(result.nativeSessionId).toBe("codex-resumed-thread");
+    expect(result.resumeProven).toBe(true);
+    expect(result.providerStartedNewSession).toBe(false);
+    expect(result.providerSessionId).toBe("codex-native-existing");
+    expect(result.nativeSessionId).toBe("codex-native-existing");
     expect(result.status).toBe("succeeded");
+  });
+
+  it("does not mark Codex resume proven when the provider starts a new thread", async () => {
+    const workspace = createWorkspace({ git: true });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-new-thread",
+        finalResponse: "new thread ok",
+        usage: null
+      })
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        nativeSessionId: "codex-native-existing"
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.resumeMode).toBe("started");
+    expect(result.resumeProven).toBe(false);
+    expect(result.providerStartedNewSession).toBe(true);
+    expect(result.providerSessionId).toBe("codex-new-thread");
+    expect(result.nativeSessionId).toBe("codex-new-thread");
   });
 
   it("rejects Codex native resume when the SDK cannot prove a resume path", async () => {
@@ -258,6 +304,11 @@ describe("agent SDK runtime", () => {
 
     expect(started.status).toBe("failed");
     expect(started.resumeMode).toBe("started");
+    expect(started.resumeRequested).toBe(true);
+    expect(started.resumeAttempted).toBe(false);
+    expect(started.resumeProven).toBe(false);
+    expect(started.resumable).toBe(false);
+    expect(started.nativeSessionId).toBeUndefined();
     expect(started.error).toContain("native_resume_unsupported");
   });
 
@@ -303,8 +354,12 @@ describe("agent SDK runtime", () => {
 
     expect(started.status).toBe("running");
     expect(started.source).toBe("claude");
+    expect(started.nativeSessionId).toBeUndefined();
+    expect(started.resumable).toBe(false);
     expect(options?.skills).toEqual(["hiveward-leader"]);
     expect(result.status).toBe("succeeded");
+    expect(result.providerSessionId).toBe("claude-session-auth-owned-by-sdk");
+    expect(result.nativeSessionId).toBe("claude-session-auth-owned-by-sdk");
   });
 
   it("resumes Claude tasks through the native SDK resume option", async () => {
@@ -352,10 +407,68 @@ describe("agent SDK runtime", () => {
     });
 
     expect(options?.resume).toBe("claude-native-existing");
-    expect(started.resumeMode).toBe("resumed");
+    expect(started).toMatchObject({
+      resumeRequested: true,
+      resumeAttempted: true,
+      resumeProven: false,
+      resumeMode: "started",
+      resumable: false
+    });
+    expect(started.nativeSessionId).toBeUndefined();
     expect(result.resumeMode).toBe("resumed");
+    expect(result.resumeProven).toBe(true);
+    expect(result.providerStartedNewSession).toBe(false);
+    expect(result.providerSessionId).toBe("claude-native-existing");
     expect(result.nativeSessionId).toBe("claude-native-existing");
     expect(result.status).toBe("succeeded");
+  });
+
+  it("does not mark Claude resume proven when the provider reports a new session", async () => {
+    const workspace = createWorkspace();
+    const runtime = new ClaudeAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      fakeClaudeQuery([
+        {
+          type: "result",
+          subtype: "success",
+          duration_ms: 1,
+          duration_api_ms: 1,
+          is_error: false,
+          num_turns: 1,
+          result: "new session ok",
+          stop_reason: null,
+          total_cost_usd: 0,
+          usage: {},
+          modelUsage: {},
+          permission_denials: [],
+          uuid: "uuid-claude-new-session",
+          session_id: "claude-new-session"
+        } as unknown as SDKMessage
+      ])
+    );
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "claude",
+        workingDirectory: workspace,
+        nativeSessionId: "claude-native-existing"
+      })
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "claude"
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.resumeMode).toBe("started");
+    expect(result.resumeProven).toBe(false);
+    expect(result.providerStartedNewSession).toBe(true);
+    expect(result.providerSessionId).toBe("claude-new-session");
+    expect(result.nativeSessionId).toBe("claude-new-session");
   });
 
   it("fails SDK nodes before provider calls when modelId is missing", async () => {

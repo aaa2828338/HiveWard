@@ -13,7 +13,7 @@ import { buildSdkChatPrompt } from "./chat-envelope";
 import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
 import { normalizePermissionProfile } from "./permissions";
 import { buildPromptEnvelope, validateOutputSchema } from "./prompt-envelope";
-import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
+import { buildRuntimeResumeProof, createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { resolveSdkWorkingDirectory } from "./workspace";
 
@@ -169,13 +169,13 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     const taskId = `${this.harnessId}-task-${nanoid(10)}`;
     const runId = `${this.harnessId}-run-${nanoid(10)}`;
     const sessionKey = input.nativeSessionId ?? `${this.harnessId}-session-${input.nodeRunId}`;
-    const resumeMode = input.nativeSessionId ? "resumed" : "started";
+    const resumeAttempted = Boolean(input.nativeSessionId);
 
     let workingDirectory: string;
     try {
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
     } catch (error) {
-      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId, resumeMode);
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId);
     }
 
     const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
@@ -215,8 +215,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: this.harnessId,
-      nativeSessionId: input.nativeSessionId,
-      resumeMode,
+      ...buildRuntimeResumeProof(input, undefined, { resumeAttempted, resumable: false }),
       status: "running",
       updatedAt: now
     };
@@ -247,7 +246,13 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     abortController: AbortController;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
-    const resumeMode = input.nativeSessionId ? "resumed" : "started";
+    let providerSessionId: string | undefined;
+    const resumeAttempted = Boolean(input.nativeSessionId);
+    const resumeProof = () =>
+      buildRuntimeResumeProof(input, providerSessionId, {
+        resumeAttempted,
+        resumable: Boolean(providerSessionId)
+      });
     try {
       if (abortController.signal.aborted) {
         return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
@@ -281,8 +286,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           taskId,
           runId,
           sessionKey,
-          nativeSessionId: input.nativeSessionId,
-          resumeMode,
+          ...resumeProof(),
           source: this.harnessId,
           status: "failed",
           error: formatAgentSdkProviderError(formatCliHarnessLabel(this.harnessId), formatCliFailure(result))
@@ -291,14 +295,14 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
 
       const parsed = parseCliCommandOutput(this.harnessId, result.stdout);
       const output = parsed.output;
-      const finalSessionKey = parsed.sessionKey ?? extractCliSessionKey(result.stdout, sessionKey);
+      providerSessionId = parsed.sessionKey;
+      const finalSessionKey = providerSessionId ?? sessionKey;
       if (!validateOutputSchema(output, input.outputSchema)) {
         return createTerminalTaskResult({
           taskId,
           runId,
           sessionKey: finalSessionKey,
-          nativeSessionId: finalSessionKey,
-          resumeMode,
+          ...resumeProof(),
           source: this.harnessId,
           status: "failed",
           error: formatAgentSdkError("invalid_output", "CLI output does not match outputSchema.")
@@ -309,8 +313,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey: finalSessionKey,
-        nativeSessionId: finalSessionKey,
-        resumeMode,
+        ...resumeProof(),
         source: this.harnessId,
         status: "succeeded",
         output,
@@ -324,8 +327,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
-        nativeSessionId: input.nativeSessionId,
-        resumeMode,
+        ...resumeProof(),
         source: this.harnessId,
         status: "failed",
         error: formatAgentSdkProviderError(formatCliHarnessLabel(this.harnessId), error)
@@ -346,7 +348,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
-      nativeSessionId,
+      ...buildRuntimeResumeProof({ nativeSessionId }, undefined, { resumeAttempted: false, resumable: false }),
       resumeMode,
       source: this.harnessId,
       status: "failed",

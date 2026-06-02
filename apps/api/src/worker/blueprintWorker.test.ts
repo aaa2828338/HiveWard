@@ -4723,8 +4723,10 @@ describe("BlueprintWorker", () => {
       {
         ...createStartedAgentTask("task-preserve-2"),
         sessionKey: "runtime-session-2",
-        nativeSessionId: "native-preserve-2",
-        resumeMode: "resumed"
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        resumable: false
       }
     ], [
       {
@@ -4735,8 +4737,14 @@ describe("BlueprintWorker", () => {
       {
         ...createCompletedAgentTask("task-preserve-2", "succeeded", "brief ready again"),
         sessionKey: "runtime-session-2",
-        nativeSessionId: "native-preserve-2",
-        resumeMode: "resumed"
+        nativeSessionId: "native-preserve-1",
+        providerSessionId: "native-preserve-1",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: true,
+        resumeMode: "resumed",
+        providerStartedNewSession: false,
+        resumable: true
       }
     ]);
     const worker = new BlueprintWorker(store, adapter);
@@ -4757,7 +4765,7 @@ describe("BlueprintWorker", () => {
     expect(sessions[1]).toMatchObject({
       policy: "preserve_across_rounds",
       status: "completed",
-      nativeSessionId: "native-preserve-2",
+      nativeSessionId: "native-preserve-1",
       resumedFromSessionId: sessions[0]?.id
     });
   });
@@ -4802,9 +4810,12 @@ describe("BlueprintWorker", () => {
         taskId: "task-fallback-resume",
         runId: "task-fallback-resume-run",
         sessionKey: "runtime-session-resume",
-        nativeSessionId: "native-original",
         source: "openclaw",
         resumeMode: "started",
+        resumeRequested: true,
+        resumeAttempted: false,
+        resumeProven: false,
+        resumable: false,
         status: "failed",
         error: "native_resume_unsupported: test runtime cannot prove native resume.",
         updatedAt: new Date().toISOString()
@@ -4848,9 +4859,10 @@ describe("BlueprintWorker", () => {
     ]);
     expect(sessions).toHaveLength(3);
     expect(unavailable).toMatchObject({
-      nativeSessionId: "native-original",
       statusReason: expect.stringContaining("native_resume_unsupported")
     });
+    expect(unavailable?.nativeSessionId).toBeUndefined();
+    expect(unavailable?.resumedFromSessionId).toBe(sessions[0]?.id);
     expect(fallback).toMatchObject({
       nativeSessionId: "native-fallback",
       fallbackOfSessionId: unavailable?.id
@@ -4881,6 +4893,11 @@ function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["
     nativeSessionId: "agent:main:main",
     source,
     resumeMode: "started",
+    resumeRequested: false,
+    resumeAttempted: false,
+    resumeProven: false,
+    providerStartedNewSession: false,
+    resumable: true,
     status: "running",
     updatedAt: new Date().toISOString()
   };
@@ -4950,6 +4967,11 @@ function createCompletedAgentTask(
     nativeSessionId: "agent:main:main",
     source,
     resumeMode: "started",
+    resumeRequested: false,
+    resumeAttempted: false,
+    resumeProven: false,
+    providerStartedNewSession: false,
+    resumable: true,
     status,
     output,
     error,

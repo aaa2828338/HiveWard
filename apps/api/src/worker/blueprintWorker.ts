@@ -5801,15 +5801,6 @@ export class BlueprintWorker {
     sessionContext: ResolvedNodeExecutionSession | undefined,
     onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
   ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
-    if (sessionContext) {
-      await this.appendExecutionTranscriptEvent(sessionContext.session, "runtime", "runtime_started", "Runtime task started.", {
-        source: input.source,
-        resumeMode: input.nativeSessionId ? "resumed" : "started",
-        nativeSessionId: input.nativeSessionId,
-        executionSessionPolicy: sessionContext.session.policy
-      });
-    }
-
     const started = await this.adapter.startAgentTask(input);
     const source = started.source;
     const runtimeRef: RuntimeObjectRef = {
@@ -5823,6 +5814,11 @@ export class BlueprintWorker {
     };
     if (sessionContext) {
       sessionContext.session = await this.markNodeExecutionSessionStarted(sessionContext.session, started, runtimeRef);
+      await this.appendExecutionTranscriptEvent(sessionContext.session, "runtime", "runtime_started", "Runtime task started.", {
+        source: input.source,
+        ...this.runtimeResumeMetadata(started, input),
+        executionSessionPolicy: sessionContext.session.policy
+      }, runtimeRef);
     }
     await onStarted?.(runtimeRef);
 
@@ -6029,15 +6025,51 @@ export class BlueprintWorker {
     }
   }
 
+  private runtimeResumeMetadata(
+    result: Pick<
+      StartedAgentTaskResult,
+      "nativeSessionId" |
+        "resumeMode" |
+        "resumeRequested" |
+        "resumeAttempted" |
+        "resumeProven" |
+        "providerSessionId" |
+        "providerStartedNewSession" |
+        "resumable"
+    >,
+    input?: Pick<StartAgentTaskInput, "nativeSessionId">
+  ): Record<string, unknown> {
+    const resumeProven = result.resumeProven ?? false;
+    return {
+      resumeRequested: result.resumeRequested ?? Boolean(input?.nativeSessionId),
+      resumeAttempted: result.resumeAttempted ?? false,
+      resumeProven,
+      resumeMode: resumeProven ? "resumed" : result.resumeMode === "fallback_started" ? "fallback_started" : "started",
+      nativeSessionId: this.runtimeProviderNativeSessionId(result),
+      providerSessionId: result.providerSessionId,
+      providerStartedNewSession: result.providerStartedNewSession ?? false,
+      resumable: result.resumable ?? Boolean(result.nativeSessionId)
+    };
+  }
+
+  private runtimeProviderNativeSessionId(
+    result: Pick<StartedAgentTaskResult, "nativeSessionId" | "providerSessionId" | "resumable">
+  ): string | undefined {
+    if (result.providerSessionId) return result.providerSessionId;
+    if (result.resumable === false) return undefined;
+    return result.nativeSessionId;
+  }
+
   private async markNodeExecutionSessionStarted(
     session: NodeExecutionSession,
     started: StartedAgentTaskResult,
     runtimeRef: RuntimeObjectRef
   ): Promise<NodeExecutionSession> {
     const now = started.updatedAt ?? new Date().toISOString();
+    const nativeSessionId = this.runtimeProviderNativeSessionId(started) ?? session.nativeSessionId;
     return this.store.updateNodeExecutionSession({
       id: session.id,
-      nativeSessionId: started.nativeSessionId ?? session.nativeSessionId,
+      nativeSessionId,
       runtimeRef,
       status: session.status === "fallback" ? "fallback" : "active",
       statusReason: undefined,
@@ -6069,8 +6101,7 @@ export class BlueprintWorker {
       {
         status: result.status,
         error: result.error,
-        resumeMode: result.resumeMode,
-        nativeSessionId: result.nativeSessionId
+        ...this.runtimeResumeMetadata(result)
       },
       runtimeRef
     );
@@ -6082,12 +6113,17 @@ export class BlueprintWorker {
           ? "paused"
           : "failed";
     const now = result.updatedAt ?? new Date().toISOString();
+    const nativeSessionId = this.runtimeProviderNativeSessionId(result) ?? session.nativeSessionId;
     return this.store.updateNodeExecutionSession({
       id: session.id,
-      nativeSessionId: result.nativeSessionId ?? session.nativeSessionId,
+      nativeSessionId,
       runtimeRef,
       status: endedStatus,
-      statusReason: result.status === "succeeded" ? undefined : result.error,
+      statusReason: result.providerStartedNewSession
+        ? "provider_started_new_session"
+        : result.status === "succeeded"
+          ? undefined
+          : result.error,
       lastUsedAt: now,
       updatedAt: now
     });
@@ -6101,12 +6137,9 @@ export class BlueprintWorker {
     metadata?: Record<string, unknown>,
     runtimeRef?: RuntimeObjectRef
   ): Promise<NodeSessionTranscriptEvent> {
-    const events = await this.store.listNodeSessionTranscriptEvents({ sessionId: session.id });
-    const sequence = events.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
     return this.store.appendNodeSessionTranscriptEvent({
       id: `node-transcript-${nanoid(10)}`,
       sessionId: session.id,
-      sequence,
       runId: session.runId,
       nodeRunId: session.nodeRunId,
       role,
