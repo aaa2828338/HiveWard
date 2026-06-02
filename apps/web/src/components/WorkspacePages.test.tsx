@@ -901,7 +901,7 @@ describe("RunsPage", () => {
     expect(html).not.toContain("Legacy timeline should not drive new command trace");
   });
 
-  it("renders only a legacy summary when transcript facts are absent", () => {
+  it("renders explicit missing execution facts when canonical trace facts are absent", () => {
     const runView = createRunPageRunView({
       runTimeline: [{
         id: "timeline-legacy-only",
@@ -917,10 +917,11 @@ describe("RunsPage", () => {
 
     const html = renderRunsPageForRun(runView);
 
-    expect(html).toContain("Transcript unavailable");
-    expect(html).toContain("legacy timeline summary");
-    expect(html).toContain("Legacy read-only");
-    expect(html).toContain("Legacy timeline fallback body");
+    expect(html).toContain("Execution facts missing");
+    expect(html).toContain("Historical run is missing canonical execution facts");
+    expect(html).not.toContain("Legacy run summary");
+    expect(html).not.toContain("Legacy read-only");
+    expect(html).not.toContain("Legacy timeline fallback body");
     expect(html).not.toContain("Assistant transcript answer");
   });
 
@@ -1252,8 +1253,8 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toContain("Delivery location");
-    expect(html).toContain("None");
+    expect(html).toContain("Execution facts missing");
+    expect(html).toContain("No command, step, execution session, or transcript facts are available");
     expect(html).not.toContain("D:/HiveWard/raw-only.html");
     expect(html).not.toContain('href="D:/HiveWard/raw-only.html"');
   });
@@ -1342,9 +1343,10 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toContain("交付位置");
-    expect(html).toContain("<h2><span>📍 交付位置</span></h2><p><span>无</span></p>");
-    expect(html).toContain("<h2><span>📦 产物</span></h2><p><span>无</span></p>");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).toContain("\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts");
+    expect(html).not.toContain("\ud83d\udccd \u4ea4\u4ed8\u4f4d\u7f6e");
+    expect(html).not.toContain("\ud83d\udce6 \u4ea7\u7269");
     expect(html).not.toContain("本步骤没有产生新的交付物");
     expect(html).not.toContain("浜や粯浣嶇疆");
   });
@@ -1474,13 +1476,14 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toContain("决策");
-    expect(html).toContain("摘要");
-    expect(html).toContain("验证");
-    expect(html).toContain("路由到 Slot 3");
-    expect(html).toContain("本节点以只读方式运行");
-    expect(html).toContain("<strong>政治新闻 HTML 自迭代 Manager</strong>");
-    expect(html).toContain("D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact-final.html");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).not.toContain("\u51b3\u7b56");
+    expect(html).not.toContain("\u6458\u8981");
+    expect(html).not.toContain("\u9a8c\u8bc1");
+    expect(html).not.toContain("\u8def\u7531\u5230 Slot 3");
+    expect(html).not.toContain("\u672c\u8282\u70b9\u4ee5\u53ea\u8bfb\u65b9\u5f0f\u8fd0\u884c");
+    expect(html).not.toContain("<strong>\u653f\u6cbb\u65b0\u95fb HTML \u81ea\u8fed\u4ee3 Manager</strong>");
+    expect(html).not.toContain("D:\\HiveWard\\artifacts\\runs\\run-zh\\artifact-final.html");
     expect(html).toContain("/artifacts/runs/run-zh/artifact-final.html");
   });
 
@@ -1676,8 +1679,10 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toMatch(/trace-actor-title.*<strong>QA Agent<\/strong>/s);
-    expect(html).toContain("QA passed the delivery.");
+    expect(html).toContain("Execution facts missing");
+    expect(html).toContain("No command, step, execution session, or transcript facts are available");
+    expect(html).not.toMatch(/trace-actor-title.*<strong>QA Agent<\/strong>/s);
+    expect(html).not.toContain("QA passed the delivery.");
     expect(html).not.toMatch(/trace-actor-title.*<strong>Slot 1 - QA<\/strong>/s);
     expect(html).not.toContain("Manager input entered this slot.");
   });
@@ -1883,46 +1888,15 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toContain("trace-round-ribbon");
-    expect(html).toContain("第一轮");
-    expect(html).toContain("trace-role-icon");
-    expect(html).toContain("trace-role-manager");
-    expect(html).toContain("trace-role-agent");
-    expect(html).toContain("lucide-bot-message-square");
-    expect(html).toContain("lucide-bot");
-    expect(html).not.toContain("lucide-git-branch");
-    const issueCards = html.match(/<button type="button" class="trace-issue-card[\s\S]*?<\/button>/g) ?? [];
-    const issueCardsHtml = issueCards.join("");
-    expect(issueCardsHtml).toContain("需求分析 Agent");
-    expect(issueCardsHtml.match(/<strong>需求分析 Agent<\/strong>/g)).toHaveLength(1);
-    expect(issueCardsHtml).not.toContain("<strong>需求分析 Agent: requirement planning completed</strong>");
-    expect(issueCardsHtml).not.toContain("该步骤已经产生输出。");
-    expect(issueCardsHtml).toContain("<strong>自分发测试 Manager</strong>");
-    expect(issueCardsHtml).not.toContain("<strong>自分发测试 Manager · 调度 3</strong>");
-    expect(issueCardsHtml).not.toContain("Manager 已完成调度。");
-    expect(issueCardsHtml).not.toContain("<strong>页面预览</strong>");
-    expect(issueCardsHtml).not.toContain("trace-work-tag-artifact");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).not.toContain("trace-round-ribbon");
+    expect(html).not.toContain("trace-role-manager");
+    expect(html).not.toContain("trace-role-agent");
+    expect(html).not.toContain("trace-work-tag-research");
+    expect(html).not.toContain("trace-work-tag-requirements");
+    expect(html).not.toContain("trace-work-tag-dispatch");
     expect(html).toContain("/artifacts/runs/run-work-card/preview.html");
-    expect(html).toContain("Manager 派发给页面制作 Agent。");
-    expect(html).toContain("trace-status-chip trace-completed");
-    const requirementsCardHtml = issueCards.find((card) => card.includes("<strong>需求分析 Agent</strong>")) ?? "";
-    expect(requirementsCardHtml).toContain("我整理了页面制作需求，明确标题、说明文字和验收标准。");
-    expect(requirementsCardHtml).not.toContain("第二句话不应该进入小卡片。");
-    expect(html).toContain("trace-work-tag");
-    expect(issueCardsHtml).toContain('<span class="trace-role-tag trace-role-tag-manager">Manager</span>');
-    expect(issueCardsHtml).toContain('<span class="trace-role-tag trace-role-tag-agent">Agent</span>');
-    expect(issueCardsHtml).toContain('<span class="trace-work-tag trace-work-tag-research">调研</span>');
-    expect(issueCardsHtml).toContain('<span class="trace-work-tag trace-work-tag-requirements">提需</span>');
-    expect(issueCardsHtml).toContain('<span class="trace-work-tag trace-work-tag-dispatch">调度</span>');
-    const managerResearchCardHtml = issueCards.find((card) => card.includes("我调研了当前上下文")) ?? "";
-    expect(managerResearchCardHtml).toContain('<span class="trace-role-tag trace-role-tag-manager">Manager</span>');
-    expect(managerResearchCardHtml).toContain('<span class="trace-work-tag trace-work-tag-research">调研</span>');
-    expect(managerResearchCardHtml).not.toContain("本步骤没有产生新的交付物。");
-    expect(issueCardsHtml).not.toContain('<span class="trace-work-tag">需求规划</span>');
-    expect(issueCardsHtml).not.toContain('<span class="trace-work-tag">计划准备</span>');
-    expect(issueCardsHtml).not.toContain('<span class="trace-work-tag">计划校验</span>');
-    expect(html).toContain("trace-issue-time");
-    expect(html).toMatch(/trace-issue-time[^>]*dateTime="2026-05-28T00:00:01\.000Z"/);
+    expect(html).not.toContain("Manager \u6d3e\u53d1\u7ed9\u9875\u9762\u5236\u4f5c Agent");
   });
 
   it("restores context-sufficient round research as a Manager research step before requirements", () => {
@@ -2034,19 +2008,12 @@ describe("RunsPage", () => {
       />
     );
 
-    const issueCards: string[] = html.match(/<button type="button" class="trace-issue-card[\s\S]*?<\/button>/g) ?? [];
-    const restoredResearchCard = issueCards.find((card) => card.includes("已复用上一轮上下文，判断不需要额外调研。")) ?? "";
-    const requirementsCard = issueCards.find((card) => card.includes("<strong>需求分析 Agent</strong>")) ?? "";
-
-    expect(restoredResearchCard).toContain("<strong>自分发测试 Manager</strong>");
-    expect(restoredResearchCard).toContain('<span class="trace-work-tag trace-work-tag-research">调研</span>');
-    expect(restoredResearchCard).toContain("第二轮");
-    expect(restoredResearchCard).toContain('dateTime="2026-05-28T00:01:00.000Z"');
-    expect(requirementsCard).toContain("<strong>需求分析 Agent</strong>");
-    expect(issueCards.indexOf(restoredResearchCard)).toBeLessThan(issueCards.indexOf(requirementsCard));
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).not.toContain("\u5df2\u590d\u7528\u4e0a\u4e00\u8f6e\u4e0a\u4e0b\u6587");
+    expect(html).not.toContain('<span class="trace-work-tag trace-work-tag-research">');
   });
 
-  it("renders self-iteration preflight lifecycle as run steps before node runs exist", () => {
+  it("renders explicit missing execution facts instead of preflight timeline rows", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
       id: "blueprint-preflight",
@@ -2125,12 +2092,14 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).not.toContain("第 1 轮启动");
-    expect(html).not.toContain("Manager 正在准备第 1 轮计划");
-    expect(html).toContain(messages["zh-CN"].empty.noRunHistory);
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).toContain("\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts");
+    expect(html).not.toContain("Round 1 started");
+    expect(html).not.toContain("Top Manager");
+    expect(html).not.toContain(messages["zh-CN"].empty.noRunHistory);
   });
 
-  it("shows pending plan approval instead of internal preflight judgment output", () => {
+  it("does not project preflight approval fallback without execution facts", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
       id: "blueprint-plan-approval",
@@ -2270,15 +2239,14 @@ describe("RunsPage", () => {
       />
     );
 
-    expect(html).toContain("待审批");
-    expect(html).toContain("计划确认");
-    expect(html).toContain("前期准备工作已经完成");
-    expect(html).toContain("确认后会开始后续 Agent 工作");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(html).not.toContain("\u524d\u671f\u51c6\u5907\u5de5\u4f5c\u5df2\u7ecf\u5b8c\u6210");
+    expect(html).not.toContain("\u786e\u8ba4\u540e\u4f1a\u5f00\u59cb\u540e\u7eed Agent \u5de5\u4f5c");
     expect(html).not.toContain("draftPlan");
-    expect(html).not.toContain("不派发 worker 槽位");
+    expect(html).not.toContain("\u4e0d\u6d3e\u53d1 worker \u69fd\u4f4d");
   });
 
-  it("uses manager output roundNumber instead of guessing or report roundId", () => {
+  it("does not infer manager report rounds without execution facts", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
       id: "blueprint-manager-round",
@@ -2374,13 +2342,15 @@ describe("RunsPage", () => {
     );
 
     const issueCards: string[] = html.match(/<button type="button" class="trace-issue-card[\s\S]*?<\/button>/g) ?? [];
-    const managerCard = issueCards.find((card) => card.includes("自分发测试 Manager")) ?? "";
+    const managerCard = issueCards.find((card) => card.includes("\u81ea\u5206\u53d1\u6d4b\u8bd5 Manager")) ?? "";
 
-    expect(managerCard).toContain("第二轮");
-    expect(managerCard).not.toContain("第一轮");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(managerCard).toBe("");
+    expect(html).not.toContain("\u7b2c\u4e8c\u8f6e");
+    expect(html).not.toContain("\u7b2c\u4e00\u8f6e");
   });
 
-  it("marks manager report round as incomplete instead of guessing from text or ids", () => {
+  it("does not guess missing manager report rounds from text or ids", () => {
     const now = "2026-05-28T00:00:00.000Z";
     const blueprint: BlueprintDefinition = {
       id: "blueprint-manager-missing-round",
@@ -2464,11 +2434,13 @@ describe("RunsPage", () => {
     );
 
     const issueCards: string[] = html.match(/<button type="button" class="trace-issue-card[\s\S]*?<\/button>/g) ?? [];
-    const managerCard = issueCards.find((card) => card.includes("自分发测试 Manager")) ?? "";
+    const managerCard = issueCards.find((card) => card.includes("\u81ea\u5206\u53d1\u6d4b\u8bd5 Manager")) ?? "";
 
-    expect(managerCard).toContain("轮次缺失");
-    expect(managerCard).not.toContain("第一轮");
-    expect(managerCard).not.toContain("第1轮");
+    expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
+    expect(managerCard).toBe("");
+    expect(html).not.toContain("\u8f6e\u6b21\u7f3a\u5931");
+    expect(html).not.toContain("\u7b2c\u4e00\u8f6e");
+    expect(html).not.toContain("\u7b2c1\u8f6e");
   });
 });
 
@@ -2498,7 +2470,21 @@ function createRunPageBlueprint(id = "blueprint-run-page", name = "Run page blue
     companyId: "company-1",
     name,
     version: 1,
-    nodes: [],
+    nodes: [
+      {
+        id: "agent-1",
+        type: "agent",
+        runtimeId: "codex",
+        position: { x: 320, y: 120 },
+        config: { label: "Research Agent", agentName: "research", prompt: "Research", tools: [] }
+      },
+      {
+        id: "manager-1",
+        type: "manager",
+        position: { x: 120, y: 120 },
+        config: { label: "Manager", portCount: 1, maxHandoffs: 4 }
+      }
+    ],
     edges: [],
     variables: {},
     display: { viewport: { x: 0, y: 0, zoom: 1 } },

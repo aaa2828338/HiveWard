@@ -15,21 +15,26 @@ const sourceRoots = [
 ];
 
 describe("execution rebuild old-path exclusion gate", () => {
-  it("keeps the run page main trace owned by execution facts before legacy fallback", () => {
+  it("keeps the run page main trace owned by execution facts without legacy inference", () => {
     const source = readSource("apps/web/src/components/WorkspacePages.tsx");
     const executionRowsIndex = source.indexOf("const executionRows = buildRunExecutionTraceRows");
     const executionReturnIndex = source.indexOf("if (executionRows.length > 0)", executionRowsIndex);
-    const legacyNodeRunIndex = source.indexOf("const nodeRunIds = new Set", executionReturnIndex);
+    const missingFactsIndex = source.indexOf("return [createMissingExecutionFactsTraceIssue", executionReturnIndex);
     const projectionPanel = sliceBetween(source, "function RunExecutionProjectionPanel", "function RunTranscriptEventRow");
 
     expect(source).not.toContain("preflightModeFromNodeRunId");
+    expect(source).not.toContain("legacyPreflightModeFromNodeRunId");
+    expect(source).not.toContain("legacyReadOnlyTraceBody");
+    expect(source).not.toContain("buildRunExecutionTimelineFallback");
+    expect(source).not.toContain("buildRunTimelineTraceItems");
+    expect(source).not.toContain("const nodeRunIds = new Set");
     expect(executionRowsIndex).toBeGreaterThanOrEqual(0);
     expect(executionReturnIndex).toBeGreaterThan(executionRowsIndex);
-    expect(legacyNodeRunIndex).toBeGreaterThan(executionReturnIndex);
-    expect(source).toContain("legacyPreflightModeFromNodeRunId");
-    expect(source).toContain("legacyReadOnlyTraceBody");
+    expect(missingFactsIndex).toBeGreaterThan(executionReturnIndex);
     expect(projectionPanel).toContain("hasExecutionFacts");
-    expect(projectionPanel).toContain("hasExecutionFacts ? [] : buildRunExecutionTimelineFallback(runView)");
+    expect(projectionPanel).toContain("run-execution-missing-facts");
+    expect(projectionPanel).not.toContain("timelineFallback");
+    expect(projectionPanel).not.toContain("runTimeline");
   });
 
   it("keeps frontend discussion and approval capability decisions on backend projections", () => {
@@ -61,6 +66,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     const executeNodeBody = methodBody(worker, "executeNode");
     const commandStepNodeRunBody = methodBody(worker, "createRunningNodeRunFromCommandStep");
     const existingStepNodeRunBody = methodBody(worker, "createRunningNodeRunFromExistingStep");
+    const releaseReportBody = methodBody(worker, "writeSelfIterationReleaseReport");
 
     expect(scheduleCalls.length).toBeGreaterThan(0);
     for (const call of scheduleCalls) {
@@ -87,16 +93,19 @@ describe("execution rebuild old-path exclusion gate", () => {
     ]);
     expect(executeNodeBody).toContain("command: RunCommand");
     expect(executeNodeBody).toContain("step: RunCommandStep");
-    expect(executeNodeBody).toContain("createRunningNodeRunFromExistingStep");
+    expect(executeNodeBody).toContain("createRunningNodeRunFromExistingStep(blueprint, run, node, step, input)");
     expect(executeNodeBody).toContain("await this.syncRunCommandStepFromNodeRun({ ...runningStep, nodeRunId: nodeRun.id });");
     expect(commandStepNodeRunBody).toContain("const step = await this.ensureNodeExecutionCommandStep(command, run, node, mode);");
+    expect(commandStepNodeRunBody).toContain("return this.createRunningNodeRunFromExistingStep(blueprint, run, node, step, input);");
     expect(existingStepNodeRunBody).toContain("findNodeRunById(run.id, step.nodeRunId)");
     expect(existingStepNodeRunBody).toContain("step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey)");
     expect(existingStepNodeRunBody).toContain("await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef)");
     expect(methodBody(worker, "runPreflightAgentTask")).toContain("const step = await this.ensurePreflightCommandStep");
     expect(methodBody(worker, "runPreflightManagerFallback")).toContain("const step = await this.ensurePreflightCommandStep");
-    expect(methodBody(worker, "writeSelfIterationReleaseReport")).toContain("createRunningNodeRunFromCommandStep");
-    expect(methodBody(worker, "writeSelfIterationReleaseReport")).toContain("\"release_report\"");
+    expect(releaseReportBody).toContain("command?: RunCommand");
+    expect(releaseReportBody).toContain("if (input.command)");
+    expect(releaseReportBody).toContain("const started = await this.createRunningNodeRunFromCommandStep");
+    expect(releaseReportBody).toContain("\"release_report\"");
     expect(worker).not.toContain("legacyBootstrapCommands");
     expect(worker).not.toContain("legacyBackfill");
     expect(worker).not.toContain("backfillLegacy");

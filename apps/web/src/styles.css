@@ -8395,8 +8395,7 @@ html[data-theme="light"] .inbox-row.processed:hover {
 .run-command-card,
 .run-session-card,
 .run-transcript-event,
-.run-execution-fallback-note,
-.run-timeline-fallback-list li {
+.run-execution-missing-facts {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -8412,8 +8411,7 @@ html[data-theme="light"] .inbox-row.processed:hover {
 .run-execution-block-header,
 .run-command-card-header,
 .run-session-card-header,
-.run-transcript-event-meta,
-.run-timeline-fallback-meta {
+.run-transcript-event-meta {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -8425,8 +8423,7 @@ html[data-theme="light"] .inbox-row.processed:hover {
 .run-command-card-header span,
 .run-session-card-header span,
 .run-command-step-list span,
-.run-transcript-event-meta time,
-.run-timeline-fallback-meta time {
+.run-transcript-event-meta time {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
@@ -8468,8 +8465,7 @@ html[data-theme="light"] .inbox-row.processed:hover {
   overflow-wrap: anywhere;
 }
 
-.run-command-step-list,
-.run-timeline-fallback-list {
+.run-command-step-list {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -8497,22 +8493,16 @@ html[data-theme="light"] .inbox-row.processed:hover {
   padding-left: 9px;
 }
 
-.run-execution-fallback-note {
+.run-execution-missing-facts {
   display: grid;
   gap: 4px;
   padding: 10px;
 }
 
-.run-execution-fallback-note span {
+.run-execution-missing-facts span {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
-}
-
-.run-timeline-fallback-list li {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
 }
 
 .run-transcript-event-runtime_started,
