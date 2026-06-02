@@ -327,6 +327,67 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
     }
   });
 
+  it("projects request-backed pending approvals from approval facts instead of legacy node output", async () => {
+    const { store, close } = await createHarness();
+    try {
+      const companyState = await store.createCompany({ name: "Projection Company" });
+      const companyId = companyState.selectedCompanyId;
+      if (!companyId) throw new Error("Expected selected company.");
+
+      const blueprint = await store.saveBlueprint(createContractBlueprint(companyId));
+      const run = await store.createBlueprintRun(blueprint, "projection-user");
+      const waitingNodeRun = {
+        ...createContractNodeRun(run, undefined, "waiting_approval"),
+        input: { upstream: [] },
+        output: {
+          approvalType: "agent",
+          reviewOutput: "legacy node output must not project",
+          replies: [{
+            id: "legacy-node-reply",
+            role: "assistant",
+            purpose: "candidate",
+            body: "legacy node candidate must not project",
+            createdAt: contractNow,
+            selected: true
+          }]
+        }
+      };
+      await store.upsertNodeRun(waitingNodeRun);
+      const approval = await store.upsertApprovalRequest({
+        ...createContractApproval(run.id, waitingNodeRun.id),
+        body: "request body is the projection source",
+        selectedReplyId: null
+      });
+      await store.appendApprovalReply({
+        id: "approval-fact-candidate",
+        threadId: approval.threadId ?? approval.id,
+        approvalRequestId: approval.id,
+        actor: "agent",
+        purpose: "candidate",
+        body: "approval fact candidate",
+        createdAt: contractNow
+      });
+
+      await expect(store.listPendingApprovals()).resolves.toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          reviewOutput: "request body is the projection source",
+          selectedReplyId: null,
+          canReturnForRevision: true,
+          replies: [
+            expect.objectContaining({
+              id: "approval-fact-candidate",
+              purpose: "candidate",
+              body: "approval fact candidate"
+            })
+          ]
+        })
+      ]);
+    } finally {
+      close?.();
+    }
+  });
+
   it("applies approval and inbox decisions once with conflict on repeats", async () => {
     const { store, close } = await createHarness();
     try {

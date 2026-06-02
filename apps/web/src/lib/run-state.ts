@@ -214,11 +214,9 @@ function buildApprovalItemFromRequest(
 ): PendingApprovalItem {
   const nodeRun = request.nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === request.nodeRunId) : undefined;
   const upstream = readPendingApprovalUpstream(nodeRun?.input);
-  const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
   const replies = mergePendingApprovalReplies(
     readApprovalFactReplies(runView, request),
-    readApprovalDecisionReplies(runView, request.id),
-    readPendingApprovalReplies(output?.replies)
+    readApprovalDecisionReplies(runView, request.id)
   );
   const selectedReplyId = request.selectedReplyId ?? null;
   const discussion = projectRunViewApprovalDiscussion(runView, request);
@@ -237,7 +235,7 @@ function buildApprovalItemFromRequest(
     startedAt: runView.run.startedAt,
     requestedAt: request.requestedAt,
     status: isPending ? nodeRun?.status === "running" ? "replying" : "pending" : request.status,
-    reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+    reviewOutput: request.body,
     discussion,
     ...(replies ? { replies } : {}),
     selectedReplyId,
@@ -246,8 +244,7 @@ function buildApprovalItemFromRequest(
     canReply: request.capabilities.reply,
     canComplete: request.capabilities.complete,
     canTerminate: request.capabilities.terminate,
-    canRequestChanges: request.capabilities.requestChanges === true,
-    canRevise: request.capabilities.revise === true,
+    canReturnForRevision: request.capabilities.returnForRevision === true,
     decidedAt: isPending ? undefined : request.updatedAt,
     ...(upstream ? { upstream } : {})
   };
@@ -277,9 +274,18 @@ function buildLegacyApprovalItemFromNodeRun(
     status: isReplying ? "replying" : "pending",
     ...("reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
     ...(replies ? { replies } : {}),
-    canApprove: !isReplying,
-    canReject: !isReplying,
-    canReply: !isReplying,
+    discussion: {
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "legacy_node_output_read_only"
+    },
+    canApprove: false,
+    canReject: false,
+    canReply: false,
+    canComplete: false,
+    canTerminate: false,
+    canReturnForRevision: false,
     ...(upstream ? { upstream } : {})
   };
 }

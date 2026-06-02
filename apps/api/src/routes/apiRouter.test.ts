@@ -677,10 +677,16 @@ describe("apiRouter", () => {
       const approval4 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-4");
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+        const invalidApprove = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" })
+        });
+        expect(invalidApprove.status).toBe(400);
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good." })
         }));
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reject`, {
           method: "POST",
@@ -705,7 +711,7 @@ describe("apiRouter", () => {
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: "reply-1" },
+        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: undefined },
         { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
         { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
         { action: "select", approvalRequestId: approval4.id, selectedReplyId: "reply-4" },
@@ -883,7 +889,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes explicit request_changes and revise approval request actions", async () => {
+  it("routes return_for_revision and legacy aliases as one approval request action", async () => {
     const fixture = await createStoreFixture();
     const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string }> = [];
     const worker = {
@@ -903,6 +909,7 @@ describe("apiRouter", () => {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
       const changeRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-change");
+      const canonicalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-return");
       const now = new Date().toISOString();
       const reviseRequest = await fixture.store.upsertApprovalRequest({
         id: "approval-revise-plan",
@@ -925,6 +932,11 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ comment: "Regenerate with sources." })
         }));
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/return-for-revision`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Return through the canonical route." })
+        }));
         await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${reviseRequest.id}/revise`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -934,6 +946,7 @@ describe("apiRouter", () => {
 
       expect(calls).toEqual([
         { action: "return_for_revision", approvalRequestId: changeRequest.id, comment: "Regenerate with sources.", message: undefined },
+        { action: "return_for_revision", approvalRequestId: canonicalRequest.id, comment: undefined, message: "Return through the canonical route." },
         { action: "return_for_revision", approvalRequestId: reviseRequest.id, comment: undefined, message: "Tighten the plan." }
       ]);
     } finally {

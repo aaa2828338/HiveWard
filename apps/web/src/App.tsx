@@ -1279,11 +1279,11 @@ export function App() {
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
   const approveRun = useCallback(
-    (blueprintRunId?: string, nodeRunId?: string, comment?: string, selectedReplyId?: string) => {
+    (blueprintRunId?: string, nodeRunId?: string, comment?: string) => {
       const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
       if (!targetRunId) return;
       void withBusy("approveRun", async () => {
-        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment, selectedReplyId);
+        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment);
         applyRunView(updated);
         setSelectedRunId(updated.run.id);
       });
@@ -1330,9 +1330,9 @@ export function App() {
   );
 
   const approveApprovalRequest = useCallback(
-    (approvalRequestId: string, comment?: string, selectedReplyId?: string) => {
+    (approvalRequestId: string, comment?: string) => {
       void withApprovalRequestBusy("approveApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment, selectedReplyId));
+        await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment));
       });
     },
     [applyApprovalRequestResponse, withApprovalRequestBusy]
@@ -1356,19 +1356,10 @@ export function App() {
     [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
-  const requestChangesApprovalRequest = useCallback(
-    (approvalRequestId: string, comment: string) => {
-      void withApprovalRequestBusy("requestChangesApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.requestChangesApprovalRequest(approvalRequestId, comment));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const reviseApprovalRequest = useCallback(
+  const returnForRevisionApprovalRequest = useCallback(
     (approvalRequestId: string, message: string) => {
-      void withApprovalRequestBusy("reviseApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.reviseApprovalRequest(approvalRequestId, message));
+      void withApprovalRequestBusy("returnForRevisionApprovalRequest", async () => {
+        await applyApprovalRequestResponse(await api.returnForRevisionApprovalRequest(approvalRequestId, message));
       });
     },
     [applyApprovalRequestResponse, withApprovalRequestBusy]
@@ -1747,8 +1738,7 @@ export function App() {
           onRejectApprovalRequest={rejectApprovalRequest}
           onReply={replyToRunApproval}
           onReplyApprovalRequest={replyToApprovalRequest}
-          onRequestChangesApprovalRequest={requestChangesApprovalRequest}
-          onReviseApprovalRequest={reviseApprovalRequest}
+          onReturnForRevisionApprovalRequest={returnForRevisionApprovalRequest}
           onSelectApprovalReply={selectApprovalReply}
           onReplyInboxItem={replyToInboxItem}
           onApproveInboxItem={approveInboxItem}
@@ -4040,8 +4030,7 @@ function isApprovalInboxActionBusy(action: string | undefined): boolean {
     action === "approveApprovalRequest" ||
     action === "rejectApprovalRequest" ||
     action === "replyApprovalRequest" ||
-    action === "requestChangesApprovalRequest" ||
-    action === "reviseApprovalRequest" ||
+    action === "returnForRevisionApprovalRequest" ||
     action === "completeRunApproval" ||
     action === "selectRunApprovalReply" ||
     action === "approveInboxItem" ||

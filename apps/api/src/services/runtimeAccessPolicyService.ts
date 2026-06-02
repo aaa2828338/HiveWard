@@ -37,7 +37,7 @@ export class MigrationService {
       (!input.replacesRequestId || request.id !== input.replacesRequestId) &&
       (!input.replacesRequestId || request.replacesRequestId === input.replacesRequestId)
     );
-    const body = stringifyHumanBody(input.nodeRun.output);
+    const body = approvalRequestBodyFromNodeOutput(input.nodeRun.output);
     if (existing) {
       const updated: ApprovalRequest = {
         ...existing,
@@ -72,6 +72,13 @@ export class MigrationService {
   }
 }
 
+function approvalRequestBodyFromNodeOutput(value: unknown): string {
+  if (isRecord(value) && value.approvalType === "agent" && "reviewOutput" in value) {
+    return stringifyHumanBody(value.reviewOutput);
+  }
+  return stringifyHumanBody(value);
+}
+
 function stringifyHumanBody(value: unknown): string {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object") return String(value ?? "");
@@ -80,4 +87,8 @@ function stringifyHumanBody(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

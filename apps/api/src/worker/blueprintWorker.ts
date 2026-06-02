@@ -78,7 +78,6 @@ const selfIterationPreparationSlotCount = 2;
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
 const managerReceiptPromptBudget = 6000;
-const reviewOutputSelectionId = "reviewOutput";
 const activeRunCommandStatuses: RunCommandStatus[] = ["queued", "running", "waiting_approval"];
 const activeRunCommandStepStatuses: RunCommandStep["status"][] = ["queued", "running", "waiting_approval"];
 const regularRunCommandKind: RunCommandKind = "regular_run";
@@ -551,11 +550,10 @@ export class BlueprintWorker {
     let requirementRevisionCommand: RunCommand | undefined;
     let result: ApprovalActionResult;
     if (action === "approve") {
-      result = await this.approvalService.approve(
-        approvalRequestId,
-        input.comment,
-        typeof input.selectedReplyId === "string" ? input.selectedReplyId : undefined
-      );
+      if (input.selectedReplyId !== undefined) {
+        throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
+      }
+      result = await this.approvalService.approve(approvalRequestId, input.comment);
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "complete") {
@@ -563,7 +561,11 @@ export class BlueprintWorker {
     } else if (isReturnForRevisionAction(action)) {
       const message = input.message ?? input.comment ?? "";
       if (request.kind === "agent_proposal" && request.nodeRunId) {
-        result = await this.approvalService.requestChanges(approvalRequestId, message);
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "keep_current_request" }
+        );
         await this.rerunAgentApprovalForRequestedChanges(blueprint, currentRun, request, result.approvalRequest, message);
         await this.managerMailProjector.refresh(run.id);
         const latestRun = await this.store.getBlueprintRun(run.id);
@@ -575,9 +577,17 @@ export class BlueprintWorker {
         requirementRevisionCommand = await this.markPrepareCommandRevisionRequested(currentRun.id, request, message);
         const draft = await this.buildRequirementDecisionRevision(blueprint, currentRun, request, message, requirementRevisionCommand);
         requirementRevisionMetadata = draft.metadata;
-        result = await this.approvalService.revise(approvalRequestId, message, draft);
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "supersede_request", revisionOverride: draft }
+        );
       } else {
-        result = await this.approvalService.revise(approvalRequestId, message);
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "supersede_request" }
+        );
       }
     } else {
       result = await this.approvalService.terminate(approvalRequestId, input.comment);
@@ -614,7 +624,15 @@ export class BlueprintWorker {
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
       if (action === "approve") {
-        return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, result.approvalRequest.selectedReplyId);
+        return this.approveRun(
+          blueprint,
+          currentRun,
+          request.nodeRunId,
+          input.comment,
+          approvalRequestHasSelectedReplyId(result.approvalRequest)
+            ? result.approvalRequest.selectedReplyId
+            : undefined
+        );
       }
     }
 
@@ -1821,7 +1839,7 @@ export class BlueprintWorker {
       "This is the base release report step for the current self-iteration round. It is one Manager run.",
       "Write the report yourself from the provided structured facts. Do not mechanically concatenate each node report, do not dump every Agent output, and do not expose raw JSON/logs as the human report.",
       "This report is before human confirmation. Do not include post-confirmation review deposition, future memory, or human feedback that is not present in the input.",
-      "The report should help a human decide whether to approve continuing, complete the run, leave a comment, or use an explicit revise action. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
+      "The report should help a human decide whether to approve continuing, complete the run, leave a comment, or use an explicit return_for_revision action. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
       "The release report itself belongs in humanReportMd. Do not declare top-level artifacts[] unless this Manager run actually creates a separate new file.",
       ...agentOutputContractLines,
       "- Return an AgentOutputEnvelope JSON object. humanReportMd is the release report. result may contain concise status, summary, recommendation, and risk fields. handoffJson may contain compact structured facts for later confirmation and review deposition."
@@ -1862,7 +1880,7 @@ export class BlueprintWorker {
     return {
       body: preflight.body,
       capabilities: preflight.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: true }
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
         : request.capabilities,
       metadata: {
         researchStatus: preflight.researchStatus,
@@ -2226,7 +2244,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRunId?: string,
     comment?: string,
-    selectedReplyId?: string
+    selectedReplyId?: string | null
   ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
@@ -2326,7 +2344,7 @@ export class BlueprintWorker {
   ): Promise<void> {
     void pendingRequest;
     const feedback = message.trim();
-    if (!feedback) throw new Error("Approval request_changes comment is required.");
+    if (!feedback) throw new Error("Approval return_for_revision message is required.");
     if (!request.nodeRunId) throw new Error("Agent approval request is missing nodeRunId.");
 
     const nodeRuns = await this.store.listNodeRuns(run.id);
@@ -4780,13 +4798,13 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRun: BlueprintNodeRun,
     comment?: string,
-    selectedReplyId?: string
+    selectedReplyId?: string | null
   ): Promise<unknown> {
     if (!isAgentApprovalWaitingOutput(nodeRun.output)) {
       return { approved: true, comment: comment?.trim() || undefined };
     }
 
-    const selectedCandidate = selectedReplyId
+    const selectedCandidate = typeof selectedReplyId === "string" && selectedReplyId.trim()
       ? await this.findSelectedApprovalCandidate(run.id, nodeRun.id, selectedReplyId)
       : undefined;
     if (selectedCandidate) {
@@ -6298,6 +6316,12 @@ function isAgentApprovalWaitingOutput(value: unknown): value is AgentApprovalWai
   return value.approvalType === "agent" && "reviewOutput" in value && Array.isArray(value.replies);
 }
 
+function approvalRequestHasSelectedReplyId(
+  request: ApprovalRequest
+): request is ApprovalRequest & { selectedReplyId: string | null } {
+  return Object.prototype.hasOwnProperty.call(request, "selectedReplyId");
+}
+
 function normalizeAgentApprovalSelectionId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -6332,29 +6356,27 @@ function isNodeRunAtOrAfter(nodeRun: BlueprintNodeRun, timestamp: number): boole
   return !Number.isFinite(nodeRunStartedAt) || nodeRunStartedAt >= timestamp;
 }
 
-function isReviewOutputSelectionId(value: string | undefined): boolean {
-  return value === reviewOutputSelectionId;
-}
-
 function isAgentApprovalSelectionAvailable(replies: AgentApprovalReply[], selectedReplyId: string | undefined): boolean {
-  if (!selectedReplyId || isReviewOutputSelectionId(selectedReplyId)) return true;
+  if (!selectedReplyId) return true;
   return replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
 }
 
 function assertAgentApprovalSelection(output: AgentApprovalWaitingOutput, selectedReplyId: string): void {
-  if (isReviewOutputSelectionId(selectedReplyId)) return;
   if (output.replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate")) return;
   throw new Error("Only candidate approval replies can be selected.");
 }
 
 function applyAgentApprovalSelection(
   output: AgentApprovalWaitingOutput,
-  selectedReplyId: string | undefined
+  selectedReplyId: string | null | undefined
 ): AgentApprovalWaitingOutput {
-  const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId) ?? output.selectedReplyId;
+  const normalizedSelectedReplyId = selectedReplyId === undefined
+    ? normalizeAgentApprovalSelectionId(output.selectedReplyId)
+    : normalizeAgentApprovalSelectionId(selectedReplyId);
   if (!normalizedSelectedReplyId) {
+    const { selectedReplyId: _selectedReplyId, selectedOutput: _selectedOutput, ...clearedOutput } = output;
     return {
-      ...output,
+      ...clearedOutput,
       replies: markSelectedApprovalReplies(output.replies, undefined)
     };
   }
@@ -6373,9 +6395,6 @@ function applyAgentApprovalSelection(
 function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput): unknown {
   const selectedReplyId = normalizeAgentApprovalSelectionId(output.selectedReplyId);
   if (!selectedReplyId) return output.reviewOutput;
-  if (isReviewOutputSelectionId(selectedReplyId)) {
-    return "selectedOutput" in output ? output.selectedOutput : output.reviewOutput;
-  }
   const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
   if (!selectedReply) {
     throw new Error("Selected approval reply is no longer available.");
@@ -6384,7 +6403,6 @@ function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput):
 }
 
 function resolveAgentApprovalSelectionSnapshot(output: AgentApprovalWaitingOutput, selectedReplyId: string): unknown {
-  if (isReviewOutputSelectionId(selectedReplyId)) return output.reviewOutput;
   const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
   return selectedReply?.body;
 }

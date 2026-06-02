@@ -1606,8 +1606,7 @@ export function ApprovalsPage({
   onRejectApprovalRequest,
   onReply,
   onReplyApprovalRequest,
-  onRequestChangesApprovalRequest,
-  onReviseApprovalRequest,
+  onReturnForRevisionApprovalRequest,
   onSelectApprovalReply,
   onReplyInboxItem,
   onApproveInboxItem,
@@ -1619,15 +1618,14 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   actionPending?: boolean;
-  onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string, selectedReplyId?: string) => void;
-  onApproveApprovalRequest: (approvalRequestId: string, comment?: string, selectedReplyId?: string) => void;
+  onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
+  onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
   onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string, discussionMode?: "reply" | "candidate") => void;
-  onRequestChangesApprovalRequest: (approvalRequestId: string, comment: string) => void;
-  onReviseApprovalRequest: (approvalRequestId: string, message: string) => void;
+  onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSelectApprovalReply: (approvalRequestId: string, selectedReplyId: string | null) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
@@ -1678,7 +1676,11 @@ export function ApprovalsPage({
     !actionPending && (selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable)
   );
   const canRejectSelection = Boolean(!actionPending && ((selectedApproval && selectedApproval.canReject) || selectedInboxOperable));
-  const canRequestChangesSelection = Boolean(!actionPending && selectedApproval?.approvalRequestId && (selectedApproval.canRequestChanges || selectedApproval.canRevise));
+  const canReturnForRevisionSelection = Boolean(
+    !actionPending &&
+    selectedApproval?.approvalRequestId &&
+    selectedApproval.canReturnForRevision
+  );
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
   const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
   const selectedMessages = useMemo(
@@ -1829,9 +1831,9 @@ export function ApprovalsPage({
     }
     if (selectedApproval && selectedApproval.canApprove !== false) {
       if (selectedApproval.approvalRequestId) {
-        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId ?? undefined);
+        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment);
       } else {
-        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId ?? undefined);
+        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
       }
       clearReplyDraft();
       return;
@@ -1847,6 +1849,11 @@ export function ApprovalsPage({
     const reply = (selectedApproval.replies ?? []).find((candidate) => candidate.id === candidateReplyId);
     if (reply?.purpose !== "candidate") return;
     onSelectApprovalReply(selectedApproval.approvalRequestId, candidateReplyId);
+  };
+
+  const selectOriginalApprovalContent = () => {
+    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
+    onSelectApprovalReply(selectedApproval.approvalRequestId, null);
   };
 
   const rejectSelectedThread = () => {
@@ -1869,11 +1876,7 @@ export function ApprovalsPage({
   const requestChangesSelectedThread = () => {
     const feedback = selectedReplyDraft.trim();
     if (!selectedApproval?.approvalRequestId || !feedback) return;
-    if (selectedApproval.canRequestChanges) {
-      onRequestChangesApprovalRequest(selectedApproval.approvalRequestId, feedback);
-    } else if (selectedApproval.canRevise) {
-      onReviseApprovalRequest(selectedApproval.approvalRequestId, feedback);
-    }
+    onReturnForRevisionApprovalRequest(selectedApproval.approvalRequestId, feedback);
     clearReplyDraft();
   };
 
@@ -2023,10 +2026,10 @@ export function ApprovalsPage({
                               return;
                             }
                             if (approval.approvalRequestId) {
-                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId ?? undefined);
+                              onApproveApprovalRequest(approval.approvalRequestId);
                               return;
                             }
-                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId ?? undefined);
+                            onApprove(approval.blueprintRunId, approval.nodeRunId);
                           }}
                         >
                           <BadgeCheck size={16} />
@@ -2073,15 +2076,16 @@ export function ApprovalsPage({
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
             canCreateCandidate={canCreateCandidateForSelection}
-            canRequestChanges={canRequestChangesSelection}
+            canReturnForRevision={canReturnForRevisionSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
             onRequestChanges={requestChangesSelectedThread}
             onSelectCandidate={selectApprovalCandidate}
+            onSelectOriginal={selectOriginalApprovalContent}
             onSendCandidate={generateCandidateReply}
             onSendReply={sendLocalReply}
             replyDraft={selectedReplyDraft}
-            requestChangesLabel={selectedApproval?.canRevise ? inboxCopy.regenerate : inboxCopy.requestChanges}
+            requestChangesLabel={selectedApproval?.kind === "agent_proposal" ? inboxCopy.requestChanges : inboxCopy.regenerate}
           />
         </div>
       </section>
@@ -2151,6 +2155,7 @@ type InboxConversationMessage = {
   candidateReplyId?: string;
   selectedCandidate?: boolean;
   selectedOriginal?: boolean;
+  selectOriginal?: boolean;
 };
 
 function InboxConversationPanel({
@@ -2165,12 +2170,13 @@ function InboxConversationPanel({
   canReject,
   canCreateCandidate,
   canReply,
-  canRequestChanges,
+  canReturnForRevision,
   onApprove,
   onReject,
   onReplyDraftChange,
   onRequestChanges,
   onSelectCandidate,
+  onSelectOriginal,
   onSendCandidate,
   onSendReply,
   requestChangesLabel
@@ -2186,12 +2192,13 @@ function InboxConversationPanel({
   canReject: boolean;
   canCreateCandidate: boolean;
   canReply: boolean;
-  canRequestChanges: boolean;
+  canReturnForRevision: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
   onRequestChanges: () => void;
   onSelectCandidate: (candidateReplyId: string) => void;
+  onSelectOriginal: () => void;
   onSendCandidate: () => void;
   onSendReply: () => void;
   requestChangesLabel: string;
@@ -2259,13 +2266,23 @@ function InboxConversationPanel({
                 ) : (
                   <MarkdownRenderer value={message.body} className="chat-message-body" />
                 )}
-                {(message.selectedOriginal || message.candidateReplyId) && (
+                {(message.selectedOriginal || message.selectOriginal || message.candidateReplyId) && (
                   <div className="inbox-message-actions">
                     {message.selectedOriginal ? (
                       <span className="inbox-solution-button selected">
                         <Check size={14} />
                         {copy.originalSelected}
                       </span>
+                    ) : message.selectOriginal ? (
+                      <button
+                        type="button"
+                        className="inbox-solution-button"
+                        disabled={!canApprove}
+                        onClick={onSelectOriginal}
+                      >
+                        <Check size={14} />
+                        {copy.useOriginal}
+                      </button>
                     ) : (
                       <button
                         type="button"
@@ -2288,8 +2305,8 @@ function InboxConversationPanel({
       <div className="chat-composer inbox-conversation-composer">
         <textarea
           value={replyDraft}
-          disabled={!canReply && !canCreateCandidate && !canRequestChanges}
-          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canCreateCandidate || canRequestChanges ? copy.replyPlaceholder : copy.processedPlaceholder}
+          disabled={!canReply && !canCreateCandidate && !canReturnForRevision}
+          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canCreateCandidate || canReturnForRevision ? copy.replyPlaceholder : copy.processedPlaceholder}
           onChange={(event) => onReplyDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -2309,7 +2326,7 @@ function InboxConversationPanel({
           </button>
           <button
             type="button"
-            disabled={!canRequestChanges || !replyDraft.trim()}
+            disabled={!canReturnForRevision || !replyDraft.trim()}
             title={requestChangesDescription}
             aria-label={requestChangesDescription}
             onClick={onRequestChanges}
@@ -2379,6 +2396,7 @@ type InboxCopy = {
   timeFilter: string;
   to: string;
   useCandidate: string;
+  useOriginal: string;
   waitingHarness: (harnessLabel: string) => string;
   you: string;
   youAvatar: string;
@@ -2436,6 +2454,7 @@ function getInboxCopy(language: Language): InboxCopy {
       timeFilter: "时间",
       to: "\u53d1\u7ed9",
       useCandidate: "\u4f7f\u7528\u6b64\u5019\u9009",
+      useOriginal: "\u9009\u56de\u539f\u59cb\u5185\u5bb9",
       waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u8f93\u51fa...`,
       you: "\u4f60",
       youAvatar: "\u4f60"
@@ -2486,6 +2505,7 @@ function getInboxCopy(language: Language): InboxCopy {
     timeFilter: "Time",
     to: "To",
     useCandidate: "Use this option",
+    useOriginal: "Use original",
     waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel} output...`,
     you: "You",
     youAvatar: "You"
@@ -2686,7 +2706,7 @@ function formalInboxTypeLabel(type: InboxItem["type"], language: Language): stri
 
 function approvalSubject(approval: PendingApprovalItem): string {
   if (approval.kind === "iteration_requirement_plan") {
-    if (approval.canApprove === false && (approval.canRevise || approval.canRequestChanges)) return "问题上报";
+    if (approval.canApprove === false && approval.canReturnForRevision) return "问题上报";
     return "计划确认";
   }
   return approval.nodeLabel || approval.blueprintName;
@@ -2820,7 +2840,7 @@ function buildInboxConversationMessages({
           ...(reply.purpose === "candidate"
             ? {
                 candidateReplyId: reply.id,
-                selectedCandidate: approval?.selectedReplyId === reply.id || reply.selected === true
+                selectedCandidate: approval?.selectedReplyId === reply.id
               }
             : {})
         }))
@@ -2919,7 +2939,8 @@ function buildApprovalConversation(
     body: block.body,
     createdAt: approval.requestedAt,
     categoryLabel: copy.originalContent,
-    selectedOriginal: selectedReplyId === null
+    selectedOriginal: selectedReplyId === null,
+    selectOriginal: selectedReplyId !== null
   }));
 }
 

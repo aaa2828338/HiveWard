@@ -963,7 +963,7 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls).toHaveLength(0);
   });
 
-  it("reruns an Agent approval only through explicit request_changes", async () => {
+  it("reruns an Agent approval only through explicit return_for_revision", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -1048,7 +1048,7 @@ describe("BlueprintWorker", () => {
     });
   });
 
-  it("keeps original approval actionable when request_changes rerun fails or returns empty output", async () => {
+  it("keeps original approval actionable when return_for_revision rerun fails or returns empty output", async () => {
     const cases: Array<{ label: string; result: AgentTaskResult }> = [
       { label: "failed", result: createCompletedAgentTask("task-agent-change-2", "failed", undefined, "model failed") },
       { label: "empty", result: createCompletedAgentTask("task-agent-change-2", "succeeded", undefined) }
@@ -1095,8 +1095,10 @@ describe("BlueprintWorker", () => {
       expect(restoredView?.run.status).toBe("waiting_approval");
       expect(originalRequest).toMatchObject({
         status: "pending",
-        capabilities: expect.objectContaining({ approve: true, reply: true, requestChanges: true })
+        capabilities: expect.objectContaining({ approve: true, reply: true, returnForRevision: true })
       });
+      expect(originalRequest?.capabilities).not.toHaveProperty("requestChanges");
+      expect(originalRequest?.capabilities).not.toHaveProperty("revise");
       expect(revisedRequests).toHaveLength(0);
       expect(restoredNode).toMatchObject({
         status: "waiting_approval",
@@ -1137,7 +1139,11 @@ describe("BlueprintWorker", () => {
       throw new Error("Expected agent approval request.");
     }
 
-    await new ApprovalService(store).requestChanges(approvalRequest.id, "Regenerate with sources.");
+    await new ApprovalService(store).returnForRevision(
+      approvalRequest.id,
+      "Regenerate with sources.",
+      { mode: "keep_current_request" }
+    );
     const revisionContext = {
       threadId: approvalRequest.threadId,
       replacesRequestId: approvalRequest.id,
@@ -1274,7 +1280,7 @@ describe("BlueprintWorker", () => {
       selectedReplyId: candidateReply.id
     });
     await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, null);
-    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeUndefined();
+    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
     await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, candidateReply.id);
 
     const currentRun = await store.getBlueprintRun(run.id);
@@ -1338,7 +1344,7 @@ describe("BlueprintWorker", () => {
     await worker.selectApprovalReply(blueprint, firstReplyView.run, approvalRequest.id, null);
     const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
     const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeUndefined();
+    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
 
     await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Try one more variant.");
     const secondReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
@@ -3782,7 +3788,7 @@ describe("BlueprintWorker", () => {
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement1) throw new Error("Expected initial requirement approval.");
 
-    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "revise", {
+    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "return_for_revision", {
       message: "Tighten the execution plan."
     });
     const replyView = await store.getRunView(run.id);

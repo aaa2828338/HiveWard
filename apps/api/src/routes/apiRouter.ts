@@ -155,6 +155,15 @@ class ApiConflictError extends Error {
   }
 }
 
+class ApiBadRequestError extends Error {
+  readonly statusCode = 400;
+
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "ApiBadRequestError";
+  }
+}
+
 type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
 
 type ChatInboxSubmissionResult = {
@@ -826,6 +835,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  router.post(["/api/approval-requests/:approvalRequestId/return-for-revision", "/api/approval-requests/:approvalRequestId/return_for_revision"], async (req, res, next) => {
+    try {
+      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post("/api/approval-requests/:approvalRequestId/revise", async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
@@ -1231,6 +1248,13 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
         return;
       }
+      const rawBody = isPlainRecord(req.body) ? req.body : {};
+      if ("selectedReplyId" in rawBody) {
+        throw new ApiBadRequestError(
+          "approval_selection_must_be_selected_first",
+          "Select an approval reply before approving; approve does not accept selectedReplyId."
+        );
+      }
       const body = normalizeApproveBlueprintRunRequest(req.body);
       if (isTerminalRunStatus(run.status)) {
         res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
@@ -1242,8 +1266,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         return;
       }
       const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "approve", {
-        comment: body.comment,
-        selectedReplyId: body.selectedReplyId
+        comment: body.comment
       });
       res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
     } catch (error) {
@@ -1368,6 +1391,12 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       throw new Error(`Approval request not found: ${approvalRequestId}`);
     }
     const body = isPlainRecord(rawBody) ? rawBody : {};
+    if (action === "approve" && "selectedReplyId" in body) {
+      throw new ApiBadRequestError(
+        "approval_selection_must_be_selected_first",
+        "Select an approval reply before approving; approve does not accept selectedReplyId."
+      );
+    }
     const run = approvalRequest.runId ? await store.getBlueprintRun(approvalRequest.runId) : undefined;
     if (run) {
       if (isTerminalRunStatus(run.status)) {
@@ -1380,7 +1409,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       }
       const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
+      const workerAction = isReturnForRevisionRouteAction(action) ? "return_for_revision" : action;
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, workerAction, {
         comment: readOptionalString(body.comment),
         message: readOptionalString(body.message),
         selectedReplyId: readOptionalString(body.selectedReplyId),
@@ -1390,15 +1420,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
 
     if (action === "approve") {
-      await approvalService.approve(approvalRequestId, readOptionalString(body.comment), readOptionalString(body.selectedReplyId));
+      await approvalService.approve(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reject") {
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reply") {
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
-    } else if (action === "request_changes") {
-      await approvalService.requestChanges(approvalRequestId, readOptionalString(body.comment) ?? readOptionalString(body.message) ?? "");
-    } else if (action === "revise" || action === "return_for_revision") {
-      await approvalService.revise(approvalRequestId, readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "");
+    } else if (isReturnForRevisionRouteAction(action)) {
+      await approvalService.returnForRevision(
+        approvalRequestId,
+        readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "",
+        { mode: returnForRevisionModeForRequest(approvalRequest) }
+      );
     } else if (action === "complete") {
       await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
     } else {
@@ -1427,6 +1459,18 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     } else {
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     }
+  }
+
+  function isReturnForRevisionRouteAction(
+    action: ApprovalRouteAction
+  ): action is "return_for_revision" | "request_changes" | "revise" {
+    return action === "return_for_revision" || action === "request_changes" || action === "revise";
+  }
+
+  function returnForRevisionModeForRequest(
+    request: ApprovalRequest
+  ): "keep_current_request" | "supersede_request" {
+    return request.kind === "agent_proposal" ? "keep_current_request" : "supersede_request";
   }
 
   function canApplyTerminalApprovalRequestAction(
@@ -1516,8 +1560,7 @@ function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRu
   }
   return {
     nodeRunId: readOptionalString(value.nodeRunId),
-    comment: readOptionalString(value.comment),
-    selectedReplyId: readOptionalString(value.selectedReplyId)
+    comment: readOptionalString(value.comment)
   };
 }
 
