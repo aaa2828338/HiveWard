@@ -5077,6 +5077,134 @@ describe("BlueprintWorker", () => {
     });
   });
 
+  it("treats provider-started native sessions as fallback boundaries instead of proven resume", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-provider-new-1"),
+        sessionKey: "runtime-provider-new-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createStartedAgentTask("task-provider-new-resume"),
+        sessionKey: "runtime-provider-new-resume",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: false,
+        resumable: false
+      },
+      {
+        ...createStartedAgentTask("task-provider-new-fallback"),
+        sessionKey: "runtime-provider-new-fallback",
+        nativeSessionId: "native-fallback-after-provider-new"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-provider-new-1", "succeeded", "first pass"),
+        sessionKey: "runtime-provider-new-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createCompletedAgentTask("task-provider-new-resume", "succeeded", "discarded provider new session"),
+        sessionKey: "runtime-provider-new-resume",
+        providerSessionId: "native-provider-new",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createCompletedAgentTask("task-provider-new-fallback", "succeeded", "fallback after provider new session"),
+        sessionKey: "runtime-provider-new-fallback",
+        nativeSessionId: "native-fallback-after-provider-new"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    const unavailableEvents = unavailable
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
+      : [];
+    const fallbackEvents = fallback
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
+      : [];
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-original",
+      undefined
+    ]);
+    expect(sessions).toHaveLength(3);
+    expect(unavailable).toMatchObject({
+      statusReason: expect.stringContaining("provider_started_new_session"),
+      resumedFromSessionId: sessions[0]?.id
+    });
+    expect(unavailable?.nativeSessionId).toBeUndefined();
+    expect(fallback).toMatchObject({
+      nativeSessionId: "native-fallback-after-provider-new",
+      fallbackOfSessionId: unavailable?.id
+    });
+    expect(unavailableEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "runtime",
+        kind: "runtime_done",
+        metadata: expect.objectContaining({
+          providerStartedNewSession: true,
+          providerSessionId: "native-provider-new",
+          resumeProven: false
+        })
+      }),
+      expect.objectContaining({
+        role: "system",
+        kind: "system_note",
+        metadata: expect.objectContaining({
+          reason: expect.stringContaining("provider_started_new_session")
+        })
+      })
+    ]));
+    expect(fallbackEvents.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief" && nodeRun.output === "fallback after provider new session")).toBeTruthy();
+  });
+
   it("marks unsupported native resume unavailable and starts an explicit fallback session", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
