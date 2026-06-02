@@ -5781,7 +5781,10 @@ export class BlueprintWorker {
     let attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
 
     if (sessionContext && this.shouldFallbackNativeResume(attemptInput, attempt.result)) {
-      sessionContext = await this.createFallbackNodeExecutionSession(sessionContext, attempt.result.error);
+      sessionContext = await this.createFallbackNodeExecutionSession(
+        sessionContext,
+        this.nativeResumeBoundaryReason(attempt.result)
+      );
       attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
       attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
     }
@@ -5948,12 +5951,34 @@ export class BlueprintWorker {
   }
 
   private shouldFallbackNativeResume(input: StartAgentTaskInput, result: AgentTaskResult): boolean {
-    if (!input.nativeSessionId || result.status !== "failed") return false;
+    if (!input.nativeSessionId) return false;
+    if (this.isUnprovenNativeResume(result)) return true;
+    if (result.status !== "failed") return false;
     const error = result.error ?? "";
     return error.includes("native_resume_unsupported") ||
       error.includes("native_resume_unavailable") ||
       error.includes("Native session could not be resumed") ||
       error.includes("cannot prove native");
+  }
+
+  private isUnprovenNativeResume(
+    result: Pick<AgentTaskResult, "resumeRequested" | "resumeAttempted" | "resumeProven" | "providerStartedNewSession" | "resumable">
+  ): boolean {
+    if (!result.resumeRequested || result.resumeProven) return false;
+    return result.providerStartedNewSession === true ||
+      result.resumeAttempted === true ||
+      result.resumable === false;
+  }
+
+  private nativeResumeBoundaryReason(
+    result: Pick<AgentTaskResult, "error" | "providerStartedNewSession" | "providerSessionId">
+  ): string {
+    if (result.providerStartedNewSession) {
+      return result.providerSessionId
+        ? `provider_started_new_session: Provider started ${result.providerSessionId} instead of resuming the requested native session.`
+        : "provider_started_new_session: Provider started a new native session instead of resuming the requested native session.";
+    }
+    return result.error?.trim() || "Native session could not be resumed.";
   }
 
   private async createFallbackNodeExecutionSession(
@@ -6046,8 +6071,9 @@ export class BlueprintWorker {
   }
 
   private runtimeProviderNativeSessionId(
-    result: Pick<StartedAgentTaskResult, "nativeSessionId" | "providerSessionId" | "resumable">
+    result: Pick<StartedAgentTaskResult, "nativeSessionId" | "providerSessionId" | "resumable" | "resumeRequested" | "resumeProven">
   ): string | undefined {
+    if (result.resumeRequested && !result.resumeProven) return undefined;
     if (result.providerSessionId) return result.providerSessionId;
     if (result.resumable === false) return undefined;
     return result.nativeSessionId;
@@ -6076,7 +6102,8 @@ export class BlueprintWorker {
     result: AgentTaskResult,
     runtimeRef: RuntimeObjectRef
   ): Promise<NodeExecutionSession> {
-    if (result.output !== undefined && result.status === "succeeded") {
+    const nativeResumeBoundary = this.isUnprovenNativeResume(result);
+    if (result.output !== undefined && result.status === "succeeded" && !nativeResumeBoundary) {
       await this.appendExecutionTranscriptEvent(
         session,
         "assistant",
@@ -6100,6 +6127,8 @@ export class BlueprintWorker {
     );
     const endedStatus: NodeExecutionSessionStatus = session.status === "fallback"
       ? "fallback"
+      : nativeResumeBoundary
+        ? "unavailable"
       : result.status === "succeeded"
         ? "completed"
         : result.status === "cancelled"
@@ -6112,8 +6141,8 @@ export class BlueprintWorker {
       nativeSessionId,
       runtimeRef,
       status: endedStatus,
-      statusReason: result.providerStartedNewSession
-        ? "provider_started_new_session"
+      statusReason: nativeResumeBoundary
+        ? this.nativeResumeBoundaryReason(result)
         : result.status === "succeeded"
           ? undefined
           : result.error,

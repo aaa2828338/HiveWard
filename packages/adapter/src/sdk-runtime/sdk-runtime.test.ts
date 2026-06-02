@@ -323,7 +323,8 @@ describe("agent SDK runtime", () => {
     expect(result.resumeProven).toBe(false);
     expect(result.providerStartedNewSession).toBe(true);
     expect(result.providerSessionId).toBe("codex-new-thread");
-    expect(result.nativeSessionId).toBe("codex-new-thread");
+    expect(result.nativeSessionId).toBeUndefined();
+    expect(result.resumable).toBe(false);
   });
 
   it("rejects Codex native resume when the SDK cannot prove a resume path", async () => {
@@ -512,7 +513,8 @@ describe("agent SDK runtime", () => {
     expect(result.resumeProven).toBe(false);
     expect(result.providerStartedNewSession).toBe(true);
     expect(result.providerSessionId).toBe("claude-new-session");
-    expect(result.nativeSessionId).toBe("claude-new-session");
+    expect(result.nativeSessionId).toBeUndefined();
+    expect(result.resumable).toBe(false);
   });
 
   it("fails SDK nodes before provider calls when modelId is missing", async () => {

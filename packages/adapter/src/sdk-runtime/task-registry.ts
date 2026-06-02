@@ -141,14 +141,19 @@ export function buildRuntimeResumeProof(
     providerSessionId &&
     providerSessionId === input.nativeSessionId
   );
+  const nativeSessionId = !resumeRequested || resumeProven
+    ? providerSessionId
+    : undefined;
   return {
-    nativeSessionId: providerSessionId,
+    nativeSessionId,
     resumeMode: resumeProven ? "resumed" : "started",
     resumeRequested,
     resumeAttempted,
     resumeProven,
     providerSessionId,
     providerStartedNewSession,
-    resumable: options.resumable ?? Boolean(providerSessionId)
+    resumable: providerStartedNewSession
+      ? false
+      : options.resumable ?? Boolean(providerSessionId)
   };
 }
