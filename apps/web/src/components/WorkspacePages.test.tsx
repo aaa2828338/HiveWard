@@ -361,6 +361,10 @@ function extractButtonByText(html: string, label: string): string {
   return match;
 }
 
+function extractTraceIssueCards(html: string): string[] {
+  return html.match(/<button type="button" class="trace-issue-card[\s\S]*?<\/button>/g) ?? [];
+}
+
 describe("RunsPage", () => {
   it("renders structured artifact links with clean titles", () => {
     const html = renderToStaticMarkup(
@@ -655,8 +659,261 @@ describe("RunsPage", () => {
     expect(html).toContain("System note");
     expect(html).toContain("Fallback adapter was unavailable");
     expect(html).toContain("Assistant transcript answer");
-    expect(html.indexOf("Fallback adapter was unavailable")).toBeLessThan(html.indexOf("Assistant transcript answer"));
+    const transcriptLedger = html.match(/<article class="run-session-card"[\s\S]*?<\/article>/)?.[0] ?? "";
+    expect(transcriptLedger.indexOf("Fallback adapter was unavailable")).toBeLessThan(transcriptLedger.indexOf("Assistant transcript answer"));
+    const issueCards = extractTraceIssueCards(html).join("");
+    expect(issueCards).toContain("Research Agent / Node execution");
+    expect(issueCards).toContain("Assistant transcript answer");
+    expect(issueCards).not.toContain("Legacy run summary");
+    expect(issueCards).not.toContain("Legacy timeline fallback body");
+    expect(issueCards).not.toContain("Legacy read-only");
     expect(html).not.toContain("Legacy timeline fallback body");
+  });
+
+  it("derives preflight display mode from command step facts instead of node-run id prefixes", () => {
+    const runView = createRunPageRunView({
+      nodeRuns: [{
+        id: "preflight-research_resolution-round-1-manager",
+        blueprintRunId: "run-preflight-mode",
+        blueprintId: "blueprint-run-page",
+        nodeId: "manager-1",
+        nodeLabel: "Manager",
+        nodeType: "manager",
+        status: "succeeded",
+        queuedAt: "2026-05-28T00:00:00.000Z",
+        startedAt: "2026-05-28T00:00:01.000Z",
+        endedAt: "2026-05-28T00:00:02.000Z",
+        output: "legacy node output"
+      }],
+      runCommands: [{
+        id: "command-preflight-mode",
+        commandKey: "run:run-preflight-mode:prepare",
+        blueprintId: "blueprint-run-page",
+        runId: "run-preflight-mode",
+        kind: "self_iteration_prepare_round",
+        status: "succeeded",
+        currentRevision: 1,
+        currentStep: "context_snapshot",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:00:02.000Z"
+      }],
+      runCommandSteps: [{
+        id: "step-context-snapshot",
+        commandId: "command-preflight-mode",
+        stepKey: "run:run-preflight-mode:context",
+        runId: "run-preflight-mode",
+        revision: 1,
+        mode: "context_snapshot",
+        nodeId: "manager-1",
+        nodeRunId: "preflight-research_resolution-round-1-manager",
+        status: "succeeded",
+        createdAt: "2026-05-28T00:00:01.000Z",
+        updatedAt: "2026-05-28T00:00:02.000Z"
+      }],
+      nodeSessionTranscriptEvents: [{
+        id: "event-context",
+        sessionId: "session-context",
+        sequence: 1,
+        runId: "run-preflight-mode",
+        nodeRunId: "preflight-research_resolution-round-1-manager",
+        role: "assistant",
+        kind: "assistant_message",
+        content: "Context snapshot transcript",
+        createdAt: "2026-05-28T00:00:02.000Z"
+      }],
+      runTimeline: [{
+        id: "timeline-legacy-research",
+        runId: "run-preflight-mode",
+        sequence: 1,
+        createdAt: "2026-05-28T00:00:03.000Z",
+        actorLabel: "Manager",
+        kind: "node_output",
+        title: "Manager: research completed",
+        body: "Legacy research fallback",
+        payloadRef: "preflight-research_resolution-round-1-manager"
+      }]
+    }, { id: "run-preflight-mode" });
+
+    const issueCards = extractTraceIssueCards(renderRunsPageForRun(runView)).join("");
+
+    expect(issueCards).toContain("Manager / Context snapshot");
+    expect(issueCards).toContain("Review memory");
+    expect(issueCards).toContain("Context snapshot transcript");
+    expect(issueCards).not.toContain("Research resolution");
+    expect(issueCards).not.toContain("Legacy research fallback");
+  });
+
+  it("orders multi-session main trace rows by command and step order before session ids", () => {
+    const runView = createRunPageRunView({
+      nodeRuns: [
+        {
+          id: "node-run-first",
+          blueprintRunId: "run-multi-session",
+          blueprintId: "blueprint-run-page",
+          nodeId: "agent-first",
+          nodeLabel: "First Agent",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: "2026-05-28T00:00:00.000Z",
+          startedAt: "2026-05-28T00:00:01.000Z",
+          endedAt: "2026-05-28T00:00:03.000Z"
+        },
+        {
+          id: "node-run-second",
+          blueprintRunId: "run-multi-session",
+          blueprintId: "blueprint-run-page",
+          nodeId: "agent-second",
+          nodeLabel: "Second Agent",
+          nodeType: "agent",
+          status: "succeeded",
+          queuedAt: "2026-05-28T00:00:00.000Z",
+          startedAt: "2026-05-28T00:00:02.000Z",
+          endedAt: "2026-05-28T00:00:04.000Z"
+        }
+      ],
+      runCommands: [{
+        id: "command-multi-session",
+        commandKey: "run:run-multi-session:root",
+        blueprintId: "blueprint-run-page",
+        runId: "run-multi-session",
+        kind: "regular_run",
+        status: "succeeded",
+        currentRevision: 1,
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:00:05.000Z"
+      }],
+      runCommandSteps: [
+        {
+          id: "step-first",
+          commandId: "command-multi-session",
+          stepKey: "run:run-multi-session:first",
+          runId: "run-multi-session",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "agent-first",
+          nodeRunId: "node-run-first",
+          status: "succeeded",
+          createdAt: "2026-05-28T00:00:01.000Z",
+          updatedAt: "2026-05-28T00:00:03.000Z"
+        },
+        {
+          id: "step-second",
+          commandId: "command-multi-session",
+          stepKey: "run:run-multi-session:second",
+          runId: "run-multi-session",
+          revision: 2,
+          mode: "node_execution",
+          nodeId: "agent-second",
+          nodeRunId: "node-run-second",
+          status: "succeeded",
+          createdAt: "2026-05-28T00:00:02.000Z",
+          updatedAt: "2026-05-28T00:00:04.000Z"
+        }
+      ],
+      nodeExecutionSessions: [
+        {
+          id: "session-z-first",
+          runId: "run-multi-session",
+          nodeRunId: "node-run-first",
+          nodeId: "agent-first",
+          harnessId: "codex",
+          policy: "refresh_per_run",
+          status: "completed",
+          createdAt: "2026-05-28T00:00:03.000Z",
+          updatedAt: "2026-05-28T00:00:03.000Z"
+        },
+        {
+          id: "session-a-second",
+          runId: "run-multi-session",
+          nodeRunId: "node-run-second",
+          nodeId: "agent-second",
+          harnessId: "codex",
+          policy: "refresh_per_run",
+          status: "completed",
+          createdAt: "2026-05-28T00:00:02.000Z",
+          updatedAt: "2026-05-28T00:00:04.000Z"
+        }
+      ],
+      nodeSessionTranscriptEvents: [
+        {
+          id: "event-second",
+          sessionId: "session-a-second",
+          sequence: 1,
+          runId: "run-multi-session",
+          nodeRunId: "node-run-second",
+          role: "assistant",
+          kind: "assistant_message",
+          content: "Second step transcript",
+          createdAt: "2026-05-28T00:00:04.000Z"
+        },
+        {
+          id: "event-first",
+          sessionId: "session-z-first",
+          sequence: 1,
+          runId: "run-multi-session",
+          nodeRunId: "node-run-first",
+          role: "assistant",
+          kind: "assistant_message",
+          content: "First step transcript",
+          createdAt: "2026-05-28T00:00:03.000Z"
+        }
+      ]
+    }, { id: "run-multi-session" });
+
+    const html = renderRunsPageForRun(runView);
+    const issueCards = extractTraceIssueCards(html).join("");
+    const sessionCards = html.match(/<article class="run-session-card"[\s\S]*?<\/article>/g)?.join("") ?? "";
+
+    expect(issueCards.indexOf("First step transcript")).toBeGreaterThanOrEqual(0);
+    expect(issueCards.indexOf("First step transcript")).toBeLessThan(issueCards.indexOf("Second step transcript"));
+    expect(sessionCards.indexOf("First step transcript")).toBeGreaterThanOrEqual(0);
+    expect(sessionCards.indexOf("First step transcript")).toBeLessThan(sessionCards.indexOf("Second step transcript"));
+  });
+
+  it("does not use legacy timeline fallback when command and step facts exist without transcript", () => {
+    const runView = createRunPageRunView({
+      runCommands: [{
+        id: "command-without-transcript",
+        commandKey: "run:run-command-only:root",
+        blueprintId: "blueprint-run-page",
+        runId: "run-command-only",
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:01:00.000Z"
+      }],
+      runCommandSteps: [{
+        id: "step-without-transcript",
+        commandId: "command-without-transcript",
+        stepKey: "run:run-command-only:agent-1",
+        runId: "run-command-only",
+        revision: 1,
+        mode: "node_execution",
+        nodeId: "agent-1",
+        nodeRunId: "node-run-agent-1",
+        status: "running",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:01:00.000Z"
+      }],
+      runTimeline: [{
+        id: "timeline-legacy-command-only",
+        runId: "run-command-only",
+        sequence: 1,
+        createdAt: "2026-05-28T00:02:00.000Z",
+        actorLabel: "System",
+        kind: "run_completed",
+        title: "Legacy command-only summary",
+        body: "Legacy timeline should not drive new command trace"
+      }]
+    }, { id: "run-command-only", status: "running" });
+
+    const html = renderRunsPageForRun(runView);
+
+    expect(extractTraceIssueCards(html).join("")).toContain("Research Agent / Node execution");
+    expect(html).not.toContain("Legacy command-only summary");
+    expect(html).not.toContain("Legacy timeline should not drive new command trace");
   });
 
   it("renders only a legacy summary when transcript facts are absent", () => {
@@ -677,6 +934,7 @@ describe("RunsPage", () => {
 
     expect(html).toContain("Transcript unavailable");
     expect(html).toContain("legacy timeline summary");
+    expect(html).toContain("Legacy read-only");
     expect(html).toContain("Legacy timeline fallback body");
     expect(html).not.toContain("Assistant transcript answer");
   });

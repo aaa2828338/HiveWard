@@ -78,6 +78,7 @@ type RunExecutionSession = NonNullable<BlueprintRunView["nodeExecutionSessions"]
 type RunTranscriptProjectionEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
 type RunOutputTabKey = "current" | "artifacts" | "release";
+type TraceActorKind = "manager" | "agent" | "user" | "system";
 
 type IdentitySpec = {
   key: string;
@@ -206,13 +207,14 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
-  kind: "node" | "report" | "timeline" | "round_research";
-  actorKind: "manager" | "agent" | "user" | "system";
+  kind: "node" | "report" | "timeline" | "round_research" | "execution";
+  actorKind: TraceActorKind;
   depth: number;
   node?: BlueprintNode;
   nodeRun?: BlueprintNodeRun;
   humanReport?: RunAgentHumanReport;
   timelineItem?: RunTimelineTraceItem;
+  executionRow?: RunExecutionTraceRow;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   roundLabel?: string;
@@ -231,6 +233,27 @@ type TraceIssueBuildContext = {
   eventsByNodeRunId: Map<string, BlueprintNodeEvent[]>;
   nodeRunById: Map<string, BlueprintNodeRun>;
   roundById: Map<string, RunIterationRound>;
+};
+
+type RunExecutionTraceRow = {
+  key: string;
+  command?: RunCommandFact;
+  step?: RunCommandStepFact;
+  session?: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  nodeRun?: BlueprintNodeRun;
+  node?: BlueprintNode;
+  humanReport?: RunAgentHumanReport;
+  artifacts: RunArtifact[];
+  mode?: RunCommandStepFact["mode"];
+  actorLabel: string;
+  actorKind: TraceActorKind;
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  createdAt: string;
+  order: number;
+  runtimeRefs: Array<NonNullable<RunCommandStepFact["runtimeRef"]>>;
 };
 
 export function CompanyDirectoryPage({
@@ -574,6 +597,10 @@ export function RunsPage({
     activeRun?.agentHumanReports,
     activeRun?.artifacts,
     activeRun?.runTimeline,
+    activeRun?.runCommands,
+    activeRun?.runCommandSteps,
+    activeRun?.nodeExecutionSessions,
+    activeRun?.nodeSessionTranscriptEvents,
     activeRun?.iterationRounds,
     activeRun?.approvalRequests,
     activeRun?.run.status,
@@ -961,9 +988,10 @@ function RunExecutionProjectionPanel({
   const sessions = sortRunExecutionSessions(runView.nodeExecutionSessions ?? []);
   const transcriptEvents = sortedRunTranscriptEventsForDisplay(runView);
   const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
-  const transcriptSessionIds = sessionIdsForTranscript(sessions, eventsBySessionId);
+  const transcriptSessionIds = sessionIdsForTranscript(sessions, eventsBySessionId, transcriptEvents);
   const hasTranscript = transcriptEvents.length > 0;
-  const timelineFallback = buildRunExecutionTimelineFallback(runView);
+  const hasExecutionFacts = commands.length > 0 || (runView.runCommandSteps ?? []).length > 0 || sessions.length > 0 || hasTranscript;
+  const timelineFallback = hasExecutionFacts ? [] : buildRunExecutionTimelineFallback(runView);
 
   return (
     <section className="run-execution-projection run-output-section" aria-label={copy.title}>
@@ -1213,11 +1241,20 @@ function groupRunTranscriptEvents(events: RunTranscriptProjectionEvent[]): Map<s
 
 function sessionIdsForTranscript(
   sessions: RunExecutionSession[],
-  eventsBySessionId: Map<string, RunTranscriptProjectionEvent[]>
+  eventsBySessionId: Map<string, RunTranscriptProjectionEvent[]>,
+  orderedEvents: RunTranscriptProjectionEvent[]
 ): string[] {
-  const sessionIds = new Set(sessions.map((session) => session.id));
-  const eventOnlyIds = [...eventsBySessionId.keys()].filter((sessionId) => !sessionIds.has(sessionId)).sort();
-  return [...sessions.map((session) => session.id), ...eventOnlyIds];
+  const emitted = new Set<string>();
+  const orderedEventSessionIds: string[] = [];
+  for (const event of orderedEvents) {
+    if (emitted.has(event.sessionId)) continue;
+    emitted.add(event.sessionId);
+    orderedEventSessionIds.push(event.sessionId);
+  }
+  const sessionOnlyIds = sessions.map((session) => session.id).filter((sessionId) => !emitted.has(sessionId));
+  for (const sessionId of sessionOnlyIds) emitted.add(sessionId);
+  const eventOnlyIds = [...eventsBySessionId.keys()].filter((sessionId) => !emitted.has(sessionId)).sort();
+  return [...orderedEventSessionIds, ...sessionOnlyIds, ...eventOnlyIds];
 }
 
 function buildRunExecutionTimelineFallback(runView: BlueprintRunView): RunTimelineTraceItem[] {
@@ -4380,6 +4417,13 @@ function buildTraceIssues(
   if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
   const context = buildTraceIssueContext(activeRun);
+  const executionRows = buildRunExecutionTraceRows(activeRun, nodesById, context);
+  if (executionRows.length > 0) {
+    return executionRows
+      .sort(compareExecutionTraceRows)
+      .map((row, index) => createExecutionTraceIssue(row, index + 1, t, language));
+  }
+
   const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
   const humanReportIds = new Set((activeRun.agentHumanReports ?? []).map((report) => report.id));
   const nodeTimelineItemsByNodeRunId = buildNodeRunTimelineItemMap(activeRun, nodeRunIds);
@@ -4396,7 +4440,7 @@ function buildTraceIssues(
     order,
     createdAt: traceTimestampForNodeRun(nodeRun)
   }));
-  const roundResearchItems = buildRoundResearchTraceItems(activeRun).map((round, order) => ({
+  const roundResearchItems = buildLegacyRoundResearchTraceItems(activeRun).map((round, order) => ({
     kind: "round_research" as const,
     round,
     order: -10_000 + order,
@@ -4420,12 +4464,14 @@ function buildTraceIssues(
   return [...roundResearchItems, ...nodeItems, ...timelineItems, ...reportItems]
     .sort(compareTraceChronologyItems)
     .map((item, index) => {
+      let issue: TraceIssue;
       if (item.kind === "round_research") {
-        return createRoundResearchTraceIssue(activeRun, blueprint, item.round, index + 1, t, language);
+        issue = createRoundResearchTraceIssue(activeRun, blueprint, item.round, index + 1, t, language);
+        return markLegacyTraceIssue(issue, language);
       }
       if (item.kind === "node") {
         const node = nodesById.get(item.nodeRun.nodeId);
-        return createNodeTraceIssue(
+        issue = createNodeTraceIssue(
           context,
           item.nodeRun,
           node,
@@ -4435,11 +4481,14 @@ function buildTraceIssues(
           t,
           language
         );
+        return markLegacyTraceIssue(issue, language);
       }
       if (item.kind === "timeline") {
-        return createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
+        issue = createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
+        return markLegacyTraceIssue(issue, language);
       }
-      return createReportTraceIssue(context, item.humanReport, index + 1, t, language);
+      issue = createReportTraceIssue(context, item.humanReport, index + 1, t, language);
+      return markLegacyTraceIssue(issue, language);
     });
 }
 
@@ -4473,11 +4522,528 @@ function groupByNodeRunId<T extends { nodeRunId?: string }>(items: T[]): Map<str
   return grouped;
 }
 
-function buildRoundResearchTraceItems(activeRun: BlueprintRunView): RunIterationRound[] {
+function buildRunExecutionTraceRows(
+  activeRun: BlueprintRunView,
+  nodesById: Map<string, BlueprintNode>,
+  context: TraceIssueBuildContext
+): RunExecutionTraceRow[] {
+  const rows: RunExecutionTraceRow[] = [];
+  const commands = sortRunCommands(activeRun.runCommands ?? []);
+  const stepsByCommandId = groupRunCommandSteps(activeRun.runCommandSteps ?? []);
+  const allSteps = sortRunCommandStepsForTrace(activeRun);
+  const sessions = sortRunSessionsForTrace(activeRun);
+  const transcriptEvents = sortedRunTranscriptEventsForDisplay(activeRun);
+  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
+  const sessionsByNodeRunId = groupSessionsByNodeRunId(sessions);
+  const eventsByNodeRunId = groupByNodeRunId(transcriptEvents);
+  const consumedStepIds = new Set<string>();
+  const consumedSessionIds = new Set<string>();
+  let order = 0;
+
+  for (const command of commands) {
+    const steps = stepsByCommandId.get(command.id) ?? [];
+    if (steps.length === 0) {
+      rows.push(buildCommandOnlyTraceRow(activeRun, command, order++));
+      continue;
+    }
+
+    for (const step of steps) {
+      consumedStepIds.add(step.id);
+      const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
+      if (stepSessions.length === 0) {
+        const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
+        rows.push(buildStepTraceRow({
+          activeRun,
+          nodesById,
+          context,
+          command,
+          step,
+          session: undefined,
+          transcriptEvents: stepEvents,
+          order: order++
+        }));
+        markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
+        continue;
+      }
+
+      for (const session of stepSessions) {
+        consumedSessionIds.add(session.id);
+        rows.push(buildStepTraceRow({
+          activeRun,
+          nodesById,
+          context,
+          command,
+          step,
+          session,
+          transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+          order: order++
+        }));
+      }
+    }
+  }
+
+  const commandIds = new Set(commands.map((command) => command.id));
+  for (const step of allSteps) {
+    if (consumedStepIds.has(step.id) || commandIds.has(step.commandId)) continue;
+    const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
+    if (stepSessions.length === 0) {
+      const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
+      rows.push(buildStepTraceRow({
+        activeRun,
+        nodesById,
+        context,
+        command: undefined,
+        step,
+        session: undefined,
+        transcriptEvents: stepEvents,
+        order: order++
+      }));
+      markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
+      continue;
+    }
+    for (const session of stepSessions) {
+      consumedSessionIds.add(session.id);
+      rows.push(buildStepTraceRow({
+        activeRun,
+        nodesById,
+        context,
+        command: undefined,
+        step,
+        session,
+        transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+        order: order++
+      }));
+    }
+  }
+
+  for (const session of sessions) {
+    if (consumedSessionIds.has(session.id)) continue;
+    rows.push(buildSessionOnlyTraceRow({
+      activeRun,
+      nodesById,
+      context,
+      session,
+      transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+      order: order++
+    }));
+    consumedSessionIds.add(session.id);
+  }
+
+  for (const [sessionId, events] of eventsBySessionId) {
+    if (consumedSessionIds.has(sessionId)) continue;
+    rows.push(buildTranscriptOnlyTraceRow({
+      activeRun,
+      nodesById,
+      context,
+      sessionId,
+      transcriptEvents: events,
+      order: order++
+    }));
+  }
+
+  return rows;
+}
+
+function buildCommandOnlyTraceRow(
+  activeRun: BlueprintRunView,
+  command: RunCommandFact,
+  order: number
+): RunExecutionTraceRow {
+  return {
+    key: `execution-command:${command.id}`,
+    command,
+    transcriptEvents: [],
+    artifacts: [],
+    actorLabel: runCommandKindLabel(command.kind, "en"),
+    actorKind: "system",
+    status: command.status,
+    startedAt: command.startedAt,
+    endedAt: command.endedAt,
+    createdAt: command.startedAt ?? command.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: []
+  };
+}
+
+function buildStepTraceRow({
+  activeRun,
+  nodesById,
+  context,
+  command,
+  step,
+  session,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  context: TraceIssueBuildContext;
+  command?: RunCommandFact;
+  step: RunCommandStepFact;
+  session?: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const nodeRun = step.nodeRunId ? context.nodeRunById.get(step.nodeRunId) : undefined;
+  const node = nodesById.get(step.nodeId);
+  const humanReport = step.nodeRunId ? context.humanReportByNodeRunId.get(step.nodeRunId) : undefined;
+  const artifacts = step.nodeRunId ? context.artifactsByNodeRunId.get(step.nodeRunId) ?? [] : [];
+  const runtimeRefs = collectExecutionRuntimeRefs(step.runtimeRef, session?.runtimeRef, transcriptEvents);
+  const actorLabel = nodeRun?.nodeLabel ?? node?.config.label ?? step.nodeId;
+  return {
+    key: `execution-step:${step.id}${session ? `:${session.id}` : ""}`,
+    command,
+    step,
+    session,
+    transcriptEvents,
+    nodeRun,
+    node,
+    humanReport,
+    artifacts,
+    mode: step.mode,
+    actorLabel,
+    actorKind: nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindForBlueprintNode(node),
+    status: step.status,
+    startedAt: step.startedAt ?? session?.createdAt,
+    endedAt: step.endedAt,
+    createdAt: step.startedAt ?? session?.createdAt ?? transcriptEvents[0]?.createdAt ?? step.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs
+  };
+}
+
+function buildSessionOnlyTraceRow({
+  activeRun,
+  nodesById,
+  context,
+  session,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  context: TraceIssueBuildContext;
+  session: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const nodeRun = context.nodeRunById.get(session.nodeRunId);
+  const node = nodesById.get(session.nodeId);
+  return {
+    key: `execution-session:${session.id}`,
+    session,
+    transcriptEvents,
+    nodeRun,
+    node,
+    humanReport: context.humanReportByNodeRunId.get(session.nodeRunId),
+    artifacts: context.artifactsByNodeRunId.get(session.nodeRunId) ?? [],
+    actorLabel: nodeRun?.nodeLabel ?? node?.config.label ?? session.nodeId,
+    actorKind: nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindForBlueprintNode(node),
+    status: session.status,
+    startedAt: session.createdAt,
+    endedAt: session.status === "completed" || session.status === "failed" ? session.updatedAt : undefined,
+    createdAt: session.createdAt ?? transcriptEvents[0]?.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: collectExecutionRuntimeRefs(session.runtimeRef, undefined, transcriptEvents)
+  };
+}
+
+function buildTranscriptOnlyTraceRow({
+  activeRun,
+  nodesById,
+  context,
+  sessionId,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  context: TraceIssueBuildContext;
+  sessionId: string;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const firstEvent = transcriptEvents[0];
+  const nodeRun = firstEvent ? context.nodeRunById.get(firstEvent.nodeRunId) : undefined;
+  const node = nodeRun ? nodesById.get(nodeRun.nodeId) : undefined;
+  return {
+    key: `execution-transcript:${sessionId}`,
+    transcriptEvents,
+    nodeRun,
+    node,
+    humanReport: nodeRun ? context.humanReportByNodeRunId.get(nodeRun.id) : undefined,
+    artifacts: nodeRun ? context.artifactsByNodeRunId.get(nodeRun.id) ?? [] : [],
+    actorLabel: nodeRun?.nodeLabel ?? firstEvent?.nodeRunId ?? sessionId,
+    actorKind: nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindForBlueprintNode(node),
+    status: nodeRun?.status ?? activeRun.run.status,
+    startedAt: firstEvent?.createdAt,
+    endedAt: transcriptEvents.at(-1)?.createdAt,
+    createdAt: firstEvent?.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: collectExecutionRuntimeRefs(undefined, undefined, transcriptEvents)
+  };
+}
+
+function sortRunCommandStepsForTrace(activeRun: BlueprintRunView): RunCommandStepFact[] {
+  const commandOrderById = new Map(sortRunCommands(activeRun.runCommands ?? []).map((command, index) => [command.id, index]));
+  return [...(activeRun.runCommandSteps ?? [])].sort((left, right) => {
+    const commandOrder = (commandOrderById.get(left.commandId) ?? Number.MAX_SAFE_INTEGER) -
+      (commandOrderById.get(right.commandId) ?? Number.MAX_SAFE_INTEGER);
+    if (commandOrder !== 0) return commandOrder;
+    const revisionOrder = left.revision - right.revision;
+    if (revisionOrder !== 0) return revisionOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
+  });
+}
+
+function sortRunSessionsForTrace(activeRun: BlueprintRunView): RunExecutionSession[] {
+  const stepOrderByNodeRunId = new Map<string, number>();
+  sortRunCommandStepsForTrace(activeRun).forEach((step, index) => {
+    if (step.nodeRunId && !stepOrderByNodeRunId.has(step.nodeRunId)) {
+      stepOrderByNodeRunId.set(step.nodeRunId, index);
+    }
+  });
+  const firstEventBySessionId = new Map<string, RunTranscriptProjectionEvent>();
+  for (const event of sortedRunTranscriptEventsForDisplay(activeRun)) {
+    if (!firstEventBySessionId.has(event.sessionId)) firstEventBySessionId.set(event.sessionId, event);
+  }
+  return [...(activeRun.nodeExecutionSessions ?? [])].sort((left, right) => {
+    const stepOrder = (stepOrderByNodeRunId.get(left.nodeRunId) ?? Number.MAX_SAFE_INTEGER) -
+      (stepOrderByNodeRunId.get(right.nodeRunId) ?? Number.MAX_SAFE_INTEGER);
+    if (stepOrder !== 0) return stepOrder;
+    const timestampOrder = toSafeTimestamp(left.createdAt ?? firstEventBySessionId.get(left.id)?.createdAt ?? "") -
+      toSafeTimestamp(right.createdAt ?? firstEventBySessionId.get(right.id)?.createdAt ?? "");
+    if (timestampOrder !== 0) return timestampOrder;
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function groupSessionsByNodeRunId(sessions: RunExecutionSession[]): Map<string, RunExecutionSession[]> {
+  const grouped = new Map<string, RunExecutionSession[]>();
+  for (const session of sessions) {
+    grouped.set(session.nodeRunId, [...(grouped.get(session.nodeRunId) ?? []), session]);
+  }
+  return grouped;
+}
+
+function sessionsForStep(
+  step: RunCommandStepFact,
+  sessionsByNodeRunId: Map<string, RunExecutionSession[]>
+): RunExecutionSession[] {
+  return step.nodeRunId ? sessionsByNodeRunId.get(step.nodeRunId) ?? [] : [];
+}
+
+function transcriptEventsForStepWithoutSession(
+  step: RunCommandStepFact,
+  eventsByNodeRunId: Map<string, RunTranscriptProjectionEvent[]>,
+  consumedSessionIds: Set<string>
+): RunTranscriptProjectionEvent[] {
+  return step.nodeRunId
+    ? (eventsByNodeRunId.get(step.nodeRunId) ?? []).filter((event) => !consumedSessionIds.has(event.sessionId))
+    : [];
+}
+
+function markConsumedTranscriptSessionIds(
+  events: RunTranscriptProjectionEvent[],
+  consumedSessionIds: Set<string>
+): void {
+  for (const event of events) consumedSessionIds.add(event.sessionId);
+}
+
+function collectExecutionRuntimeRefs(
+  stepRuntimeRef: RunCommandStepFact["runtimeRef"] | undefined,
+  sessionRuntimeRef: RunExecutionSession["runtimeRef"] | undefined,
+  transcriptEvents: RunTranscriptProjectionEvent[]
+): Array<NonNullable<RunCommandStepFact["runtimeRef"]>> {
+  const refs = [stepRuntimeRef, sessionRuntimeRef, ...transcriptEvents.map((event) => event.runtimeRef)]
+    .filter((ref): ref is NonNullable<RunCommandStepFact["runtimeRef"]> => Boolean(ref));
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.source}:${ref.sourceId}:${ref.taskId ?? ""}:${ref.sessionKey ?? ""}:${ref.messageId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function compareExecutionTraceRows(left: RunExecutionTraceRow, right: RunExecutionTraceRow): number {
+  return left.order - right.order || toSafeTimestamp(left.createdAt) - toSafeTimestamp(right.createdAt) || left.key.localeCompare(right.key);
+}
+
+function createExecutionTraceIssue(
+  row: RunExecutionTraceRow,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const label = executionTraceRowLabel(row, language);
+  const body = buildExecutionTraceIssueBody(row, language);
+  const previewSource = row.transcriptEvents.at(-1)?.content ??
+    row.humanReport?.bodyMd ??
+    row.step?.error ??
+    row.command?.error ??
+    executionTraceRowSummary(row, language);
+  const roundNumber = managerRoundNumberForNodeRun(row.nodeRun);
+  return {
+    key: row.key,
+    index,
+    label,
+    kind: "execution",
+    actorKind: row.actorKind,
+    depth: row.node?.parentId ? 1 : 0,
+    node: row.node,
+    nodeRun: row.nodeRun,
+    humanReport: row.humanReport,
+    executionRow: row,
+    issueStatus: toExecutionTraceIssueStatus(row.status),
+    statusLabel: runExecutionStatusLabel(row.status, language),
+    roundLabel: traceRoundLabel(row.actorKind, roundNumber, language),
+    roundTone: roundNumber ? roundTone(roundNumber) : undefined,
+    roleTag: roleTagForActorKind(row.actorKind, language),
+    workTags: workTagsForExecutionTraceRow(row, label, language),
+    timestamp: row.startedAt ?? row.createdAt,
+    outputPreview: summarizeOutput(buildCurrentOutputPreviewBody(previewSource, language), t),
+    outputBody: body,
+    events: row.nodeRun ? [] : []
+  };
+}
+
+function executionTraceRowLabel(row: RunExecutionTraceRow, language: Language): string {
+  const actor = cleanTraceActorLabel(row.actorLabel);
+  const mode = row.mode ? runCommandStepModeLabel(row.mode, language) : undefined;
+  return mode ? `${actor} / ${mode}` : actor;
+}
+
+function buildExecutionTraceIssueBody(row: RunExecutionTraceRow, language: Language): string {
+  const zh = language === "zh-CN";
+  const facts = [
+    row.mode ? `${zh ? "\u6a21\u5f0f" : "Mode"}: ${runCommandStepModeLabel(row.mode, language)}` : undefined,
+    row.command ? `${zh ? "\u547d\u4ee4" : "Command"}: ${runCommandKindLabel(row.command.kind, language)} (${row.command.commandKey})` : undefined,
+    row.step ? `${zh ? "\u6b65\u9aa4" : "Step"}: ${row.step.stepKey}` : undefined,
+    `${zh ? "\u72b6\u6001" : "Status"}: ${runExecutionStatusLabel(row.status, language)}`,
+    row.startedAt ? `${zh ? "\u5f00\u59cb" : "Started"}: ${formatTraceTime(row.startedAt, language)}` : undefined,
+    row.endedAt ? `${zh ? "\u7ed3\u675f" : "Ended"}: ${formatTraceTime(row.endedAt, language)}` : undefined,
+    row.session ? `${zh ? "Session" : "Session"}: ${row.session.nativeSessionId ?? row.session.id}` : undefined,
+    row.session ? `${zh ? "Harness" : "Harness"}: ${row.session.harnessId}` : undefined
+  ].filter((line): line is string => Boolean(line));
+  const runtimeRefs = row.runtimeRefs.map(formatRuntimeObjectRefForTrace);
+  const artifactRefs = row.artifacts.map((artifact) => formatArtifactRefForTrace(artifact, language));
+  const transcriptLines = row.transcriptEvents.flatMap((event) => {
+    const content = event.content?.trim();
+    return [
+      `### ${runTranscriptEventLabel(event.kind, event.role, language)}`,
+      `${zh ? "\u65f6\u95f4" : "Time"}: ${formatTraceTime(event.createdAt, language)}`,
+      content || (zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content.")
+    ];
+  });
+  const reportBody = row.humanReport?.bodyMd?.trim();
+  return [
+    `## ${zh ? "\u6267\u884c\u4e8b\u5b9e" : "Execution facts"}`,
+    "",
+    executionTraceRowSummary(row, language),
+    "",
+    facts.join("\n"),
+    runtimeRefs.length > 0 ? "" : undefined,
+    runtimeRefs.length > 0 ? `## ${zh ? "\u8fd0\u884c\u65f6\u5f15\u7528" : "Runtime refs"}` : undefined,
+    runtimeRefs.length > 0 ? "" : undefined,
+    runtimeRefs.join("\n"),
+    artifactRefs.length > 0 ? "" : undefined,
+    artifactRefs.length > 0 ? `## ${zh ? "\u4ea7\u7269\u5f15\u7528" : "Artifact refs"}` : undefined,
+    artifactRefs.length > 0 ? "" : undefined,
+    artifactRefs.join("\n"),
+    transcriptLines.length > 0 ? "" : undefined,
+    transcriptLines.length > 0 ? `## ${zh ? "Transcript" : "Transcript"}` : undefined,
+    transcriptLines.length > 0 ? "" : undefined,
+    transcriptLines.join("\n\n"),
+    reportBody ? "" : undefined,
+    reportBody ? `## ${zh ? "\u62a5\u544a" : "Report"}` : undefined,
+    reportBody ? "" : undefined,
+    reportBody
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0).join("\n");
+}
+
+function executionTraceRowSummary(row: RunExecutionTraceRow, language: Language): string {
+  const zh = language === "zh-CN";
+  const mode = row.mode ? runCommandStepModeLabel(row.mode, language) : undefined;
+  const actor = cleanTraceActorLabel(row.actorLabel);
+  if (mode) {
+    return zh
+      ? `${actor} \u7684 ${mode} \u6b65\u9aa4\u6765\u81ea command/step/session/transcript \u4e8b\u5b9e\u3002`
+      : `${actor} ${mode} is projected from command, step, session, and transcript facts.`;
+  }
+  return zh
+    ? `${actor} \u6765\u81ea execution fact \u6295\u5f71\u3002`
+    : `${actor} is projected from execution facts.`;
+}
+
+function formatRuntimeObjectRefForTrace(ref: NonNullable<RunCommandStepFact["runtimeRef"]>): string {
+  const parts = [
+    `${ref.source}:${ref.sourceId}`,
+    ref.taskId ? `task=${ref.taskId}` : undefined,
+    ref.sessionKey ? `session=${ref.sessionKey}` : undefined,
+    ref.messageId ? `message=${ref.messageId}` : undefined
+  ].filter((part): part is string => Boolean(part));
+  return `- ${parts.join(" / ")}`;
+}
+
+function formatArtifactRefForTrace(artifact: RunArtifact, language: Language): string {
+  const title = artifact.title ?? artifact.kind;
+  const location = artifact.downloadUrl ?? artifact.storagePath ?? artifact.relativePath ?? artifact.id;
+  return `- ${title}: ${formatDeliveryLocationForDisplay(location, language)}`;
+}
+
+function toExecutionTraceIssueStatus(status: string): TraceIssueStatus {
+  if (status === "queued" || status === "running" || status === "waiting_approval" || status === "active" || status === "paused") {
+    return "in_progress";
+  }
+  if (status === "failed" || status === "cancelled" || status === "unavailable") return "failed";
+  return "completed";
+}
+
+function workTagsForExecutionTraceRow(row: RunExecutionTraceRow, label: string, language: Language): string[] {
+  if (row.mode) return [workTagForExecutionMode(row.mode, language)];
+  if (row.command?.kind === "self_iteration_release_report") return [reportPublishWorkTag(language)];
+  return [workTagFromLabel(label, language, row.nodeRun?.nodeType)];
+}
+
+function workTagForExecutionMode(mode: RunCommandStepFact["mode"], language: Language): string {
+  if (isRunPreflightMode(mode)) return preflightWorkTag(mode, language);
+  if (mode === "release_report") return reportPublishWorkTag(language);
+  return language === "zh-CN" ? "\u6267\u884c" : "Execution";
+}
+
+function isRunPreflightMode(mode: RunCommandStepFact["mode"]): mode is RunPreflightMode {
+  return mode === "research_resolution" ||
+    mode === "requirement_resolution" ||
+    mode === "revise_plan" ||
+    mode === "preflight_judgment" ||
+    mode === "context_snapshot";
+}
+
+function markLegacyTraceIssue(issue: TraceIssue, language: Language): TraceIssue {
+  const tag = legacyReadOnlyTraceTag(language);
+  return {
+    ...issue,
+    workTags: issue.workTags.includes(tag) ? issue.workTags : [...issue.workTags, tag],
+    outputBody: issue.outputBody ? `${legacyReadOnlyTraceBody(language)}\n\n${issue.outputBody}` : legacyReadOnlyTraceBody(language)
+  };
+}
+
+function legacyReadOnlyTraceTag(language: Language): string {
+  return language === "zh-CN" ? "\u5386\u53f2\u53ea\u8bfb" : "Legacy read-only";
+}
+
+function legacyReadOnlyTraceBody(language: Language): string {
+  return language === "zh-CN"
+    ? "\u6b64 trace \u6765\u81ea\u9057\u7559 nodeRun/timeline \u5386\u53f2\u6570\u636e\uff0c\u4ec5\u4f5c\u53ea\u8bfb\u517c\u5bb9\u5c55\u793a\u3002"
+    : "This trace comes from legacy nodeRun/timeline historical data and is shown as read-only compatibility data.";
+}
+
+function buildLegacyRoundResearchTraceItems(activeRun: BlueprintRunView): RunIterationRound[] {
   return (activeRun.iterationRounds ?? [])
     .filter((round) => round.researchStatus === "context_sufficient")
     .filter((round) => !activeRun.nodeRuns.some((nodeRun) =>
-      nodeRun.iterationRoundId === round.id && preflightModeFromNodeRunId(nodeRun.id) === "research_resolution"
+      nodeRun.iterationRoundId === round.id && legacyPreflightModeFromNodeRunId(nodeRun.id) === "research_resolution"
     ));
 }
 
@@ -4507,7 +5073,7 @@ function managerContainerNodeRunIdsWithDecisionReports(activeRun: BlueprintRunVi
 }
 
 function isSupersededPreflightJudgmentNodeRun(activeRun: BlueprintRunView, nodeRun: BlueprintNodeRun): boolean {
-  if (preflightModeFromNodeRunId(nodeRun.id) !== "preflight_judgment") return false;
+  if (legacyPreflightModeFromNodeRunId(nodeRun.id) !== "preflight_judgment") return false;
   return (activeRun.approvalRequests ?? []).some((approval) =>
     approval.kind === "iteration_requirement_plan" &&
     approval.roundId === nodeRun.iterationRoundId
@@ -4621,7 +5187,7 @@ function createNodeTraceIssue(
   const managerReason = actorKind === "manager" && isDispatchManagerNodeRun(nodeRun)
     ? readManagerOutputReason(nodeRun.output)
     : undefined;
-  const contextSnapshotBody = preflightModeFromNodeRunId(nodeRun.id) === "context_snapshot"
+  const contextSnapshotBody = legacyPreflightModeFromNodeRunId(nodeRun.id) === "context_snapshot"
     ? buildContextSnapshotReadableBody(nodeRun.output, humanReport?.bodyMd, language)
     : undefined;
   const readableSource = contextSnapshotBody ?? (humanReport
@@ -4827,7 +5393,7 @@ function cleanTraceActorLabel(label: string): string {
     .trim();
 }
 
-function preflightModeFromNodeRunId(nodeRunId: string): RunPreflightMode | undefined {
+function legacyPreflightModeFromNodeRunId(nodeRunId: string): RunPreflightMode | undefined {
   if (!nodeRunId.startsWith("preflight-")) return undefined;
   if (nodeRunId.startsWith("preflight-research_resolution-")) return "research_resolution";
   if (nodeRunId.startsWith("preflight-requirement_resolution-")) return "requirement_resolution";
@@ -4858,7 +5424,7 @@ function isReleaseReportNodeRun(nodeRun: BlueprintNodeRun | undefined): boolean 
 }
 
 function isDispatchManagerNodeRun(nodeRun: BlueprintNodeRun): boolean {
-  return nodeRun.nodeType === "manager" && !isReleaseReportNodeRun(nodeRun) && !preflightModeFromNodeRunId(nodeRun.id);
+  return nodeRun.nodeType === "manager" && !isReleaseReportNodeRun(nodeRun) && !legacyPreflightModeFromNodeRunId(nodeRun.id);
 }
 
 function createTimelineTraceIssue(
@@ -4911,6 +5477,12 @@ function traceTimestampForNodeRun(nodeRun: BlueprintNodeRun): string {
 function traceActorKindForNodeRun(nodeRun: BlueprintNodeRun | undefined): TraceIssue["actorKind"] {
   if (!nodeRun) return "agent";
   if (nodeRun.nodeType === "manager") return "manager";
+  return "agent";
+}
+
+function traceActorKindForBlueprintNode(node: BlueprintNode | undefined): TraceIssue["actorKind"] {
+  if (!node) return "agent";
+  if (node.type === "manager" || node.type === "manager_slot") return "manager";
   return "agent";
 }
 
@@ -5017,7 +5589,7 @@ function roleTagForActorKind(kind: TraceIssue["actorKind"], language: Language):
 }
 
 function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: Language): string[] {
-  const mode = preflightModeFromNodeRunId(nodeRun.id);
+  const mode = legacyPreflightModeFromNodeRunId(nodeRun.id);
   if (mode) return [preflightWorkTag(mode, language)];
   if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
   if (nodeRun.nodeType === "manager") return [dispatchWorkTag(language)];
@@ -5025,7 +5597,7 @@ function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: 
 }
 
 function workTagsForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined, language: Language): string[] {
-  const mode = preflightModeFromNodeRunId(humanReport.nodeRunId);
+  const mode = legacyPreflightModeFromNodeRunId(humanReport.nodeRunId);
   if (mode) return [preflightWorkTag(mode, language)];
   if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
   if (/manager-decision-\d+$/i.test(humanReport.nodeRunId) || /dispatch|调度/i.test(humanReport.nodeLabel)) {
