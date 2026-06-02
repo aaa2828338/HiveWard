@@ -3,6 +3,7 @@ import type {
   ApprovalCapabilities,
   ApprovalDecision,
   ApprovalDecisionAction,
+  ApprovalDiscussionBinding,
   ApprovalReply,
   ApprovalRequest,
   ApprovalRequestKind,
@@ -137,6 +138,10 @@ export class ApprovalService {
     }
 
     await this.store.upsertApprovalRequest(request);
+    const defaultBinding = buildDefaultApprovalDiscussionBinding(request, now);
+    if (defaultBinding) {
+      await this.store.createApprovalDiscussionBindingIfAbsent(defaultBinding);
+    }
     if (input.runId && await this.store.getBlueprintRun(input.runId)) {
       await this.store.appendRunTimelineItem({
         id: `timeline-${nanoid(10)}`,
@@ -153,8 +158,11 @@ export class ApprovalService {
     return request;
   }
 
-  approve(id: string, comment?: string, selectedReplyId?: string): Promise<ApprovalActionResult> {
-    return this.decide(id, "approve", "approved", { comment, selectedReplyId });
+  async approve(id: string, comment?: string, selectedReplyId?: string): Promise<ApprovalActionResult> {
+    if (selectedReplyId !== undefined) {
+      await this.selectApprovalCandidate(id, selectedReplyId.trim() || null);
+    }
+    return this.decide(id, "approve", "approved", { comment });
   }
 
   reject(id: string, comment?: string): Promise<ApprovalActionResult> {
@@ -172,10 +180,10 @@ export class ApprovalService {
   async requestChanges(id: string, comment: string): Promise<ApprovalActionResult> {
     const trimmed = comment.trim();
     if (!trimmed) throw new Error("Approval request_changes comment is required.");
-    const current = await this.requirePendingRequest(id, "request_changes");
+    const current = await this.requirePendingRequest(id, "return_for_revision");
     const now = new Date().toISOString();
     const updated: ApprovalRequest = { ...current, updatedAt: now };
-    const decision = this.buildDecision(current.id, "request_changes", "pending", "user", trimmed, now);
+    const decision = this.buildDecision(current.id, "return_for_revision", "pending", "user", trimmed, now);
     return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
   }
 
@@ -198,7 +206,7 @@ export class ApprovalService {
     const feedback = message.trim();
     if (!feedback) throw new Error("Approval revision message is required.");
 
-    const current = await this.requirePendingRequest(id, "revise");
+    const current = await this.requirePendingRequest(id, "return_for_revision");
     const revision = current.revision + 1;
     const draft = await this.buildDecisionRevision(current, feedback, revision, revisionOverride);
     const now = new Date().toISOString();
@@ -224,7 +232,7 @@ export class ApprovalService {
           createdAt: draft.releaseReport.createdAt || now
         }
       : undefined;
-    const decision = this.buildDecision(current.id, "revise", "superseded", "user", feedback, now);
+    const decision = this.buildDecision(current.id, "return_for_revision", "superseded", "user", feedback, now);
     const superseded: ApprovalRequest = {
       ...current,
       status: "superseded",
@@ -247,6 +255,34 @@ export class ApprovalService {
   ): Promise<ApprovalActionResult> {
     void revisionOverride;
     return this.recordPendingReply(id, message);
+  }
+
+  async selectApprovalCandidate(id: string, selectedReplyId: string | null): Promise<ApprovalRequest> {
+    const current = await this.requireRequest(id);
+    if (current.status !== "pending") {
+      throw new ApprovalConflictError("Approval request is already closed.");
+    }
+    const nextSelectedReplyId = selectedReplyId?.trim() || undefined;
+    if (nextSelectedReplyId) {
+      const threadId = current.threadId ?? current.id;
+      const replies = await this.store.listApprovalReplies({ threadId });
+      const selected = replies.find((reply) =>
+        reply.id === nextSelectedReplyId &&
+        reply.approvalRequestId === current.id &&
+        reply.threadId === threadId
+      );
+      if (!selected) {
+        throw new Error("Selected approval reply does not belong to this request.");
+      }
+      if (selected.purpose !== "candidate") {
+        throw new Error("Only candidate approval replies can be selected.");
+      }
+    }
+    const { selectedReplyId: _previousSelectedReplyId, ...withoutSelection } = current;
+    const updated: ApprovalRequest = nextSelectedReplyId
+      ? { ...current, selectedReplyId: nextSelectedReplyId, updatedAt: new Date().toISOString() }
+      : { ...withoutSelection, updatedAt: new Date().toISOString() };
+    return this.store.upsertApprovalRequest(updated);
   }
 
   async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {
@@ -321,7 +357,7 @@ export class ApprovalService {
       options.actor ?? "user",
       options.comment,
       now,
-      options.selectedReplyId
+      action === "approve" ? current.selectedReplyId : options.selectedReplyId
     );
     const next: ApprovalRequest = {
       ...current,
@@ -521,6 +557,32 @@ export class ApprovalService {
 
 function appendRevisionSuffix(title: string, revision: number): string {
   return `${title.replace(/\s+v\d+$/i, "")} v${revision}`;
+}
+
+function buildDefaultApprovalDiscussionBinding(
+  request: ApprovalRequest,
+  now: string
+): ApprovalDiscussionBinding | undefined {
+  if (!approvalKindDefaultsToMessageOnly(request.kind)) return undefined;
+  return {
+    approvalRequestId: request.id,
+    threadId: request.threadId,
+    mode: "message_only",
+    route: "message_only",
+    canStreamReply: false,
+    canCreateCandidate: false,
+    reason: "message_only_approval_kind",
+    resolverVersion: 1,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function approvalKindDefaultsToMessageOnly(kind: ApprovalRequestKind): boolean {
+  return kind === "blueprint_proposal" ||
+    kind === "leader_delegation" ||
+    kind === "run_request" ||
+    kind === "company_config";
 }
 
 type ApprovalFeedbackEntry = {

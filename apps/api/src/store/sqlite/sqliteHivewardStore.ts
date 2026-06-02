@@ -103,6 +103,7 @@ import {
   agentWorkspaceRefsForBlueprint,
   agentWorkspaceRootFolder
 } from "../../services/agentWorkspaceService";
+import { projectPendingApprovalDiscussion } from "../approvalDiscussionProjection";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const selectedCompanySettingKey = "selected_company_id";
@@ -1182,7 +1183,9 @@ export class SqliteHivewardStore implements HivewardStore {
        ORDER BY ar.requested_at DESC`
     ).all(companyId) as Row[];
     const rowsWithRequests = rows.map((row) => ({ row, request: approvalRequestFromRow(row) }));
-    const approvalRepliesByRequestId = new Map<string, PendingApprovalItem["replies"]>();
+    const approvalRepliesByRequestId = new Map<string, ApprovalReply[]>();
+    const approvalBindingsByRequestId = new Map<string, ApprovalDiscussionBinding>();
+    const sessionsByRunId = new Map<string, NodeExecutionSession[]>();
     if (rowsWithRequests.length > 0) {
       const requestIds = rowsWithRequests.map(({ request }) => request.id);
       const placeholders = requestIds.map(() => "?").join(", ");
@@ -1190,10 +1193,13 @@ export class SqliteHivewardStore implements HivewardStore {
         `SELECT * FROM approval_replies WHERE approval_request_id IN (${placeholders}) ORDER BY created_at`
       ).all(...requestIds) as Row[]).map(approvalReplyFromRow);
       for (const request of rowsWithRequests.map((entry) => entry.request)) {
-        const requestReplies = pendingApprovalRepliesFromApprovalReplies(
-          replies.filter((reply) => reply.approvalRequestId === request.id)
-        );
-        if (requestReplies) approvalRepliesByRequestId.set(request.id, requestReplies);
+        approvalRepliesByRequestId.set(request.id, replies.filter((reply) => reply.approvalRequestId === request.id));
+      }
+      for (const binding of this.readApprovalDiscussionBindings({ approvalRequestIds: requestIds })) {
+        approvalBindingsByRequestId.set(binding.approvalRequestId, binding);
+      }
+      for (const runId of new Set(rowsWithRequests.flatMap(({ request }) => request.runId ? [request.runId] : []))) {
+        sessionsByRunId.set(runId, this.readNodeExecutionSessions({ runId }));
       }
     }
     return rowsWithRequests.map(({ row, request }) => {
@@ -1202,12 +1208,20 @@ export class SqliteHivewardStore implements HivewardStore {
       const output = isRecord(parsedOutput) && parsedOutput.approvalType === "agent"
         ? parsedOutput
         : undefined;
-      const selectedReplyId = request.selectedReplyId ?? readString(output?.selectedReplyId);
-      const approvalReplies = approvalRepliesByRequestId.get(request.id);
+      const selectedReplyId = request.selectedReplyId;
+      const approvalReplies = pendingApprovalRepliesFromApprovalReplies(
+        approvalRepliesByRequestId.get(request.id) ?? [],
+        selectedReplyId
+      );
       return {
         approvalRequestId: request.id,
         approvalThreadId: approvalThreadIdForRequest(request),
         kind: request.kind,
+        discussion: projectPendingApprovalDiscussion({
+          request,
+          binding: approvalBindingsByRequestId.get(request.id),
+          sessions: sessionsByRunId.get(requestRunId) ?? []
+        }),
         blueprintId: readString(row.blueprint_id) ?? requestRunId,
         blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? requestRunId,
         blueprintRunId: requestRunId,

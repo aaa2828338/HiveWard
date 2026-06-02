@@ -97,7 +97,7 @@ describe("ApprovalService", () => {
     expect((await store.listApprovalRequests({ runId: "run-1" }))).toHaveLength(1);
   });
 
-  it("creates a superseding revision only for an explicit revise decision", async () => {
+  it("creates a superseding revision through return_for_revision when the request kind requires it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-revise-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -136,7 +136,7 @@ describe("ApprovalService", () => {
     expect(requests).toHaveLength(2);
     expect(decisions).toEqual([
       expect.objectContaining({
-        action: "revise",
+        action: "return_for_revision",
         resultingStatus: "superseded",
         comment: "Tighten scope."
       })
@@ -144,7 +144,7 @@ describe("ApprovalService", () => {
     expect(replies).toEqual([]);
   });
 
-  it("records request_changes as a lifecycle decision without appending a reply", async () => {
+  it("records return_for_revision as a lifecycle decision without appending a reply", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-request-changes-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -172,7 +172,7 @@ describe("ApprovalService", () => {
     });
     expect(decisions).toEqual([
       expect.objectContaining({
-        action: "request_changes",
+        action: "return_for_revision",
         resultingStatus: "pending",
         comment: "Regenerate with sources."
       })

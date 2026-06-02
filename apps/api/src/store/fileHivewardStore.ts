@@ -93,6 +93,7 @@ import {
   agentWorkspaceRefsForBlueprint,
   agentWorkspaceRootFolder
 } from "../services/agentWorkspaceService";
+import { projectPendingApprovalDiscussion } from "./approvalDiscussionProjection";
 
 const storeIndexSchema = "hiveward.store-index/v1";
 
@@ -1374,20 +1375,29 @@ export class FileHivewardStore implements HivewardStore {
         )
         .map((request) => {
           const run = runsById.get(request.runId)!;
+          const archive = archivesByRunId.get(request.runId);
           const nodeRun = request.nodeRunId
-            ? archivesByRunId.get(request.runId)?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
+            ? archive?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
             : undefined;
           const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
-          const selectedReplyId = request.selectedReplyId ?? readString(output?.selectedReplyId);
+          const selectedReplyId = request.selectedReplyId;
           const replies = mergePendingApprovalReplies(
             pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }), selectedReplyId),
             readPendingApprovalReplies(output?.replies, selectedReplyId)
           );
+          const binding = index.approvalDiscussionBindings.find((candidate) => candidate.approvalRequestId === request.id);
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
           return {
             approvalRequestId: request.id,
             approvalThreadId: approvalThreadIdForRequest(request),
             kind: request.kind,
+            discussion: projectPendingApprovalDiscussion({
+              request,
+              binding,
+              run,
+              nodeRuns: archive?.nodeRuns ?? [],
+              sessions: index.nodeExecutionSessions.filter((session) => session.runId === request.runId)
+            }),
             blueprintId: run.blueprintId,
             blueprintName: run.blueprintName,
             blueprintRunId: run.id,

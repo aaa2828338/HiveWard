@@ -650,20 +650,20 @@ describe("apiRouter", () => {
 
   it("routes legacy blueprint approval actions through pending approval requests", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string }> = [];
+    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string | null }> = [];
     const worker = {
       async applyApprovalRequest(
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
         approvalRequestId: string,
         action: "approve" | "reject" | "reply",
-        input?: { comment?: string; message?: string; selectedReplyId?: string }
+        input?: { comment?: string; message?: string; selectedReplyId?: string | null }
       ) {
         calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message, selectedReplyId: input?.selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       },
-      async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId: string, selectedReplyId: string) {
-        calls.push({ action: "select", approvalRequestId: nodeRunId, selectedReplyId });
+      async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, approvalRequestId: string, selectedReplyId: string | null) {
+        calls.push({ action: "select", approvalRequestId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -674,6 +674,7 @@ describe("apiRouter", () => {
       const approval1 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
       const approval2 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-2");
       const approval3 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-3");
+      const approval4 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-4");
 
       await withApiServer(fixture.store, async (baseUrl) => {
         await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
@@ -696,13 +697,19 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ nodeRunId: "node-run-4", selectedReplyId: "reply-4" })
         }));
+        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/select-approval-reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-4", selectedReplyId: null })
+        }));
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
         { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: "reply-1" },
         { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
         { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
-        { action: "select", approvalRequestId: "node-run-4", selectedReplyId: "reply-4" }
+        { action: "select", approvalRequestId: approval4.id, selectedReplyId: "reply-4" },
+        { action: "select", approvalRequestId: approval4.id, selectedReplyId: null }
       ]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -884,7 +891,7 @@ describe("apiRouter", () => {
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
         approvalRequestId: string,
-        action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise",
+        action: "approve" | "reject" | "reply" | "complete" | "terminate" | "return_for_revision" | "request_changes" | "revise",
         input?: { comment?: string; message?: string }
       ) {
         calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message });
@@ -926,8 +933,8 @@ describe("apiRouter", () => {
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "request_changes", approvalRequestId: changeRequest.id, comment: "Regenerate with sources.", message: undefined },
-        { action: "revise", approvalRequestId: reviseRequest.id, comment: undefined, message: "Tighten the plan." }
+        { action: "return_for_revision", approvalRequestId: changeRequest.id, comment: "Regenerate with sources.", message: undefined },
+        { action: "return_for_revision", approvalRequestId: reviseRequest.id, comment: undefined, message: "Tighten the plan." }
       ]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

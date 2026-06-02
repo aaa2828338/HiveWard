@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
+  approvalThreadIdForRequest,
   isAgentBlueprintNode,
   resolveAgentRuntimeSource,
   isManagerSlotInnerInHandle,
@@ -15,6 +16,7 @@ import {
   type AgentRuntimeId,
   type AgentTaskResult,
   type ConditionNodeConfig,
+  type InboxDiscussionMode,
   type LoopNodeConfig,
   type IterationRound,
   type IterationSession,
@@ -24,6 +26,9 @@ import {
   type StartAgentTaskInput,
   type StartedAgentTaskResult,
   type Artifact,
+  type ApprovalDiscussionBinding,
+  type ApprovalDiscussionRoute,
+  type ApprovalReply,
   type ApprovalRequest,
   type ReleaseReport,
   type NodeExecutionSession,
@@ -56,6 +61,7 @@ import { agentWorkspaceRefForNode, type AgentWorkspaceRef } from "../services/ag
 import { ManagerContextService, type ManagerInjectedContext, type ManagerSnapshotDraft } from "../services/managerContextService";
 import { RoundPreflightService, type RoundPreflightExecutionResult, type RoundPreflightMode } from "../services/roundPreflightService";
 import { SelfIterationOrchestrator } from "../services/selfIterationOrchestrator";
+import { resolveApprovalDiscussion, type ApprovalDiscussionResolution } from "../services/approvalDiscussionResolver";
 
 const executableTypes = new Set([
   "agent",
@@ -277,6 +283,7 @@ interface ManagerDecision {
 interface AgentApprovalReply {
   id: string;
   role: "assistant" | "user";
+  purpose?: "message" | "candidate";
   body: string;
   createdAt: string;
   selected?: boolean;
@@ -317,6 +324,16 @@ interface PendingApprovalRevisionContext {
 interface RequirementRevisionDraft extends ApprovalRevisionDraft {
   metadata: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
 }
+
+type ApprovalRequestAction =
+  | "approve"
+  | "reject"
+  | "reply"
+  | "complete"
+  | "terminate"
+  | "return_for_revision"
+  | "request_changes"
+  | "revise";
 
 interface ManagerSlotContext {
   manager: {
@@ -495,8 +512,8 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     approvalRequestId: string,
-    action: "approve" | "reject" | "reply" | "complete" | "terminate" | "request_changes" | "revise",
-    input: { comment?: string; message?: string; selectedReplyId?: string } = {}
+    action: ApprovalRequestAction,
+    input: { comment?: string; message?: string; selectedReplyId?: string | null; discussionMode?: InboxDiscussionMode } = {}
   ): Promise<BlueprintRun> {
     const request = await this.store.getApprovalRequest(approvalRequestId);
     if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
@@ -510,9 +527,11 @@ export class BlueprintWorker {
     }
 
     if (action === "reply") {
-      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "");
-      if (request.kind === "agent_proposal" && request.nodeRunId) {
-        await this.recordAgentApprovalComment(currentRun, request.nodeRunId, input.message ?? "");
+      const discussionMode = input.discussionMode ?? "reply";
+      if (discussionMode === "candidate") {
+        await this.createApprovalCandidateReply(blueprint, currentRun, request, input.message ?? "");
+      } else {
+        await this.recordApprovalDiscussionReply(blueprint, currentRun, request, input.message ?? "");
       }
       await this.managerMailProjector.refresh(run.id);
       const waiting = { ...currentRun, status: "waiting_approval" as const };
@@ -521,27 +540,32 @@ export class BlueprintWorker {
     }
 
     let requirementRevisionMetadata: RequirementRevisionDraft["metadata"] | undefined;
+    let requirementRevisionCommand: RunCommand | undefined;
     let result: ApprovalActionResult;
     if (action === "approve") {
-      result = await this.approvalService.approve(approvalRequestId, input.comment, input.selectedReplyId);
+      result = await this.approvalService.approve(
+        approvalRequestId,
+        input.comment,
+        typeof input.selectedReplyId === "string" ? input.selectedReplyId : undefined
+      );
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
-    } else if (action === "request_changes") {
-      result = await this.approvalService.requestChanges(approvalRequestId, input.comment ?? input.message ?? "");
+    } else if (isReturnForRevisionAction(action)) {
+      const message = input.message ?? input.comment ?? "";
       if (request.kind === "agent_proposal" && request.nodeRunId) {
-        await this.rerunAgentApprovalForRequestedChanges(blueprint, currentRun, request, result.approvalRequest, input.comment ?? input.message ?? "");
+        result = await this.approvalService.requestChanges(approvalRequestId, message);
+        await this.rerunAgentApprovalForRequestedChanges(blueprint, currentRun, request, result.approvalRequest, message);
         await this.managerMailProjector.refresh(run.id);
         const latestRun = await this.store.getBlueprintRun(run.id);
         const waiting = { ...(latestRun ?? currentRun), status: "waiting_approval" as const };
         await this.store.updateBlueprintRun(waiting);
         return waiting;
       }
-    } else if (action === "revise") {
-      const message = input.message ?? input.comment ?? "";
       if (request.kind === "iteration_requirement_plan") {
-        const draft = await this.buildRequirementDecisionRevision(blueprint, currentRun, request, message);
+        requirementRevisionCommand = await this.markPrepareCommandRevisionRequested(currentRun.id, request, message);
+        const draft = await this.buildRequirementDecisionRevision(blueprint, currentRun, request, message, requirementRevisionCommand);
         requirementRevisionMetadata = draft.metadata;
         result = await this.approvalService.revise(approvalRequestId, message, draft);
       } else {
@@ -552,6 +576,18 @@ export class BlueprintWorker {
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    if (result.nextApprovalRequest?.kind === "iteration_requirement_plan") {
+      const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+      if (topManager) {
+        await this.ensureRequirementApprovalDiscussionBinding(result.nextApprovalRequest, currentRun, topManager, requirementRevisionCommand);
+      }
+    }
+    if (result.nextApprovalRequest?.kind === "manager_release_report") {
+      const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+      if (topManager) {
+        await this.ensureReleaseReportApprovalDiscussionBinding(result.nextApprovalRequest, currentRun, topManager);
+      }
+    }
     if (requirementRevisionMetadata && result.nextApprovalRequest?.roundId) {
       const round = (await this.store.listIterationRounds({ runId: result.nextApprovalRequest.runId }))
         .find((candidate) => candidate.id === result.nextApprovalRequest?.roundId);
@@ -566,7 +602,9 @@ export class BlueprintWorker {
     await this.managerMailProjector.refresh(run.id);
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
-      if (action === "approve") return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, input.selectedReplyId);
+      if (action === "approve") {
+        return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, result.approvalRequest.selectedReplyId);
+      }
     }
 
     if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
@@ -847,6 +885,43 @@ export class BlueprintWorker {
     await Promise.all(commands.map((command) => this.markRunCommandSucceeded(command)));
   }
 
+  private async markPrepareCommandRevisionRequested(
+    runId: string,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<RunCommand | undefined> {
+    if (!request.roundId) return undefined;
+    const feedback = message.trim();
+    if (!feedback) throw new Error("Approval revision message is required.");
+
+    const commands = (await this.store.listRunCommands({
+      runId,
+      roundId: request.roundId,
+      kind: prepareRoundCommandKind
+    })).sort((left, right) =>
+      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    );
+    const command = commands.find((candidate) => activeRunCommandStatuses.includes(candidate.status)) ?? commands[0];
+    if (!command) return undefined;
+
+    const revision = Math.max(command.currentRevision + 1, request.revision);
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "running",
+      currentRevision: revision,
+      currentStep: "revise_plan",
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      metadata: {
+        ...(command.metadata ?? {}),
+        humanFeedback: feedback,
+        previousRequirement: request.body,
+        revisionRequestedBy: request.id
+      }
+    });
+  }
+
   private async prepareSelfIterationRound(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
@@ -1026,6 +1101,7 @@ export class BlueprintWorker {
         planSource: preflight.planSource
       }
     });
+    await this.ensureRequirementApprovalDiscussionBinding(request, run, topManager, command);
     await this.managerMailProjector.refresh(run.id);
     return request;
   }
@@ -1603,7 +1679,8 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     request: ApprovalRequest,
-    message: string
+    message: string,
+    command?: RunCommand
   ): Promise<RequirementRevisionDraft> {
     const feedback = message.trim();
     if (!feedback) throw new Error("Approval revision message is required.");
@@ -1627,7 +1704,7 @@ export class BlueprintWorker {
       humanFeedback: feedback,
       previousRequirement: request.body,
       revision,
-      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
+      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager, command)
     });
     return {
       body: preflight.body,
@@ -1641,6 +1718,354 @@ export class BlueprintWorker {
         planSource: "revised_from_feedback"
       }
     };
+  }
+
+  private async recordApprovalDiscussionReply(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<void> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval reply message is required.");
+
+    const resolution = await this.resolveApprovalDiscussionForRequest(request);
+    if (resolution.capability.mode === "none") {
+      throw new Error(`Approval discussion is unavailable: ${resolution.reason ?? "discussion_disabled"}.`);
+    }
+
+    await this.approvalService.recordPendingReply(request.id, trimmed);
+    if (resolution.capability.mode !== "executor" || !resolution.executor) return;
+
+    const { result, runtimeRef } = await this.runApprovalDiscussionExecutor({
+      blueprint,
+      run,
+      request,
+      resolution,
+      message: trimmed,
+      discussionMode: "reply"
+    });
+    if (result.status !== "succeeded") {
+      throw new Error(result.error ?? "Approval discussion reply failed.");
+    }
+    await this.appendApprovalAssistantReply(request, resolution, "message", formatTranscriptContent(result.output), runtimeRef);
+  }
+
+  private async createApprovalCandidateReply(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<void> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval candidate prompt is required.");
+
+    const resolution = await this.resolveApprovalDiscussionForRequest(request);
+    if (resolution.capability.mode === "none") {
+      throw new Error(`Approval discussion is unavailable: ${resolution.reason ?? "discussion_disabled"}.`);
+    }
+    if (resolution.capability.mode !== "executor" || !resolution.executor || !resolution.capability.canCreateCandidate) {
+      throw new Error("Approval discussion cannot create candidate replies.");
+    }
+
+    const { result, runtimeRef } = await this.runApprovalDiscussionExecutor({
+      blueprint,
+      run,
+      request,
+      resolution,
+      message: trimmed,
+      discussionMode: "candidate"
+    });
+    if (result.status !== "succeeded") {
+      throw new Error(result.error ?? "Approval candidate generation failed.");
+    }
+    await this.appendApprovalAssistantReply(request, resolution, "candidate", formatTranscriptContent(result.output), runtimeRef);
+  }
+
+  private async resolveApprovalDiscussionForRequest(request: ApprovalRequest): Promise<ApprovalDiscussionResolution> {
+    const binding = await this.store.getApprovalDiscussionBinding(request.id);
+    const run = request.runId ? await this.store.getBlueprintRun(request.runId) : undefined;
+    const [nodeRuns, sessions] = request.runId
+      ? await Promise.all([
+          this.store.listNodeRuns(request.runId),
+          this.store.listNodeExecutionSessions({ runId: request.runId })
+        ])
+      : [[], []];
+    return resolveApprovalDiscussion({
+      request,
+      binding,
+      run,
+      nodeRuns,
+      sessions
+    });
+  }
+
+  private async runApprovalDiscussionExecutor(input: {
+    blueprint: BlueprintDefinition;
+    run: BlueprintRun;
+    request: ApprovalRequest;
+    resolution: ApprovalDiscussionResolution;
+    message: string;
+    discussionMode: InboxDiscussionMode;
+  }): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
+    const executor = input.resolution.executor;
+    if (!executor) throw new Error("Approval discussion executor is not bound.");
+
+    const [session, nodeRun, replies] = await Promise.all([
+      this.store.getNodeExecutionSession(executor.sessionId),
+      this.findNodeRunById(input.run.id, executor.nodeRunId),
+      this.store.listApprovalReplies({ threadId: approvalThreadIdForRequest(input.request) })
+    ]);
+    if (!session) throw new Error("Approval discussion executor session is missing.");
+    if (!session.nativeSessionId) throw new Error("Approval discussion executor session cannot be resumed.");
+    if (!nodeRun) throw new Error("Approval discussion executor node run is missing.");
+
+    await this.appendExecutionTranscriptEvent(session, "user", "user_message", input.message, {
+      approvalRequestId: input.request.id,
+      approvalDiscussionMode: input.discussionMode,
+      route: input.resolution.route
+    });
+
+    const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message, input.discussionMode);
+    const startInput = this.buildApprovalDiscussionStartInput(input.blueprint, nodeRun, session, input.resolution, taskInput);
+    return this.executeAgentTaskAttempt({
+      ...startInput,
+      nativeSessionId: session.nativeSessionId,
+      executionSessionPolicy: session.policy
+    }, {
+      session,
+      nodeRun,
+      resumeNativeSessionId: session.nativeSessionId
+    });
+  }
+
+  private buildApprovalDiscussionTaskInput(
+    request: ApprovalRequest,
+    replies: ApprovalReply[],
+    message: string,
+    discussionMode: InboxDiscussionMode
+  ): Record<string, unknown> {
+    return {
+      approvalDiscussion: {
+        requestId: request.id,
+        threadId: approvalThreadIdForRequest(request),
+        kind: request.kind,
+        title: request.title,
+        body: request.body,
+        mode: discussionMode,
+        latestUserMessage: message,
+        selectedReplyId: request.selectedReplyId,
+        instruction: discussionMode === "candidate"
+          ? "Create a reviewable candidate replacement output for this pending approval. Do not approve, reject, revise, or advance lifecycle state."
+          : "Reply conversationally to the human about this pending approval. Do not approve, reject, revise, or advance lifecycle state."
+      },
+      approvalReplies: replies.map((reply) => ({
+        id: reply.id,
+        actor: reply.actor,
+        purpose: reply.purpose ?? "message",
+        body: reply.body,
+        createdAt: reply.createdAt
+      }))
+    };
+  }
+
+  private buildApprovalDiscussionStartInput(
+    blueprint: BlueprintDefinition,
+    nodeRun: BlueprintNodeRun,
+    session: NodeExecutionSession,
+    resolution: ApprovalDiscussionResolution,
+    taskInput: Record<string, unknown>
+  ): StartAgentTaskInput {
+    const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+    if (!node) throw new Error("Approval discussion executor node is missing.");
+
+    if (isAgentBlueprintNode(node)) {
+      const config = node.config as AgentNodeConfig;
+      return {
+        blueprintRunId: nodeRun.blueprintRunId,
+        nodeRunId: nodeRun.id,
+        source: session.harnessId,
+        agentId: session.harnessId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: session.harnessId === "hermes" ? config.profileId : undefined,
+        agentName: config.agentName,
+        prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) }),
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
+        input: taskInput,
+        skillIds: config.skillIds,
+        tools: config.tools
+      };
+    }
+
+    if (node.type === "manager") {
+      const config = node.config as ManagerNodeConfig;
+      const prompt = resolution.route === "release_report_manager"
+        ? this.resolveManagerReleaseReportPrompt(config)
+        : this.resolveManagerPreflightPrompt(config, "revise_plan");
+      return {
+        blueprintRunId: nodeRun.blueprintRunId,
+        nodeRunId: nodeRun.id,
+        source: session.harnessId,
+        agentId: session.harnessId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: session.harnessId === "hermes" ? config.profileId : undefined,
+        agentName: config.agentName?.trim() || defaultManagerAgentName,
+        prompt,
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: humanReportEnvelopeSchemaBase,
+        input: taskInput,
+        skillIds: config.skillIds,
+        tools: config.tools ?? []
+      };
+    }
+
+    throw new Error("Approval discussion executor node type is not supported.");
+  }
+
+  private async appendApprovalAssistantReply(
+    request: ApprovalRequest,
+    resolution: ApprovalDiscussionResolution,
+    purpose: "message" | "candidate",
+    body: string,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<ApprovalReply> {
+    return this.store.appendApprovalReply({
+      id: `approval-reply-${nanoid(10)}`,
+      threadId: approvalThreadIdForRequest(request),
+      approvalRequestId: request.id,
+      actor: resolution.binding?.executorActor ?? "agent",
+      purpose,
+      body,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        source: "approval_discussion",
+        route: resolution.route,
+        runtimeRef
+      }
+    });
+  }
+
+  private async ensureAgentApprovalDiscussionBinding(
+    request: ApprovalRequest,
+    nodeRun: BlueprintNodeRun
+  ): Promise<void> {
+    const session = this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({
+      runId: nodeRun.blueprintRunId,
+      nodeRunId: nodeRun.id
+    }));
+    await this.createApprovalDiscussionBinding({
+      request,
+      route: "agent_approval",
+      executorActor: "agent",
+      executorNodeId: nodeRun.nodeId,
+      executorNodeRunId: nodeRun.id,
+      session,
+      missingReason: "agent_approval_session_missing"
+    });
+  }
+
+  private async ensureRequirementApprovalDiscussionBinding(
+    request: ApprovalRequest,
+    run: BlueprintRun,
+    topManager: BlueprintNode,
+    command?: RunCommand
+  ): Promise<void> {
+    const requirementStep = command
+      ? (await this.store.listRunCommandSteps({ commandId: command.id }))
+          .filter((step) => step.mode === "requirement_resolution" || step.mode === "revise_plan")
+          .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0]
+      : undefined;
+    const nodeRunId = requirementStep?.nodeRunId ?? request.nodeRunId;
+    const session = nodeRunId
+      ? this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({ runId: run.id, nodeRunId }))
+      : undefined;
+    const executorNodeId = requirementStep?.nodeId ?? session?.nodeId ?? topManager.id;
+    const route: ApprovalDiscussionRoute = executorNodeId === topManager.id ? "requirement_manager" : "requirement_agent";
+    await this.createApprovalDiscussionBinding({
+      request,
+      route,
+      executorActor: route === "requirement_manager" ? "manager" : "agent",
+      executorNodeId,
+      executorNodeRunId: nodeRunId,
+      session,
+      missingReason: "requirement_executor_session_missing"
+    });
+  }
+
+  private async ensureReleaseReportApprovalDiscussionBinding(
+    request: ApprovalRequest,
+    run: BlueprintRun,
+    topManager: BlueprintNode
+  ): Promise<void> {
+    const nodeRun = (await this.store.listNodeRuns(run.id))
+      .filter((candidate) =>
+        candidate.nodeId === topManager.id &&
+        candidate.status === "succeeded" &&
+        (!request.roundId || candidate.iterationRoundId === request.roundId)
+      )
+      .sort((left, right) =>
+        new Date(right.endedAt ?? right.startedAt ?? right.queuedAt ?? "").getTime() -
+        new Date(left.endedAt ?? left.startedAt ?? left.queuedAt ?? "").getTime()
+      )[0];
+    const session = nodeRun
+      ? this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id }))
+      : undefined;
+    await this.createApprovalDiscussionBinding({
+      request,
+      route: "release_report_manager",
+      executorActor: "manager",
+      executorNodeId: topManager.id,
+      executorNodeRunId: nodeRun?.id,
+      session,
+      missingReason: "release_report_executor_session_missing"
+    });
+  }
+
+  private async createApprovalDiscussionBinding(input: {
+    request: ApprovalRequest;
+    route: ApprovalDiscussionRoute;
+    executorActor: NonNullable<ApprovalDiscussionBinding["executorActor"]>;
+    executorNodeId?: string;
+    executorNodeRunId?: string;
+    session?: NodeExecutionSession;
+    missingReason: string;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session);
+    await this.store.createApprovalDiscussionBindingIfAbsent({
+      approvalRequestId: input.request.id,
+      threadId: input.request.threadId,
+      mode: hasExecutor ? "executor" : "message_only",
+      route: input.route,
+      executorActor: input.executorActor,
+      executorKind: input.route,
+      executorNodeId: input.executorNodeId,
+      executorNodeRunId: input.executorNodeRunId,
+      executorSessionId: input.session?.id,
+      runtimeId: input.session?.harnessId as AgentRuntimeId | undefined,
+      canStreamReply: hasExecutor,
+      canCreateCandidate: hasExecutor,
+      reason: hasExecutor ? undefined : input.missingReason,
+      resolverVersion: 1,
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+
+  private latestNodeExecutionSession(sessions: NodeExecutionSession[]): NodeExecutionSession | undefined {
+    return sessions
+      .filter((session) => session.status !== "unavailable")
+      .sort((left, right) =>
+        new Date(right.lastUsedAt ?? right.updatedAt).getTime() -
+        new Date(left.lastUsedAt ?? left.updatedAt).getTime()
+      )[0];
   }
 
   async approveRun(
@@ -1673,40 +2098,23 @@ export class BlueprintWorker {
   async selectApprovalReply(
     _blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    nodeRunId: string,
-    selectedReplyId: string
+    approvalRequestId: string,
+    selectedReplyId: string | null
   ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
 
-    const nodeRuns = await this.store.listNodeRuns(run.id);
-    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
-    if (!waiting) {
-      throw new Error("Requested approval is no longer waiting.");
+    const request = await this.store.getApprovalRequest(approvalRequestId);
+    if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
+    if (request.runId !== run.id) {
+      throw new Error("Approval request does not belong to this run.");
     }
-    if (!isAgentApprovalWaitingOutput(waiting.output)) {
-      throw new Error("Only Agent approval requests can select a solution.");
-    }
-
-    const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId);
-    if (!normalizedSelectedReplyId) {
-      throw new Error("Approval selection id is required.");
-    }
-    const selectedOutput = applyAgentApprovalSelection(waiting.output, normalizedSelectedReplyId);
-
-    const updatedWaiting = {
-      ...waiting,
-      output: selectedOutput
-    };
-    await this.store.upsertNodeRun(updatedWaiting);
-    await this.migrationService.migratePendingNodeApproval({
-      runId: run.id,
-      nodeRun: updatedWaiting,
-      requestedByLabel: waiting.nodeLabel
-    });
+    await this.approvalService.selectApprovalCandidate(approvalRequestId, selectedReplyId);
     await this.managerMailProjector.refresh(run.id);
-    return { ...run, status: "waiting_approval" as const };
+    const waiting = { ...run, status: "waiting_approval" as const };
+    await this.store.updateBlueprintRun(waiting);
+    return waiting;
   }
 
   async rejectRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
@@ -2096,12 +2504,15 @@ export class BlueprintWorker {
       agentReports: releaseAgentReports,
       agentHandoffs
     });
-    await this.iterationService.publishExecutionResult({
+    const published = await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
       summary,
       artifacts
     });
+    if (published?.approvalRequest) {
+      await this.ensureReleaseReportApprovalDiscussionBinding(published.approvalRequest, run, topManager);
+    }
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
       return "handled";
@@ -4040,6 +4451,9 @@ export class BlueprintWorker {
       replacesRequestId: revisionContext?.replacesRequestId,
       revision: revisionContext?.revision
     });
+    if (migratedRequest) {
+      await this.ensureAgentApprovalDiscussionBinding(migratedRequest, waiting);
+    }
     if (revisionContext?.replacesRequestId && migratedRequest?.id) {
       await this.supersedeOriginalApprovalIfPending(revisionContext.replacesRequestId, migratedRequest.id);
     }
@@ -4057,6 +4471,27 @@ export class BlueprintWorker {
       return { approved: true, comment: comment?.trim() || undefined };
     }
 
+    const selectedCandidate = selectedReplyId
+      ? await this.findSelectedApprovalCandidate(run.id, nodeRun.id, selectedReplyId)
+      : undefined;
+    if (selectedCandidate) {
+      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+      if (node && isAgentBlueprintNode(node)) {
+        const config = node.config as AgentNodeConfig;
+        if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
+          await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, selectedCandidate.body);
+        }
+      }
+      return buildApprovedAgentOutput(
+        selectedCandidate.body,
+        approvalRepliesToAgentApprovalReplies(await this.store.listApprovalReplies({
+          threadId: approvalThreadIdForRequest(selectedCandidate.request)
+        }), selectedCandidate.reply.id),
+        comment,
+        selectedCandidate.reply.id
+      );
+    }
+
     const approvalOutput = applyAgentApprovalSelection(nodeRun.output, selectedReplyId);
     const approvedOutput = resolveAgentApprovalSelectedOutput(approvalOutput);
     const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
@@ -4067,6 +4502,25 @@ export class BlueprintWorker {
       }
     }
     return buildApprovedAgentOutput(approvedOutput, approvalOutput.replies, comment, approvalOutput.selectedReplyId);
+  }
+
+  private async findSelectedApprovalCandidate(
+    runId: string,
+    nodeRunId: string,
+    selectedReplyId: string
+  ): Promise<{ request: ApprovalRequest; reply: ApprovalReply; body: string } | undefined> {
+    const requests = (await this.store.listApprovalRequests({ runId }))
+      .filter((candidate) => candidate.nodeRunId === nodeRunId);
+    for (const request of requests) {
+      const reply = (await this.store.listApprovalReplies({ approvalRequestId: request.id }))
+        .find((candidate) =>
+          candidate.id === selectedReplyId &&
+          candidate.threadId === approvalThreadIdForRequest(request) &&
+          candidate.purpose === "candidate"
+        );
+      if (reply) return { request, reply, body: reply.body };
+    }
+    return undefined;
   }
 
   private async executeAgentConfiguredSend(
@@ -5521,6 +5975,10 @@ function normalizeAgentApprovalSelectionId(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function isReturnForRevisionAction(action: ApprovalRequestAction): boolean {
+  return action === "return_for_revision" || action === "request_changes" || action === "revise";
+}
+
 function formatNodeOutputSummary(output: unknown): string {
   if (typeof output === "string") {
     return output.length > 500 ? `${output.slice(0, 500)}...` : output;
@@ -5553,13 +6011,13 @@ function isReviewOutputSelectionId(value: string | undefined): boolean {
 
 function isAgentApprovalSelectionAvailable(replies: AgentApprovalReply[], selectedReplyId: string | undefined): boolean {
   if (!selectedReplyId || isReviewOutputSelectionId(selectedReplyId)) return true;
-  return replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+  return replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
 }
 
 function assertAgentApprovalSelection(output: AgentApprovalWaitingOutput, selectedReplyId: string): void {
   if (isReviewOutputSelectionId(selectedReplyId)) return;
-  if (output.replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant")) return;
-  throw new Error("Only assistant approval replies can be selected.");
+  if (output.replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate")) return;
+  throw new Error("Only candidate approval replies can be selected.");
 }
 
 function applyAgentApprovalSelection(
@@ -5591,7 +6049,7 @@ function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput):
   if (isReviewOutputSelectionId(selectedReplyId)) {
     return "selectedOutput" in output ? output.selectedOutput : output.reviewOutput;
   }
-  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
   if (!selectedReply) {
     throw new Error("Selected approval reply is no longer available.");
   }
@@ -5600,7 +6058,7 @@ function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput):
 
 function resolveAgentApprovalSelectionSnapshot(output: AgentApprovalWaitingOutput, selectedReplyId: string): unknown {
   if (isReviewOutputSelectionId(selectedReplyId)) return output.reviewOutput;
-  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
+  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant" && reply.purpose === "candidate");
   return selectedReply?.body;
 }
 
@@ -5614,6 +6072,19 @@ function markSelectedApprovalReplies(
       ? { ...unselectedReply, selected: true }
       : unselectedReply;
   });
+}
+
+function approvalRepliesToAgentApprovalReplies(
+  replies: ApprovalReply[],
+  selectedReplyId?: string
+): AgentApprovalReply[] {
+  return markSelectedApprovalReplies(replies.map((reply) => ({
+    id: reply.id,
+    role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
+    body: reply.body,
+    createdAt: reply.createdAt
+  })), selectedReplyId);
 }
 
 function buildAgentApprovalReplyInput(
@@ -5662,7 +6133,7 @@ function buildAgentApprovalRevisionInput(
   revisionContext: PendingApprovalRevisionContext
 ): Record<string, unknown> {
   const instruction = [
-    "This node is being rerun because the human explicitly selected request_changes.",
+    "This node is being rerun because the human explicitly selected return_for_revision.",
     "Treat requestedChanges as required revision feedback, not as a casual chat reply.",
     "Produce a revised output for the original task while preserving useful parts of the previous output.",
     "Do not claim the approval is complete or approved; the platform will create a new pending approval for the revised output."
