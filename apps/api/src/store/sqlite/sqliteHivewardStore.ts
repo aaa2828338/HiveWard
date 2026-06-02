@@ -1235,10 +1235,7 @@ export class SqliteHivewardStore implements HivewardStore {
     return rowsWithRequests.map(({ row, request }) => {
       const requestRunId = request.runId ?? requireString(row.run_id);
       const selectedReplyId = request.selectedReplyId;
-      const approvalReplies = pendingApprovalRepliesFromApprovalReplies(
-        approvalRepliesByRequestId.get(request.id) ?? [],
-        selectedReplyId ?? undefined
-      );
+      const approvalReplies = pendingApprovalRepliesFromApprovalReplies(approvalRepliesByRequestId.get(request.id) ?? []);
       const canReturnForRevision = request.capabilities.returnForRevision === true;
       return {
         approvalRequestId: request.id,
@@ -3772,18 +3769,14 @@ function approvalReplyFromRow(row: Row): ApprovalReply {
   };
 }
 
-function pendingApprovalRepliesFromApprovalReplies(
-  replies: ApprovalReply[],
-  selectedReplyId?: string
-): PendingApprovalItem["replies"] {
+function pendingApprovalRepliesFromApprovalReplies(replies: ApprovalReply[]): PendingApprovalItem["replies"] {
   if (!replies.length) return undefined;
   return replies.map((reply) => ({
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
     purpose: reply.purpose ?? "message",
     body: reply.body,
-    createdAt: reply.createdAt,
-    ...(selectedReplyId === reply.id ? { selected: true } : {})
+    createdAt: reply.createdAt
   }));
 }
 

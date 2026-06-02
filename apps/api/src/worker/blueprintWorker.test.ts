@@ -943,21 +943,29 @@ describe("BlueprintWorker", () => {
     });
     expect(adapter.sendCalls).toHaveLength(0);
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Use the final wording.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Use the final wording."
+    });
     const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
     const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const repliedOutput = repliedNode.output as {
       reviewOutput: string;
       replies: Array<{ role: string; body: string }>;
     };
+    const approvalReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
 
     expect(repliedOutput.reviewOutput).toBe("draft answer");
-    expect(repliedOutput.replies.map((reply) => reply.role)).toEqual(["user"]);
-    expect(repliedOutput.replies.map((reply) => reply.body)).toEqual(["Use the final wording."]);
-    expect(adapter.calls).toHaveLength(1);
+    expect(repliedOutput.replies).toEqual([]);
+    expect(approvalReplies.map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
+      ["user", "message", "Use the final wording."],
+      ["agent", "message", "final answer"]
+    ]);
+    expect(adapter.calls).toHaveLength(2);
     expect(adapter.sendCalls).toHaveLength(0);
 
-    await worker.approveRun(blueprint, repliedView.run, repliedNode.id, "Approved.");
+    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "approve", {
+      comment: "Approved."
+    });
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
     const finalStep = (await store.listRunCommandSteps({ commandId: waitingCommand.id }))
@@ -975,6 +983,10 @@ describe("BlueprintWorker", () => {
               {
                 role: "user",
                 body: "Use the final wording."
+              },
+              {
+                role: "assistant",
+                body: "final answer"
               }
             ]
           }
@@ -1379,6 +1391,56 @@ describe("BlueprintWorker", () => {
     expect(finalView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["reply", "approve"]);
   });
 
+  it("fails approval when selectedReplyId is not a candidate on the current request", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-approval-request-1")
+    ], [
+      createCompletedAgentTask("task-approval-request-1", "succeeded", "draft answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const foreignRequest = await store.upsertApprovalRequest({
+      ...approvalRequest,
+      id: "approval-foreign-candidate",
+      threadId: "thread-foreign-candidate",
+      selectedReplyId: undefined
+    });
+    await store.appendApprovalReply({
+      id: "reply-foreign-candidate",
+      threadId: foreignRequest.threadId ?? foreignRequest.id,
+      approvalRequestId: foreignRequest.id,
+      actor: "agent",
+      purpose: "candidate",
+      body: "foreign candidate answer",
+      createdAt: new Date().toISOString()
+    });
+    await store.upsertApprovalRequest({
+      ...approvalRequest,
+      selectedReplyId: "reply-foreign-candidate"
+    });
+
+    await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "approve"))
+      .rejects.toThrow("Selected approval reply does not belong to this request.");
+    expect((await store.getApprovalRequest(approvalRequest.id))?.status).toBe("pending");
+    expect((await store.listNodeRuns(run.id)).find((nodeRun) => nodeRun.nodeId === "delivery")?.status).toBe("waiting_approval");
+  });
+
   it("keeps Agent approval comments from changing the selected output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -1409,22 +1471,27 @@ describe("BlueprintWorker", () => {
     const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
     if (!approvalRequest) throw new Error("Expected agent approval request.");
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Give me a concrete plan.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Give me a concrete plan."
+    });
     const firstReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const firstReplyNode = firstReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const firstReplyOutput = firstReplyNode.output as {
-      replies: Array<{ id: string; role: string; body: string; selected?: boolean }>;
+      replies: Array<{ id: string; role: string; body: string }>;
     };
-    expect(firstReplyOutput.replies.map((reply) => [reply.role, reply.body])).toEqual([
-      ["user", "Give me a concrete plan."]
+    expect(firstReplyOutput.replies).toEqual([]);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
+      ["user", "Give me a concrete plan."],
+      ["agent", "first usable plan"]
     ]);
 
     await worker.selectApprovalReply(blueprint, firstReplyView.run, approvalRequest.id, null);
     const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
 
-    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Try one more variant.");
+    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
+      message: "Try one more variant."
+    });
     const secondReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const secondReplyNode = secondReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const secondReplyOutput = secondReplyNode.output as {
@@ -1435,13 +1502,16 @@ describe("BlueprintWorker", () => {
 
     expect(secondReplyOutput.reviewOutput).toBe("draft answer");
     expect(secondReplyOutput.selectedReplyId).toBeUndefined();
-    expect(secondReplyOutput.replies.map((reply) => [reply.role, reply.body])).toEqual([
+    expect(secondReplyOutput.replies).toEqual([]);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
       ["user", "Give me a concrete plan."],
-      ["user", "Try one more variant."]
+      ["agent", "first usable plan"],
+      ["user", "Try one more variant."],
+      ["agent", "second plan"]
     ]);
-    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls).toHaveLength(3);
 
-    await worker.approveRun(blueprint, secondReplyView.run, secondReplyNode.id);
+    await worker.applyApprovalRequest(blueprint, secondReplyView.run, approvalRequest.id, "approve");
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
@@ -1478,25 +1548,24 @@ describe("BlueprintWorker", () => {
 
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
     if (!approvalRequest) throw new Error("Expected agent approval request.");
 
     await worker.selectApprovalReply(blueprint, waitingView.run, approvalRequest.id, null);
     const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
 
-    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Show another option.");
+    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
+      message: "Show another option."
+    });
     const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
     const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId?: string; selectedOutput?: string };
+    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId?: string };
 
     expect(repliedOutput.reviewOutput).toBe("original plan");
     expect(repliedOutput.selectedReplyId).toBeUndefined();
-    expect(repliedOutput.selectedOutput).toBeUndefined();
-    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls).toHaveLength(2);
 
-    await worker.approveRun(blueprint, repliedView.run, repliedNode.id);
+    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "approve");
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
@@ -1509,7 +1578,7 @@ describe("BlueprintWorker", () => {
     });
   });
 
-  it("does not rerun or fail the run when an Agent approval comment is added", async () => {
+  it("keeps the run waiting when an Agent approval discussion reply is added", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -1527,22 +1596,31 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-2")
     ], [
       createCompletedAgentTask("task-1", "succeeded", "draft answer"),
-      createCompletedAgentTask("task-2", "failed", undefined, "revision failed")
+      createCompletedAgentTask("task-2", "succeeded", "discussion acknowledgement")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Try again.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Try again."
+    });
     const replyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingAfterReply = replyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
     expect(replyView.run.status).toBe("waiting_approval");
     expect(waitingAfterReply?.status).toBe("waiting_approval");
     expect(waitingAfterReply?.error).toBeUndefined();
-    expect(adapter.calls).toHaveLength(1);
+    expect(waitingAfterReply?.id).toBe(waitingNode.id);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
+      ["user", "Try again."],
+      ["agent", "discussion acknowledgement"]
+    ]);
+    expect(adapter.calls).toHaveLength(2);
   });
 
   it("runs downstream nodes connected to a manager slot forward output", async () => {

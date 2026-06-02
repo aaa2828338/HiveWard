@@ -172,6 +172,8 @@ export class ApprovalService {
     if (selectedReplyId !== undefined) {
       throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
     }
+    const current = await this.requirePendingRequest(id, "approve");
+    await this.assertSelectedCandidateBelongsToRequest(current);
     return this.decide(id, "approve", "approved", { comment });
   }
 
@@ -293,19 +295,7 @@ export class ApprovalService {
     }
     const nextSelectedReplyId = selectedReplyId === null ? null : selectedReplyId.trim();
     if (nextSelectedReplyId) {
-      const threadId = current.threadId ?? current.id;
-      const replies = await this.store.listApprovalReplies({ threadId });
-      const selected = replies.find((reply) =>
-        reply.id === nextSelectedReplyId &&
-        reply.approvalRequestId === current.id &&
-        reply.threadId === threadId
-      );
-      if (!selected) {
-        throw new Error("Selected approval reply does not belong to this request.");
-      }
-      if (selected.purpose !== "candidate") {
-        throw new Error("Only candidate approval replies can be selected.");
-      }
+      await this.assertSelectedCandidateBelongsToRequest(current, nextSelectedReplyId);
     }
     const updated: ApprovalRequest = {
       ...current,
@@ -313,6 +303,25 @@ export class ApprovalService {
       updatedAt: new Date().toISOString()
     };
     return this.store.upsertApprovalRequest(updated);
+  }
+
+  private async assertSelectedCandidateBelongsToRequest(
+    request: ApprovalRequest,
+    selectedReplyId = typeof request.selectedReplyId === "string" ? request.selectedReplyId.trim() : ""
+  ): Promise<void> {
+    if (!selectedReplyId) return;
+    const threadId = request.threadId ?? request.id;
+    const selected = (await this.store.listApprovalReplies({ approvalRequestId: request.id })).find((reply) =>
+      reply.id === selectedReplyId &&
+      reply.approvalRequestId === request.id &&
+      reply.threadId === threadId
+    );
+    if (!selected) {
+      throw new Error("Selected approval reply does not belong to this request.");
+    }
+    if (selected.purpose !== "candidate") {
+      throw new Error("Only candidate approval replies can be selected.");
+    }
   }
 
   async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {

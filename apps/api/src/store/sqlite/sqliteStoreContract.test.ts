@@ -369,8 +369,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
             role: "assistant",
             purpose: "candidate",
             body: "legacy node candidate must not project",
-            createdAt: contractNow,
-            selected: true
+            createdAt: contractNow
           }]
         }
       };

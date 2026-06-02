@@ -98,7 +98,6 @@ export interface PendingApprovalReply {
   purpose?: "message" | "candidate";
   body: string;
   createdAt: string;
-  selected?: boolean;
 }
 
 export interface PendingApprovalUpstreamItem {
