@@ -69,12 +69,9 @@ function renderApprovalsPage({
       inboxItems={[]}
       language="en"
       t={messages.en}
-      onApprove={() => undefined}
       onApproveApprovalRequest={() => undefined}
       onComplete={() => undefined}
-      onReject={() => undefined}
       onRejectApprovalRequest={() => undefined}
-      onReply={() => undefined}
       onReplyApprovalRequest={() => undefined}
       onReturnForRevisionApprovalRequest={() => undefined}
       onSelectApprovalReply={() => undefined}
@@ -128,12 +125,9 @@ describe("ApprovalsPage", () => {
         inboxItems={[]}
         language="en"
         t={messages.en}
-        onApprove={() => undefined}
         onApproveApprovalRequest={() => undefined}
         onComplete={() => undefined}
-        onReject={() => undefined}
         onRejectApprovalRequest={() => undefined}
-        onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
@@ -159,12 +153,9 @@ describe("ApprovalsPage", () => {
         inboxItems={[]}
         language="en"
         t={messages.en}
-        onApprove={() => undefined}
         onApproveApprovalRequest={() => undefined}
         onComplete={() => undefined}
-        onReject={() => undefined}
         onRejectApprovalRequest={() => undefined}
-        onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
@@ -175,7 +166,7 @@ describe("ApprovalsPage", () => {
     );
 
     expect(html).toContain("Comment");
-    expect(html).toContain("Request changes");
+    expect(html).toContain("Return for revision");
     expect(html).not.toMatch(/reply with changes/i);
   });
 
@@ -188,12 +179,9 @@ describe("ApprovalsPage", () => {
         language="en"
         t={messages.en}
         actionPending
-        onApprove={() => undefined}
         onApproveApprovalRequest={() => undefined}
         onComplete={() => undefined}
-        onReject={() => undefined}
         onRejectApprovalRequest={() => undefined}
-        onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
@@ -221,12 +209,9 @@ describe("ApprovalsPage", () => {
         inboxItems={[]}
         language="en"
         t={messages.en}
-        onApprove={() => undefined}
         onApproveApprovalRequest={() => undefined}
         onComplete={() => undefined}
-        onReject={() => undefined}
         onRejectApprovalRequest={() => undefined}
-        onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}

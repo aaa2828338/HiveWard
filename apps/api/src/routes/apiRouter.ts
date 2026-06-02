@@ -61,19 +61,16 @@ import type {
   ChatRuntimeRef,
   ChatSessionStatus,
   ChatThinkingEffort,
-  ApproveBlueprintRunRequest,
   CreateChatSessionRequest,
   CreateHivewardChatSessionRequest,
+  InboxDiscussionMode,
   InboxItem,
-  RejectBlueprintRunRequest,
   RejectInboxItemRequest,
-  ReplyBlueprintRunApprovalRequest,
   ReplyInboxItemRequest,
   SelectApprovalRequestReplyRequest,
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
-  SelectBlueprintRunApprovalRequest,
   ChatStreamEvent,
   ApprovalDecision,
   ApprovalRequest,
@@ -818,8 +815,24 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const approvalRequestId = readRouteParam(req.params.approvalRequestId, "approvalRequestId");
       const body = normalizeSelectApprovalRequestReplyRequest(req.body);
-      const updated = await approvalService.selectApprovalCandidate(approvalRequestId, body.selectedReplyId);
-      res.json(await buildApprovalRequestResponse(approvalRequestId, updated.runId));
+      const approvalRequest = await store.getApprovalRequest(approvalRequestId);
+      if (!approvalRequest) {
+        throw new Error(`Approval request not found: ${approvalRequestId}`);
+      }
+      if (approvalRequest.runId) {
+        const run = await store.getBlueprintRun(approvalRequest.runId);
+        if (!run) throw new Error(`Blueprint run not found: ${approvalRequest.runId}`);
+        if (isTerminalRunStatus(run.status)) {
+          throw new ApiConflictError("run_already_finished", "Run is already finished.");
+        }
+        const blueprint = await getRunActionBlueprint(run);
+        if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
+        const updated = await worker.selectApprovalReply(blueprint, run, approvalRequestId, body.selectedReplyId);
+        res.json(await buildApprovalRequestResponse(approvalRequestId, updated.id));
+        return;
+      }
+      await approvalService.selectApprovalCandidate(approvalRequestId, body.selectedReplyId);
+      res.json(await buildApprovalRequestResponse(approvalRequestId));
     } catch (error) {
       next(error);
     }
@@ -1218,135 +1231,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post("/api/blueprint-runs/:runId/approve", async (req, res, next) => {
-    try {
-      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
-      if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
-        return;
-      }
-      const blueprint = await getRunActionBlueprint(run);
-      if (!blueprint) {
-        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
-        return;
-      }
-      const rawBody = isPlainRecord(req.body) ? req.body : {};
-      if ("selectedReplyId" in rawBody) {
-        throw new ApiBadRequestError(
-          "approval_selection_must_be_selected_first",
-          "Select an approval reply before approving; approve does not accept selectedReplyId."
-        );
-      }
-      const body = normalizeApproveBlueprintRunRequest(req.body);
-      if (isTerminalRunStatus(run.status)) {
-        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
-        return;
-      }
-      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
-      if (!approvalRequest) {
-        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
-        return;
-      }
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "approve", {
-        comment: body.comment
-      });
-      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/blueprint-runs/:runId/reject", async (req, res, next) => {
-    try {
-      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
-      if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
-        return;
-      }
-      const blueprint = await getRunActionBlueprint(run);
-      if (!blueprint) {
-        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
-        return;
-      }
-      const body = normalizeRejectBlueprintRunRequest(req.body);
-      if (isTerminalRunStatus(run.status)) {
-        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
-        return;
-      }
-      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
-      if (!approvalRequest) {
-        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
-        return;
-      }
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reject", { comment: body.comment });
-      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/blueprint-runs/:runId/reply", async (req, res, next) => {
-    try {
-      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
-      if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
-        return;
-      }
-      const blueprint = await getRunActionBlueprint(run);
-      if (!blueprint) {
-        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
-        return;
-      }
-      const body = normalizeReplyBlueprintRunApprovalRequest(req.body);
-      if (isTerminalRunStatus(run.status)) {
-        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
-        return;
-      }
-      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
-      if (!approvalRequest) {
-        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
-        return;
-      }
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequest.id, "reply", {
-        message: body.message,
-        discussionMode: body.discussionMode
-      });
-      res.json(await buildApprovalRequestResponse(approvalRequest.id, updated.id));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/blueprint-runs/:runId/select-approval-reply", async (req, res, next) => {
-    try {
-      const run = await store.getBlueprintRun(readRouteParam(req.params.runId, "runId"));
-      if (!run) {
-        res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
-        return;
-      }
-      const blueprint = await getRunActionBlueprint(run);
-      if (!blueprint) {
-        res.status(404).json({ error: { code: "blueprint_not_found", message: "Blueprint not found." } });
-        return;
-      }
-      const body = normalizeSelectBlueprintRunApprovalRequest(req.body);
-      if (isTerminalRunStatus(run.status)) {
-        res.status(409).json({ error: { code: "run_already_finished", message: "Run is already finished." } });
-        return;
-      }
-      const approvalRequest = await findPendingRunApprovalRequest(run.id, body.nodeRunId);
-      if (!approvalRequest) {
-        res.status(409).json({ error: { code: "approval_request_not_pending", message: "No pending approval request matches this run action." } });
-        return;
-      }
-      const updated = await worker.selectApprovalReply(blueprint, run, approvalRequest.id, body.selectedReplyId);
-      const view = await store.getRunView(updated.id);
-      res.json({ run: view });
-    } catch (error) {
-      next(error);
-    }
-  });
-
   router.get("/api/catalog/snapshot", async (_req, res, next) => {
     try {
       res.json({ snapshot: (await store.getCatalogSnapshot()) ?? emptyCatalogSnapshot() });
@@ -1493,11 +1377,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     };
   }
 
-  async function findPendingRunApprovalRequest(runId: string, nodeRunId?: string): Promise<{ id: string } | undefined> {
-    const requests = await store.listApprovalRequests({ runId, status: "pending" });
-    return requests.find((request) => !nodeRunId || request.nodeRunId === nodeRunId || request.id === nodeRunId);
-  }
-
   function isTerminalRunStatus(status: BlueprintRun["status"]): boolean {
     return status === "succeeded" || status === "failed" || status === "cancelled";
   }
@@ -1528,63 +1407,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   return router;
 }
 
-function normalizeApproveBlueprintRunRequest(value: unknown): ApproveBlueprintRunRequest {
-  if (value === undefined || value === null) return {};
-  if (!isPlainRecord(value)) {
-    throw new Error("Approve request must be a JSON object.");
-  }
-  return {
-    nodeRunId: readOptionalString(value.nodeRunId),
-    comment: readOptionalString(value.comment)
-  };
-}
-
 function readApprovalThreadStatus(value: unknown): ApprovalThread["status"] | undefined {
   const status = readOptionalString(value);
   if (!status) return undefined;
   if (status === "open" || status === "closed") return status;
   throw new Error("Approval thread status must be open or closed.");
-}
-
-function normalizeRejectBlueprintRunRequest(value: unknown): RejectBlueprintRunRequest {
-  if (value === undefined || value === null) return {};
-  if (!isPlainRecord(value)) {
-    throw new Error("Reject request must be a JSON object.");
-  }
-  return {
-    nodeRunId: readOptionalString(value.nodeRunId),
-    comment: readOptionalString(value.comment)
-  };
-}
-
-function normalizeReplyBlueprintRunApprovalRequest(value: unknown): ReplyBlueprintRunApprovalRequest {
-  if (!isPlainRecord(value)) {
-    throw new Error("Approval reply request must be a JSON object.");
-  }
-  const nodeRunId = readOptionalString(value.nodeRunId);
-  const message = readOptionalString(value.message);
-  if (!nodeRunId) {
-    throw new Error("Approval reply nodeRunId is required.");
-  }
-  if (!message) {
-    throw new Error("Approval reply message is required.");
-  }
-  return { nodeRunId, message, discussionMode: readInboxDiscussionMode(value.discussionMode) };
-}
-
-function normalizeSelectBlueprintRunApprovalRequest(value: unknown): SelectBlueprintRunApprovalRequest {
-  if (!isPlainRecord(value)) {
-    throw new Error("Approval selection request must be a JSON object.");
-  }
-  const nodeRunId = readOptionalString(value.nodeRunId);
-  const selectedReplyId = value.selectedReplyId === null ? null : readOptionalString(value.selectedReplyId);
-  if (!nodeRunId) {
-    throw new Error("Approval selection nodeRunId is required.");
-  }
-  if (selectedReplyId === undefined) {
-    throw new Error("Approval selection selectedReplyId is required.");
-  }
-  return { nodeRunId, selectedReplyId };
 }
 
 function normalizeSelectApprovalRequestReplyRequest(value: unknown): SelectApprovalRequestReplyRequest {
@@ -1598,7 +1425,7 @@ function normalizeSelectApprovalRequestReplyRequest(value: unknown): SelectAppro
   return { selectedReplyId };
 }
 
-function readInboxDiscussionMode(value: unknown): ReplyBlueprintRunApprovalRequest["discussionMode"] {
+function readInboxDiscussionMode(value: unknown): InboxDiscussionMode | undefined {
   if (value === undefined || value === null) return undefined;
   if (value === "reply" || value === "candidate") return value;
   throw new Error("Approval discussionMode must be reply or candidate.");
