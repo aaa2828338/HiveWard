@@ -1647,18 +1647,24 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async appendNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): Promise<NodeSessionTranscriptEvent> {
+  async appendNodeSessionTranscriptEvent(
+    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
+  ): Promise<NodeSessionTranscriptEvent> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
+      const transcriptEvent: NodeSessionTranscriptEvent = {
+        ...event,
+        sequence: event.sequence ?? nextNodeSessionTranscriptSequence(index.nodeSessionTranscriptEvents, event.sessionId)
+      };
       const duplicate = index.nodeSessionTranscriptEvents.find(
-        (candidate) => candidate.sessionId === event.sessionId && candidate.sequence === event.sequence && candidate.id !== event.id
+        (candidate) => candidate.sessionId === transcriptEvent.sessionId && candidate.sequence === transcriptEvent.sequence && candidate.id !== transcriptEvent.id
       );
       if (duplicate) {
-        throw new Error(`Transcript sequence ${event.sequence} already exists for session ${event.sessionId}.`);
+        throw new Error(`Transcript sequence ${transcriptEvent.sequence} already exists for session ${transcriptEvent.sessionId}.`);
       }
-      upsertById(index.nodeSessionTranscriptEvents, event);
+      upsertById(index.nodeSessionTranscriptEvents, transcriptEvent);
       await this.writeIndexUnlocked(index);
-      return event;
+      return transcriptEvent;
     });
   }
 
@@ -2917,6 +2923,13 @@ function nextTimelineSequence(items: RunTimelineItem[], runId: string): number {
     .filter((item) => item.runId === runId)
     .reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
 }
+
+function nextNodeSessionTranscriptSequence(items: NodeSessionTranscriptEvent[], sessionId: string): number {
+  return items
+    .filter((item) => item.sessionId === sessionId)
+    .reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
+}
+
 function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
   if (!isRecord(value)) return undefined;
   const role = value.role === "leader" ? "leader" : value.role === "ceo" ? "ceo" : undefined;

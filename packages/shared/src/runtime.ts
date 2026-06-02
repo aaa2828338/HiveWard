@@ -169,6 +169,12 @@ export interface StartedAgentTaskResult {
   sessionKey: string;
   nativeSessionId?: string;
   resumeMode: RuntimeResumeMode;
+  resumeRequested?: boolean;
+  resumeAttempted?: boolean;
+  resumeProven?: boolean;
+  providerSessionId?: string;
+  providerStartedNewSession?: boolean;
+  resumable?: boolean;
   source: RuntimeObjectSource;
   status: RuntimeExecutionStatus;
   error?: string;

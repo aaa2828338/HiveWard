@@ -13,7 +13,7 @@ import { mapCodexSandbox, normalizeTaskRuntimeAccessPolicy } from "./permissions
 import { buildSdkChatPrompt, mapCodexReasoningEffort } from "./chat-envelope";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { runtimeLabelFromRecord } from "./runtime-state";
-import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
+import { buildRuntimeResumeProof, createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { assertGitWorkspace, resolveSdkWorkingDirectory } from "./workspace";
 
@@ -121,7 +121,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     const taskId = `codex-task-${nanoid(10)}`;
     const runId = `codex-run-${nanoid(10)}`;
     const sessionKey = input.nativeSessionId ?? `codex-session-${input.nodeRunId}`;
-    const resumeMode = input.nativeSessionId ? "resumed" : "started";
+    const resumeAttempted = Boolean(input.nativeSessionId);
 
     let workingDirectory: string;
     try {
@@ -184,8 +184,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: "codex",
-      nativeSessionId: input.nativeSessionId,
-      resumeMode,
+      ...buildRuntimeResumeProof(input, undefined, { resumeAttempted, resumable: false }),
       status: "running",
       updatedAt: now
     };
@@ -240,14 +239,12 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
           taskId,
           runId,
           sessionKey,
-          nativeSessionId: input.nativeSessionId,
-          resumeMode: "started",
+          ...buildRuntimeResumeProof(input, undefined, { resumeAttempted: false, resumable: false }),
           source: "codex",
           status: "failed",
           error: "native_resume_unsupported: Codex runtime cannot prove native task resume for this session."
         });
       }
-      const resumeMode = input.nativeSessionId ? "resumed" : "started";
       const thread = input.nativeSessionId
         ? codex.resumeThread!(input.nativeSessionId, threadOptions)
         : codex.startThread(threadOptions);
@@ -255,16 +252,19 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         outputSchema,
         signal: abortController.signal
       });
-      sessionKey = thread.id ?? sessionKey;
-      const nativeSessionId = thread.id ?? input.nativeSessionId ?? sessionKey;
+      const providerSessionId = thread.id ?? undefined;
+      sessionKey = providerSessionId ?? sessionKey;
+      const proof = buildRuntimeResumeProof(input, providerSessionId, {
+        resumeAttempted: Boolean(input.nativeSessionId),
+        resumable: Boolean(providerSessionId)
+      });
 
       if (!validateOutputSchema(turn.finalResponse, input.outputSchema)) {
         return createTerminalTaskResult({
           taskId,
           runId,
           sessionKey,
-          nativeSessionId,
-          resumeMode,
+          ...proof,
           source: "codex",
           status: "failed",
           error: formatAgentSdkError("invalid_output", "SDK output does not match outputSchema."),
@@ -276,8 +276,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
-        nativeSessionId,
-        resumeMode,
+        ...proof,
         source: "codex",
         status: "succeeded",
         output: turn.finalResponse,
@@ -292,8 +291,10 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
-        nativeSessionId: input.nativeSessionId,
-        resumeMode: input.nativeSessionId ? "resumed" : "started",
+        ...buildRuntimeResumeProof(input, undefined, {
+          resumeAttempted: Boolean(input.nativeSessionId),
+          resumable: false
+        }),
         source: "codex",
         status: "failed",
         error: formatAgentSdkProviderError("Codex", error)
@@ -314,7 +315,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
-      nativeSessionId,
+      ...buildRuntimeResumeProof({ nativeSessionId }, undefined, { resumeAttempted: false, resumable: false }),
       resumeMode,
       source: "codex",
       status: "failed",
