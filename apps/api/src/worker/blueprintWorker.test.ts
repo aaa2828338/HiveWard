@@ -217,7 +217,7 @@ class BlockingAdapter implements RuntimeAdapter {
 }
 
 describe("BlueprintWorker", () => {
-  it("resolves legacy missing approval discussion bindings as none without node-run fallback", () => {
+  it("resolves missing approval discussion bindings as unavailable without node-run fallback", () => {
     const now = new Date().toISOString();
     const request: ApprovalRequest = {
       id: "approval-legacy-missing-binding",
@@ -258,7 +258,7 @@ describe("BlueprintWorker", () => {
       mode: "none",
       canStreamReply: false,
       canCreateCandidate: false,
-      reason: "legacy_binding_missing"
+      reason: "discussion_binding_missing"
     });
   });
 
