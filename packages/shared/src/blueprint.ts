@@ -1,5 +1,6 @@
 import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, RuntimeUsageFact } from "./runtime";
 import { normalizeRuntimeAccessPolicy } from "./lifecycle";
+import type { PendingApprovalDiscussionCapabilities } from "./workspace";
 import type {
   ApprovalDecision,
   ApprovalDiscussionBinding,
@@ -461,6 +462,11 @@ export interface BlueprintNodeEvent {
   runtimeRef?: RuntimeObjectRef;
 }
 
+export interface ApprovalRequestDiscussionProjection {
+  approvalRequestId: string;
+  discussion: PendingApprovalDiscussionCapabilities;
+}
+
 export interface BlueprintRunView {
   run: BlueprintRunSummary;
   nodeRuns: BlueprintNodeRun[];
@@ -473,6 +479,7 @@ export interface BlueprintRunView {
   nodeExecutionSessions?: NodeExecutionSession[];
   nodeSessionTranscriptEvents?: NodeSessionTranscriptEvent[];
   approvalDiscussionBindings?: ApprovalDiscussionBinding[];
+  approvalRequestDiscussions?: ApprovalRequestDiscussionProjection[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];
   approvalThreads?: ApprovalThread[];

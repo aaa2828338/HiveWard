@@ -12,7 +12,7 @@ import type {
   ReleaseReport
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import type { ApprovalActionResult, LifecycleApprovalOutcome } from "./lifecycleApprovalService";
+import type { ApprovalActionResult, ApprovalDiscussionBindingDraft, LifecycleApprovalOutcome } from "./lifecycleApprovalService";
 import { ApprovalService } from "./lifecycleApprovalService";
 export class IterationService {
   constructor(
@@ -95,6 +95,7 @@ export class IterationService {
     managerNode: BlueprintNode;
     summary: string;
     artifacts: Artifact[];
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<{ round: IterationRound; releaseReport: ReleaseReport; approvalRequest: ApprovalRequest } | undefined> {
     const round = await this.currentExecutingRound(input.run.id);
     if (!round) return undefined;
@@ -122,7 +123,8 @@ export class IterationService {
       round: artifactPublished,
       managerNode: input.managerNode,
       summary: input.summary,
-      artifacts: input.artifacts
+      artifacts: input.artifacts,
+      discussionBinding: input.discussionBinding
     });
   }
 
@@ -135,6 +137,7 @@ export class IterationService {
     threadId?: string;
     replacesRequestId?: string;
     closeReplacedRequest?: boolean;
+    discussionBinding?: ApprovalDiscussionBindingDraft;
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
     const zh = usesChineseText(input.body) || usesChineseText(input.managerNode.config.label);
@@ -162,6 +165,7 @@ export class IterationService {
       revision: input.revision,
       replacesRequestId: input.replacesRequestId,
       closeReplacedRequest: input.closeReplacedRequest,
+      discussionBinding: input.discussionBinding,
       capabilities: input.metadata?.researchStatus === "blocked"
         ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
         : undefined
@@ -191,6 +195,7 @@ export class IterationService {
     managerNode: BlueprintNode;
     summary: string;
     artifacts: Artifact[];
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<{ round: IterationRound; releaseReport: ReleaseReport; approvalRequest: ApprovalRequest }> {
     const session = await this.requireSession(input.round.sessionId);
     const finalRound = input.round.roundNumber >= session.maxRounds;
@@ -228,7 +233,8 @@ export class IterationService {
         label: input.managerNode.config.label,
         nodeId: input.managerNode.id
       },
-      finalRound
+      finalRound,
+      discussionBinding: input.discussionBinding
     });
     const releaseReport: ReleaseReport = {
       id: reportId,

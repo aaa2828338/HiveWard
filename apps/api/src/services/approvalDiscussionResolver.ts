@@ -50,20 +50,20 @@ export function resolveApprovalDiscussion(input: ResolveApprovalDiscussionInput)
   const executorSessionId = binding.executorSessionId;
   const executorNodeId = binding.executorNodeId;
   if (!executorNodeRunId || !executorSessionId || !executorNodeId) {
-    return messageOnlyResolution(binding, "executor_binding_incomplete");
+    return noneResolution("executor_binding_incomplete", binding);
   }
 
   const nodeRun = input.nodeRuns?.find((candidate) => candidate.id === executorNodeRunId);
   if (input.nodeRuns && !nodeRun) {
-    return messageOnlyResolution(binding, "executor_node_run_missing");
+    return noneResolution("executor_node_run_missing", binding);
   }
 
   const session = input.sessions?.find((candidate) => candidate.id === executorSessionId);
   if (input.sessions && !session) {
-    return messageOnlyResolution(binding, "executor_session_missing");
+    return noneResolution("executor_session_missing", binding);
   }
   if (session?.status === "unavailable") {
-    return messageOnlyResolution(binding, "executor_session_unavailable");
+    return noneResolution("executor_session_unavailable", binding);
   }
 
   return {

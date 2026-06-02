@@ -5,7 +5,11 @@ import {
   runtimeAccessPolicyToPermissionProfile
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService } from "./lifecycleApprovalService";
+import {
+  ApprovalService,
+  buildApprovalDiscussionBindingForRequest,
+  type ApprovalDiscussionBindingDraft
+} from "./lifecycleApprovalService";
 export class RuntimeAccessPolicyService {
   static normalize(value: Partial<RuntimeAccessPolicy> | undefined, legacyPermissionProfile?: AgentPermissionProfile): RuntimeAccessPolicy {
     return normalizeRuntimeAccessPolicy(value, legacyPermissionProfile);
@@ -29,6 +33,7 @@ export class MigrationService {
     threadId?: string;
     replacesRequestId?: string;
     revision?: number;
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<ApprovalRequest | undefined> {
     if (input.nodeRun.status !== "waiting_approval") return undefined;
     const pendingRequests = await this.store.listApprovalRequests({ runId: input.runId, status: "pending" });
@@ -50,6 +55,13 @@ export class MigrationService {
         updatedAt: new Date().toISOString()
       };
       await this.store.upsertApprovalRequest(updated);
+      if (input.discussionBinding) {
+        await upsertApprovalDiscussionBinding(this.store, buildApprovalDiscussionBindingForRequest(
+          updated,
+          input.discussionBinding,
+          updated.updatedAt ?? new Date().toISOString()
+        ));
+      }
       return updated;
     }
     return this.approvalService.createRequest({
@@ -63,6 +75,7 @@ export class MigrationService {
       replacesRequestId: input.replacesRequestId,
       closeReplacedRequest: false,
       revision: input.revision,
+      discussionBinding: input.discussionBinding,
       requestedBy: {
         type: "node",
         label: input.requestedByLabel,
@@ -70,6 +83,18 @@ export class MigrationService {
       }
     });
   }
+}
+
+async function upsertApprovalDiscussionBinding(
+  store: HivewardStore,
+  binding: ReturnType<typeof buildApprovalDiscussionBindingForRequest>
+): Promise<void> {
+  const existing = await store.getApprovalDiscussionBinding(binding.approvalRequestId);
+  if (existing) {
+    await store.updateApprovalDiscussionBinding(binding);
+    return;
+  }
+  await store.createApprovalDiscussionBinding(binding);
 }
 
 function approvalRequestBodyFromNodeOutput(value: unknown): string {

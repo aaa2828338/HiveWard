@@ -207,11 +207,9 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         createdAt: contractNow,
         updatedAt: contractNow
       };
-      await expect(store.createApprovalDiscussionBindingIfAbsent(discussionBinding)).resolves.toMatchObject({ created: true });
-      await expect(store.createApprovalDiscussionBindingIfAbsent({ ...discussionBinding, reason: "duplicate" })).resolves.toMatchObject({
-        created: false,
-        binding: expect.objectContaining({ approvalRequestId: approval.id })
-      });
+      await expect(store.createApprovalDiscussionBinding(discussionBinding)).resolves.toMatchObject({ approvalRequestId: approval.id });
+      await expect(store.createApprovalDiscussionBinding({ ...discussionBinding, reason: "duplicate" }))
+        .rejects.toThrow(/Approval discussion binding already exists/);
       await store.appendApprovalDecision(createContractDecision(approval.id));
       await store.upsertApprovalRequest({
         ...approval,
@@ -237,6 +235,13 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id, nativeSessionId: "native-session-contract" })],
         nodeSessionTranscriptEvents: [expect.objectContaining({ id: transcriptEvent.id, sequence: 1 })],
         approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id, mode: "executor" })],
+        approvalRequestDiscussions: [expect.objectContaining({
+          approvalRequestId: approval.id,
+          discussion: expect.objectContaining({
+            mode: "none",
+            reason: "approval_not_pending"
+          })
+        })],
         approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied", selectedReplyId: "approval-reply-candidate-contract" })],
         approvalThreads: [expect.objectContaining({ id: approval.id, status: "closed", currentRevision: 1 })],
         approvalReplies: expect.arrayContaining([

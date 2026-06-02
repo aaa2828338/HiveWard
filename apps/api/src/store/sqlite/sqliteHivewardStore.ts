@@ -10,6 +10,7 @@ import type {
   AgentRuntimeId,
   ArchitectureBlueprintView,
   ApprovalDiscussionBinding,
+  ApprovalRequestDiscussionProjection,
   ApprovalDecision,
   ApprovalReply,
   ApprovalRequest,
@@ -1130,14 +1131,12 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.readNodeSessionTranscriptEvents(filter);
   }
 
-  async createApprovalDiscussionBindingIfAbsent(
-    binding: ApprovalDiscussionBinding
-  ): Promise<{ binding: ApprovalDiscussionBinding; created: boolean }> {
+  async createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding> {
     return this.driver.transaction(() => {
       const existing = this.getApprovalDiscussionBindingSync(binding.approvalRequestId);
-      if (existing) return { binding: existing, created: false };
+      if (existing) throw new Error(`Approval discussion binding already exists: ${binding.approvalRequestId}`);
       this.upsertApprovalDiscussionBinding(binding);
-      return { binding, created: true };
+      return binding;
     });
   }
 
@@ -1165,6 +1164,21 @@ export class SqliteHivewardStore implements HivewardStore {
       };
       this.upsertApprovalDiscussionBinding(updated);
       return updated;
+    });
+  }
+
+  async markApprovalDiscussionBindingUnavailable(input: {
+    approvalRequestId: string;
+    reason: string;
+    updatedAt?: string;
+  }): Promise<ApprovalDiscussionBinding> {
+    return this.updateApprovalDiscussionBinding({
+      approvalRequestId: input.approvalRequestId,
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: input.reason,
+      updatedAt: input.updatedAt
     });
   }
 
@@ -1324,6 +1338,24 @@ export class SqliteHivewardStore implements HivewardStore {
 
   async upsertApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest> {
     return this.upsertApprovalRequestSync(request);
+  }
+
+  async createApprovalRequestWithDiscussionBinding(input: {
+    request: ApprovalRequest;
+    discussionBinding?: ApprovalDiscussionBinding;
+  }): Promise<ApprovalRequest> {
+    return this.driver.transaction(() => {
+      this.upsertApprovalRequestSync(input.request);
+      if (input.discussionBinding) {
+        if (input.discussionBinding.approvalRequestId !== input.request.id) {
+          throw new Error("Approval discussion binding must target the created approval request.");
+        }
+        const existing = this.getApprovalDiscussionBindingSync(input.request.id);
+        if (existing) throw new Error(`Approval discussion binding already exists: ${input.request.id}`);
+        this.upsertApprovalDiscussionBinding(input.discussionBinding);
+      }
+      return input.request;
+    });
   }
 
   private upsertApprovalRequestSync(request: ApprovalRequest): ApprovalRequest {
@@ -1489,7 +1521,17 @@ export class SqliteHivewardStore implements HivewardStore {
       }
       this.upsertApprovalThreadSync(approvalThreadFromRequest(input.nextRequest));
       this.appendApprovalDecisionSync(input.decision);
-      if (input.nextApprovalRequest) this.upsertApprovalRequestSync(input.nextApprovalRequest);
+      if (input.nextApprovalRequest) {
+        this.upsertApprovalRequestSync(input.nextApprovalRequest);
+        if (input.nextApprovalDiscussionBinding) {
+          if (input.nextApprovalDiscussionBinding.approvalRequestId !== input.nextApprovalRequest.id) {
+            throw new Error("Approval discussion binding must target the next approval request.");
+          }
+          const existingBinding = this.getApprovalDiscussionBindingSync(input.nextApprovalRequest.id);
+          if (existingBinding) throw new Error(`Approval discussion binding already exists: ${input.nextApprovalRequest.id}`);
+          this.upsertApprovalDiscussionBinding(input.nextApprovalDiscussionBinding);
+        }
+      }
       if (input.releaseReport) this.upsertReleaseReportSync(input.releaseReport);
       if (input.timelineItem) this.appendRunTimelineItemSync(input.timelineItem);
       return {
@@ -2782,6 +2824,8 @@ export class SqliteHivewardStore implements HivewardStore {
     const archive = this.requireRunArchive(requireString(row.id));
     const runId = archive.run.id;
     const approvalRequests = (this.driver.db.prepare("SELECT * FROM approval_requests WHERE run_id = ?").all(runId) as Row[]).map(approvalRequestFromRow);
+    const approvalDiscussionBindings = archive.approvalDiscussionBindings ?? [];
+    const nodeExecutionSessions = archive.nodeExecutionSessions ?? [];
     const approvalIds = new Set(approvalRequests.map((request) => request.id));
     const approvalThreads = (this.driver.db.prepare("SELECT * FROM approval_threads WHERE run_id = ? ORDER BY updated_at DESC").all(runId) as Row[])
       .map(approvalThreadFromRow);
@@ -2795,9 +2839,16 @@ export class SqliteHivewardStore implements HivewardStore {
       iterationRounds: (this.driver.db.prepare("SELECT * FROM iteration_rounds WHERE run_id = ?").all(runId) as Row[]).map(iterationRoundFromRow),
       runCommands: archive.runCommands,
       runCommandSteps: archive.runCommandSteps,
-      nodeExecutionSessions: archive.nodeExecutionSessions,
+      nodeExecutionSessions,
       nodeSessionTranscriptEvents: archive.nodeSessionTranscriptEvents,
-      approvalDiscussionBindings: archive.approvalDiscussionBindings,
+      approvalDiscussionBindings,
+      approvalRequestDiscussions: this.projectApprovalRequestDiscussions({
+        requests: approvalRequests,
+        bindings: approvalDiscussionBindings,
+        run: archive.run,
+        nodeRuns: archive.nodeRuns,
+        sessions: nodeExecutionSessions
+      }),
       approvalRequests,
       approvalDecisions: (this.driver.db.prepare("SELECT * FROM approval_decisions ORDER BY created_at").all() as Row[])
         .map(approvalDecisionFromRow)
@@ -2814,6 +2865,25 @@ export class SqliteHivewardStore implements HivewardStore {
       runTimeline: (this.driver.db.prepare("SELECT * FROM run_timeline_items WHERE run_id = ? ORDER BY sequence").all(runId) as Row[]).map(runTimelineItemFromRow),
       managerMail: (this.driver.db.prepare("SELECT * FROM manager_mail WHERE related_run_id = ?").all(runId) as Row[]).map(managerMailFromRow)
     };
+  }
+
+  private projectApprovalRequestDiscussions(input: {
+    requests: ApprovalRequest[];
+    bindings: ApprovalDiscussionBinding[];
+    run: BlueprintRun;
+    nodeRuns: BlueprintNodeRun[];
+    sessions: NodeExecutionSession[];
+  }): ApprovalRequestDiscussionProjection[] {
+    return input.requests.map((request) => ({
+      approvalRequestId: request.id,
+      discussion: projectPendingApprovalDiscussion({
+        request,
+        binding: input.bindings.find((binding) => binding.approvalRequestId === request.id),
+        run: input.run,
+        nodeRuns: input.nodeRuns,
+        sessions: input.sessions
+      })
+    }));
   }
 
   private readNodeRuns(runId: string): BlueprintNodeRun[] {

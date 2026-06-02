@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeAdapter, RuntimeChatSessionResult, RuntimeChatSessionTitleResult } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
+  type ApprovalDiscussionBinding,
   type ApprovalRequest,
   blueprintRunArchiveSchema,
   createActiveManagerNewsHtmlChaosBlueprint,
@@ -258,6 +259,83 @@ describe("BlueprintWorker", () => {
       canStreamReply: false,
       canCreateCandidate: false,
       reason: "legacy_binding_missing"
+    });
+  });
+
+  it("resolves broken executor approval discussion bindings as unavailable", () => {
+    const now = new Date().toISOString();
+    const request: ApprovalRequest = {
+      id: "approval-broken-executor-binding",
+      runId: "run-broken",
+      kind: "agent_proposal",
+      status: "pending",
+      title: "Broken approval",
+      body: "Review broken binding.",
+      threadId: "thread-broken-executor-binding",
+      revision: 1,
+      capabilities: {
+        approve: true,
+        reject: true,
+        reply: true,
+        complete: false,
+        terminate: true,
+        returnForRevision: true
+      },
+      requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
+      requestedAt: now,
+      updatedAt: now
+    };
+    const binding: ApprovalDiscussionBinding = {
+      approvalRequestId: request.id,
+      threadId: request.threadId,
+      mode: "executor",
+      route: "agent_approval",
+      executorActor: "agent",
+      executorKind: "agent_approval",
+      executorNodeId: "delivery",
+      executorNodeRunId: "node-run-delivery",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      resolverVersion: 1,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    expect(resolveApprovalDiscussion({ request, binding }).capability).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_binding_incomplete"
+    });
+    expect(resolveApprovalDiscussion({
+      request,
+      binding: { ...binding, executorSessionId: "session-unavailable" },
+      nodeRuns: [{
+        id: "node-run-delivery",
+        blueprintRunId: "run-broken",
+        blueprintId: "blueprint-broken",
+        nodeId: "delivery",
+        nodeLabel: "Delivery",
+        nodeType: "agent",
+        status: "waiting_approval",
+        queuedAt: now
+      }],
+      sessions: [{
+        id: "session-unavailable",
+        runId: "run-broken",
+        nodeRunId: "node-run-delivery",
+        nodeId: "delivery",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "unavailable",
+        createdAt: now,
+        updatedAt: now
+      }]
+    }).capability).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_session_unavailable"
     });
   });
 
@@ -3504,14 +3582,22 @@ describe("BlueprintWorker", () => {
     expect(request?.body).toContain("Issue Report");
     expect(request?.body).toContain("What you can do");
     expect(request?.body).toContain("missing research credential");
+    const pendingBlockedApproval = (await store.listPendingApprovals())
+      .find((approval) => approval.approvalRequestId === request?.id);
+    expect(pendingBlockedApproval?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_binding_incomplete"
+    });
 
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun || !request) throw new Error("Expected blocked preflight approval.");
     await expect(worker.applyApprovalRequest(blueprint, currentRun, request.id, "approve"))
       .rejects.toThrow("Approval request does not allow approve.");
-    await worker.applyApprovalRequest(blueprint, currentRun, request.id, "reply", {
+    await expect(worker.applyApprovalRequest(blueprint, currentRun, request.id, "reply", {
       message: "The credential is still unavailable."
-    });
+    })).rejects.toThrow("Approval discussion is unavailable: executor_binding_incomplete.");
     const replyView = await store.getRunView(run.id);
     const stillBlocked = replyView?.approvalRequests
       ?.find((approval) => approval.id === request.id);
@@ -3521,9 +3607,7 @@ describe("BlueprintWorker", () => {
       revision: 1,
       capabilities: expect.objectContaining({ approve: false, reply: true })
     });
-    expect(replyView?.approvalDecisions?.filter((decision) => decision.action === "reply")).toEqual([
-      expect.objectContaining({ approvalRequestId: request.id, resultingStatus: "pending" })
-    ]);
+    expect(replyView?.approvalDecisions?.filter((decision) => decision.action === "reply")).toEqual([]);
   });
 
   it("uses manager semantic judgment to request another research pass", async () => {
