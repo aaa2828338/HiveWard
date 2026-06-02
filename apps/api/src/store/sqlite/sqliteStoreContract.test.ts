@@ -12,6 +12,7 @@ import type {
 } from "@hiveward/shared";
 import type { HivewardStore } from "../hivewardStore";
 import { FileHivewardStore } from "../fileHivewardStore";
+import { SqliteDriver } from "./sqliteDriver";
 import {
   contractNow,
   createContractApproval,
@@ -487,6 +488,88 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       ]);
     } finally {
       close?.();
+    }
+  });
+});
+
+describe("SqliteHivewardStore execution schema constraints", () => {
+  it("rejects invalid execution enum values and dangling session references", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-sqlite-execution-constraints-"));
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    const store = new SqliteHivewardStore(sqlitePath);
+    await store.init();
+    let runId = "";
+    let nodeRunId = "";
+    let approvalRequestId = "";
+    try {
+      const blueprint = await store.saveBlueprint(createContractBlueprint());
+      const run = await store.createBlueprintRun(blueprint, "constraint-user");
+      runId = run.id;
+      const nodeRun = createContractNodeRun(run, { result: { ok: true } });
+      nodeRunId = nodeRun.id;
+      await store.upsertNodeRun(nodeRun);
+      const command: RunCommand = {
+        id: "run-command-constraint",
+        commandKey: `constraint:${run.id}:execute`,
+        blueprintId: run.blueprintId,
+        runId: run.id,
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await store.createRunCommandIfAbsent(command);
+      const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+      approvalRequestId = approval.id;
+    } finally {
+      store.close();
+    }
+
+    const driver = new SqliteDriver(sqlitePath);
+    try {
+      expect(() => driver.db.prepare(
+        `INSERT INTO run_command_steps (
+          id, command_id, step_key, run_id, revision, mode, node_id, node_run_id, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        "run-command-step-invalid-mode",
+        "run-command-constraint",
+        "constraint:invalid-mode",
+        runId,
+        1,
+        "old_preflight_guess",
+        "contract-agent",
+        nodeRunId,
+        "queued",
+        contractNow,
+        contractNow
+      )).toThrow(/CHECK constraint failed/);
+
+      expect(() => driver.db.prepare(
+        `INSERT INTO approval_discussion_bindings (
+          approval_request_id, mode, route, executor_actor, executor_kind, executor_node_run_id,
+          executor_session_id, runtime_id, can_stream_reply, can_create_candidate,
+          resolver_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        approvalRequestId,
+        "executor",
+        "agent_approval",
+        "agent",
+        "agent_approval",
+        nodeRunId,
+        "missing-executor-session",
+        "codex",
+        1,
+        1,
+        1,
+        contractNow,
+        contractNow
+      )).toThrow(/FOREIGN KEY constraint failed/);
+    } finally {
+      driver.close();
     }
   });
 });
