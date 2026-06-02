@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import type { RuntimeAdapter } from "@hiveward/adapter";
@@ -24,6 +25,11 @@ import {
   type Artifact,
   type ApprovalRequest,
   type ReleaseReport,
+  type RunCommand,
+  type RunCommandKind,
+  type RunCommandStatus,
+  type RunCommandStep,
+  type RunCommandStepMode,
   type SummaryNodeConfig,
   type BlueprintDefinition,
   type BlueprintEdge,
@@ -60,6 +66,8 @@ const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
 const managerReceiptPromptBudget = 6000;
 const reviewOutputSelectionId = "reviewOutput";
+const activeRunCommandStatuses: RunCommandStatus[] = ["queued", "running", "waiting_approval"];
+const prepareRoundCommandKind: RunCommandKind = "self_iteration_prepare_round";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Route work inside the platform-provided Manager round by reading upstream input, previousResults, and delegationRoster.",
@@ -420,17 +428,29 @@ export class BlueprintWorker {
   async resumeActiveRuns(): Promise<void> {
     const archives = await this.store.listRunArchives();
     for (const archive of archives) {
-      if (archive.run.status === "queued") {
+      if (this.isTerminalRunStatus(archive.run.status)) {
+        continue;
+      }
+
+      const activeCommands = await this.store.listRunCommands({
+        runId: archive.run.id,
+        statuses: activeRunCommandStatuses
+      });
+      if (activeCommands.length > 0) {
+        for (const command of activeCommands) {
+          await this.resumeRunCommand(archive.blueprintSnapshot, archive.run, command);
+        }
+        continue;
+      }
+
+      if (await this.legacyBootstrapCommands(archive.blueprintSnapshot, archive.run)) {
+        continue;
+      }
+
+      if (archive.run.status === "queued" || archive.run.status === "running") {
         const runningRun = { ...archive.run, status: "running" as const };
         await this.store.updateBlueprintRun(runningRun);
         this.scheduleRun(archive.blueprintSnapshot, runningRun);
-        continue;
-      }
-      if (archive.run.status === "running") {
-        if (await this.resumeSelfIterationPreparationIfNeeded(archive.blueprintSnapshot, archive.run)) {
-          continue;
-        }
-        this.scheduleRun(archive.blueprintSnapshot, archive.run);
       }
     }
   }
@@ -450,7 +470,8 @@ export class BlueprintWorker {
         run: runningRun,
         topManagerNode: topManager
       });
-      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager);
+      const command = await this.ensureSelfIterationPrepareCommand(blueprint, runningRun, round);
+      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager, command);
       return runningRun;
     }
     this.scheduleRun(blueprint, runningRun);
@@ -552,6 +573,9 @@ export class BlueprintWorker {
       return completed;
     }
     if (lifecycle.resumeExecution) {
+      if (request.kind === "iteration_requirement_plan" && request.roundId) {
+        await this.markPrepareCommandsForRoundSucceeded(currentRun.id, request.roundId);
+      }
       const running = { ...currentRun, status: "running" as const };
       await this.store.updateBlueprintRun(running);
       this.scheduleRun(blueprint, running);
@@ -563,7 +587,90 @@ export class BlueprintWorker {
     return waiting;
   }
 
-  private async resumeSelfIterationPreparationIfNeeded(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<boolean> {
+  private scheduleSelfIterationPreparation(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    session: IterationSession,
+    round: IterationRound,
+    topManager: BlueprintNode,
+    command: RunCommand,
+    context: {
+      humanFeedback?: string;
+      previousRequirement?: string;
+      revision?: number;
+    } = {}
+  ): void {
+    if (this.activeRuns.has(run.id)) {
+      return;
+    }
+
+    const execution = this.prepareSelfIterationRound(blueprint, run, session, round, topManager, command, context)
+      .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
+      .finally(async () => {
+        this.activeRuns.delete(run.id);
+        if (await this.flushPendingRunSchedule(run.id)) {
+          return;
+        }
+        this.cancelledRunIds.delete(run.id);
+      });
+
+    this.activeRuns.set(run.id, execution);
+  }
+
+  private async resumeRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    command: RunCommand
+  ): Promise<boolean> {
+    if (command.kind !== prepareRoundCommandKind) {
+      if (command.kind === "regular_run" && (run.status === "queued" || run.status === "running")) {
+        const runningRun = { ...run, status: "running" as const };
+        await this.store.updateBlueprintRun(runningRun);
+        this.scheduleRun(blueprint, runningRun);
+        return true;
+      }
+      return false;
+    }
+
+    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+    if (!topManager || !command.roundId) return false;
+    const round = (await this.store.listIterationRounds({ runId: run.id }))
+      .find((candidate) => candidate.id === command.roundId);
+    if (!round) return false;
+    const session = (await this.store.listIterationSessions(run.id))
+      .find((candidate) => candidate.id === round.sessionId);
+    if (!session) return false;
+
+    if (round.status === "executing" || round.approvedRequirementRequestId) {
+      await this.markRunCommandSucceeded(command);
+      const runningRun = { ...run, status: "running" as const };
+      await this.store.updateBlueprintRun(runningRun);
+      this.scheduleRun(blueprint, runningRun);
+      return true;
+    }
+
+    if (command.status === "waiting_approval" || round.requirementRequestId) {
+      await this.markRunCommandWaitingForApproval(command, "requirement_resolution");
+      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+      await this.managerMailProjector.refresh(run.id);
+      return true;
+    }
+
+    const runningRun = { ...run, status: "running" as const };
+    await this.store.updateBlueprintRun(runningRun);
+    this.scheduleSelfIterationPreparation(
+      blueprint,
+      runningRun,
+      session,
+      round,
+      topManager,
+      command,
+      readPrepareCommandContext(command)
+    );
+    return true;
+  }
+
+  private async legacyBootstrapCommands(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<boolean> {
     const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
     if (!topManager) return false;
 
@@ -578,56 +685,185 @@ export class BlueprintWorker {
         run,
         topManagerNode: topManager
       });
-      this.scheduleSelfIterationPreparation(blueprint, run, started.session, started.round, topManager);
+      const command = await this.ensureSelfIterationPrepareCommand(blueprint, run, started.round, {
+        metadata: { legacyBackfill: true }
+      });
+      this.scheduleSelfIterationPreparation(blueprint, run, started.session, started.round, topManager, command);
       return true;
     }
 
+    const command = await this.ensureSelfIterationPrepareCommand(blueprint, run, pendingRound, {
+      status: pendingRound.requirementRequestId ? "waiting_approval" : "queued",
+      metadata: { legacyBackfill: true }
+    });
+    await this.backfillLegacyPreflightStepsForCommand(run, pendingRound, command);
+
     if (pendingRound.requirementRequestId) {
+      await this.markRunCommandWaitingForApproval(command, "requirement_resolution");
       await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
       await this.managerMailProjector.refresh(run.id);
       return true;
     }
 
-    const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === pendingRound.sessionId);
+    const session = (await this.store.listIterationSessions(run.id))
+      .find((candidate) => candidate.id === pendingRound.sessionId);
     if (!session) return false;
-    this.scheduleSelfIterationPreparation(blueprint, run, session, pendingRound, topManager);
+    const runningRun = { ...run, status: "running" as const };
+    await this.store.updateBlueprintRun(runningRun);
+    this.scheduleSelfIterationPreparation(blueprint, runningRun, session, pendingRound, topManager, command);
     return true;
   }
 
-  private scheduleSelfIterationPreparation(
+  private async ensureSelfIterationPrepareCommand(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    session: IterationSession,
     round: IterationRound,
-    topManager: BlueprintNode
-  ): void {
-    if (this.activeRuns.has(run.id)) {
-      return;
-    }
-
-    const execution = this.prepareInitialSelfIterationRound(blueprint, run, session, round, topManager)
-      .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
-      .finally(async () => {
-        this.activeRuns.delete(run.id);
-        if (await this.flushPendingRunSchedule(run.id)) {
-          return;
-        }
-        this.cancelledRunIds.delete(run.id);
-      });
-
-    this.activeRuns.set(run.id, execution);
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    const now = new Date().toISOString();
+    const commandKey = buildRunCommandKey(run.id, round.id, prepareRoundCommandKind);
+    const { command, created } = await this.store.createRunCommandIfAbsent({
+      id: deterministicFactId("run-command", commandKey),
+      commandKey,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: round.id,
+      kind: prepareRoundCommandKind,
+      status: options.status ?? "queued",
+      currentRevision: 0,
+      currentStep: "research_resolution",
+      metadata: options.metadata,
+      createdAt: now,
+      updatedAt: now
+    });
+    if (created || !options.status) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: options.status,
+      metadata: {
+        ...(command.metadata ?? {}),
+        ...(options.metadata ?? {})
+      }
+    });
   }
 
-  private async prepareInitialSelfIterationRound(
+  private async backfillLegacyPreflightStepsForCommand(
+    run: BlueprintRun,
+    round: IterationRound,
+    command: RunCommand
+  ): Promise<void> {
+    const nodeRuns = await this.store.listNodeRuns(run.id);
+    for (const nodeRun of nodeRuns) {
+      const parsed = parseLegacyPreflightNodeRunId(nodeRun.id, round.id);
+      if (!parsed || nodeRun.iterationRoundId !== round.id) continue;
+      const now = new Date().toISOString();
+      await this.store.createRunCommandStepIfAbsent({
+        id: deterministicFactId("run-command-step", buildRunCommandStepKey(command, parsed.mode, parsed.nodeId)),
+        commandId: command.id,
+        stepKey: buildRunCommandStepKey(command, parsed.mode, parsed.nodeId),
+        runId: run.id,
+        roundId: round.id,
+        revision: command.currentRevision,
+        mode: parsed.mode,
+        nodeId: parsed.nodeId,
+        nodeRunId: nodeRun.id,
+        status: commandStepStatusFromNodeRun(nodeRun),
+        startedAt: nodeRun.startedAt,
+        endedAt: nodeRun.endedAt,
+        error: nodeRun.error,
+        runtimeRef: nodeRun.runtimeRef,
+        metadata: { legacyBackfill: true },
+        createdAt: nodeRun.queuedAt ?? now,
+        updatedAt: nodeRun.endedAt ?? nodeRun.startedAt ?? now
+      });
+    }
+  }
+
+  private async markRunCommandRunning(command: RunCommand, currentStep: RunCommandStepMode): Promise<RunCommand> {
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "running",
+      currentStep,
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined
+    });
+  }
+
+  private async markRunCommandWaitingForApproval(command: RunCommand, currentStep: RunCommandStepMode): Promise<RunCommand> {
+    if (command.status === "waiting_approval" && command.currentStep === currentStep) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "waiting_approval",
+      currentStep,
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined
+    });
+  }
+
+  private async markRunCommandSucceeded(command: RunCommand): Promise<RunCommand> {
+    if (command.status === "succeeded") return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "succeeded",
+      endedAt: new Date().toISOString(),
+      error: undefined
+    });
+  }
+
+  private async markRunCommandFailed(command: RunCommand, error: string): Promise<RunCommand> {
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "failed",
+      endedAt: new Date().toISOString(),
+      error
+    });
+  }
+
+  private async markPrepareCommandsForRoundSucceeded(runId: string, roundId: string): Promise<void> {
+    const commands = await this.store.listRunCommands({
+      runId,
+      roundId,
+      kind: prepareRoundCommandKind,
+      statuses: activeRunCommandStatuses
+    });
+    await Promise.all(commands.map((command) => this.markRunCommandSucceeded(command)));
+  }
+
+  private async prepareSelfIterationRound(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     session: IterationSession,
     round: IterationRound,
-    topManager: BlueprintNode
+    topManager: BlueprintNode,
+    command: RunCommand,
+    context: {
+      humanFeedback?: string;
+      previousRequirement?: string;
+      revision?: number;
+    } = {}
   ): Promise<void> {
     if (await this.isRunCancelled(run.id)) return;
 
-    await this.prepareRoundPlan(blueprint, run, session, round, topManager);
+    if (round.requirementRequestId) {
+      await this.markRunCommandWaitingForApproval(command, "requirement_resolution");
+      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+      await this.managerMailProjector.refresh(run.id);
+      return;
+    }
+
+    let runningCommand = await this.markRunCommandRunning(command, context.revision && context.revision > 1 ? "revise_plan" : "research_resolution");
+    try {
+      await this.prepareRoundPlan(blueprint, run, session, round, topManager, context, runningCommand);
+      runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, context.revision && context.revision > 1 ? "revise_plan" : "requirement_resolution");
+    } catch (error) {
+      await this.markRunCommandFailed(runningCommand, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     if (await this.isRunCancelled(run.id)) return;
 
     const latestRun = await this.store.getBlueprintRun(run.id);
@@ -635,8 +871,12 @@ export class BlueprintWorker {
     if (this.isTerminalRunStatus(currentRun.status)) return;
 
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun, { scheduleOnResume: false });
-    if (autoAdvanced?.completeRun) return;
+    if (autoAdvanced?.completeRun) {
+      await this.markRunCommandSucceeded(runningCommand);
+      return;
+    }
     if (autoAdvanced?.resumeExecution) {
+      await this.markRunCommandSucceeded(runningCommand);
       await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run);
       return;
     }
@@ -660,7 +900,12 @@ export class BlueprintWorker {
     if (!session) throw new Error(`Iteration session not found: ${intent.sessionId}`);
     const round = (await this.store.listIterationRounds({ runId: run.id })).find((candidate) => candidate.id === intent.roundId);
     if (!round) throw new Error(`Iteration round not found: ${intent.roundId}`);
-    await this.prepareRoundPlan(blueprint, run, session, round, topManager, {
+    const command = await this.ensureSelfIterationPrepareCommand(blueprint, run, round, {
+      metadata: {
+        humanFeedback: intent.humanFeedback
+      }
+    });
+    await this.prepareSelfIterationRound(blueprint, run, session, round, topManager, command, {
       humanFeedback: intent.humanFeedback
     });
   }
@@ -741,7 +986,8 @@ export class BlueprintWorker {
       humanFeedback?: string;
       previousRequirement?: string;
       revision?: number;
-    } = {}
+    } = {},
+    command?: RunCommand
   ): Promise<ApprovalRequest> {
     const preflight = await this.roundPreflightService.prepareRoundPlan({
       blueprint,
@@ -752,7 +998,7 @@ export class BlueprintWorker {
       humanFeedback: context.humanFeedback,
       previousRequirement: context.previousRequirement,
       revision: context.revision,
-      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
+      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager, command)
     });
     const request = await this.iterationService.requestRoundPlan({
       session,
@@ -775,7 +1021,8 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     round: IterationRound,
-    topManager: BlueprintNode
+    topManager: BlueprintNode,
+    command?: RunCommand
   ) {
     return {
       runAgentNode: (input: {
@@ -783,12 +1030,12 @@ export class BlueprintWorker {
         mode: RoundPreflightMode;
         runContext: ManagerInjectedContext;
         taskInput: Record<string, unknown>;
-      }) => this.runPreflightAgentTask(blueprint, run, round, input.node, input.mode, input.runContext, input.taskInput),
+      }) => this.runPreflightAgentTask(blueprint, run, round, input.node, input.mode, input.runContext, input.taskInput, command),
       runManagerFallback: (input: {
         mode: RoundPreflightMode;
         runContext: ManagerInjectedContext;
         taskInput: Record<string, unknown>;
-      }) => this.runPreflightManagerFallback(blueprint, run, round, topManager, input.mode, input.runContext, input.taskInput)
+      }) => this.runPreflightManagerFallback(blueprint, run, round, topManager, input.mode, input.runContext, input.taskInput, command)
     };
   }
 
@@ -799,51 +1046,65 @@ export class BlueprintWorker {
     node: BlueprintNode & { type: "agent"; config: AgentNodeConfig },
     mode: RoundPreflightMode,
     runContext: ManagerInjectedContext,
-    taskInput: Record<string, unknown>
+    taskInput: Record<string, unknown>,
+    command?: RunCommand
   ): Promise<RoundPreflightExecutionResult> {
     const config = node.config;
     const runtimeId = node.runtimeId ?? "openclaw";
-    const nodeRunId = `preflight-${mode}-${round.id}-${node.id}-${nanoid(6)}`;
+    const step = await this.ensurePreflightCommandStep(command, run, round, mode, node.id, taskInput);
+    const nodeRunId = step.nodeRunId ?? stablePreflightNodeRunId(
+      buildStandalonePreflightStepKey(run.id, round.id, mode, node.id, readPreflightAttempt(taskInput))
+    );
+    const existingResult = await this.resolveExistingPreflightResult(run, round, node, nodeRunId, step);
+    if (existingResult) return existingResult;
     const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, node, nodeRunId);
+    await this.markRunCommandStepRunning(step, preflightNode.nodeRun.runtimeRef);
     await this.appendPreflightTaskStarted(run, round, node, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
-      ({ result } = await this.runAgentTask({
-        blueprintRunId: run.id,
-        nodeRunId,
-        source: resolveAgentRuntimeSource(runtimeId),
-        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-        profileId: runtimeId === "hermes" ? config.profileId : undefined,
-        agentName: config.agentName,
-        prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
-        modelId: config.modelId,
-        permissionProfile: config.permissionProfile,
-        runtimeAccessPolicy: config.runtimeAccessPolicy,
-        workingDirectory: config.workingDirectory,
-        timeoutMs: config.timeoutMs,
-        outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
-        input: {
-          ...taskInput,
-          runContext
-        },
-        skillIds: config.skillIds,
-        tools: config.tools
-      }, async (runtimeRef) => {
-        await this.store.startNodeRun({
+      if (preflightNode.nodeRun.runtimeRef?.sessionKey) {
+        result = await this.waitForExistingPreflightTask(preflightNode.nodeRun);
+      } else {
+        ({ result } = await this.runAgentTask({
+          blueprintRunId: run.id,
           nodeRunId,
-          owner: preflightNode.claim.owner,
-          workerEpoch: preflightNode.claim.workerEpoch,
-          runtimeRef
-        });
-      }));
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+          profileId: runtimeId === "hermes" ? config.profileId : undefined,
+          agentName: config.agentName,
+          prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
+          modelId: config.modelId,
+          permissionProfile: config.permissionProfile,
+          runtimeAccessPolicy: config.runtimeAccessPolicy,
+          workingDirectory: config.workingDirectory,
+          timeoutMs: config.timeoutMs,
+          outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
+          input: {
+            ...taskInput,
+            runContext
+          },
+          skillIds: config.skillIds,
+          tools: config.tools
+        }, async (runtimeRef) => {
+          await this.markRunCommandStepRunning(step, runtimeRef);
+          await this.store.startNodeRun({
+            nodeRunId,
+            owner: preflightNode.claim.owner,
+            workerEpoch: preflightNode.claim.workerEpoch,
+            runtimeRef
+          });
+        }));
+      }
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
+      await this.markRunCommandStepFailed(step, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.markRunCommandStepFailed(step, error);
       await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
@@ -851,6 +1112,9 @@ export class BlueprintWorker {
       : [];
     if (result.status === "succeeded" && mode !== "research_resolution") {
       await this.publishPreflightOutput(blueprint, run, round, node, preflightNode, mode, result);
+    }
+    if (result.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, result);
     }
     return { result, artifactIds };
   }
@@ -862,51 +1126,65 @@ export class BlueprintWorker {
     topManager: BlueprintNode,
     mode: RoundPreflightMode,
     runContext: ManagerInjectedContext,
-    taskInput: Record<string, unknown>
+    taskInput: Record<string, unknown>,
+    command?: RunCommand
   ): Promise<RoundPreflightExecutionResult> {
     const config = topManager.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(topManager);
-    const nodeRunId = `preflight-${mode}-${round.id}-${topManager.id}-${nanoid(6)}`;
+    const step = await this.ensurePreflightCommandStep(command, run, round, mode, topManager.id, taskInput);
+    const nodeRunId = step.nodeRunId ?? stablePreflightNodeRunId(
+      buildStandalonePreflightStepKey(run.id, round.id, mode, topManager.id, readPreflightAttempt(taskInput))
+    );
+    const existingResult = await this.resolveExistingPreflightResult(run, round, topManager, nodeRunId, step);
+    if (existingResult) return existingResult;
     const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, topManager, nodeRunId);
+    await this.markRunCommandStepRunning(step, preflightNode.nodeRun.runtimeRef);
     await this.appendPreflightTaskStarted(run, round, topManager, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
-      ({ result } = await this.runAgentTask({
-        blueprintRunId: run.id,
-        nodeRunId,
-        source: resolveAgentRuntimeSource(runtimeId),
-        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-        profileId: runtimeId === "hermes" ? config.profileId : undefined,
-        agentName: config.agentName?.trim() || defaultManagerAgentName,
-        prompt: this.resolveManagerPreflightPrompt(config, mode),
-        modelId: config.modelId,
-        permissionProfile: config.permissionProfile,
-        runtimeAccessPolicy: config.runtimeAccessPolicy,
-        workingDirectory: config.workingDirectory,
-        timeoutMs: config.timeoutMs,
-        outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
-        input: {
-          ...taskInput,
-          runContext
-        },
-        skillIds: config.skillIds,
-        tools: config.tools ?? []
-      }, async (runtimeRef) => {
-        await this.store.startNodeRun({
+      if (preflightNode.nodeRun.runtimeRef?.sessionKey) {
+        result = await this.waitForExistingPreflightTask(preflightNode.nodeRun);
+      } else {
+        ({ result } = await this.runAgentTask({
+          blueprintRunId: run.id,
           nodeRunId,
-          owner: preflightNode.claim.owner,
-          workerEpoch: preflightNode.claim.workerEpoch,
-          runtimeRef
-        });
-      }));
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+          profileId: runtimeId === "hermes" ? config.profileId : undefined,
+          agentName: config.agentName?.trim() || defaultManagerAgentName,
+          prompt: this.resolveManagerPreflightPrompt(config, mode),
+          modelId: config.modelId,
+          permissionProfile: config.permissionProfile,
+          runtimeAccessPolicy: config.runtimeAccessPolicy,
+          workingDirectory: config.workingDirectory,
+          timeoutMs: config.timeoutMs,
+          outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
+          input: {
+            ...taskInput,
+            runContext
+          },
+          skillIds: config.skillIds,
+          tools: config.tools ?? []
+        }, async (runtimeRef) => {
+          await this.markRunCommandStepRunning(step, runtimeRef);
+          await this.store.startNodeRun({
+            nodeRunId,
+            owner: preflightNode.claim.owner,
+            workerEpoch: preflightNode.claim.workerEpoch,
+            runtimeRef
+          });
+        }));
+      }
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
+      await this.markRunCommandStepFailed(step, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.markRunCommandStepFailed(step, error);
       await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
@@ -915,7 +1193,145 @@ export class BlueprintWorker {
     if (result.status === "succeeded" && mode !== "research_resolution") {
       await this.publishPreflightOutput(blueprint, run, round, topManager, preflightNode, mode, result);
     }
+    if (result.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, result);
+    }
     return { result, artifactIds };
+  }
+
+  private async ensurePreflightCommandStep(
+    command: RunCommand | undefined,
+    run: BlueprintRun,
+    round: IterationRound,
+    mode: RoundPreflightMode,
+    nodeId: string,
+    taskInput: Record<string, unknown>
+  ): Promise<RunCommandStep> {
+    const attempt = readPreflightAttempt(taskInput);
+    const stepKey = command
+      ? buildRunCommandStepKey(command, mode, nodeId, attempt)
+      : buildStandalonePreflightStepKey(run.id, round.id, mode, nodeId, attempt);
+    const now = new Date().toISOString();
+    const nodeRunId = stablePreflightNodeRunId(stepKey);
+    if (!command) {
+      return {
+        id: deterministicFactId("standalone-preflight-step", stepKey),
+        commandId: "standalone",
+        stepKey,
+        runId: run.id,
+        roundId: round.id,
+        revision: 0,
+        mode,
+        nodeId,
+        nodeRunId,
+        status: "queued",
+        createdAt: now,
+        updatedAt: now
+      };
+    }
+
+    const { step } = await this.store.createRunCommandStepIfAbsent({
+      id: deterministicFactId("run-command-step", stepKey),
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: round.id,
+      revision: command.currentRevision,
+      mode,
+      nodeId,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now
+    });
+    if (step.nodeRunId) return step;
+    return { ...step, nodeRunId };
+  }
+
+  private async resolveExistingPreflightResult(
+    run: BlueprintRun,
+    round: IterationRound,
+    node: BlueprintNode,
+    nodeRunId: string,
+    step: RunCommandStep
+  ): Promise<RoundPreflightExecutionResult | undefined> {
+    const nodeRun = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
+    if (!nodeRun) return undefined;
+    if (nodeRun.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, agentTaskResultFromNodeRun(nodeRun));
+      return {
+        result: agentTaskResultFromNodeRun(nodeRun),
+        artifactIds: await this.cachedPreflightArtifactIds(run.id, round.id, nodeRun.id)
+      };
+    }
+    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
+      const result = agentTaskResultFromNodeRun(nodeRun);
+      await this.markRunCommandStepFailed(step, result.error ?? `${node.config.label} ${nodeRun.status}.`);
+      return {
+        result,
+        artifactIds: await this.cachedPreflightArtifactIds(run.id, round.id, nodeRun.id)
+      };
+    }
+    return undefined;
+  }
+
+  private async waitForExistingPreflightTask(nodeRun: BlueprintNodeRun): Promise<AgentTaskResult> {
+    const runtimeRef = nodeRun.runtimeRef;
+    if (!runtimeRef?.sessionKey) {
+      throw new Error(`Preflight node run ${nodeRun.id} has no runtime session to resume.`);
+    }
+    return this.adapter.waitForAgentTask({
+      nodeRunId: nodeRun.id,
+      taskId: runtimeRef.taskId ?? runtimeRef.sourceId,
+      runId: runtimeRef.runId ?? runtimeRef.sourceId,
+      sessionKey: runtimeRef.sessionKey,
+      source: runtimeRef.source
+    });
+  }
+
+  private async cachedPreflightArtifactIds(runId: string, roundId: string, nodeRunId: string): Promise<string[]> {
+    return (await this.store.listArtifacts(runId))
+      .filter((artifact) =>
+        artifact.roundId === roundId &&
+        artifact.nodeRunId === nodeRunId &&
+        (artifact.status ?? "current") === "current"
+      )
+      .map((artifact) => artifact.id);
+  }
+
+  private async markRunCommandStepRunning(step: RunCommandStep, runtimeRef?: RuntimeObjectRef): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "running",
+      startedAt: step.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      ...(runtimeRef ? { runtimeRef } : {})
+    });
+  }
+
+  private async markRunCommandStepSucceeded(step: RunCommandStep, result: AgentTaskResult): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "succeeded",
+      endedAt: result.updatedAt ?? new Date().toISOString(),
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      runtimeRef: runtimeRefFromAgentTaskResult(result, step.runtimeRef)
+    });
+  }
+
+  private async markRunCommandStepFailed(step: RunCommandStep, error: string): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "failed",
+      endedAt: new Date().toISOString(),
+      error,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {})
+    });
   }
 
   private async startPreflightNodeRun(
@@ -926,7 +1342,8 @@ export class BlueprintWorker {
     nodeRunId: string
   ): Promise<{ nodeRun: BlueprintNodeRun; claim: { owner: string; workerEpoch: number } }> {
     const now = new Date().toISOString();
-    const nodeRun: BlueprintNodeRun = {
+    const existing = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
+    const nodeRun: BlueprintNodeRun = existing ?? {
       id: nodeRunId,
       blueprintRunId: run.id,
       blueprintId: blueprint.id,
@@ -937,7 +1354,9 @@ export class BlueprintWorker {
       status: "queued",
       queuedAt: now
     };
-    await this.store.createQueuedNodeRun(nodeRun);
+    if (!existing) {
+      await this.store.createQueuedNodeRun(nodeRun);
+    }
     const claim = await this.store.claimNodeRun({
       nodeRunId,
       owner: this.workerId,
@@ -1866,6 +2285,9 @@ export class BlueprintWorker {
       }
 
       if (lifecycle.resumeExecution) {
+        if (request.kind === "iteration_requirement_plan" && request.roundId) {
+          await this.markPrepareCommandsForRoundSucceeded(currentRun.id, request.roundId);
+        }
         const running = { ...currentRun, status: "running" as const };
         await this.store.updateBlueprintRun(running);
         if (options.scheduleOnResume !== false) {
@@ -4642,6 +5064,145 @@ export class BlueprintWorker {
       runtimeRef
     });
   }
+}
+
+export function buildRunCommandKey(runId: string, roundId: string | undefined, kind: RunCommandKind): string {
+  return [runId, roundId ?? "run", kind].join(":");
+}
+
+export function buildRunCommandStepKey(
+  command: RunCommand,
+  mode: RunCommandStepMode,
+  nodeId: string,
+  attempt = 1
+): string {
+  return [
+    command.commandKey,
+    `revision-${command.currentRevision}`,
+    mode,
+    nodeId,
+    `attempt-${Math.max(1, Math.round(attempt))}`
+  ].join(":");
+}
+
+export function stablePreflightNodeRunId(stepKey: string): string {
+  const hash = createHash("sha256").update(stepKey).digest("hex").slice(0, 12);
+  const parts = stepKey.split(":");
+  const attemptPart = parts.at(-1);
+  const nodeId = sanitizeIdPart(parts.at(-2) ?? "node");
+  const mode = sanitizeIdPart(parts.at(-3) ?? "preflight");
+  const roundId = sanitizeIdPart(parts.at(1) ?? "round");
+  const attempt = attemptPart?.startsWith("attempt-") && attemptPart !== "attempt-1"
+    ? `-${sanitizeIdPart(attemptPart)}`
+    : "";
+  return `preflight-${mode}-${roundId}-${nodeId}${attempt}-${hash}`;
+}
+
+function buildStandalonePreflightStepKey(
+  runId: string,
+  roundId: string,
+  mode: RunCommandStepMode,
+  nodeId: string,
+  attempt = 1
+): string {
+  return [
+    "standalone-preflight",
+    runId,
+    roundId,
+    "revision-0",
+    mode,
+    nodeId,
+    `attempt-${Math.max(1, Math.round(attempt))}`
+  ].join(":");
+}
+
+function deterministicFactId(prefix: string, key: string): string {
+  return `${prefix}-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+}
+
+function sanitizeIdPart(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitized.slice(0, 72) || "unknown";
+}
+
+function readPreflightAttempt(taskInput: Record<string, unknown>): number {
+  const attempt = taskInput.preparationAttempt;
+  return typeof attempt === "number" && Number.isFinite(attempt)
+    ? Math.max(1, Math.round(attempt))
+    : 1;
+}
+
+function readPrepareCommandContext(command: RunCommand): {
+  humanFeedback?: string;
+  previousRequirement?: string;
+  revision?: number;
+} {
+  const metadata = command.metadata;
+  if (!metadata) return {};
+  return {
+    humanFeedback: typeof metadata.humanFeedback === "string" ? metadata.humanFeedback : undefined,
+    previousRequirement: typeof metadata.previousRequirement === "string" ? metadata.previousRequirement : undefined,
+    revision: typeof metadata.revision === "number" ? metadata.revision : undefined
+  };
+}
+
+function parseLegacyPreflightNodeRunId(
+  nodeRunId: string,
+  roundId: string
+): { mode: RunCommandStepMode; nodeId: string } | undefined {
+  if (!nodeRunId.startsWith("preflight-")) return undefined;
+  const modes: RunCommandStepMode[] = [
+    "research_resolution",
+    "requirement_resolution",
+    "revise_plan",
+    "preflight_judgment",
+    "context_snapshot"
+  ];
+  for (const mode of modes) {
+    const prefix = `preflight-${mode}-${roundId}-`;
+    if (!nodeRunId.startsWith(prefix)) continue;
+    const remainder = nodeRunId.slice(prefix.length);
+    const nodeId = remainder.replace(/-[^-]+$/, "");
+    return nodeId ? { mode, nodeId } : undefined;
+  }
+  return undefined;
+}
+
+function commandStepStatusFromNodeRun(nodeRun: BlueprintNodeRun): RunCommandStep["status"] {
+  if (nodeRun.status === "succeeded") return "succeeded";
+  if (nodeRun.status === "failed") return "failed";
+  if (nodeRun.status === "cancelled") return "cancelled";
+  if (nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "running";
+  return "queued";
+}
+
+function agentTaskResultFromNodeRun(nodeRun: BlueprintNodeRun): AgentTaskResult {
+  const runtimeRef = nodeRun.runtimeRef;
+  return {
+    taskId: runtimeRef?.taskId ?? runtimeRef?.sourceId ?? nodeRun.id,
+    runId: runtimeRef?.runId ?? runtimeRef?.sourceId ?? nodeRun.id,
+    sessionKey: runtimeRef?.sessionKey ?? nodeRun.id,
+    source: runtimeRef?.source ?? "openclaw",
+    status: nodeRun.status === "succeeded" || nodeRun.status === "failed" || nodeRun.status === "cancelled"
+      ? nodeRun.status
+      : "running",
+    output: nodeRun.output,
+    error: nodeRun.error,
+    usage: nodeRun.usage,
+    updatedAt: nodeRun.endedAt ?? nodeRun.startedAt ?? nodeRun.queuedAt ?? new Date().toISOString()
+  };
+}
+
+function runtimeRefFromAgentTaskResult(result: AgentTaskResult, fallback?: RuntimeObjectRef): RuntimeObjectRef {
+  return {
+    source: result.source,
+    sourceId: result.taskId,
+    sourceUpdatedAt: result.updatedAt,
+    taskId: result.taskId,
+    runId: result.runId,
+    sessionKey: result.sessionKey,
+    usageRef: result.usage?.id ?? fallback?.usageRef
+  };
 }
 
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {
