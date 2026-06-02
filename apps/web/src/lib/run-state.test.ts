@@ -415,7 +415,7 @@ describe("run state sync", () => {
     ]);
   });
 
-  it("projects approval discussion capabilities from backend binding and session facts", () => {
+  it("uses backend-projected approval discussion capabilities", () => {
     const runView = createRunView("waiting_approval");
     runView.approvalRequests = [
       createApprovalRequest({
@@ -424,6 +424,17 @@ describe("run state sync", () => {
         kind: "agent_proposal",
         nodeRunId: "node-run-agent"
       })
+    ];
+    runView.approvalRequestDiscussions = [
+      {
+        approvalRequestId: "approval-agent-1",
+        discussion: {
+          mode: "executor",
+          canStreamReply: true,
+          canCreateCandidate: true,
+          executorKind: "agent_approval"
+        }
+      }
     ];
     runView.approvalDiscussionBindings = [
       {
@@ -467,6 +478,56 @@ describe("run state sync", () => {
     });
   });
 
+  it("does not resolve raw approval discussion bindings in the browser", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-raw",
+        threadId: "approval-thread-agent-raw",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+    runView.approvalRequestDiscussions = [
+      {
+        approvalRequestId: "approval-agent-raw",
+        discussion: {
+          mode: "none",
+          canStreamReply: false,
+          canCreateCandidate: false,
+          reason: "executor_session_unavailable"
+        }
+      }
+    ];
+    runView.approvalDiscussionBindings = [
+      {
+        approvalRequestId: "approval-agent-raw",
+        threadId: "approval-thread-agent-raw",
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: "agent",
+        executorNodeRunId: "node-run-agent",
+        executorSessionId: "session-agent-raw",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      }
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_session_unavailable"
+    });
+  });
+
   it("marks missing approval discussion projection unavailable instead of synthesizing message-only", () => {
     const runView = createRunView("waiting_approval");
     runView.approvalRequests = [
@@ -483,7 +544,7 @@ describe("run state sync", () => {
       mode: "none",
       canStreamReply: false,
       canCreateCandidate: false,
-      reason: "legacy_binding_missing"
+      reason: "backend_discussion_projection_missing"
     });
     expect(approvals[0]?.selectedReplyId).toBeNull();
   });

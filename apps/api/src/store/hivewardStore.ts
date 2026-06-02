@@ -114,6 +114,7 @@ export type ApplyApprovalDecisionInput = {
   nextRequest: ApprovalRequest;
   decision: ApprovalDecision;
   nextApprovalRequest?: ApprovalRequest;
+  nextApprovalDiscussionBinding?: ApprovalDiscussionBinding;
   releaseReport?: ReleaseReport;
   timelineItem?: Omit<RunTimelineItem, "sequence"> & { sequence?: number };
 };
@@ -250,6 +251,10 @@ export interface HivewardStore {
   listApprovalRequests(filter?: { runId?: string; status?: ApprovalRequest["status"] }): Promise<ApprovalRequest[]>;
   getApprovalRequest(id: string): Promise<ApprovalRequest | undefined>;
   upsertApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest>;
+  createApprovalRequestWithDiscussionBinding(input: {
+    request: ApprovalRequest;
+    discussionBinding?: ApprovalDiscussionBinding;
+  }): Promise<ApprovalRequest>;
   appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply>;
   listApprovalReplies(filter?: { runId?: string; threadId?: string; approvalRequestId?: string }): Promise<ApprovalReply[]>;
   appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision>;
@@ -275,14 +280,17 @@ export interface HivewardStore {
     runId?: string;
     nodeRunId?: string;
   }): Promise<NodeSessionTranscriptEvent[]>;
-  createApprovalDiscussionBindingIfAbsent(
-    binding: ApprovalDiscussionBinding
-  ): Promise<{ binding: ApprovalDiscussionBinding; created: boolean }>;
+  createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding>;
   getApprovalDiscussionBinding(approvalRequestId: string): Promise<ApprovalDiscussionBinding | undefined>;
   listApprovalDiscussionBindings(filter?: { approvalRequestIds?: string[]; runId?: string }): Promise<ApprovalDiscussionBinding[]>;
   updateApprovalDiscussionBinding(
     input: { approvalRequestId: string } & Partial<ApprovalDiscussionBinding>
   ): Promise<ApprovalDiscussionBinding>;
+  markApprovalDiscussionBindingUnavailable(input: {
+    approvalRequestId: string;
+    reason: string;
+    updatedAt?: string;
+  }): Promise<ApprovalDiscussionBinding>;
 
   listArtifacts(runId?: string): Promise<Artifact[]>;
   upsertArtifact(artifact: Artifact): Promise<Artifact>;

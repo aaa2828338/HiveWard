@@ -29,7 +29,17 @@ export interface ApprovalRevisionDraft {
   payloadRef?: string;
   releaseReport?: ReleaseReport;
   capabilities?: ApprovalCapabilities;
+  discussionBinding?: ApprovalDiscussionBindingDraft;
 }
+
+export type ApprovalDiscussionBindingDraft = Omit<
+  ApprovalDiscussionBinding,
+  "approvalRequestId" | "threadId" | "createdAt" | "updatedAt"
+> & {
+  threadId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
 
 export interface LifecycleApprovalOutcome {
   resumeExecution: boolean;
@@ -108,6 +118,7 @@ export class ApprovalService {
     finalRound?: boolean;
     requestedAt?: string;
     capabilities?: ApprovalCapabilities;
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<ApprovalRequest> {
     const now = input.requestedAt ?? new Date().toISOString();
     const request: ApprovalRequest = {
@@ -137,11 +148,10 @@ export class ApprovalService {
       }
     }
 
-    await this.store.upsertApprovalRequest(request);
-    const defaultBinding = buildDefaultApprovalDiscussionBinding(request, now);
-    if (defaultBinding) {
-      await this.store.createApprovalDiscussionBindingIfAbsent(defaultBinding);
-    }
+    const discussionBinding = input.discussionBinding
+      ? buildApprovalDiscussionBindingForRequest(request, input.discussionBinding, now)
+      : buildDefaultApprovalDiscussionBinding(request, now);
+    await this.store.createApprovalRequestWithDiscussionBinding({ request, discussionBinding });
     if (input.runId && await this.store.getBlueprintRun(input.runId)) {
       await this.store.appendRunTimelineItem({
         id: `timeline-${nanoid(10)}`,
@@ -259,10 +269,18 @@ export class ApprovalService {
       capabilities: { ...emptyApprovalCapabilities },
       updatedAt: now
     };
+    const nextApprovalDiscussionBinding = draft.discussionBinding
+      ? buildApprovalDiscussionBindingForRequest(nextApprovalRequest, draft.discussionBinding, now)
+      : copyApprovalDiscussionBindingForRequest(
+          await this.store.getApprovalDiscussionBinding(current.id),
+          nextApprovalRequest,
+          now
+        );
     return this.applyDecisionOrThrow({
       approvalRequest: superseded,
       decision,
       nextApprovalRequest,
+      nextApprovalDiscussionBinding,
       releaseReport
     });
   }
@@ -451,6 +469,7 @@ export class ApprovalService {
     approvalRequest: ApprovalRequest;
     decision: ApprovalDecision;
     nextApprovalRequest?: ApprovalRequest;
+    nextApprovalDiscussionBinding?: ApprovalDiscussionBinding;
     releaseReport?: ReleaseReport;
   }): Promise<ApprovalActionResult> {
     const result = await this.store.applyApprovalDecision({
@@ -459,6 +478,7 @@ export class ApprovalService {
       nextRequest: input.approvalRequest,
       decision: input.decision,
       nextApprovalRequest: input.nextApprovalRequest,
+      nextApprovalDiscussionBinding: input.nextApprovalDiscussionBinding,
       releaseReport: input.releaseReport,
       timelineItem: input.approvalRequest.runId && await this.store.getBlueprintRun(input.approvalRequest.runId)
         ? this.buildDecisionTimelineItem(input.approvalRequest, input.decision)
@@ -504,14 +524,16 @@ export class ApprovalService {
     payloadRef?: string;
     releaseReport?: ReleaseReport;
     capabilities: ApprovalCapabilities;
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }> {
-    if (override.title || override.body || override.payloadRef || override.releaseReport || override.capabilities) {
+    if (override.title || override.body || override.payloadRef || override.releaseReport || override.capabilities || override.discussionBinding) {
       return {
         title: override.title ?? appendRevisionSuffix(current.title, revision),
         body: override.body ?? current.body,
         payloadRef: override.payloadRef ?? current.payloadRef,
         releaseReport: override.releaseReport,
-        capabilities: override.capabilities ?? current.capabilities
+        capabilities: override.capabilities ?? current.capabilities,
+        discussionBinding: override.discussionBinding
       };
     }
 
@@ -593,6 +615,35 @@ function buildDefaultApprovalDiscussionBinding(
     canCreateCandidate: false,
     reason: "message_only_approval_kind",
     resolverVersion: 1,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function buildApprovalDiscussionBindingForRequest(
+  request: ApprovalRequest,
+  draft: ApprovalDiscussionBindingDraft,
+  now: string
+): ApprovalDiscussionBinding {
+  return {
+    ...draft,
+    approvalRequestId: request.id,
+    threadId: draft.threadId ?? request.threadId,
+    createdAt: draft.createdAt ?? now,
+    updatedAt: draft.updatedAt ?? now
+  };
+}
+
+function copyApprovalDiscussionBindingForRequest(
+  binding: ApprovalDiscussionBinding | undefined,
+  request: ApprovalRequest,
+  now: string
+): ApprovalDiscussionBinding | undefined {
+  if (!binding) return undefined;
+  return {
+    ...binding,
+    approvalRequestId: request.id,
+    threadId: request.threadId,
     createdAt: now,
     updatedAt: now
   };

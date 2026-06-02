@@ -51,7 +51,13 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService, type ApprovalActionResult, type ApprovalRevisionDraft, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import {
+  ApprovalService,
+  type ApprovalActionResult,
+  type ApprovalDiscussionBindingDraft,
+  type ApprovalRevisionDraft,
+  type LifecycleApprovalOutcome
+} from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -409,6 +415,11 @@ interface ResolvedNodeExecutionSession {
 
 type SelfIterationPublishResult = "none" | "continue" | "handled";
 
+interface SelfIterationReleaseReportResult {
+  summary: string;
+  discussionBinding: ApprovalDiscussionBindingDraft;
+}
+
 interface AutoAdvanceResult {
   run: BlueprintRun;
   changed: boolean;
@@ -596,18 +607,6 @@ export class BlueprintWorker {
     const lifecycle = await this.iterationService.handleApprovalResult(result);
     if (request.kind === "manager_release_report" && request.roundId && (action === "approve" || action === "complete")) {
       await this.markRunCommandsForRoundSucceeded(currentRun.id, request.roundId, releaseReportCommandKind);
-    }
-    if (result.nextApprovalRequest?.kind === "iteration_requirement_plan") {
-      const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-      if (topManager) {
-        await this.ensureRequirementApprovalDiscussionBinding(result.nextApprovalRequest, currentRun, topManager, requirementRevisionCommand);
-      }
-    }
-    if (result.nextApprovalRequest?.kind === "manager_release_report") {
-      const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-      if (topManager) {
-        await this.ensureReleaseReportApprovalDiscussionBinding(result.nextApprovalRequest, currentRun, topManager);
-      }
     }
     if (requirementRevisionMetadata && result.nextApprovalRequest?.roundId) {
       const round = (await this.store.listIterationRounds({ runId: result.nextApprovalRequest.runId }))
@@ -1222,12 +1221,14 @@ export class BlueprintWorker {
       revision: context.revision,
       executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager, command)
     });
+    const discussionBinding = await this.buildRequirementApprovalDiscussionBindingDraft(run, topManager, command);
     const request = await this.iterationService.requestRoundPlan({
       session,
       round,
       managerNode: topManager,
       body: preflight.body,
       revision: context.revision,
+      discussionBinding,
       metadata: {
         researchStatus: preflight.researchStatus,
         researchSummary: preflight.researchSummary,
@@ -1235,7 +1236,6 @@ export class BlueprintWorker {
         planSource: preflight.planSource
       }
     });
-    await this.ensureRequirementApprovalDiscussionBinding(request, run, topManager, command);
     await this.managerMailProjector.refresh(run.id);
     return request;
   }
@@ -1882,6 +1882,7 @@ export class BlueprintWorker {
       capabilities: preflight.researchStatus === "blocked"
         ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
         : request.capabilities,
+      discussionBinding: await this.buildRequirementApprovalDiscussionBindingDraft(run, topManager, command),
       metadata: {
         researchStatus: preflight.researchStatus,
         researchSummary: preflight.researchSummary,
@@ -2123,16 +2124,14 @@ export class BlueprintWorker {
     });
   }
 
-  private async ensureAgentApprovalDiscussionBinding(
-    request: ApprovalRequest,
+  private async buildAgentApprovalDiscussionBindingDraft(
     nodeRun: BlueprintNodeRun
-  ): Promise<void> {
+  ): Promise<ApprovalDiscussionBindingDraft> {
     const session = this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({
       runId: nodeRun.blueprintRunId,
       nodeRunId: nodeRun.id
     }));
-    await this.createApprovalDiscussionBinding({
-      request,
+    return this.buildExecutorApprovalDiscussionBindingDraft({
       route: "agent_approval",
       executorActor: "agent",
       executorNodeId: nodeRun.nodeId,
@@ -2142,25 +2141,23 @@ export class BlueprintWorker {
     });
   }
 
-  private async ensureRequirementApprovalDiscussionBinding(
-    request: ApprovalRequest,
+  private async buildRequirementApprovalDiscussionBindingDraft(
     run: BlueprintRun,
     topManager: BlueprintNode,
     command?: RunCommand
-  ): Promise<void> {
+  ): Promise<ApprovalDiscussionBindingDraft> {
     const requirementStep = command
       ? (await this.store.listRunCommandSteps({ commandId: command.id }))
           .filter((step) => step.mode === "requirement_resolution" || step.mode === "revise_plan")
           .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0]
       : undefined;
-    const nodeRunId = requirementStep?.nodeRunId ?? request.nodeRunId;
+    const nodeRunId = requirementStep?.nodeRunId;
     const session = nodeRunId
       ? this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({ runId: run.id, nodeRunId }))
       : undefined;
     const executorNodeId = requirementStep?.nodeId ?? session?.nodeId ?? topManager.id;
     const route: ApprovalDiscussionRoute = executorNodeId === topManager.id ? "requirement_manager" : "requirement_agent";
-    await this.createApprovalDiscussionBinding({
-      request,
+    return this.buildExecutorApprovalDiscussionBindingDraft({
       route,
       executorActor: route === "requirement_manager" ? "manager" : "agent",
       executorNodeId,
@@ -2170,50 +2167,19 @@ export class BlueprintWorker {
     });
   }
 
-  private async ensureReleaseReportApprovalDiscussionBinding(
-    request: ApprovalRequest,
-    run: BlueprintRun,
-    topManager: BlueprintNode
-  ): Promise<void> {
-    const nodeRun = (await this.store.listNodeRuns(run.id))
-      .filter((candidate) =>
-        candidate.nodeId === topManager.id &&
-        candidate.status === "succeeded" &&
-        (!request.roundId || candidate.iterationRoundId === request.roundId)
-      )
-      .sort((left, right) =>
-        new Date(right.endedAt ?? right.startedAt ?? right.queuedAt ?? "").getTime() -
-        new Date(left.endedAt ?? left.startedAt ?? left.queuedAt ?? "").getTime()
-      )[0];
-    const session = nodeRun
-      ? this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id }))
-      : undefined;
-    await this.createApprovalDiscussionBinding({
-      request,
-      route: "release_report_manager",
-      executorActor: "manager",
-      executorNodeId: topManager.id,
-      executorNodeRunId: nodeRun?.id,
-      session,
-      missingReason: "release_report_executor_session_missing"
-    });
-  }
-
-  private async createApprovalDiscussionBinding(input: {
-    request: ApprovalRequest;
+  private buildExecutorApprovalDiscussionBindingDraft(input: {
     route: ApprovalDiscussionRoute;
     executorActor: NonNullable<ApprovalDiscussionBinding["executorActor"]>;
     executorNodeId?: string;
     executorNodeRunId?: string;
     session?: NodeExecutionSession;
     missingReason: string;
-  }): Promise<void> {
-    const now = new Date().toISOString();
-    const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session);
-    await this.store.createApprovalDiscussionBindingIfAbsent({
-      approvalRequestId: input.request.id,
-      threadId: input.request.threadId,
-      mode: hasExecutor ? "executor" : "message_only",
+    canStreamReply?: boolean;
+    canCreateCandidate?: boolean;
+  }): ApprovalDiscussionBindingDraft {
+    const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session && input.session.status !== "unavailable");
+    return {
+      mode: "executor",
       route: input.route,
       executorActor: input.executorActor,
       executorKind: input.route,
@@ -2221,13 +2187,11 @@ export class BlueprintWorker {
       executorNodeRunId: input.executorNodeRunId,
       executorSessionId: input.session?.id,
       runtimeId: input.session?.harnessId as AgentRuntimeId | undefined,
-      canStreamReply: hasExecutor,
-      canCreateCandidate: hasExecutor,
+      canStreamReply: hasExecutor && input.canStreamReply !== false,
+      canCreateCandidate: hasExecutor && input.canCreateCandidate !== false,
       reason: hasExecutor ? undefined : input.missingReason,
-      resolverVersion: 1,
-      createdAt: now,
-      updatedAt: now
-    });
+      resolverVersion: 1
+    };
   }
 
   private latestNodeExecutionSession(sessions: NodeExecutionSession[]): NodeExecutionSession | undefined {
@@ -2470,7 +2434,8 @@ export class BlueprintWorker {
     await this.migrationService.migratePendingNodeApproval({
       runId: run.id,
       nodeRun: repliedNodeRun,
-      requestedByLabel: waiting.nodeLabel
+      requestedByLabel: waiting.nodeLabel,
+      discussionBinding: await this.buildAgentApprovalDiscussionBindingDraft(repliedNodeRun)
     });
   }
 
@@ -2677,7 +2642,7 @@ export class BlueprintWorker {
     }
     const releaseCommand = releaseCommandInput ?? await this.ensureSelfIterationReleaseReportCommand(blueprint, run, executingRound.id);
     const runningReleaseCommand = await this.markRunCommandRunning(releaseCommand, "release_report");
-    const summary = await this.writeSelfIterationReleaseReport({
+    const releaseReportDraft = await this.writeSelfIterationReleaseReport({
       blueprint,
       run,
       round: executingRound,
@@ -2700,12 +2665,10 @@ export class BlueprintWorker {
     const published = await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
-      summary,
-      artifacts
+      summary: releaseReportDraft.summary,
+      artifacts,
+      discussionBinding: releaseReportDraft.discussionBinding
     });
-    if (published?.approvalRequest) {
-      await this.ensureReleaseReportApprovalDiscussionBinding(published.approvalRequest, run, topManager);
-    }
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
       await this.markRunCommandSucceeded(runningReleaseCommand);
@@ -2734,7 +2697,7 @@ export class BlueprintWorker {
     agentReports: AgentHumanReport[];
     agentHandoffs: AgentHandoff[];
     command?: RunCommand;
-  }): Promise<string> {
+  }): Promise<SelfIterationReleaseReportResult> {
     const config = input.managerNode.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
     const taskInput = {
@@ -2812,7 +2775,21 @@ export class BlueprintWorker {
     }
     await this.completeNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.output, runtimeRef);
     if (step) await this.markRunCommandStepSucceeded({ ...step, nodeRunId: nodeRun.id }, result);
-    return humanReport.bodyMd;
+    const session = this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({
+      runId: input.run.id,
+      nodeRunId: nodeRun.id
+    }));
+    return {
+      summary: humanReport.bodyMd,
+      discussionBinding: this.buildExecutorApprovalDiscussionBindingDraft({
+        route: "release_report_manager",
+        executorActor: "manager",
+        executorNodeId: input.managerNode.id,
+        executorNodeRunId: nodeRun.id,
+        session,
+        missingReason: "release_report_executor_session_missing"
+      })
+    };
   }
 
   private async buildManagerSnapshotDraft(
@@ -4782,11 +4759,9 @@ export class BlueprintWorker {
       requestedByLabel: nodeRun.nodeLabel,
       threadId: revisionContext?.threadId,
       replacesRequestId: revisionContext?.replacesRequestId,
-      revision: revisionContext?.revision
+      revision: revisionContext?.revision,
+      discussionBinding: await this.buildAgentApprovalDiscussionBindingDraft(waiting)
     });
-    if (migratedRequest) {
-      await this.ensureAgentApprovalDiscussionBinding(migratedRequest, waiting);
-    }
     if (revisionContext?.replacesRequestId && migratedRequest?.id) {
       await this.supersedeOriginalApprovalIfPending(revisionContext.replacesRequestId, migratedRequest.id);
     }
@@ -6024,11 +5999,34 @@ export class BlueprintWorker {
       createdAt: now,
       updatedAt: now
     };
+    const fallbackSession = await this.store.createNodeExecutionSession(fallback);
+    await this.rebindApprovalDiscussionsToFallbackSession(unavailable, fallbackSession);
     return {
-      session: await this.store.createNodeExecutionSession(fallback),
+      session: fallbackSession,
       nodeRun: context.nodeRun,
       resumeNativeSessionId: undefined
     };
+  }
+
+  private async rebindApprovalDiscussionsToFallbackSession(
+    unavailable: NodeExecutionSession,
+    fallback: NodeExecutionSession
+  ): Promise<void> {
+    const bindings = await this.store.listApprovalDiscussionBindings({ runId: fallback.runId });
+    const affected = bindings.filter((binding) => binding.executorSessionId === unavailable.id);
+    for (const binding of affected) {
+      const canUseFallback = Boolean(binding.executorNodeId && binding.executorNodeRunId);
+      await this.store.updateApprovalDiscussionBinding({
+        approvalRequestId: binding.approvalRequestId,
+        mode: "executor",
+        executorSessionId: fallback.id,
+        runtimeId: fallback.harnessId as AgentRuntimeId,
+        canStreamReply: canUseFallback && binding.canStreamReply,
+        canCreateCandidate: canUseFallback && binding.canCreateCandidate,
+        reason: canUseFallback ? undefined : "fallback_executor_binding_incomplete",
+        updatedAt: fallback.updatedAt
+      });
+    }
   }
 
   private async markNodeExecutionSessionStarted(

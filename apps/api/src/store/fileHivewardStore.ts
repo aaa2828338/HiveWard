@@ -32,6 +32,7 @@ import type {
   AgentHandoff,
   AgentHumanReport,
   ApprovalDiscussionBinding,
+  ApprovalRequestDiscussionProjection,
   ApprovalDecision,
   ApprovalReply,
   ApprovalRequest,
@@ -1465,6 +1466,25 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
+  async createApprovalRequestWithDiscussionBinding(input: {
+    request: ApprovalRequest;
+    discussionBinding?: ApprovalDiscussionBinding;
+  }): Promise<ApprovalRequest> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.approvalRequests, input.request);
+      upsertById(index.approvalThreads, approvalThreadFromRequest(input.request));
+      if (input.discussionBinding) {
+        if (input.discussionBinding.approvalRequestId !== input.request.id) {
+          throw new Error("Approval discussion binding must target the created approval request.");
+        }
+        insertApprovalDiscussionBindingStrict(index, input.discussionBinding);
+      }
+      await this.writeIndexUnlocked(index);
+      return input.request;
+    });
+  }
+
   async appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -1504,6 +1524,12 @@ export class FileHivewardStore implements HivewardStore {
       if (input.nextApprovalRequest) {
         upsertById(index.approvalRequests, input.nextApprovalRequest);
         upsertById(index.approvalThreads, approvalThreadFromRequest(input.nextApprovalRequest));
+        if (input.nextApprovalDiscussionBinding) {
+          if (input.nextApprovalDiscussionBinding.approvalRequestId !== input.nextApprovalRequest.id) {
+            throw new Error("Approval discussion binding must target the next approval request.");
+          }
+          insertApprovalDiscussionBindingStrict(index, input.nextApprovalDiscussionBinding);
+        }
       }
       if (input.releaseReport) upsertById(index.releaseReports, input.releaseReport);
       if (input.timelineItem) {
@@ -1654,16 +1680,12 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async createApprovalDiscussionBindingIfAbsent(
-    binding: ApprovalDiscussionBinding
-  ): Promise<{ binding: ApprovalDiscussionBinding; created: boolean }> {
+  async createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
-      const existing = index.approvalDiscussionBindings.find((item) => item.approvalRequestId === binding.approvalRequestId);
-      if (existing) return { binding: existing, created: false };
-      index.approvalDiscussionBindings.push(binding);
+      insertApprovalDiscussionBindingStrict(index, binding);
       await this.writeIndexUnlocked(index);
-      return { binding, created: true };
+      return binding;
     });
   }
 
@@ -1707,6 +1729,21 @@ export class FileHivewardStore implements HivewardStore {
       index.approvalDiscussionBindings[bindingIndex] = updated;
       await this.writeIndexUnlocked(index);
       return updated;
+    });
+  }
+
+  async markApprovalDiscussionBindingUnavailable(input: {
+    approvalRequestId: string;
+    reason: string;
+    updatedAt?: string;
+  }): Promise<ApprovalDiscussionBinding> {
+    return this.updateApprovalDiscussionBinding({
+      approvalRequestId: input.approvalRequestId,
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: input.reason,
+      updatedAt: input.updatedAt
     });
   }
 
@@ -2450,6 +2487,9 @@ export class FileHivewardStore implements HivewardStore {
 
   private getRunViewFromArchive(archive: BlueprintRunArchive, index: HivewardStoreIndex): BlueprintRunView {
     const runId = archive.run.id;
+    const approvalRequests = index.approvalRequests.filter((item) => item.runId === runId);
+    const approvalDiscussionBindings = filterApprovalDiscussionBindingsForRun(index, runId);
+    const nodeExecutionSessions = index.nodeExecutionSessions.filter((item) => item.runId === runId);
     return {
       run: archive.run,
       nodeRuns: archive.nodeRuns,
@@ -2459,10 +2499,17 @@ export class FileHivewardStore implements HivewardStore {
       iterationRounds: index.iterationRounds.filter((item) => item.runId === runId),
       runCommands: index.runCommands.filter((item) => item.runId === runId),
       runCommandSteps: index.runCommandSteps.filter((item) => item.runId === runId),
-      nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === runId),
+      nodeExecutionSessions,
       nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === runId),
-      approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, runId),
-      approvalRequests: index.approvalRequests.filter((item) => item.runId === runId),
+      approvalDiscussionBindings,
+      approvalRequestDiscussions: projectApprovalRequestDiscussions({
+        requests: approvalRequests,
+        bindings: approvalDiscussionBindings,
+        run: archive.run,
+        nodeRuns: archive.nodeRuns,
+        sessions: nodeExecutionSessions
+      }),
+      approvalRequests,
       approvalDecisions: index.approvalDecisions.filter((item) =>
         index.approvalRequests.some((request) => request.runId === runId && request.id === item.approvalRequestId)
       ),
@@ -2795,6 +2842,36 @@ function filterApprovalDiscussionBindingsForRun(
     .filter((binding) => requestIds.has(binding.approvalRequestId))
     .slice()
     .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.approvalRequestId.localeCompare(right.approvalRequestId));
+}
+
+function insertApprovalDiscussionBindingStrict(
+  index: HivewardStoreIndex,
+  binding: ApprovalDiscussionBinding
+): void {
+  const existing = index.approvalDiscussionBindings.find((item) => item.approvalRequestId === binding.approvalRequestId);
+  if (existing) {
+    throw new Error(`Approval discussion binding already exists: ${binding.approvalRequestId}`);
+  }
+  index.approvalDiscussionBindings.push(binding);
+}
+
+function projectApprovalRequestDiscussions(input: {
+  requests: ApprovalRequest[];
+  bindings: ApprovalDiscussionBinding[];
+  run: BlueprintRun;
+  nodeRuns: BlueprintNodeRun[];
+  sessions: NodeExecutionSession[];
+}): ApprovalRequestDiscussionProjection[] {
+  return input.requests.map((request) => ({
+    approvalRequestId: request.id,
+    discussion: projectPendingApprovalDiscussion({
+      request,
+      binding: input.bindings.find((binding) => binding.approvalRequestId === request.id),
+      run: input.run,
+      nodeRuns: input.nodeRuns,
+      sessions: input.sessions
+    })
+  }));
 }
 
 function appendApprovalReplyFromDecision(

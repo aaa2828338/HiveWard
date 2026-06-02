@@ -4,7 +4,6 @@ import type {
   BlueprintRunStatus,
   BlueprintRunSummary,
   BlueprintRunView,
-  ApprovalDiscussionBinding,
   ApprovalReply,
   ApprovalRequest,
   PendingApprovalItem
@@ -219,7 +218,7 @@ function buildApprovalItemFromRequest(
     readApprovalDecisionReplies(runView, request.id)
   );
   const selectedReplyId = request.selectedReplyId ?? null;
-  const discussion = projectRunViewApprovalDiscussion(runView, request);
+  const discussion = readApprovalRequestDiscussion(runView, request.id);
   const isPending = request.status === "pending";
   return {
     approvalRequestId: request.id,
@@ -346,69 +345,18 @@ function readApprovalDecisionReplies(runView: BlueprintRunView, approvalRequestI
   return replies.length ? replies : undefined;
 }
 
-function projectRunViewApprovalDiscussion(
+function readApprovalRequestDiscussion(
   runView: BlueprintRunView,
-  request: ApprovalRequest
+  approvalRequestId: string
 ): PendingApprovalItem["discussion"] {
-  const binding = (runView.approvalDiscussionBindings ?? [])
-    .find((candidate) => candidate.approvalRequestId === request.id);
-  if (request.status !== "pending") return noneDiscussion("approval_not_pending");
-  if (!binding) return noneDiscussion("legacy_binding_missing");
-  if (binding.mode === "none") return noneDiscussion(binding.reason ?? "discussion_disabled");
-  if (binding.mode === "message_only") return messageOnlyDiscussion(binding, binding.reason);
-
-  if (!binding.executorNodeId || !binding.executorNodeRunId || !binding.executorSessionId) {
-    return messageOnlyDiscussion(binding, "executor_binding_incomplete");
-  }
-
-  if (!runView.nodeRuns.some((nodeRun) => nodeRun.id === binding.executorNodeRunId)) {
-    return messageOnlyDiscussion(binding, "executor_node_run_missing");
-  }
-
-  const sessions = runView.nodeExecutionSessions;
-  if (sessions) {
-    const session = sessions.find((candidate) => candidate.id === binding.executorSessionId);
-    if (!session) return messageOnlyDiscussion(binding, "executor_session_missing");
-    if (session.status === "unavailable") return messageOnlyDiscussion(binding, "executor_session_unavailable");
-  }
-
-  return {
-    mode: "executor",
-    canStreamReply: binding.canStreamReply,
-    canCreateCandidate: binding.canCreateCandidate,
-    ...(executorKindForDiscussion(binding) ? { executorKind: executorKindForDiscussion(binding) } : {}),
-    ...(binding.reason ? { reason: binding.reason } : {})
-  };
-}
-
-function noneDiscussion(reason: string): NonNullable<PendingApprovalItem["discussion"]> {
-  return {
-    mode: "none",
-    canStreamReply: false,
-    canCreateCandidate: false,
-    reason
-  };
-}
-
-function messageOnlyDiscussion(
-  binding: ApprovalDiscussionBinding,
-  reason: string | undefined
-): NonNullable<PendingApprovalItem["discussion"]> {
-  return {
-    mode: "message_only",
-    canStreamReply: false,
-    canCreateCandidate: false,
-    ...(executorKindForDiscussion(binding) ? { executorKind: executorKindForDiscussion(binding) } : {}),
-    ...(reason ? { reason } : binding.reason ? { reason: binding.reason } : {})
-  };
-}
-
-function executorKindForDiscussion(
-  binding: ApprovalDiscussionBinding
-): NonNullable<PendingApprovalItem["discussion"]>["executorKind"] | undefined {
-  const route = binding.executorKind ?? binding.route;
-  if (!route || route === "none" || route === "message_only") return undefined;
-  return route;
+  return (runView.approvalRequestDiscussions ?? [])
+    .find((candidate) => candidate.approvalRequestId === approvalRequestId)
+    ?.discussion ?? {
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "backend_discussion_projection_missing"
+    };
 }
 
 function mergePendingApprovalReplies(
