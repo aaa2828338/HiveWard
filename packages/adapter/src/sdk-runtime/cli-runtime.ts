@@ -11,7 +11,7 @@ import type {
 } from "@hiveward/shared";
 import { buildSdkChatPrompt } from "./chat-envelope";
 import { formatAgentSdkError, formatAgentSdkProviderError, getErrorMessage, isAbortLikeError } from "./errors";
-import { normalizePermissionProfile } from "./permissions";
+import { normalizeTaskRuntimeAccessPolicy } from "./permissions";
 import { buildPromptEnvelope, validateOutputSchema } from "./prompt-envelope";
 import { buildRuntimeResumeProof, createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
@@ -258,7 +258,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         return this.cancelledResult(taskId, runId, sessionKey, isTimedOut());
       }
 
-      const permissionProfile = normalizePermissionProfile(input.permissionProfile);
+      const runtimeAccessPolicy = normalizeTaskRuntimeAccessPolicy(input, this.harnessId);
       const prompt = buildPromptEnvelope(input);
       const command = await this.resolveCommand({
         profileId: input.profileId,
@@ -274,7 +274,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           agentId: input.agentId,
           agentName: input.agentName,
           nativeSessionId: input.nativeSessionId,
-          workspaceWrite: permissionProfile === "workspace_write",
+          workspaceWrite: runtimeAccessPolicy.filesystem === "workspace_write",
           skillIds: input.skillIds
         }),
         cwd: workingDirectory,

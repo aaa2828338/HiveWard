@@ -15,7 +15,10 @@ export function normalizeTaskRuntimeAccessPolicy(input: {
   runtimeAccessPolicy?: Partial<RuntimeAccessPolicy>;
   permissionProfile?: AgentPermissionProfile;
 }, runtime?: RuntimeAccessPolicyRuntime): RuntimeAccessPolicy {
-  const policy = normalizeRuntimeAccessPolicy(input.runtimeAccessPolicy, input.permissionProfile);
+  const legacyPermissionProfile = input.runtimeAccessPolicy?.filesystem === undefined
+    ? input.permissionProfile
+    : undefined;
+  const policy = normalizeRuntimeAccessPolicy(input.runtimeAccessPolicy, legacyPermissionProfile);
   const unsupported = runtime ? unsupportedRuntimeAccessPolicyChanges(runtime, policy) : [];
   if (runtime && unsupported.length > 0) {
     throw new Error(`Runtime ${runtime} does not support requested access policy axes: ${unsupported.join(", ")}.`);
