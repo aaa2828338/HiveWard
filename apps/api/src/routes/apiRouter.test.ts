@@ -648,22 +648,59 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes legacy blueprint approval actions through pending approval requests", async () => {
+  it("does not expose run-scoped approval action routes", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string; selectedReplyId?: string | null }> = [];
     const worker = {
-      async applyApprovalRequest(
-        _blueprint: BlueprintDefinition,
-        run: BlueprintRun,
-        approvalRequestId: string,
-        action: "approve" | "reject" | "reply",
-        input?: { comment?: string; message?: string; selectedReplyId?: string | null }
-      ) {
-        calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message, selectedReplyId: input?.selectedReplyId });
-        return { ...run, status: "waiting_approval" as const };
+      async applyApprovalRequest() {
+        throw new Error("Run-scoped approval routes must not call the worker.");
       },
+      async selectApprovalReply() {
+        throw new Error("Run-scoped approval selection routes must not call the worker.");
+      }
+    } as unknown as BlueprintWorker;
+
+    try {
+      const blueprint = (await fixture.store.listBlueprints())[0]!;
+      const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const approve = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good." })
+        });
+        const reject = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reject`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Needs work." })
+        });
+        const reply = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", message: "Please revise this answer." })
+        });
+        const select = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/select-approval-reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ nodeRunId: "node-run-1", selectedReplyId: "reply-1" })
+        });
+        expect(approve.status).toBe(404);
+        expect(reject.status).toBe(404);
+        expect(reply.status).toBe(404);
+        expect(select.status).toBe(404);
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("routes request-scoped approval selection through the worker owner", async () => {
+    const fixture = await createStoreFixture();
+    const calls: Array<{ approvalRequestId: string; selectedReplyId: string | null }> = [];
+    const worker = {
       async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, approvalRequestId: string, selectedReplyId: string | null) {
-        calls.push({ action: "select", approvalRequestId, selectedReplyId });
+        calls.push({ approvalRequestId, selectedReplyId });
         return { ...run, status: "waiting_approval" as const };
       }
     } as unknown as BlueprintWorker;
@@ -671,58 +708,59 @@ describe("apiRouter", () => {
     try {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
-      const approval1 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
-      const approval2 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-2");
-      const approval3 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-3");
-      const approval4 = await seedRunApprovalRequest(fixture.store, run.id, "node-run-4");
+      const approvalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-select");
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        const invalidApprove = await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approvalRequest.id}/select-reply`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good.", selectedReplyId: "reply-1" })
-        });
-        expect(invalidApprove.status).toBe(400);
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-1", comment: "Looks good." })
-        }));
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reject`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-2", comment: "Needs work." })
-        }));
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/reply`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-3", message: "Please revise this answer." })
-        }));
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/select-approval-reply`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-4", selectedReplyId: "reply-4" })
-        }));
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/select-approval-reply`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-4", selectedReplyId: null })
+          body: JSON.stringify({ selectedReplyId: null })
         }));
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
-      expect(calls).toEqual([
-        { action: "approve", approvalRequestId: approval1.id, comment: "Looks good.", selectedReplyId: undefined },
-        { action: "reject", approvalRequestId: approval2.id, comment: "Needs work.", selectedReplyId: undefined },
-        { action: "reply", approvalRequestId: approval3.id, message: "Please revise this answer.", comment: undefined, selectedReplyId: undefined },
-        { action: "select", approvalRequestId: approval4.id, selectedReplyId: "reply-4" },
-        { action: "select", approvalRequestId: approval4.id, selectedReplyId: null }
-      ]);
+      expect(calls).toEqual([{ approvalRequestId: approvalRequest.id, selectedReplyId: null }]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("applies run approvals against the immutable run blueprint snapshot", async () => {
+  it("rejects request-scoped approval selection on terminal runs", async () => {
+    const fixture = await createStoreFixture();
+    const worker = {
+      async selectApprovalReply() {
+        throw new Error("Terminal selection must not call the worker.");
+      }
+    } as unknown as BlueprintWorker;
+
+    try {
+      const blueprint = (await fixture.store.listBlueprints())[0]!;
+      const run = await fixture.store.createBlueprintRun(blueprint, "tester");
+      await fixture.store.updateBlueprintRun({
+        ...run,
+        status: "cancelled",
+        endedAt: new Date().toISOString()
+      });
+      const approvalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-terminal-select");
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/approval-requests/${approvalRequest.id}/select-reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ selectedReplyId: null })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+        expect(response.status, JSON.stringify(body)).toBe(409);
+        expect(body.error).toMatchObject({
+          code: "run_already_finished",
+          message: "Run is already finished."
+        });
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies request-scoped run approvals against the immutable run blueprint snapshot", async () => {
     const fixture = await createStoreFixture();
     const receivedBlueprints: BlueprintDefinition[] = [];
     const worker = {
@@ -766,13 +804,13 @@ describe("apiRouter", () => {
           return { ...node, config: { ...config, modelId: undefined } satisfies ManagerNodeConfig };
         })
       });
-      await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
+      const approvalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-1");
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/blueprint-runs/${run.id}/approve`, {
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approvalRequest.id}/approve`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ nodeRunId: "node-run-1" })
+          body: JSON.stringify({})
         }));
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 

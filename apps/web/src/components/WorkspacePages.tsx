@@ -1636,12 +1636,9 @@ export function ApprovalsPage({
   language,
   t,
   actionPending = false,
-  onApprove,
   onApproveApprovalRequest,
   onComplete,
-  onReject,
   onRejectApprovalRequest,
-  onReply,
   onReplyApprovalRequest,
   onReturnForRevisionApprovalRequest,
   onSelectApprovalReply,
@@ -1655,12 +1652,9 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   actionPending?: boolean;
-  onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
-  onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string, discussionMode?: "reply" | "candidate") => void;
   onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSelectApprovalReply: (approvalRequestId: string, selectedReplyId: string | null) => void;
@@ -1701,7 +1695,8 @@ export function ApprovalsPage({
   const selectedApproval = selectedApprovalThread?.approval;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
   const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved && !actionPending);
-  const canReplyToApproval = Boolean(!actionPending && selectedApproval && canSendApprovalDiscussionReply(selectedApproval));
+  const selectedApprovalOperable = hasActionableApprovalRequest(selectedApproval);
+  const canReplyToApproval = Boolean(!actionPending && selectedApprovalOperable && canSendApprovalDiscussionReply(selectedApproval));
   const canCreateCandidateForSelection = Boolean(
     !actionPending &&
     selectedApproval?.approvalRequestId &&
@@ -1710,9 +1705,9 @@ export function ApprovalsPage({
   );
   const canReplyToSelection = Boolean(canReplyToApproval || selectedInboxOperable);
   const canApproveSelection = Boolean(
-    !actionPending && (selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable)
+    !actionPending && (selectedApproval ? selectedApprovalOperable && (selectedApproval.canApprove !== false || selectedApproval.canComplete === true) : selectedInboxOperable)
   );
-  const canRejectSelection = Boolean(!actionPending && ((selectedApproval && selectedApproval.canReject) || selectedInboxOperable));
+  const canRejectSelection = Boolean(!actionPending && ((selectedApprovalOperable && selectedApproval?.canReject) || selectedInboxOperable));
   const canReturnForRevisionSelection = Boolean(
     !actionPending &&
     selectedApproval?.approvalRequestId &&
@@ -1817,11 +1812,7 @@ export function ApprovalsPage({
       setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
     });
     window.setTimeout(() => {
-      if (selectedApproval.approvalRequestId) {
-        onReplyApprovalRequest(selectedApproval.approvalRequestId, body, discussionMode);
-        return;
-      }
-      onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
+      if (selectedApproval.approvalRequestId) onReplyApprovalRequest(selectedApproval.approvalRequestId, body, discussionMode);
     }, 0);
   };
 
@@ -1866,12 +1857,8 @@ export function ApprovalsPage({
       clearReplyDraft();
       return;
     }
-    if (selectedApproval && selectedApproval.canApprove !== false) {
-      if (selectedApproval.approvalRequestId) {
-        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment);
-      } else {
-        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
-      }
+    if (selectedApproval?.approvalRequestId && selectedApproval.canApprove !== false) {
+      onApproveApprovalRequest(selectedApproval.approvalRequestId, comment);
       clearReplyDraft();
       return;
     }
@@ -1901,11 +1888,7 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval?.canReject) {
-      if (selectedApproval.approvalRequestId) {
-        onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
-      } else {
-        onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
-      }
+      if (selectedApproval.approvalRequestId) onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
     }
     clearReplyDraft();
   };
@@ -2021,7 +2004,7 @@ export function ApprovalsPage({
                   const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && thread.id === selectedThread.id;
                   const processed = !isActionableApprovalThread(approval);
-                  const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
+                  const canApproveOrComplete = Boolean(approval.approvalRequestId && (approval.canApprove !== false || approval.canComplete === true));
                   const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
                     <article
@@ -2062,11 +2045,7 @@ export function ApprovalsPage({
                               onComplete(approval.approvalRequestId);
                               return;
                             }
-                            if (approval.approvalRequestId) {
-                              onApproveApprovalRequest(approval.approvalRequestId);
-                              return;
-                            }
-                            onApprove(approval.blueprintRunId, approval.nodeRunId);
+                            if (approval.approvalRequestId) onApproveApprovalRequest(approval.approvalRequestId);
                           }}
                         >
                           <BadgeCheck size={16} />
@@ -2076,13 +2055,9 @@ export function ApprovalsPage({
                           className="inbox-row-action danger-action"
                           title={inboxCopy.reject}
                           aria-label={inboxCopy.reject}
-                          disabled={!approval.canReject || actionPending}
+                          disabled={!approval.approvalRequestId || !approval.canReject || actionPending}
                           onClick={() => {
-                            if (approval.approvalRequestId) {
-                              onRejectApprovalRequest(approval.approvalRequestId);
-                              return;
-                            }
-                            onReject(approval.blueprintRunId, approval.nodeRunId);
+                            if (approval.approvalRequestId) onRejectApprovalRequest(approval.approvalRequestId);
                           }}
                         >
                           <Trash2 size={15} />
@@ -2658,6 +2633,12 @@ function inboxStatusLabel(status: InboxItem["status"], language: Language): stri
 
 function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
   return approval.status === undefined || approval.status === "pending";
+}
+
+function hasActionableApprovalRequest(
+  approval: PendingApprovalItem | undefined,
+): approval is PendingApprovalItem & { approvalRequestId: string } {
+  return Boolean(approval?.approvalRequestId && isActionableApprovalThread(approval));
 }
 
 function canSendApprovalDiscussionReply(approval: PendingApprovalItem): boolean {

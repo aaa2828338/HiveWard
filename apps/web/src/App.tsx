@@ -1278,41 +1278,6 @@ export function App() {
     });
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
-  const approveRun = useCallback(
-    (blueprintRunId?: string, nodeRunId?: string, comment?: string) => {
-      const targetRunId = blueprintRunId ?? latestRunForBlueprint?.run.id;
-      if (!targetRunId) return;
-      void withBusy("approveRun", async () => {
-        const updated = await api.approveBlueprintRun(targetRunId, nodeRunId, comment);
-        applyRunView(updated);
-        setSelectedRunId(updated.run.id);
-      });
-    },
-    [applyRunView, latestRunForBlueprint?.run.id, withBusy]
-  );
-
-  const rejectRunApproval = useCallback(
-    (blueprintRunId: string, nodeRunId: string, comment?: string) => {
-      void withBusy("rejectRunApproval", async () => {
-        const updated = await api.rejectBlueprintRun(blueprintRunId, nodeRunId, comment);
-        applyRunView(updated);
-        setSelectedRunId(updated.run.id);
-      });
-    },
-    [applyRunView, withBusy]
-  );
-
-  const replyToRunApproval = useCallback(
-    (blueprintRunId: string, nodeRunId: string, message: string) => {
-      void withBusy("replyRunApproval", async () => {
-        const updated = await api.replyToBlueprintRunApproval(blueprintRunId, nodeRunId, message);
-        applyRunView(updated);
-        setSelectedRunId(updated.run.id);
-      });
-    },
-    [applyRunView, withBusy]
-  );
-
   const applyApprovalRequestResponse = useCallback(
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
       if (response.approvalThread) {
@@ -1703,7 +1668,6 @@ export function App() {
           onSelectNode={setSelectedNodeId}
           onUpdateBlueprint={updateBlueprint}
           onUpdateArchitectureLayout={updateArchitectureLayout}
-          onApproveRun={() => approveRun()}
           t={t}
         />
       );
@@ -1731,12 +1695,9 @@ export function App() {
           language={language}
           t={t}
           actionPending={isApprovalInboxActionBusy(busyAction)}
-          onApprove={approveRun}
           onApproveApprovalRequest={approveApprovalRequest}
           onComplete={completeRunApproval}
-          onReject={rejectRunApproval}
           onRejectApprovalRequest={rejectApprovalRequest}
-          onReply={replyToRunApproval}
           onReplyApprovalRequest={replyToApprovalRequest}
           onReturnForRevisionApprovalRequest={returnForRevisionApprovalRequest}
           onSelectApprovalReply={selectApprovalReply}
@@ -4011,7 +3972,6 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "importBlueprint") return t.errors.save;
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
-  if (action === "approveRun") return t.errors.approve;
   if (action === "completeRunApproval") return t.errors.approve;
   if (action === "selectRunApprovalReply") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
@@ -4024,9 +3984,6 @@ function errorMessageForAction(action: string, t: Messages): string {
 
 function isApprovalInboxActionBusy(action: string | undefined): boolean {
   return Boolean(action && (
-    action === "approveRun" ||
-    action === "rejectRunApproval" ||
-    action === "replyRunApproval" ||
     action === "approveApprovalRequest" ||
     action === "rejectApprovalRequest" ||
     action === "replyApprovalRequest" ||

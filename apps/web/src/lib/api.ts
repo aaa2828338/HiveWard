@@ -53,9 +53,6 @@ import type {
   SaveBlueprintRequest,
   SelectCompanyRequest,
   UpdateCompanyRequest,
-  ApproveBlueprintRunRequest,
-  RejectBlueprintRunRequest,
-  ReplyBlueprintRunApprovalRequest,
   ReplyApprovalRequestRequest,
   SelectApprovalRequestReplyRequest,
   InboxDiscussionMode,
@@ -642,39 +639,6 @@ export const api = {
   async getLatestBlueprintRun(blueprintId: string): Promise<StartBlueprintRunResponse["run"] | undefined> {
     const response = await request<LatestBlueprintRunResponse>(`/api/blueprints/${blueprintId}/runs/latest`);
     return response.run ?? undefined;
-  },
-
-  async approveBlueprintRun(
-    runId: string,
-    nodeRunId?: string,
-    comment?: string
-  ): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, comment } satisfies ApproveBlueprintRunRequest)
-    });
-    return response.run;
-  },
-
-  async rejectBlueprintRun(runId: string, nodeRunId?: string, comment?: string): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reject`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, comment } satisfies RejectBlueprintRunRequest)
-    });
-    return response.run;
-  },
-
-  async replyToBlueprintRunApproval(
-    runId: string,
-    nodeRunId: string,
-    message: string,
-    discussionMode: InboxDiscussionMode = "reply"
-  ): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, message, discussionMode } satisfies ReplyBlueprintRunApprovalRequest)
-    });
-    return response.run;
   },
 
   async cancelBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
