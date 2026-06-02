@@ -177,7 +177,6 @@ export interface ApproveInboxItemResponse {
 export interface ApproveBlueprintRunRequest {
   nodeRunId?: string;
   comment?: string;
-  selectedReplyId?: string;
 }
 
 export type InboxDiscussionMode = "reply" | "candidate";

@@ -490,10 +490,10 @@ export const api = {
     return response.messages;
   },
 
-  async approveApprovalRequest(approvalRequestId: string, comment?: string, selectedReplyId?: string): Promise<ApprovalRequestResponse> {
+  async approveApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
     return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/approve`, {
       method: "POST",
-      body: JSON.stringify({ comment, selectedReplyId })
+      body: JSON.stringify({ comment })
     });
   },
 
@@ -525,15 +525,8 @@ export const api = {
     });
   },
 
-  async requestChangesApprovalRequest(approvalRequestId: string, comment: string): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/request-changes`, {
-      method: "POST",
-      body: JSON.stringify({ comment })
-    });
-  },
-
-  async reviseApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/revise`, {
+  async returnForRevisionApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/return-for-revision`, {
       method: "POST",
       body: JSON.stringify({ message })
     });
@@ -654,12 +647,11 @@ export const api = {
   async approveBlueprintRun(
     runId: string,
     nodeRunId?: string,
-    comment?: string,
-    selectedReplyId?: string
+    comment?: string
   ): Promise<BlueprintRunResponse["run"]> {
     const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
       method: "POST",
-      body: JSON.stringify({ nodeRunId, comment, selectedReplyId } satisfies ApproveBlueprintRunRequest)
+      body: JSON.stringify({ nodeRunId, comment } satisfies ApproveBlueprintRunRequest)
     });
     return response.run;
   },

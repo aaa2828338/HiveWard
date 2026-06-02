@@ -1379,14 +1379,14 @@ export class FileHivewardStore implements HivewardStore {
           const nodeRun = request.nodeRunId
             ? archive?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
             : undefined;
-          const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
           const selectedReplyId = request.selectedReplyId;
-          const replies = mergePendingApprovalReplies(
-            pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }), selectedReplyId),
-            readPendingApprovalReplies(output?.replies, selectedReplyId)
+          const replies = pendingApprovalRepliesFromApprovalReplies(
+            listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }),
+            selectedReplyId ?? undefined
           );
           const binding = index.approvalDiscussionBindings.find((candidate) => candidate.approvalRequestId === request.id);
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
+          const canReturnForRevision = request.capabilities.returnForRevision === true;
           return {
             approvalRequestId: request.id,
             approvalThreadId: approvalThreadIdForRequest(request),
@@ -1408,17 +1408,16 @@ export class FileHivewardStore implements HivewardStore {
             startedAt: run.startedAt,
             requestedAt: request.requestedAt,
             status: nodeRun?.status === "running" ? "replying" as const : "pending" as const,
-            reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+            reviewOutput: request.body,
             ...(replies ? { replies } : {}),
-            ...(selectedReplyId ? { selectedReplyId } : {}),
+            ...(selectedReplyId !== undefined ? { selectedReplyId } : {}),
             ...(upstream ? { upstream } : {}),
             canApprove: request.capabilities.approve,
             canReject: request.capabilities.reject,
             canReply: request.capabilities.reply,
             canComplete: request.capabilities.complete,
             canTerminate: request.capabilities.terminate,
-            canRequestChanges: request.capabilities.requestChanges === true,
-            canRevise: request.capabilities.revise === true
+            canReturnForRevision
           };
         })
         .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
@@ -3230,21 +3229,6 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
-function readPendingApprovalReplies(value: unknown, selectedReplyId?: string): PendingApprovalItem["replies"] {
-  if (!Array.isArray(value)) return undefined;
-  const replies = value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const id = readString(item.id);
-    const role: "assistant" | "user" | undefined =
-      item.role === "assistant" || item.role === "user" ? item.role : undefined;
-    const body = readString(item.body);
-    const createdAt = readString(item.createdAt);
-    if (!id || !role || !body || !createdAt) return [];
-    return [{ id, role, body, createdAt, ...(selectedReplyId === id ? { selected: true } : {}) }];
-  });
-  return replies.length ? replies : undefined;
-}
-
 function pendingApprovalRepliesFromApprovalReplies(
   replies: ApprovalReply[],
   selectedReplyId?: string
@@ -3258,26 +3242,6 @@ function pendingApprovalRepliesFromApprovalReplies(
     createdAt: reply.createdAt,
     ...(selectedReplyId === reply.id ? { selected: true } : {})
   }));
-}
-
-function mergePendingApprovalReplies(
-  ...groups: Array<PendingApprovalItem["replies"]>
-): PendingApprovalItem["replies"] {
-  const merged: NonNullable<PendingApprovalItem["replies"]> = [];
-  const seenExact = new Set<string>();
-  const seenContentFromEarlierSources = new Set<string>();
-  groups.forEach((group, groupIndex) => {
-    for (const reply of group ?? []) {
-      const exactKey = `${reply.role}\0${reply.body}\0${reply.createdAt}`;
-      if (seenExact.has(exactKey)) continue;
-      const contentKey = `${reply.role}\0${reply.body}`;
-      if (groupIndex > 0 && seenContentFromEarlierSources.has(contentKey)) continue;
-      seenExact.add(exactKey);
-      seenContentFromEarlierSources.add(contentKey);
-      merged.push(reply);
-    }
-  });
-  return merged.length ? merged : undefined;
 }
 
 function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstream"] {

@@ -33,9 +33,18 @@ describe("run state sync", () => {
         requestedAt: "2026-05-21T01:02:00.000Z",
         status: "pending",
         reviewOutput: "draft answer",
-        canApprove: true,
-        canReply: true,
-        canReject: true
+        discussion: {
+          mode: "none",
+          canStreamReply: false,
+          canCreateCandidate: false,
+          reason: "legacy_node_output_read_only"
+        },
+        canApprove: false,
+        canReply: false,
+        canReject: false,
+        canComplete: false,
+        canTerminate: false,
+        canReturnForRevision: false
       }
     ]);
   });
@@ -74,9 +83,9 @@ describe("run state sync", () => {
       nodeLabel: "Delivery",
       reviewOutput: "draft answer",
       status: "pending",
-      canApprove: true,
-      canReply: true,
-      canReject: true,
+      canApprove: false,
+      canReply: false,
+      canReject: false,
       replies: [
         {
           id: "reply-1",
@@ -216,7 +225,7 @@ describe("run state sync", () => {
     });
   });
 
-  it("maps explicit request-change and revision capabilities into pending approval items", () => {
+  it("maps return-for-revision capability into pending approval items", () => {
     const runView = createRunView("waiting_approval");
     runView.approvalRequests = [
       createApprovalRequest({
@@ -229,8 +238,7 @@ describe("run state sync", () => {
           reply: true,
           complete: false,
           terminate: false,
-          requestChanges: true,
-          revise: false
+          returnForRevision: true
         }
       }),
       createApprovalRequest({
@@ -243,8 +251,7 @@ describe("run state sync", () => {
           reply: true,
           complete: false,
           terminate: false,
-          requestChanges: false,
-          revise: true
+          returnForRevision: true
         }
       })
     ];
@@ -252,12 +259,10 @@ describe("run state sync", () => {
     const approvals = syncApprovalsForRun([], runView);
 
     expect(approvals.find((approval) => approval.approvalRequestId === "approval-agent-change")).toMatchObject({
-      canRequestChanges: true,
-      canRevise: false
+      canReturnForRevision: true
     });
     expect(approvals.find((approval) => approval.approvalRequestId === "approval-plan-revise")).toMatchObject({
-      canRequestChanges: false,
-      canRevise: true
+      canReturnForRevision: true
     });
   });
 
@@ -361,6 +366,17 @@ describe("run state sync", () => {
         selectedReplyId: "reply-candidate"
       })
     ];
+    runView.approvalReplies = [
+      {
+        id: "reply-candidate",
+        threadId: "approval-thread-agent-1",
+        approvalRequestId: "approval-agent-1",
+        actor: "agent",
+        purpose: "candidate",
+        body: "candidate answer",
+        createdAt: "2026-05-21T01:07:00.000Z"
+      }
+    ];
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
       output: {
@@ -389,13 +405,6 @@ describe("run state sync", () => {
 
     expect(approvals[0]?.selectedReplyId).toBe("reply-candidate");
     expect(approvals[0]?.replies).toEqual([
-      {
-        id: "reply-message",
-        role: "assistant",
-        purpose: "message",
-        body: "ordinary message",
-        createdAt: "2026-05-21T01:06:00.000Z"
-      },
       {
         id: "reply-candidate",
         role: "assistant",

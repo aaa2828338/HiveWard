@@ -1204,15 +1204,12 @@ export class SqliteHivewardStore implements HivewardStore {
     }
     return rowsWithRequests.map(({ row, request }) => {
       const requestRunId = request.runId ?? requireString(row.run_id);
-      const parsedOutput = parseOptionalJson(row.node_output_json);
-      const output = isRecord(parsedOutput) && parsedOutput.approvalType === "agent"
-        ? parsedOutput
-        : undefined;
       const selectedReplyId = request.selectedReplyId;
       const approvalReplies = pendingApprovalRepliesFromApprovalReplies(
         approvalRepliesByRequestId.get(request.id) ?? [],
-        selectedReplyId
+        selectedReplyId ?? undefined
       );
+      const canReturnForRevision = request.capabilities.returnForRevision === true;
       return {
         approvalRequestId: request.id,
         approvalThreadId: approvalThreadIdForRequest(request),
@@ -1232,16 +1229,15 @@ export class SqliteHivewardStore implements HivewardStore {
         startedAt: readString(row.started_at) ?? request.requestedAt,
         requestedAt: request.requestedAt,
         status: row.node_status === "running" ? "replying" : "pending",
-        reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+        reviewOutput: request.body,
         ...(approvalReplies ? { replies: approvalReplies } : {}),
-        ...(selectedReplyId ? { selectedReplyId } : {}),
+        ...(selectedReplyId !== undefined ? { selectedReplyId } : {}),
         canApprove: request.capabilities.approve,
         canReject: request.capabilities.reject,
         canReply: request.capabilities.reply,
         canComplete: request.capabilities.complete,
         canTerminate: request.capabilities.terminate,
-        canRequestChanges: request.capabilities.requestChanges === true,
-        canRevise: request.capabilities.revise === true
+        canReturnForRevision
       };
     });
   }
@@ -3628,7 +3624,7 @@ function approvalRequestFromRow(row: Row): ApprovalRequest {
     revision: readNumber(row.revision, 1),
     replacesRequestId: readString(row.replaces_request_id),
     supersededByRequestId: readString(row.superseded_by_request_id),
-    selectedReplyId: readString(row.selected_reply_id),
+    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     capabilities: readJson(row.capabilities_json),
     requestedBy: readJson(row.requested_by_json),
     requestedAt: requireString(row.requested_at),
@@ -3643,7 +3639,7 @@ function approvalDecisionFromRow(row: Row): ApprovalDecision {
     action: requireString(row.action) as ApprovalDecision["action"],
     actor: requireString(row.actor) as ApprovalDecision["actor"],
     comment: readString(row.comment),
-    selectedReplyId: readString(row.selected_reply_id),
+    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     resultingStatus: requireString(row.resulting_status) as ApprovalDecision["resultingStatus"],
     createdAt: requireString(row.created_at)
   };
@@ -4190,6 +4186,11 @@ function requireString(value: unknown): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
+}
+
+function readNullableSelectedReplyId(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return readString(value);
 }
 
 function readOptionalString(value: unknown): string | undefined {

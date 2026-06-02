@@ -10,31 +10,37 @@ import {
 } from "./lifecycle";
 
 describe("lifecycle contracts", () => {
-  it("keeps reply as message-only while explicit decisions can trigger workflow", () => {
+  it("keeps reply as message-only while canonical decisions can trigger workflow", () => {
     expect(approvalActionIsMessageOnly("reply")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("reply")).toBe(false);
     expect(approvalActionCanTriggerWorkflow("approve")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("complete")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("terminate")).toBe(true);
-    expect(approvalActionCanTriggerWorkflow("request_changes")).toBe(true);
-    expect(approvalActionCanTriggerWorkflow("revise")).toBe(true);
+    expect(approvalActionCanTriggerWorkflow("return_for_revision")).toBe(true);
+    expect(approvalActionCanTriggerWorkflow("request_changes")).toBe(false);
+    expect(approvalActionCanTriggerWorkflow("revise")).toBe(false);
     expect(approvalActionCanTriggerWorkflow("reject")).toBe(false);
   });
 
-  it("declares explicit request-change and revision capabilities by request kind", () => {
+  it("declares a single return-for-revision capability by request kind", () => {
     const requirement = resolveApprovalCapabilities("iteration_requirement_plan", "pending");
     const release = resolveApprovalCapabilities("manager_release_report", "pending");
     const agent = resolveApprovalCapabilities("agent_proposal", "pending");
     const delegation = resolveApprovalCapabilities("leader_delegation", "pending");
 
     expect(capabilitiesAllow(requirement, "reply")).toBe(true);
+    expect(capabilitiesAllow(requirement, "return_for_revision")).toBe(true);
     expect(capabilitiesAllow(requirement, "request_changes")).toBe(false);
-    expect(capabilitiesAllow(requirement, "revise")).toBe(true);
+    expect(capabilitiesAllow(requirement, "revise")).toBe(false);
     expect(capabilitiesAllow(release, "complete")).toBe(true);
+    expect(capabilitiesAllow(release, "return_for_revision")).toBe(true);
     expect(capabilitiesAllow(release, "request_changes")).toBe(false);
-    expect(capabilitiesAllow(release, "revise")).toBe(true);
-    expect(capabilitiesAllow(agent, "request_changes")).toBe(true);
+    expect(capabilitiesAllow(release, "revise")).toBe(false);
+    expect(capabilitiesAllow(agent, "return_for_revision")).toBe(true);
+    expect(capabilitiesAllow(agent, "request_changes")).toBe(false);
     expect(capabilitiesAllow(agent, "revise")).toBe(false);
+    expect(agent).not.toHaveProperty("requestChanges");
+    expect(agent).not.toHaveProperty("revise");
     expect(capabilitiesAllow(delegation, "request_changes")).toBe(false);
     expect(capabilitiesAllow(delegation, "revise")).toBe(false);
   });

@@ -163,7 +163,7 @@ export class IterationService {
       replacesRequestId: input.replacesRequestId,
       closeReplacedRequest: input.closeReplacedRequest,
       capabilities: input.metadata?.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, requestChanges: false, revise: true }
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
         : undefined
     });
     await this.store.upsertIterationRound({

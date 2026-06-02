@@ -97,7 +97,7 @@ describe("ApprovalService", () => {
     expect((await store.listApprovalRequests({ runId: "run-1" }))).toHaveLength(1);
   });
 
-  it("creates a superseding revision only for an explicit revise decision", async () => {
+  it("creates a superseding revision through return_for_revision when the request kind requires it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-revise-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -115,7 +115,7 @@ describe("ApprovalService", () => {
       }
     });
 
-    const result = await service.revise(request.id, "Tighten scope.");
+    const result = await service.returnForRevision(request.id, "Tighten scope.", { mode: "supersede_request" });
     const original = await store.getApprovalRequest(request.id);
     const requests = await store.listApprovalRequests({ runId: "run-revise" });
     const decisions = await store.listApprovalDecisions(request.id);
@@ -136,7 +136,7 @@ describe("ApprovalService", () => {
     expect(requests).toHaveLength(2);
     expect(decisions).toEqual([
       expect.objectContaining({
-        action: "revise",
+        action: "return_for_revision",
         resultingStatus: "superseded",
         comment: "Tighten scope."
       })
@@ -144,7 +144,7 @@ describe("ApprovalService", () => {
     expect(replies).toEqual([]);
   });
 
-  it("records request_changes as a lifecycle decision without appending a reply", async () => {
+  it("records return_for_revision as a lifecycle decision without appending a reply", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-request-changes-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -162,22 +162,59 @@ describe("ApprovalService", () => {
       }
     });
 
-    const result = await service.requestChanges(request.id, "Regenerate with sources.");
+    const result = await service.returnForRevision(request.id, "Regenerate with sources.", { mode: "keep_current_request" });
     const decisions = await store.listApprovalDecisions(request.id);
     const replies = await store.listApprovalReplies({ threadId: request.threadId });
 
     expect(result.approvalRequest).toMatchObject({
       status: "pending",
-      capabilities: expect.objectContaining({ approve: true, reply: true, requestChanges: true })
+      capabilities: expect.objectContaining({ approve: true, reply: true, returnForRevision: true })
     });
+    expect(result.approvalRequest.capabilities).not.toHaveProperty("requestChanges");
+    expect(result.approvalRequest.capabilities).not.toHaveProperty("revise");
     expect(decisions).toEqual([
       expect.objectContaining({
-        action: "request_changes",
+        action: "return_for_revision",
         resultingStatus: "pending",
         comment: "Regenerate with sources."
       })
     ]);
     expect(replies).toEqual([]);
+  });
+
+  it("rejects approval selection in approve and persists explicit original selection through select", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-selection-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const service = new ApprovalService(store);
+
+    const request = await service.createRequest({
+      runId: "run-selection",
+      kind: "agent_proposal",
+      title: "Agent output",
+      body: "Draft output",
+      requestedBy: {
+        type: "node",
+        label: "Agent",
+        nodeId: "agent"
+      }
+    });
+    await store.appendApprovalReply({
+      id: "reply-candidate-selection",
+      threadId: request.threadId ?? request.id,
+      approvalRequestId: request.id,
+      actor: "agent",
+      purpose: "candidate",
+      body: "Candidate output",
+      createdAt: new Date().toISOString()
+    });
+
+    await service.selectApprovalCandidate(request.id, "reply-candidate-selection");
+    expect((await store.getApprovalRequest(request.id))?.selectedReplyId).toBe("reply-candidate-selection");
+    await service.selectApprovalCandidate(request.id, null);
+    expect((await store.getApprovalRequest(request.id))?.selectedReplyId).toBeNull();
+    await expect(service.approve(request.id, "Looks good.", "reply-candidate-selection"))
+      .rejects.toThrow("approve does not accept selectedReplyId");
   });
 
   it("reply then approve release report carries reply into next round humanFeedback", async () => {

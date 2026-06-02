@@ -158,9 +158,9 @@ export class ApprovalService {
     return request;
   }
 
-  async approve(id: string, comment?: string, selectedReplyId?: string): Promise<ApprovalActionResult> {
+  async approve(id: string, comment?: string, selectedReplyId?: string | null): Promise<ApprovalActionResult> {
     if (selectedReplyId !== undefined) {
-      await this.selectApprovalCandidate(id, selectedReplyId.trim() || null);
+      throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
     }
     return this.decide(id, "approve", "approved", { comment });
   }
@@ -178,8 +178,19 @@ export class ApprovalService {
   }
 
   async requestChanges(id: string, comment: string): Promise<ApprovalActionResult> {
-    const trimmed = comment.trim();
-    if (!trimmed) throw new Error("Approval request_changes comment is required.");
+    return this.returnForRevision(id, comment, { mode: "keep_current_request" });
+  }
+
+  async returnForRevision(
+    id: string,
+    message: string,
+    options: { mode: "keep_current_request" | "supersede_request"; revisionOverride?: ApprovalRevisionDraft }
+  ): Promise<ApprovalActionResult> {
+    if (options.mode === "supersede_request") {
+      return this.createSupersedingRevision(id, message, options.revisionOverride ?? {});
+    }
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval return_for_revision message is required.");
     const current = await this.requirePendingRequest(id, "return_for_revision");
     const now = new Date().toISOString();
     const updated: ApprovalRequest = { ...current, updatedAt: now };
@@ -203,6 +214,14 @@ export class ApprovalService {
   }
 
   async revise(id: string, message: string, revisionOverride: ApprovalRevisionDraft = {}): Promise<ApprovalActionResult> {
+    return this.returnForRevision(id, message, { mode: "supersede_request", revisionOverride });
+  }
+
+  private async createSupersedingRevision(
+    id: string,
+    message: string,
+    revisionOverride: ApprovalRevisionDraft = {}
+  ): Promise<ApprovalActionResult> {
     const feedback = message.trim();
     if (!feedback) throw new Error("Approval revision message is required.");
 
@@ -262,7 +281,7 @@ export class ApprovalService {
     if (current.status !== "pending") {
       throw new ApprovalConflictError("Approval request is already closed.");
     }
-    const nextSelectedReplyId = selectedReplyId?.trim() || undefined;
+    const nextSelectedReplyId = selectedReplyId === null ? null : selectedReplyId.trim();
     if (nextSelectedReplyId) {
       const threadId = current.threadId ?? current.id;
       const replies = await this.store.listApprovalReplies({ threadId });
@@ -278,10 +297,11 @@ export class ApprovalService {
         throw new Error("Only candidate approval replies can be selected.");
       }
     }
-    const { selectedReplyId: _previousSelectedReplyId, ...withoutSelection } = current;
-    const updated: ApprovalRequest = nextSelectedReplyId
-      ? { ...current, selectedReplyId: nextSelectedReplyId, updatedAt: new Date().toISOString() }
-      : { ...withoutSelection, updatedAt: new Date().toISOString() };
+    const updated: ApprovalRequest = {
+      ...current,
+      selectedReplyId: nextSelectedReplyId || null,
+      updatedAt: new Date().toISOString()
+    };
     return this.store.upsertApprovalRequest(updated);
   }
 
@@ -413,7 +433,7 @@ export class ApprovalService {
     actor: ApprovalDecision["actor"],
     comment: string | undefined,
     createdAt: string,
-    selectedReplyId?: string
+    selectedReplyId?: string | null
   ): ApprovalDecision {
     return {
       id: `decision-${nanoid(10)}`,

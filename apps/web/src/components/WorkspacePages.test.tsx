@@ -76,8 +76,7 @@ function renderApprovalsPage({
       onRejectApprovalRequest={() => undefined}
       onReply={() => undefined}
       onReplyApprovalRequest={() => undefined}
-      onRequestChangesApprovalRequest={() => undefined}
-      onReviseApprovalRequest={() => undefined}
+      onReturnForRevisionApprovalRequest={() => undefined}
       onSelectApprovalReply={() => undefined}
       onReplyInboxItem={() => undefined}
       onApproveInboxItem={() => undefined}
@@ -136,8 +135,7 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onRequestChangesApprovalRequest={() => undefined}
-        onReviseApprovalRequest={() => undefined}
+        onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
         onReplyInboxItem={() => undefined}
         onApproveInboxItem={() => undefined}
@@ -155,8 +153,7 @@ describe("ApprovalsPage", () => {
     const html = renderToStaticMarkup(
       <ApprovalsPage
         approvals={[createPendingApproval({
-          canRequestChanges: true,
-          canRevise: false
+          canReturnForRevision: true
         } as Partial<PendingApprovalItem>)]}
         approvalThreads={[]}
         inboxItems={[]}
@@ -169,8 +166,7 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onRequestChangesApprovalRequest={() => undefined}
-        onReviseApprovalRequest={() => undefined}
+        onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
         onReplyInboxItem={() => undefined}
         onApproveInboxItem={() => undefined}
@@ -199,8 +195,7 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onRequestChangesApprovalRequest={() => undefined}
-        onReviseApprovalRequest={() => undefined}
+        onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
         onReplyInboxItem={() => undefined}
         onApproveInboxItem={() => undefined}
@@ -220,8 +215,7 @@ describe("ApprovalsPage", () => {
           canReject: false,
           canReply: false,
           canComplete: false,
-          canRequestChanges: false,
-          canRevise: false
+          canReturnForRevision: false
         })]}
         approvalThreads={[]}
         inboxItems={[]}
@@ -234,8 +228,7 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReply={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onRequestChangesApprovalRequest={() => undefined}
-        onReviseApprovalRequest={() => undefined}
+        onReturnForRevisionApprovalRequest={() => undefined}
         onSelectApprovalReply={() => undefined}
         onReplyInboxItem={() => undefined}
         onApproveInboxItem={() => undefined}
@@ -305,8 +298,9 @@ describe("ApprovalsPage", () => {
             role: "assistant",
             purpose: "candidate",
             body: "candidate answer",
-            createdAt: "2026-05-21T01:04:00.000Z"
-          }
+            createdAt: "2026-05-21T01:04:00.000Z",
+            selected: true
+          } as NonNullable<PendingApprovalItem["replies"]>[number] & { selected: true }
         ]
       })]
     });
@@ -315,7 +309,29 @@ describe("ApprovalsPage", () => {
     expect(html).toContain("Original content selected");
     expect(html).toContain("Message reply");
     expect(html).toContain("Candidate reply");
+    expect(html).not.toContain("Candidate selected");
     expect(html.match(/Use this option/g) ?? []).toHaveLength(1);
+  });
+
+  it("renders an action to select original content after a candidate is selected", () => {
+    const html = renderApprovalsPage({
+      approvals: [createPendingApproval({
+        selectedReplyId: "reply-candidate",
+        replies: [
+          {
+            id: "reply-candidate",
+            role: "assistant",
+            purpose: "candidate",
+            body: "candidate answer",
+            createdAt: "2026-05-21T01:04:00.000Z"
+          }
+        ]
+      })]
+    });
+
+    expect(html).toContain("Use original");
+    expect(html).toContain("Candidate selected");
+    expect(html).not.toContain("Original content selected");
   });
 
   it("disables discussion actions when backend projection is missing", () => {
