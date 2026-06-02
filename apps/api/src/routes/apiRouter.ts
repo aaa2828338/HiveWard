@@ -115,9 +115,7 @@ type ApprovalRouteAction =
   | "reply"
   | "complete"
   | "terminate"
-  | "return_for_revision"
-  | "request_changes"
-  | "revise";
+  | "return_for_revision";
 
 interface ApiRouterDeps {
   store: HivewardStore;
@@ -827,23 +825,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post(["/api/approval-requests/:approvalRequestId/request-changes", "/api/approval-requests/:approvalRequestId/request_changes"], async (req, res, next) => {
-    try {
-      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
-    } catch (error) {
-      next(error);
-    }
-  });
-
   router.post(["/api/approval-requests/:approvalRequestId/return-for-revision", "/api/approval-requests/:approvalRequestId/return_for_revision"], async (req, res, next) => {
-    try {
-      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/approval-requests/:approvalRequestId/revise", async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
     } catch (error) {
@@ -1409,8 +1391,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       }
       const blueprint = await getRunActionBlueprint(run);
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
-      const workerAction = isReturnForRevisionRouteAction(action) ? "return_for_revision" : action;
-      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, workerAction, {
+      const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
         comment: readOptionalString(body.comment),
         message: readOptionalString(body.message),
         selectedReplyId: readOptionalString(body.selectedReplyId),
@@ -1425,7 +1406,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reply") {
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
-    } else if (isReturnForRevisionRouteAction(action)) {
+    } else if (action === "return_for_revision") {
       await approvalService.returnForRevision(
         approvalRequestId,
         readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "",
@@ -1459,12 +1440,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     } else {
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     }
-  }
-
-  function isReturnForRevisionRouteAction(
-    action: ApprovalRouteAction
-  ): action is "return_for_revision" | "request_changes" | "revise" {
-    return action === "return_for_revision" || action === "request_changes" || action === "revise";
   }
 
   function returnForRevisionModeForRequest(

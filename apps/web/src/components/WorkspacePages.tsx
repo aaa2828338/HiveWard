@@ -1910,7 +1910,7 @@ export function ApprovalsPage({
     clearReplyDraft();
   };
 
-  const requestChangesSelectedThread = () => {
+  const returnForRevisionSelectedThread = () => {
     const feedback = selectedReplyDraft.trim();
     if (!selectedApproval?.approvalRequestId || !feedback) return;
     onReturnForRevisionApprovalRequest(selectedApproval.approvalRequestId, feedback);
@@ -2116,13 +2116,13 @@ export function ApprovalsPage({
             canReturnForRevision={canReturnForRevisionSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
-            onRequestChanges={requestChangesSelectedThread}
+            onReturnForRevision={returnForRevisionSelectedThread}
             onSelectCandidate={selectApprovalCandidate}
             onSelectOriginal={selectOriginalApprovalContent}
             onSendCandidate={generateCandidateReply}
             onSendReply={sendLocalReply}
             replyDraft={selectedReplyDraft}
-            requestChangesLabel={selectedApproval?.kind === "agent_proposal" ? inboxCopy.requestChanges : inboxCopy.regenerate}
+            returnForRevisionLabel={selectedApproval?.kind === "agent_proposal" ? inboxCopy.returnForRevision : inboxCopy.regenerate}
           />
         </div>
       </section>
@@ -2211,12 +2211,12 @@ function InboxConversationPanel({
   onApprove,
   onReject,
   onReplyDraftChange,
-  onRequestChanges,
+  onReturnForRevision,
   onSelectCandidate,
   onSelectOriginal,
   onSendCandidate,
   onSendReply,
-  requestChangesLabel
+  returnForRevisionLabel
 }: {
   approval?: PendingApprovalItem;
   approveLabel: string;
@@ -2233,18 +2233,18 @@ function InboxConversationPanel({
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
-  onRequestChanges: () => void;
+  onReturnForRevision: () => void;
   onSelectCandidate: (candidateReplyId: string) => void;
   onSelectOriginal: () => void;
   onSendCandidate: () => void;
   onSendReply: () => void;
-  requestChangesLabel: string;
+  returnForRevisionLabel: string;
 }) {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const hasSelection = Boolean(inboxItem || approval);
-  const requestChangesDescription = requestChangesLabel === copy.regenerate
+  const returnForRevisionDescription = returnForRevisionLabel === copy.regenerate
     ? copy.regenerateDescription
-    : copy.requestChangesDescription;
+    : copy.returnForRevisionDescription;
   const title = inboxItem?.title ?? (approval ? approvalSubject(approval) : copy.noSelectionTitle);
   const subtitle = inboxItem
     ? inboxItem.blueprintName ?? inboxItem.targetRoleId ?? inboxItem.createdByRoleId
@@ -2364,12 +2364,12 @@ function InboxConversationPanel({
           <button
             type="button"
             disabled={!canReturnForRevision || !replyDraft.trim()}
-            title={requestChangesDescription}
-            aria-label={requestChangesDescription}
-            onClick={onRequestChanges}
+            title={returnForRevisionDescription}
+            aria-label={returnForRevisionDescription}
+            onClick={onReturnForRevision}
           >
             <RefreshCw size={15} />
-            {requestChangesLabel}
+            {returnForRevisionLabel}
           </button>
           <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
@@ -2425,8 +2425,8 @@ type InboxCopy = {
   reject: string;
   messageReply: string;
   replyPlaceholder: string;
-  requestChanges: string;
-  requestChangesDescription: string;
+  returnForRevision: string;
+  returnForRevisionDescription: string;
   sendReply: string;
   status: string;
   system: string;
@@ -2483,8 +2483,8 @@ function getInboxCopy(language: Language): InboxCopy {
       reject: "\u9a73\u56de",
       messageReply: "\u666e\u901a\u7559\u8a00",
       replyPlaceholder: "\u8f93\u5165\u7559\u8a00\uff0c\u4e0d\u4f1a\u6539\u53d8\u6d41\u7a0b\uff1bShift+Enter \u6362\u884c...",
-      requestChanges: "\u8bf7\u6c42\u4fee\u6539",
-      requestChangesDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u65b0\u7248\u672c",
+      returnForRevision: "\u9000\u56de\u4fee\u8ba2",
+      returnForRevisionDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u4fee\u8ba2\u7248\u672c",
       sendReply: "\u7559\u8a00",
       status: "状态",
       system: "HiveWard",
@@ -2534,8 +2534,8 @@ function getInboxCopy(language: Language): InboxCopy {
     reject: "Reject",
     messageReply: "Message reply",
     replyPlaceholder: "Add a comment; comments do not change the workflow. Shift+Enter for a new line...",
-    requestChanges: "Request changes",
-    requestChangesDescription: "Ask the Agent to create a revised version from this comment",
+    returnForRevision: "Return for revision",
+    returnForRevisionDescription: "Ask the Agent to create a revised version from this comment",
     sendReply: "Comment",
     status: "Status",
     system: "HiveWard",

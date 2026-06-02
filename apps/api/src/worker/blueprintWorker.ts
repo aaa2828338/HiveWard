@@ -340,9 +340,7 @@ type ApprovalRequestAction =
   | "reply"
   | "complete"
   | "terminate"
-  | "return_for_revision"
-  | "request_changes"
-  | "revise";
+  | "return_for_revision";
 
 interface ManagerSlotContext {
   manager: {
@@ -6358,7 +6356,7 @@ function normalizeAgentApprovalSelectionId(value: unknown): string | undefined {
 }
 
 function isReturnForRevisionAction(action: ApprovalRequestAction): boolean {
-  return action === "return_for_revision" || action === "request_changes" || action === "revise";
+  return action === "return_for_revision";
 }
 
 function formatNodeOutputSummary(output: unknown): string {

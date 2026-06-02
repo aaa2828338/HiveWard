@@ -68,8 +68,6 @@ export interface ApprovalCapabilities {
   complete: boolean;
   terminate: boolean;
   returnForRevision?: boolean;
-  requestChanges?: boolean;
-  revise?: boolean;
 }
 
 export type ApprovalRequestKind =
@@ -201,8 +199,6 @@ export type ApprovalDecisionAction =
   | "complete"
   | "terminate"
   | "return_for_revision"
-  | "request_changes"
-  | "revise"
   | "auto_approve"
   | "supersede";
 
@@ -416,9 +412,7 @@ export const emptyApprovalCapabilities = Object.freeze({
   reply: false,
   complete: false,
   terminate: false,
-  returnForRevision: false,
-  requestChanges: false,
-  revise: false
+  returnForRevision: false
 }) satisfies ApprovalCapabilities;
 
 export function resolveApprovalCapabilities(
@@ -455,9 +449,6 @@ export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: Ap
   if (action === "terminate") return capabilities.terminate;
   if (action === "return_for_revision") {
     return capabilities.returnForRevision === true;
-  }
-  if (action === "request_changes" || action === "revise") {
-    return false;
   }
   return false;
 }

@@ -889,7 +889,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes return_for_revision and legacy aliases as one approval request action", async () => {
+  it("routes only canonical return_for_revision approval request actions", async () => {
     const fixture = await createStoreFixture();
     const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string }> = [];
     const worker = {
@@ -897,7 +897,7 @@ describe("apiRouter", () => {
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
         approvalRequestId: string,
-        action: "approve" | "reject" | "reply" | "complete" | "terminate" | "return_for_revision" | "request_changes" | "revise",
+        action: "approve" | "reject" | "reply" | "complete" | "terminate" | "return_for_revision",
         input?: { comment?: string; message?: string }
       ) {
         calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message });
@@ -908,46 +908,36 @@ describe("apiRouter", () => {
     try {
       const blueprint = (await fixture.store.listBlueprints())[0]!;
       const run = await fixture.store.createBlueprintRun(blueprint, "tester");
-      const changeRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-change");
       const canonicalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-return");
-      const now = new Date().toISOString();
-      const reviseRequest = await fixture.store.upsertApprovalRequest({
-        id: "approval-revise-plan",
-        runId: run.id,
-        kind: "iteration_requirement_plan",
-        status: "pending",
-        title: "Round plan",
-        body: "Plan body",
-        threadId: "thread-revise-plan",
-        revision: 1,
-        capabilities: resolveApprovalCapabilities("iteration_requirement_plan", "pending"),
-        requestedBy: { type: "node", label: "Top Manager", nodeId: "manager" },
-        requestedAt: now,
-        updatedAt: now
-      });
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${changeRequest.id}/request-changes`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ comment: "Regenerate with sources." })
-        }));
         await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/return-for-revision`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ message: "Return through the canonical route." })
         }));
-        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${reviseRequest.id}/revise`, {
+        const dashedAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/request-changes`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Tighten the plan." })
-        }));
+          body: JSON.stringify({ message: "Return through the canonical route." })
+        });
+        const underscoredAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/request_changes`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Return through the canonical route." })
+        });
+        const reviseAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/revise`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Return through the canonical route." })
+        });
+        expect(dashedAlias.status).toBe(404);
+        expect(underscoredAlias.status).toBe(404);
+        expect(reviseAlias.status).toBe(404);
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([
-        { action: "return_for_revision", approvalRequestId: changeRequest.id, comment: "Regenerate with sources.", message: undefined },
-        { action: "return_for_revision", approvalRequestId: canonicalRequest.id, comment: undefined, message: "Return through the canonical route." },
-        { action: "return_for_revision", approvalRequestId: reviseRequest.id, comment: undefined, message: "Tighten the plan." }
+        { action: "return_for_revision", approvalRequestId: canonicalRequest.id, comment: undefined, message: "Return through the canonical route." }
       ]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

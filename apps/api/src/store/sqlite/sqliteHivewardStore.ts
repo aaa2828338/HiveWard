@@ -812,7 +812,7 @@ export class SqliteHivewardStore implements HivewardStore {
            WHERE id = ? AND status = 'pending'`
         ).run(
           nextStatus,
-          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false, requestChanges: false, revise: false }),
+          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false }),
           now,
           input.approvalRequestId
         );
@@ -821,7 +821,7 @@ export class SqliteHivewardStore implements HivewardStore {
           this.upsertApprovalThreadSync(approvalThreadFromRequest({
             ...request,
             status: nextStatus,
-            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false, requestChanges: false, revise: false },
+            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false },
             updatedAt: now
           }));
         }
