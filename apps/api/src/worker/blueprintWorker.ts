@@ -80,7 +80,11 @@ const managerRosterItemPromptBudget = 6000;
 const managerReceiptPromptBudget = 6000;
 const reviewOutputSelectionId = "reviewOutput";
 const activeRunCommandStatuses: RunCommandStatus[] = ["queued", "running", "waiting_approval"];
+const activeRunCommandStepStatuses: RunCommandStep["status"][] = ["queued", "running", "waiting_approval"];
+const regularRunCommandKind: RunCommandKind = "regular_run";
 const prepareRoundCommandKind: RunCommandKind = "self_iteration_prepare_round";
+const executeRoundCommandKind: RunCommandKind = "self_iteration_execute_round";
+const releaseReportCommandKind: RunCommandKind = "self_iteration_release_report";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Route work inside the platform-provided Manager round by reading upstream input, previousResults, and delegationRoster.",
@@ -421,7 +425,7 @@ interface BlueprintWorkerOptions {
 
 export class BlueprintWorker {
   private readonly activeRuns = new Map<string, Promise<void>>();
-  private readonly pendingRunSchedules = new Map<string, { blueprint: BlueprintDefinition; run: BlueprintRun }>();
+  private readonly pendingRunSchedules = new Map<string, { blueprint: BlueprintDefinition; run: BlueprintRun; command: RunCommand }>();
   private readonly cancelledRunIds = new Set<string>();
   private readonly approvalService: ApprovalService;
   private readonly iterationService: IterationService;
@@ -480,7 +484,10 @@ export class BlueprintWorker {
       if (archive.run.status === "queued" || archive.run.status === "running") {
         const runningRun = { ...archive.run, status: "running" as const };
         await this.store.updateBlueprintRun(runningRun);
-        this.scheduleRun(archive.blueprintSnapshot, runningRun);
+        const command = await this.ensureRegularRunCommand(archive.blueprintSnapshot, runningRun, {
+          metadata: { legacyBackfill: true }
+        });
+        this.scheduleRun(archive.blueprintSnapshot, runningRun, command);
       }
     }
   }
@@ -504,7 +511,8 @@ export class BlueprintWorker {
       this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager, command);
       return runningRun;
     }
-    this.scheduleRun(blueprint, runningRun);
+    const command = await this.ensureRegularRunCommand(blueprint, runningRun);
+    this.scheduleRun(blueprint, runningRun, command);
     return runningRun;
   }
 
@@ -576,6 +584,9 @@ export class BlueprintWorker {
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    if (request.kind === "manager_release_report" && request.roundId && (action === "approve" || action === "complete")) {
+      await this.markRunCommandsForRoundSucceeded(currentRun.id, request.roundId, releaseReportCommandKind);
+    }
     if (result.nextApprovalRequest?.kind === "iteration_requirement_plan") {
       const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
       if (topManager) {
@@ -629,7 +640,10 @@ export class BlueprintWorker {
       }
       const running = { ...currentRun, status: "running" as const };
       await this.store.updateBlueprintRun(running);
-      this.scheduleRun(blueprint, running);
+      const command = request.kind === "iteration_requirement_plan" && request.roundId
+        ? await this.ensureSelfIterationExecuteCommand(blueprint, running, request.roundId)
+        : await this.ensureExecutionRunCommand(blueprint, running);
+      this.scheduleRun(blueprint, running, command);
       return running;
     }
 
@@ -674,10 +688,26 @@ export class BlueprintWorker {
     command: RunCommand
   ): Promise<boolean> {
     if (command.kind !== prepareRoundCommandKind) {
-      if (command.kind === "regular_run" && (run.status === "queued" || run.status === "running")) {
+      if (command.kind === regularRunCommandKind && (run.status === "queued" || run.status === "running")) {
         const runningRun = { ...run, status: "running" as const };
         await this.store.updateBlueprintRun(runningRun);
-        this.scheduleRun(blueprint, runningRun);
+        this.scheduleRun(blueprint, runningRun, command);
+        return true;
+      }
+      if (command.kind === executeRoundCommandKind && (run.status === "queued" || run.status === "running")) {
+        const runningRun = { ...run, status: "running" as const };
+        await this.store.updateBlueprintRun(runningRun);
+        this.scheduleRun(blueprint, runningRun, command);
+        return true;
+      }
+      if (command.kind === releaseReportCommandKind) {
+        if (command.status === "waiting_approval") {
+          await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+          await this.managerMailProjector.refresh(run.id);
+          return true;
+        }
+        const nodeRuns = await this.scopeNodeRunsForActiveIterationRound(run.id, await this.store.listNodeRuns(run.id));
+        await this.publishSelfIterationRoundIfNeeded(blueprint, run, nodeRuns, undefined, command);
         return true;
       }
       return false;
@@ -696,7 +726,8 @@ export class BlueprintWorker {
       await this.markRunCommandSucceeded(command);
       const runningRun = { ...run, status: "running" as const };
       await this.store.updateBlueprintRun(runningRun);
-      this.scheduleRun(blueprint, runningRun);
+      const executeCommand = await this.ensureSelfIterationExecuteCommand(blueprint, runningRun, round.id);
+      this.scheduleRun(blueprint, runningRun, executeCommand);
       return true;
     }
 
@@ -801,6 +832,86 @@ export class BlueprintWorker {
     });
   }
 
+  private async ensureRegularRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, undefined, regularRunCommandKind, "node_execution", options);
+  }
+
+  private async ensureSelfIterationExecuteCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, roundId, executeRoundCommandKind, "node_execution", options);
+  }
+
+  private async ensureSelfIterationReleaseReportCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, roundId, releaseReportCommandKind, "release_report", options);
+  }
+
+  private async ensureExecutionRunCommand(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<RunCommand> {
+    const executingRoundId = await this.currentExecutingRoundId(run.id);
+    return executingRoundId
+      ? this.ensureSelfIterationExecuteCommand(blueprint, run, executingRoundId)
+      : this.ensureRegularRunCommand(blueprint, run);
+  }
+
+  private async ensureRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string | undefined,
+    kind: RunCommandKind,
+    currentStep: RunCommandStepMode,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    const now = new Date().toISOString();
+    const commandKey = buildRunCommandKey(run.id, roundId, kind);
+    const { command, created } = await this.store.createRunCommandIfAbsent({
+      id: deterministicFactId("run-command", commandKey),
+      commandKey,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      ...(roundId ? { roundId } : {}),
+      kind,
+      status: options.status ?? "queued",
+      currentRevision: 0,
+      currentStep,
+      metadata: options.metadata,
+      createdAt: now,
+      updatedAt: now
+    });
+    if (created || (!options.status && !options.metadata)) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      ...(options.status ? { status: options.status } : {}),
+      metadata: {
+        ...(command.metadata ?? {}),
+        ...(options.metadata ?? {})
+      }
+    });
+  }
+
   private async backfillLegacyPreflightStepsForCommand(
     run: BlueprintRun,
     round: IterationRound,
@@ -876,10 +987,14 @@ export class BlueprintWorker {
   }
 
   private async markPrepareCommandsForRoundSucceeded(runId: string, roundId: string): Promise<void> {
+    await this.markRunCommandsForRoundSucceeded(runId, roundId, prepareRoundCommandKind);
+  }
+
+  private async markRunCommandsForRoundSucceeded(runId: string, roundId: string, kind: RunCommandKind): Promise<void> {
     const commands = await this.store.listRunCommands({
       runId,
       roundId,
-      kind: prepareRoundCommandKind,
+      kind,
       statuses: activeRunCommandStatuses
     });
     await Promise.all(commands.map((command) => this.markRunCommandSucceeded(command)));
@@ -944,10 +1059,10 @@ export class BlueprintWorker {
       return;
     }
 
-    let runningCommand = await this.markRunCommandRunning(command, context.revision && context.revision > 1 ? "revise_plan" : "research_resolution");
+    let runningCommand = await this.markRunCommandRunning(command, context.revision && context.revision > 0 ? "revise_plan" : "research_resolution");
     try {
       await this.prepareRoundPlan(blueprint, run, session, round, topManager, context, runningCommand);
-      runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, context.revision && context.revision > 1 ? "revise_plan" : "requirement_resolution");
+      runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, context.revision && context.revision > 0 ? "revise_plan" : "requirement_resolution");
     } catch (error) {
       await this.markRunCommandFailed(runningCommand, error instanceof Error ? error.message : String(error));
       throw error;
@@ -965,7 +1080,8 @@ export class BlueprintWorker {
     }
     if (autoAdvanced?.resumeExecution) {
       await this.markRunCommandSucceeded(runningCommand);
-      await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run);
+      const executeCommand = await this.ensureSelfIterationExecuteCommand(blueprint, autoAdvanced.run, round.id);
+      await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run, executeCommand);
       return;
     }
     if (await this.isRunCancelled(run.id)) return;
@@ -1400,6 +1516,19 @@ export class BlueprintWorker {
     });
   }
 
+  private async markRunCommandStepWaitingForApproval(step: RunCommandStep, runtimeRef?: RuntimeObjectRef): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "waiting_approval",
+      startedAt: step.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      ...(runtimeRef ? { runtimeRef } : {})
+    });
+  }
+
   private async markRunCommandStepSucceeded(step: RunCommandStep, result: AgentTaskResult): Promise<RunCommandStep> {
     if (step.commandId === "standalone") return step;
     return this.store.updateRunCommandStep({
@@ -1421,6 +1550,30 @@ export class BlueprintWorker {
       error,
       ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {})
     });
+  }
+
+  private async syncRunCommandStepFromNodeRun(step: RunCommandStep): Promise<RunCommandStep> {
+    if (step.commandId === "standalone" || !step.nodeRunId) return step;
+    const nodeRun = (await this.store.listNodeRuns(step.runId)).find((candidate) => candidate.id === step.nodeRunId);
+    if (!nodeRun) return step;
+    if (nodeRun.status === "succeeded") return this.markRunCommandStepSucceeded(step, agentTaskResultFromNodeRun(nodeRun));
+    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
+      return this.markRunCommandStepFailed(step, nodeRun.error ?? `${nodeRun.nodeLabel} ${nodeRun.status}.`);
+    }
+    if (nodeRun.status === "waiting_approval") {
+      return this.markRunCommandStepWaitingForApproval(step, nodeRun.runtimeRef);
+    }
+    if (nodeRun.status === "running") return this.markRunCommandStepRunning(step, nodeRun.runtimeRef);
+    return step;
+  }
+
+  private async syncRunCommandStepsForNodeRun(nodeRun: BlueprintNodeRun): Promise<void> {
+    const commands = await this.store.listRunCommands({ runId: nodeRun.blueprintRunId });
+    const stepLists = await Promise.all(
+      commands.map((command) => this.store.listRunCommandSteps({ commandId: command.id }))
+    );
+    const matchingSteps = stepLists.flat().filter((step) => step.nodeRunId === nodeRun.id);
+    await Promise.all(matchingSteps.map((step) => this.syncRunCommandStepFromNodeRun(step)));
   }
 
   private async startPreflightNodeRun(
@@ -2089,9 +2242,11 @@ export class BlueprintWorker {
 
     const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId);
     await this.completeNode(waiting, approvedOutput, waiting.runtimeRef);
+    await this.syncRunCommandStepsForNodeRun(waiting);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(blueprint, running);
+    const command = await this.ensureExecutionRunCommand(blueprint, running);
+    this.scheduleRun(blueprint, running, command);
     return running;
   }
 
@@ -2131,9 +2286,11 @@ export class BlueprintWorker {
     }
 
     await this.failNode(waiting, comment?.trim() || "Rejected by human reviewer.");
+    await this.syncRunCommandStepsForNodeRun(waiting);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(blueprint, running);
+    const command = await this.ensureExecutionRunCommand(blueprint, running);
+    this.scheduleRun(blueprint, running, command);
     return running;
   }
 
@@ -2328,13 +2485,13 @@ export class BlueprintWorker {
     return cancelled;
   }
 
-  private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun): void {
+  private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun, command: RunCommand): void {
     if (this.activeRuns.has(run.id)) {
-      this.pendingRunSchedules.set(run.id, { blueprint, run });
+      this.pendingRunSchedules.set(run.id, { blueprint, run, command });
       return;
     }
 
-    const execution = this.runUntilBlockedOrDone(blueprint, run)
+    const execution = this.runUntilBlockedOrDone(blueprint, run, command)
       .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
       .finally(async () => {
         this.activeRuns.delete(run.id);
@@ -2362,7 +2519,7 @@ export class BlueprintWorker {
 
     const running = { ...nextRun, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(pending.blueprint, running);
+    this.scheduleRun(pending.blueprint, running, pending.command);
     return true;
   }
 
@@ -2379,8 +2536,9 @@ export class BlueprintWorker {
     await this.store.updateBlueprintRun(failed);
   }
 
-  private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<void> {
+  private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun, command: RunCommand): Promise<void> {
     const startedAt = new Date(run.startedAt).getTime();
+    let runningCommand = await this.markRunCommandRunning(command, command.currentStep ?? "node_execution");
 
     while (true) {
       if (await this.isRunCancelled(run.id)) {
@@ -2400,6 +2558,7 @@ export class BlueprintWorker {
         await this.cancelOpenNodeRuns(run.id, `Run stopped after ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
         const latestRun = await this.store.getBlueprintRun(run.id);
         const failed = await this.applyRunTotals(latestRun ?? run, startedAt, "failed");
+        await this.markRunCommandFailed(runningCommand, `Node ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} failed at node ${failedNodeRun.nodeLabel}.`);
         await this.store.updateBlueprintRun(failed);
         return;
@@ -2409,6 +2568,12 @@ export class BlueprintWorker {
         continue;
       }
       if (nodeRuns.some((nodeRun) => nodeRun.status === "waiting_approval")) {
+        const waitingStep = await this.findCommandStepForWaitingNode(runningCommand, nodeRuns);
+        if (waitingStep) {
+          const waitingNodeRun = nodeRuns.find((nodeRun) => nodeRun.id === waitingStep.nodeRunId);
+          await this.markRunCommandStepWaitingForApproval(waitingStep, waitingNodeRun?.runtimeRef);
+        }
+        runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, "node_execution");
         await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" });
         return;
       }
@@ -2426,7 +2591,7 @@ export class BlueprintWorker {
             !this.hasCurrentTerminalNodeRun(blueprint, node, nodeRuns)
         );
         if (pending.length === 0) {
-          const selfIterationPublishResult = await this.publishSelfIterationRoundIfNeeded(blueprint, run, nodeRuns);
+          const selfIterationPublishResult = await this.publishSelfIterationRoundIfNeeded(blueprint, run, nodeRuns, runningCommand);
           if (selfIterationPublishResult === "continue") {
             continue;
           }
@@ -2434,25 +2599,29 @@ export class BlueprintWorker {
             return;
           }
           const completed = await this.applyRunTotals(run, startedAt, "succeeded");
+          await this.markRunCommandSucceeded(runningCommand);
           await this.event(run.id, "blueprint.run.completed", `Blueprint ${blueprint.name} completed.`);
           await this.store.updateBlueprintRun(completed);
           return;
         }
 
         const failed = await this.applyRunTotals(run, startedAt, "failed");
+        await this.markRunCommandFailed(runningCommand, `Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} could not continue. Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
         await this.store.updateBlueprintRun(failed);
         return;
       }
 
-      await Promise.all(readyNodes.map((node) => this.executeNode(blueprint, run, node)));
+      await Promise.all(readyNodes.map((node) => this.executeNodeFromCommandStep(blueprint, run, node, runningCommand)));
     }
   }
 
   private async publishSelfIterationRoundIfNeeded(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    nodeRuns: BlueprintNodeRun[]
+    nodeRuns: BlueprintNodeRun[],
+    executeCommand?: RunCommand,
+    releaseCommandInput?: RunCommand
   ): Promise<SelfIterationPublishResult> {
     const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
     if (!topManager) return "none";
@@ -2485,6 +2654,11 @@ export class BlueprintWorker {
       const nodeRun = nodeRunsById.get(report.nodeRunId);
       return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
     });
+    if (executeCommand?.kind === executeRoundCommandKind) {
+      await this.markRunCommandSucceeded(executeCommand);
+    }
+    const releaseCommand = releaseCommandInput ?? await this.ensureSelfIterationReleaseReportCommand(blueprint, run, executingRound.id);
+    const runningReleaseCommand = await this.markRunCommandRunning(releaseCommand, "release_report");
     const summary = await this.writeSelfIterationReleaseReport({
       blueprint,
       run,
@@ -2502,7 +2676,8 @@ export class BlueprintWorker {
       },
       artifacts,
       agentReports: releaseAgentReports,
-      agentHandoffs
+      agentHandoffs,
+      command: runningReleaseCommand
     });
     const published = await this.iterationService.publishExecutionResult({
       run,
@@ -2515,11 +2690,14 @@ export class BlueprintWorker {
     }
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
+      await this.markRunCommandSucceeded(runningReleaseCommand);
       return "handled";
     }
     if (autoAdvanced?.resumeExecution) {
+      await this.markRunCommandSucceeded(runningReleaseCommand);
       return "continue";
     }
+    await this.markRunCommandWaitingForApproval(runningReleaseCommand, "release_report");
     const waiting = { ...run, status: "waiting_approval" as const };
     await this.store.updateBlueprintRun(waiting);
     await this.managerMailProjector.refresh(run.id);
@@ -2537,6 +2715,7 @@ export class BlueprintWorker {
     artifacts: Array<{ id: string; title?: string; kind: string; downloadUrl?: string; relativePath?: string; storagePath?: string }>;
     agentReports: AgentHumanReport[];
     agentHandoffs: AgentHandoff[];
+    command?: RunCommand;
   }): Promise<string> {
     const config = input.managerNode.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
@@ -2568,7 +2747,19 @@ export class BlueprintWorker {
         payload: handoff.payload
       }))
     };
-    let nodeRun = await this.createRunningNodeRun(input.blueprint, input.run, input.managerNode, taskInput);
+    const step = input.command
+      ? await this.ensureNodeExecutionCommandStep(input.command, input.run, input.managerNode, "release_report")
+      : undefined;
+    let nodeRun = await this.createRunningNodeRun(
+      input.blueprint,
+      input.run,
+      input.managerNode,
+      taskInput,
+      step ? stableNodeExecutionNodeRunId(step.stepKey) : undefined
+    );
+    if (step) {
+      await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef);
+    }
     const { result, runtimeRef } = await this.runAgentTask({
       blueprintRunId: input.run.id,
       nodeRunId: nodeRun.id,
@@ -2590,16 +2781,19 @@ export class BlueprintWorker {
       nodeRun = await this.recordNodeRuntimeRef(nodeRun, startedRef);
     });
     if (result.status !== "succeeded") {
+      if (step) await this.markRunCommandStepFailed({ ...step, nodeRunId: nodeRun.id }, result.error ?? `Manager release report run ${result.status}.`);
       await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.error ?? `Manager release report run ${result.status}.`);
       throw new Error(result.error ?? `Manager release report run ${result.status}.`);
     }
     const humanReport = this.agentReportService.extractHumanReport(result.output);
     if (!humanReport?.bodyMd) {
       const error = "Manager release report run did not return humanReportMd.";
+      if (step) await this.markRunCommandStepFailed({ ...step, nodeRunId: nodeRun.id }, error);
       await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, error);
       throw new Error(error);
     }
     await this.completeNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.output, runtimeRef);
+    if (step) await this.markRunCommandStepSucceeded({ ...step, nodeRunId: nodeRun.id }, result);
     return humanReport.bodyMd;
   }
 
@@ -2715,7 +2909,10 @@ export class BlueprintWorker {
         const running = { ...currentRun, status: "running" as const };
         await this.store.updateBlueprintRun(running);
         if (options.scheduleOnResume !== false) {
-          this.scheduleRun(blueprint, running);
+          const command = request.kind === "iteration_requirement_plan" && request.roundId
+            ? await this.ensureSelfIterationExecuteCommand(blueprint, running, request.roundId)
+            : await this.ensureExecutionRunCommand(blueprint, running);
+          this.scheduleRun(blueprint, running, command);
         }
         return { run: running, changed, resumeExecution: true, completeRun: false };
       }
@@ -2897,7 +3094,8 @@ export class BlueprintWorker {
     );
     if (hasRunningChild) return false;
 
-    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, context, scopeStartIndex);
+    const command = await this.ensureExecutionRunCommand(blueprint, run);
+    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, command, context, scopeStartIndex);
     return true;
   }
 
@@ -3043,7 +3241,8 @@ export class BlueprintWorker {
           ...(managerDecision ? { managerDecision } : {}),
           previousResults: this.managerPreviousResultsFromTrace(trace)
         };
-        await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, context);
+        const command = await this.ensureExecutionRunCommand(blueprint, run);
+        await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, command, context);
         return true;
       }
 
@@ -3106,15 +3305,20 @@ export class BlueprintWorker {
     managerNode: BlueprintNode,
     managerRun: BlueprintNodeRun,
     assignment: { target: BlueprintNode; returnEdgePresent: boolean },
+    command: RunCommand,
     context: ManagerSlotContext
   ): Promise<AgentTaskResult> {
     if (isAgentBlueprintNode(assignment.target)) {
-      const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
-      return this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, context);
+      const { nodeRun, step } = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, context);
+      const result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, nodeRun, context);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
     if (assignment.target.type === "manager_slot") {
-      const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
-      return this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, context);
+      const { nodeRun, step } = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, context);
+      const result = await this.executeManagerSlotNode(blueprint, run, assignment.target, nodeRun, command, context);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
     if (assignment.target.type === "manager") {
       const managerUpstreamInput: UpstreamOutput = [
@@ -3126,8 +3330,16 @@ export class BlueprintWorker {
           context
         }
       ];
-      const nestedManagerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
-      return this.executeManagerNode(blueprint, run, assignment.target, nestedManagerRun, managerUpstreamInput);
+      const { nodeRun, step } = await this.createRunningNodeRunFromCommandStep(
+        blueprint,
+        run,
+        assignment.target,
+        command,
+        { upstream: managerUpstreamInput }
+      );
+      const result = await this.executeManagerNode(blueprint, run, assignment.target, nodeRun, command, managerUpstreamInput);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
 
     const error = `Manager slot ${context.manager.slot} targets unsupported node type ${assignment.target.type}.`;
@@ -3600,11 +3812,73 @@ export class BlueprintWorker {
     });
   }
 
-  private async executeNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<void> {
+  private async findCommandStepForWaitingNode(
+    command: RunCommand,
+    nodeRuns: BlueprintNodeRun[]
+  ): Promise<RunCommandStep | undefined> {
+    const waitingNodeRunIds = new Set(nodeRuns.filter((nodeRun) => nodeRun.status === "waiting_approval").map((nodeRun) => nodeRun.id));
+    if (waitingNodeRunIds.size === 0) return undefined;
+    return (await this.store.listRunCommandSteps({ commandId: command.id }))
+      .filter((step) => step.nodeRunId && waitingNodeRunIds.has(step.nodeRunId))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+  }
+
+  private async ensureNodeExecutionCommandStep(
+    command: RunCommand,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    mode: RunCommandStepMode = "node_execution"
+  ): Promise<RunCommandStep> {
+    const existingSteps = (await this.store.listRunCommandSteps({ commandId: command.id }))
+      .filter((step) => step.mode === mode && step.nodeId === node.id)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const activeStep = existingSteps.find((step) => activeRunCommandStepStatuses.includes(step.status));
+    if (activeStep) {
+      return activeStep;
+    }
+
+    const attempt = existingSteps.length + 1;
+    const stepKey = buildRunCommandStepKey(command, mode, node.id, attempt);
+    const now = new Date().toISOString();
+    const { step } = await this.store.createRunCommandStepIfAbsent({
+      id: deterministicFactId("run-command-step", stepKey),
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: command.roundId,
+      revision: command.currentRevision,
+      mode,
+      nodeId: node.id,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now
+    });
+    return step;
+  }
+
+  private async executeNodeFromCommandStep(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand
+  ): Promise<void> {
+    const step = await this.ensureNodeExecutionCommandStep(command, run, node);
+    await this.executeNode(blueprint, run, node, command, step);
+  }
+
+  private async executeNode(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand,
+    step: RunCommandStep
+  ): Promise<void> {
     const input = await this.collectStandardNodeInput(blueprint, run.id, node);
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
+    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input, step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey));
+    await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef);
     if (this.cancelledRunIds.has(run.id)) {
       await this.cancelNodeRun(nodeRun, "Run stopped by user.");
+      await this.markRunCommandStepFailed({ ...step, nodeRunId: nodeRun.id }, "Run stopped by user.");
       return;
     }
 
@@ -3612,7 +3886,7 @@ export class BlueprintWorker {
       if (isAgentBlueprintNode(node)) {
         await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
       } else if (node.type === "manager") {
-        await this.executeManagerNode(blueprint, run, node, nodeRun, input.upstream);
+        await this.executeManagerNode(blueprint, run, node, nodeRun, command, input.upstream);
       } else if (node.type === "manager_slot") {
         await this.failNode(nodeRun, "Manager slot nodes can only run when called by their manager.");
       } else if (node.type === "loop") {
@@ -3626,18 +3900,20 @@ export class BlueprintWorker {
       const message = error instanceof Error ? error.message : "Unknown node failure";
       await this.failNode(nodeRun, message);
     }
+    await this.syncRunCommandStepFromNodeRun({ ...step, nodeRunId: nodeRun.id });
   }
 
   private async createRunningNodeRun(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
-    input?: unknown
+    input?: unknown,
+    nodeRunId?: string
   ): Promise<BlueprintNodeRun> {
     const now = new Date().toISOString();
     const iterationRoundId = await this.currentExecutingRoundId(run.id);
     const nodeRun: BlueprintNodeRun = {
-      id: `node-run-${nanoid(10)}`,
+      id: nodeRunId ?? `node-run-${nanoid(10)}`,
       blueprintRunId: run.id,
       blueprintId: blueprint.id,
       nodeId: node.id,
@@ -3668,6 +3944,26 @@ export class BlueprintWorker {
     });
     await this.event(run.id, "node.run.started", `${node.config.label} started.`, nodeRun.id);
     return { ...claim.nodeRun, input, startedAt: claim.nodeRun.startedAt ?? now };
+  }
+
+  private async createRunningNodeRunFromCommandStep(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand,
+    input?: unknown,
+    mode: RunCommandStepMode = "node_execution"
+  ): Promise<{ nodeRun: BlueprintNodeRun; step: RunCommandStep }> {
+    const step = await this.ensureNodeExecutionCommandStep(command, run, node, mode);
+    const nodeRun = await this.createRunningNodeRun(
+      blueprint,
+      run,
+      node,
+      input,
+      step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey)
+    );
+    const runningStep = await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef);
+    return { nodeRun, step: runningStep };
   }
 
   private async executeAgentNode(
@@ -3820,6 +4116,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
+    command: RunCommand,
     upstream?: UpstreamOutput
   ): Promise<AgentTaskResult> {
     const config = node.config as ManagerNodeConfig;
@@ -3929,15 +4226,18 @@ export class BlueprintWorker {
 
       let result: AgentTaskResult;
       let participantNodeRun: BlueprintNodeRun | undefined;
+      let participantStep: RunCommandStep | undefined;
 
       if (isAgentBlueprintNode(assignment.target)) {
-        const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
-        participantNodeRun = participantRun;
-        result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, managerContext);
+        const started = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, managerContext);
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, started.nodeRun, managerContext);
       } else if (assignment.target.type === "manager_slot") {
-        const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
-        participantNodeRun = slotRun;
-        result = await this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, managerContext);
+        const started = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, managerContext);
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = await this.executeManagerSlotNode(blueprint, run, assignment.target, started.nodeRun, command, managerContext);
       } else if (assignment.target.type === "manager") {
         const managerUpstreamInput: UpstreamOutput = [
           {
@@ -3948,13 +4248,24 @@ export class BlueprintWorker {
             context: managerContext
           }
         ];
-        const managerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
-        participantNodeRun = managerRun;
-        result = await this.executeManagerNode(blueprint, run, assignment.target, managerRun, managerUpstreamInput);
+        const started = await this.createRunningNodeRunFromCommandStep(
+          blueprint,
+          run,
+          assignment.target,
+          command,
+          { upstream: managerUpstreamInput }
+        );
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = await this.executeManagerNode(blueprint, run, assignment.target, started.nodeRun, command, managerUpstreamInput);
       } else {
         const error = `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`;
         await this.failNode(nodeRunWithInput, error);
         return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
+      }
+
+      if (participantStep) {
+        await this.syncRunCommandStepFromNodeRun(participantStep);
       }
 
       const latestParticipantRun = participantNodeRun
@@ -4018,6 +4329,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     slotNode: BlueprintNode,
     slotRun: BlueprintNodeRun,
+    command: RunCommand,
     context: ManagerSlotContext,
     existingScopeStartIndex?: number
   ): Promise<AgentTaskResult> {
@@ -4074,6 +4386,7 @@ export class BlueprintWorker {
               blueprint,
               run,
               node,
+              command,
               await this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput),
               context
             )
@@ -4102,6 +4415,7 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
+    command: RunCommand,
     upstream: UpstreamOutput,
     managerContext?: ManagerSlotContext
   ): Promise<void> {
@@ -4113,7 +4427,7 @@ export class BlueprintWorker {
           ...(managerContext.managerDecision ? { managerDecision: managerContext.managerDecision } : {})
         }
       : { upstream };
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
+    const { nodeRun, step } = await this.createRunningNodeRunFromCommandStep(blueprint, run, node, command, input);
     if (isAgentBlueprintNode(node)) {
       await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
     } else if (node.type === "condition") {
@@ -4123,6 +4437,7 @@ export class BlueprintWorker {
     } else {
       await this.failNode(nodeRun, `Node type ${node.type} is not supported inside a manager slot yet.`);
     }
+    await this.syncRunCommandStepFromNodeRun(step);
   }
 
   private isScopedReadyNode(
@@ -5843,6 +6158,17 @@ export function stablePreflightNodeRunId(stepKey: string): string {
   return `preflight-${mode}-${roundId}-${nodeId}${attempt}-${hash}`;
 }
 
+export function stableNodeExecutionNodeRunId(stepKey: string): string {
+  const hash = createHash("sha256").update(stepKey).digest("hex").slice(0, 12);
+  const parts = stepKey.split(":");
+  const attemptPart = parts.at(-1);
+  const nodeId = sanitizeIdPart(parts.at(-2) ?? "node");
+  const attempt = attemptPart?.startsWith("attempt-") && attemptPart !== "attempt-1"
+    ? `-${sanitizeIdPart(attemptPart)}`
+    : "";
+  return `node-run-step-${nodeId}${attempt}-${hash}`;
+}
+
 function buildStandalonePreflightStepKey(
   runId: string,
   roundId: string,
@@ -5917,7 +6243,8 @@ function commandStepStatusFromNodeRun(nodeRun: BlueprintNodeRun): RunCommandStep
   if (nodeRun.status === "succeeded") return "succeeded";
   if (nodeRun.status === "failed") return "failed";
   if (nodeRun.status === "cancelled") return "cancelled";
-  if (nodeRun.status === "running" || nodeRun.status === "waiting_approval") return "running";
+  if (nodeRun.status === "waiting_approval") return "waiting_approval";
+  if (nodeRun.status === "running") return "running";
   return "queued";
 }
 

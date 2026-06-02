@@ -31,6 +31,7 @@ import {
   BlueprintWorker,
   buildRunCommandKey,
   buildRunCommandStepKey,
+  stableNodeExecutionNodeRunId,
   stablePreflightNodeRunId
 } from "./blueprintWorker";
 
@@ -362,6 +363,43 @@ describe("BlueprintWorker", () => {
     expect(index.nodeRuns).toBeUndefined();
     expect(index.events).toBeUndefined();
     expect(index.runIndex?.find((item) => item.id === run.id)?.status).toBe("failed");
+  });
+
+  it("drives regular runs through a durable regular command and node execution steps", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createRealThreeAgentBlueprint(new Date().toISOString(), "company-hiveward-studio");
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-command-brief"),
+      createStartedAgentTask("task-command-plan"),
+      createStartedAgentTask("task-command-verify")
+    ], [
+      createCompletedAgentTask("task-command-brief", "succeeded", "brief ok"),
+      createCompletedAgentTask("task-command-plan", "succeeded", "plan ok"),
+      createCompletedAgentTask("task-command-verify", "succeeded", "verify ok")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const command = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!command) throw new Error("Expected regular run command.");
+    const steps = await store.listRunCommandSteps({ commandId: command.id });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(command).toMatchObject({
+      commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
+      kind: "regular_run",
+      status: "succeeded",
+      currentStep: "node_execution"
+    });
+    expect(steps.map((step) => step.nodeId)).toEqual(["brief", "plan", "verify"]);
+    expect(steps.map((step) => step.mode)).toEqual(["node_execution", "node_execution", "node_execution"]);
+    expect(steps.map((step) => step.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(steps.map((step) => step.nodeRunId)).toEqual(steps.map((step) => stableNodeExecutionNodeRunId(step.stepKey)));
+    expect(view?.nodeRuns.map((nodeRun) => nodeRun.id)).toEqual(steps.map((step) => step.nodeRunId));
   });
 
   it("writes node input and runtime ref to the run archive before the agent task finishes", async () => {
@@ -805,11 +843,25 @@ describe("BlueprintWorker", () => {
     const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
     if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const waitingCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!waitingCommand) throw new Error("Expected regular command for waiting approval.");
+    const waitingStep = (await store.listRunCommandSteps({ commandId: waitingCommand.id }))
+      .find((step) => step.nodeRunId === waitingNode.id);
 
     expect(waitingNode.output).toMatchObject({
       approvalType: "agent",
       reviewOutput: "draft answer",
       replies: []
+    });
+    expect(waitingCommand).toMatchObject({
+      kind: "regular_run",
+      status: "waiting_approval",
+      currentStep: "node_execution"
+    });
+    expect(waitingStep).toMatchObject({
+      mode: "node_execution",
+      status: "waiting_approval",
+      nodeRunId: waitingNode.id
     });
     expect(adapter.sendCalls).toHaveLength(0);
 
@@ -830,6 +882,8 @@ describe("BlueprintWorker", () => {
     await worker.approveRun(blueprint, repliedView.run, repliedNode.id, "Approved.");
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+    const finalStep = (await store.listRunCommandSteps({ commandId: waitingCommand.id }))
+      .find((step) => step.nodeRunId === repliedNode.id);
 
     expect(finalView?.run.status).toBe("succeeded");
     expect(finalNode).toMatchObject({
@@ -848,6 +902,10 @@ describe("BlueprintWorker", () => {
           }
         }
       });
+    expect(finalStep).toMatchObject({
+      status: "succeeded",
+      nodeRunId: repliedNode.id
+    });
     expect(adapter.sendCalls).toHaveLength(1);
     expect(adapter.sendCalls[0]).toMatchObject({
       channelId: "slack",
@@ -4234,8 +4292,30 @@ describe("BlueprintWorker", () => {
       const runArchiveDir = path.join(tempDir, "runs");
       const htmlArtifacts = completed?.artifacts?.filter((artifact) => artifact.kind === "html") ?? [];
       const releaseReport = completed?.releaseReports?.[0];
+      const commands = await store.listRunCommands({ runId: run.id });
+      const commandsByKind = new Map(commands.map((command) => [command.kind, command]));
+      const executeCommand = commandsByKind.get("self_iteration_execute_round");
+      const releaseCommand = commandsByKind.get("self_iteration_release_report");
+      const executeSteps = executeCommand ? await store.listRunCommandSteps({ commandId: executeCommand.id }) : [];
+      const releaseSteps = releaseCommand ? await store.listRunCommandSteps({ commandId: releaseCommand.id }) : [];
 
       expect(completed?.run.status).toBe("succeeded");
+      expect(commands.map((command) => [command.kind, command.status])).toEqual([
+        ["self_iteration_prepare_round", "succeeded"],
+        ["self_iteration_execute_round", "succeeded"],
+        ["self_iteration_release_report", "succeeded"]
+      ]);
+      expect(executeSteps.map((step) => [step.mode, step.status, step.nodeId])).toEqual([
+        ["node_execution", "succeeded", "top-manager"],
+        ["node_execution", "succeeded", "slot-1"],
+        ["node_execution", "succeeded", "builder"]
+      ]);
+      expect(releaseSteps.map((step) => [step.mode, step.status, step.nodeId])).toEqual([
+        ["release_report", "succeeded", "top-manager"]
+      ]);
+      expect([...executeSteps, ...releaseSteps].map((step) => step.nodeRunId)).toEqual(
+        [...executeSteps, ...releaseSteps].map((step) => stableNodeExecutionNodeRunId(step.stepKey))
+      );
       expect(htmlArtifacts).toHaveLength(1);
       expect(htmlArtifacts[0]).toMatchObject({
         downloadUrl: expect.stringContaining("/artifacts/"),

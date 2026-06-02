@@ -69,6 +69,7 @@ export type RunCommandStatus =
 export type RunCommandStepStatus =
   | "queued"
   | "running"
+  | "waiting_approval"
   | "succeeded"
   | "failed"
   | "cancelled";
