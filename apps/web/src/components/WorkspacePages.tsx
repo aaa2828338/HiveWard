@@ -59,6 +59,7 @@ import {
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
+  sortedRunTranscriptEventsForDisplay,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
 import { resolveApiResourceUrl } from "../lib/api";
@@ -71,6 +72,10 @@ type IdentityKind = "model" | "agent" | "channel" | "provider";
 type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
 type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
 type RunIterationRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
+type RunCommandFact = NonNullable<BlueprintRunView["runCommands"]>[number];
+type RunCommandStepFact = NonNullable<BlueprintRunView["runCommandSteps"]>[number];
+type RunExecutionSession = NonNullable<BlueprintRunView["nodeExecutionSessions"]>[number];
+type RunTranscriptProjectionEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
 type RunOutputTabKey = "current" | "artifacts" | "release";
 
@@ -823,6 +828,8 @@ export function RunsPage({
             <h3>{t.trace.modelOutput}</h3>
           </div>
           <div className="content-card stack-card trace-output-column run-output-column">
+            {activeRun && <RunExecutionProjectionPanel runView={activeRun} language={language} />}
+
             <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
               {outputTabs.map((tab) => (
                 <button
@@ -939,6 +946,374 @@ function getRunReportLayerCopy(language: Language) {
     openArtifact: zh ? "打开" : "Open",
     count: (value: number) => zh ? `${value} 条` : `${value}`
   };
+}
+
+function RunExecutionProjectionPanel({
+  runView,
+  language
+}: {
+  runView: BlueprintRunView;
+  language: Language;
+}) {
+  const copy = getRunExecutionProjectionCopy(language);
+  const commands = sortRunCommands(runView.runCommands ?? []);
+  const stepsByCommandId = groupRunCommandSteps(runView.runCommandSteps ?? []);
+  const sessions = sortRunExecutionSessions(runView.nodeExecutionSessions ?? []);
+  const transcriptEvents = sortedRunTranscriptEventsForDisplay(runView);
+  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
+  const transcriptSessionIds = sessionIdsForTranscript(sessions, eventsBySessionId);
+  const hasTranscript = transcriptEvents.length > 0;
+  const timelineFallback = buildRunExecutionTimelineFallback(runView);
+
+  return (
+    <section className="run-execution-projection run-output-section" aria-label={copy.title}>
+      <div className="run-output-section-header">
+        <div>
+          <h4>{copy.title}</h4>
+          <p>{copy.hint}</p>
+        </div>
+        <span className="status-pill status-default">{copy.readOnly}</span>
+      </div>
+
+      <div className="run-execution-grid">
+        <section className="run-execution-block" aria-label={copy.commandsTitle}>
+          <div className="run-execution-block-header">
+            <strong>{copy.commandsTitle}</strong>
+            <span>{copy.count(commands.length)}</span>
+          </div>
+          {commands.length === 0 ? (
+            <div className="empty-state compact-empty-state">{copy.noCommands}</div>
+          ) : (
+            <div className="run-command-list">
+              {commands.map((command) => {
+                const steps = stepsByCommandId.get(command.id) ?? [];
+                return (
+                  <article className="run-command-card" key={command.id}>
+                    <div className="run-command-card-header">
+                      <div>
+                        <strong>{runCommandKindLabel(command.kind, language)}</strong>
+                        <span>{command.commandKey}</span>
+                      </div>
+                      <span className={`status-pill ${runExecutionProjectionStatusClass(command.status)}`}>
+                        {runExecutionStatusLabel(command.status, language)}
+                      </span>
+                    </div>
+                    <dl className="run-execution-meta">
+                      <div>
+                        <dt>{copy.currentStep}</dt>
+                        <dd>{command.currentStep ? runCommandStepModeLabel(command.currentStep, language) : copy.none}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.ledgerVersion}</dt>
+                        <dd>{command.currentRevision}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.updated}</dt>
+                        <dd>{formatTraceTime(command.updatedAt, language)}</dd>
+                      </div>
+                    </dl>
+                    {command.error && <MarkdownRenderer value={command.error} className="run-execution-error" />}
+                    {steps.length === 0 ? (
+                      <div className="run-command-step-empty">{copy.noSteps}</div>
+                    ) : (
+                      <ol className="run-command-step-list">
+                        {steps.map((step) => (
+                          <li key={step.id}>
+                            <span className={`status-pill ${runExecutionProjectionStatusClass(step.status)}`}>
+                              {runExecutionStatusLabel(step.status, language)}
+                            </span>
+                            <div>
+                              <strong>{runCommandStepModeLabel(step.mode, language)}</strong>
+                              <span>{copy.stepMeta(step.revision, nodeLabelForStep(runView, step))}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="run-execution-block run-transcript-block" aria-label={copy.transcriptTitle}>
+          <div className="run-execution-block-header">
+            <strong>{copy.transcriptTitle}</strong>
+            <span>{hasTranscript ? copy.transcriptAvailable : copy.legacyOnly}</span>
+          </div>
+          {hasTranscript ? (
+            <div className="run-session-list">
+              {transcriptSessionIds.map((sessionId) => {
+                const session = sessions.find((candidate) => candidate.id === sessionId);
+                const events = eventsBySessionId.get(sessionId) ?? [];
+                return (
+                  <article className="run-session-card" key={sessionId}>
+                    <div className="run-session-card-header">
+                      <div>
+                        <strong>{nodeLabelForRunSession(runView, session, events[0])}</strong>
+                        <span>{session?.nativeSessionId ?? sessionId}</span>
+                      </div>
+                      <span className={`status-pill ${runExecutionProjectionStatusClass(session?.status ?? "default")}`}>
+                        {session ? runExecutionStatusLabel(session.status, language) : copy.sessionMissing}
+                      </span>
+                    </div>
+                    <dl className="run-execution-meta">
+                      <div>
+                        <dt>{copy.harness}</dt>
+                        <dd>{session?.harnessId ?? copy.unknown}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.policy}</dt>
+                        <dd>{session ? runSessionPolicyLabel(session.policy, language) : copy.unknown}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.updated}</dt>
+                        <dd>{session ? formatTraceTime(session.updatedAt, language) : copy.unknown}</dd>
+                      </div>
+                    </dl>
+                    {session?.statusReason && (
+                      <MarkdownRenderer value={session.statusReason} className="run-execution-system-note" />
+                    )}
+                    <div className="run-transcript-event-list">
+                      {events.map((event) => (
+                        <RunTranscriptEventRow key={event.id} event={event} language={language} />
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="run-execution-legacy-fallback">
+              <div className="run-execution-fallback-note">
+                <strong>{copy.transcriptUnavailable}</strong>
+                <span>{copy.legacyHint}</span>
+              </div>
+              {timelineFallback.length === 0 ? (
+                <div className="empty-state compact-empty-state">{copy.noTimeline}</div>
+              ) : (
+                <ol className="run-timeline-fallback-list">
+                  {timelineFallback.map((item) => (
+                    <li key={item.id}>
+                      <div className="run-timeline-fallback-meta">
+                        <strong>{item.title || timelineKindDescription(item.kind, language)}</strong>
+                        <time dateTime={item.createdAt}>{formatTraceTime(item.createdAt, language)}</time>
+                      </div>
+                      <MarkdownRenderer
+                        value={localizeTimelineBody(item.body, language) ?? timelineKindDescription(item.kind, language)}
+                        className="run-timeline-fallback-body"
+                      />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function RunTranscriptEventRow({
+  event,
+  language
+}: {
+  event: RunTranscriptProjectionEvent;
+  language: Language;
+}) {
+  const copy = getRunExecutionProjectionCopy(language);
+  const content = event.content?.trim();
+
+  return (
+    <div className={`run-transcript-event run-transcript-event-${event.kind}`}>
+      <div className="run-transcript-event-meta">
+        <strong>{runTranscriptEventLabel(event.kind, event.role, language)}</strong>
+        <time dateTime={event.createdAt}>{formatTraceTime(event.createdAt, language)}</time>
+      </div>
+      {event.kind === "system_note" ? (
+        <div className="run-execution-system-note">
+          <strong>{copy.systemNote}</strong>
+          <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
+        </div>
+      ) : (
+        <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
+      )}
+    </div>
+  );
+}
+
+function getRunExecutionProjectionCopy(language: Language) {
+  const zh = language === "zh-CN";
+  return {
+    title: zh ? "\u6267\u884c\u8d26\u672c" : "Execution ledger",
+    hint: zh
+      ? "\u53ea\u8bfb\u5c55\u793a command\u3001step\u3001execution session \u548c transcript \u4e8b\u5b9e\u3002"
+      : "Read-only projection of command, step, execution session, and transcript facts.",
+    readOnly: zh ? "\u53ea\u8bfb" : "Read-only",
+    commandsTitle: zh ? "\u6307\u4ee4\u548c\u6b65\u9aa4" : "Commands and steps",
+    transcriptTitle: "Session transcript",
+    transcriptAvailable: zh ? "\u5df2\u8bb0\u5f55 transcript" : "Transcript recorded",
+    legacyOnly: zh ? "\u9057\u7559\u6458\u8981" : "Legacy summary",
+    noCommands: zh ? "\u6ca1\u6709 command \u4e8b\u5b9e\u3002" : "No command facts recorded.",
+    noSteps: zh ? "\u6ca1\u6709 step \u8bb0\u5f55\u3002" : "No step records.",
+    currentStep: zh ? "\u5f53\u524d\u6b65\u9aa4" : "Current step",
+    ledgerVersion: zh ? "\u8d26\u672c\u7248\u672c" : "Ledger version",
+    updated: zh ? "\u66f4\u65b0" : "Updated",
+    none: zh ? "\u65e0" : "None",
+    count: (value: number) => zh ? `${value} \u6761` : `${value}`,
+    stepMeta: (version: number, nodeLabel: string) =>
+      zh ? `v${version} / ${nodeLabel}` : `v${version} / ${nodeLabel}`,
+    harness: "Harness",
+    policy: "Policy",
+    unknown: zh ? "\u672a\u77e5" : "Unknown",
+    sessionMissing: zh ? "\u7f3a\u5c11 session" : "Session missing",
+    transcriptUnavailable: zh ? "Transcript \u4e0d\u53ef\u7528" : "Transcript unavailable",
+    legacyHint: zh
+      ? "\u6b64\u533a\u57df\u53ea\u663e\u793a\u9057\u7559 timeline \u6458\u8981\uff0c\u4e0d\u63d0\u4f9b\u804a\u5929\u6216\u5ba1\u6279\u64cd\u4f5c\u3002"
+      : "This area only shows the legacy timeline summary; it does not provide chat or action controls.",
+    noTimeline: zh ? "\u6ca1\u6709\u53ef\u663e\u793a\u7684 timeline \u6458\u8981\u3002" : "No timeline summary is available.",
+    systemNote: zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note",
+    noEventContent: zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content."
+  };
+}
+
+function sortRunCommands(commands: RunCommandFact[]): RunCommandFact[] {
+  return [...commands].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
+}
+
+function sortRunCommandSteps(steps: RunCommandStepFact[]): RunCommandStepFact[] {
+  return [...steps].sort((left, right) => {
+    const revisionOrder = left.revision - right.revision;
+    if (revisionOrder !== 0) return revisionOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
+  });
+}
+
+function sortRunExecutionSessions(sessions: RunExecutionSession[]): RunExecutionSession[] {
+  return [...sessions].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
+}
+
+function groupRunCommandSteps(steps: RunCommandStepFact[]): Map<string, RunCommandStepFact[]> {
+  const grouped = new Map<string, RunCommandStepFact[]>();
+  for (const step of sortRunCommandSteps(steps)) {
+    grouped.set(step.commandId, [...(grouped.get(step.commandId) ?? []), step]);
+  }
+  return grouped;
+}
+
+function groupRunTranscriptEvents(events: RunTranscriptProjectionEvent[]): Map<string, RunTranscriptProjectionEvent[]> {
+  const grouped = new Map<string, RunTranscriptProjectionEvent[]>();
+  for (const event of events) {
+    grouped.set(event.sessionId, [...(grouped.get(event.sessionId) ?? []), event]);
+  }
+  return grouped;
+}
+
+function sessionIdsForTranscript(
+  sessions: RunExecutionSession[],
+  eventsBySessionId: Map<string, RunTranscriptProjectionEvent[]>
+): string[] {
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const eventOnlyIds = [...eventsBySessionId.keys()].filter((sessionId) => !sessionIds.has(sessionId)).sort();
+  return [...sessions.map((session) => session.id), ...eventOnlyIds];
+}
+
+function buildRunExecutionTimelineFallback(runView: BlueprintRunView): RunTimelineTraceItem[] {
+  const timeline = [...(runView.runTimeline ?? [])].sort((left, right) => {
+    const sequenceOrder = left.sequence - right.sequence;
+    if (sequenceOrder !== 0) return sequenceOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
+  });
+  const visible = timeline.filter((item) => isVisibleRunTimelineKind(item.kind));
+  return visible.length > 0 ? visible : timeline;
+}
+
+function nodeLabelForStep(runView: BlueprintRunView, step: RunCommandStepFact): string {
+  return runView.nodeRuns.find((nodeRun) => nodeRun.id === step.nodeRunId)?.nodeLabel ??
+    runView.nodeRuns.find((nodeRun) => nodeRun.nodeId === step.nodeId)?.nodeLabel ??
+    step.nodeId;
+}
+
+function nodeLabelForRunSession(
+  runView: BlueprintRunView,
+  session: RunExecutionSession | undefined,
+  firstEvent: RunTranscriptProjectionEvent | undefined
+): string {
+  const nodeRunId = session?.nodeRunId ?? firstEvent?.nodeRunId;
+  const nodeRun = nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === nodeRunId) : undefined;
+  return nodeRun?.nodeLabel ?? session?.nodeId ?? firstEvent?.nodeRunId ?? "Session";
+}
+
+function runCommandKindLabel(kind: RunCommandFact["kind"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (kind === "self_iteration_prepare_round") return zh ? "\u81ea\u8fed\u4ee3\u51c6\u5907" : "Self-iteration prepare";
+  if (kind === "self_iteration_execute_round") return zh ? "\u81ea\u8fed\u4ee3\u6267\u884c" : "Self-iteration execute";
+  if (kind === "self_iteration_release_report") return zh ? "\u81ea\u8fed\u4ee3\u62a5\u544a" : "Self-iteration report";
+  return zh ? "\u5e38\u89c4\u8fd0\u884c" : "Regular run";
+}
+
+function runCommandStepModeLabel(mode: RunCommandStepFact["mode"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (mode === "research_resolution") return zh ? "\u7814\u7a76\u68b3\u7406" : "Research resolution";
+  if (mode === "requirement_resolution") return zh ? "\u9700\u6c42\u68b3\u7406" : "Requirement resolution";
+  if (mode === "revise_plan") return zh ? "\u8ba1\u5212\u66f4\u65b0" : "Plan update";
+  if (mode === "preflight_judgment") return zh ? "\u6267\u884c\u524d\u5224\u65ad" : "Preflight judgment";
+  if (mode === "context_snapshot") return zh ? "\u4e0a\u4e0b\u6587\u5feb\u7167" : "Context snapshot";
+  if (mode === "release_report") return zh ? "\u53d1\u5e03\u62a5\u544a" : "Release report";
+  return zh ? "\u8282\u70b9\u6267\u884c" : "Node execution";
+}
+
+function runSessionPolicyLabel(policy: RunExecutionSession["policy"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (policy === "refresh_per_run") return zh ? "\u6bcf\u6b21 run \u5237\u65b0" : "Refresh per run";
+  if (policy === "refresh_per_round") return zh ? "\u6bcf\u8f6e\u5237\u65b0" : "Refresh per round";
+  return zh ? "\u8de8\u8f6e\u4fdd\u7559" : "Preserve across rounds";
+}
+
+function runTranscriptEventLabel(
+  kind: RunTranscriptProjectionEvent["kind"],
+  role: RunTranscriptProjectionEvent["role"],
+  language: Language
+): string {
+  const zh = language === "zh-CN";
+  if (kind === "system_note") return zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note";
+  if (kind === "runtime_started") return zh ? "\u8fd0\u884c\u65f6\u542f\u52a8" : "Runtime started";
+  if (kind === "runtime_state") return zh ? "\u8fd0\u884c\u65f6\u72b6\u6001" : "Runtime state";
+  if (kind === "runtime_done") return zh ? "\u8fd0\u884c\u65f6\u5b8c\u6210" : "Runtime done";
+  if (kind === "assistant_delta") return zh ? "\u52a9\u624b\u589e\u91cf" : "Assistant delta";
+  if (kind === "assistant_message") return zh ? "\u52a9\u624b\u6700\u7ec8\u6d88\u606f" : "Assistant final message";
+  if (kind === "user_message") return zh ? "\u7528\u6237\u6d88\u606f" : "User message";
+  return role;
+}
+
+function runExecutionStatusLabel(status: string, language: Language): string {
+  const zh = language === "zh-CN";
+  if (status === "queued") return zh ? "\u6392\u961f\u4e2d" : "Queued";
+  if (status === "running" || status === "active") return zh ? "\u8fd0\u884c\u4e2d" : "Running";
+  if (status === "waiting_approval" || status === "paused") return zh ? "\u7b49\u5f85\u4e2d" : "Waiting";
+  if (status === "succeeded" || status === "completed") return zh ? "\u5df2\u5b8c\u6210" : "Completed";
+  if (status === "failed") return zh ? "\u5931\u8d25" : "Failed";
+  if (status === "cancelled") return zh ? "\u5df2\u53d6\u6d88" : "Cancelled";
+  if (status === "unavailable") return zh ? "\u4e0d\u53ef\u7528" : "Unavailable";
+  if (status === "fallback") return zh ? "\u964d\u7ea7" : "Fallback";
+  return status;
+}
+
+function runExecutionProjectionStatusClass(status: string): string {
+  if (status === "queued" || status === "running" || status === "waiting_approval" || status === "active" || status === "paused") {
+    return "status-running";
+  }
+  if (status === "succeeded" || status === "completed") return "status-succeeded";
+  if (status === "failed" || status === "cancelled" || status === "unavailable") return "status-failed";
+  return "status-default";
+}
+
+function compareByTimestampThenId(leftDate: string, rightDate: string, leftId: string, rightId: string): number {
+  const timestampOrder = toSafeTimestamp(leftDate) - toSafeTimestamp(rightDate);
+  if (timestampOrder !== 0) return timestampOrder;
+  return leftId.localeCompare(rightId);
 }
 
 export function buildCurrentOutputDisplayBody({

@@ -554,6 +554,171 @@ describe("RunsPage", () => {
     expect(html).not.toContain("machine-only");
   });
 
+  it("renders transcript facts before any legacy timeline fallback", () => {
+    const runView = createRunPageRunView({
+      runCommands: [{
+        id: "command-1",
+        commandKey: "run:run-transcript:root",
+        blueprintId: "blueprint-run-page",
+        runId: "run-transcript",
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
+      }],
+      runCommandSteps: [{
+        id: "step-1",
+        commandId: "command-1",
+        stepKey: "run:run-transcript:agent-1",
+        runId: "run-transcript",
+        revision: 1,
+        mode: "node_execution",
+        nodeId: "agent-1",
+        nodeRunId: "node-run-agent-1",
+        status: "running",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
+      }],
+      nodeExecutionSessions: [{
+        id: "session-agent-1",
+        runId: "run-transcript",
+        nodeRunId: "node-run-agent-1",
+        nodeId: "agent-1",
+        harnessId: "codex",
+        nativeSessionId: "native-session-1",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
+      }],
+      nodeSessionTranscriptEvents: [
+        {
+          id: "event-assistant-final",
+          sessionId: "session-agent-1",
+          sequence: 3,
+          runId: "run-transcript",
+          nodeRunId: "node-run-agent-1",
+          role: "assistant",
+          kind: "assistant_message",
+          content: "Assistant transcript answer",
+          createdAt: "2026-05-28T00:03:00.000Z"
+        },
+        {
+          id: "event-system-note",
+          sessionId: "session-agent-1",
+          sequence: 1,
+          runId: "run-transcript",
+          nodeRunId: "node-run-agent-1",
+          role: "system",
+          kind: "system_note",
+          content: "Fallback adapter was unavailable; a transcript note was persisted.",
+          createdAt: "2026-05-28T00:01:30.000Z"
+        }
+      ],
+      runTimeline: [{
+        id: "timeline-legacy-summary",
+        runId: "run-transcript",
+        sequence: 1,
+        createdAt: "2026-05-28T00:04:00.000Z",
+        actorLabel: "System",
+        kind: "run_completed",
+        title: "Legacy run summary",
+        body: "Legacy timeline fallback body"
+      }]
+    }, { id: "run-transcript", status: "running" });
+
+    const html = renderRunsPageForRun(runView);
+
+    expect(html).toContain("Execution ledger");
+    expect(html).toContain("Commands and steps");
+    expect(html).toContain("Regular run");
+    expect(html).toContain("Node execution");
+    expect(html).toContain("Session transcript");
+    expect(html).toContain("System note");
+    expect(html).toContain("Fallback adapter was unavailable");
+    expect(html).toContain("Assistant transcript answer");
+    expect(html.indexOf("Fallback adapter was unavailable")).toBeLessThan(html.indexOf("Assistant transcript answer"));
+    expect(html).not.toContain("Legacy timeline fallback body");
+  });
+
+  it("renders only a legacy summary when transcript facts are absent", () => {
+    const runView = createRunPageRunView({
+      runTimeline: [{
+        id: "timeline-legacy-only",
+        runId: "run-legacy",
+        sequence: 1,
+        createdAt: "2026-05-28T00:04:00.000Z",
+        actorLabel: "System",
+        kind: "run_completed",
+        title: "Legacy run summary",
+        body: "Legacy timeline fallback body"
+      }]
+    }, { id: "run-legacy" });
+
+    const html = renderRunsPageForRun(runView);
+
+    expect(html).toContain("Transcript unavailable");
+    expect(html).toContain("legacy timeline summary");
+    expect(html).toContain("Legacy timeline fallback body");
+    expect(html).not.toContain("Assistant transcript answer");
+  });
+
+  it("keeps the run page free of writable discussion and decision controls", () => {
+    const html = renderRunsPageForRun(createRunPageRunView());
+
+    expect(html).not.toContain("<textarea");
+    expect(html).not.toContain("composer");
+    expect(html).not.toContain("Generate candidate");
+    expect(html).not.toContain("Request changes");
+    expect(html).not.toContain("Approve");
+    expect(html).not.toContain("Candidate");
+  });
+
+  it("displays command and step status without mutating run state", () => {
+    const runView = createRunPageRunView({
+      runCommands: [{
+        id: "command-display",
+        commandKey: "run:run-display:root",
+        blueprintId: "blueprint-run-page",
+        runId: "run-display",
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 2,
+        currentStep: "node_execution",
+        createdAt: "2026-05-28T00:00:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
+      }],
+      runCommandSteps: [{
+        id: "step-display",
+        commandId: "command-display",
+        stepKey: "run:run-display:agent-1",
+        runId: "run-display",
+        revision: 2,
+        mode: "node_execution",
+        nodeId: "agent-1",
+        nodeRunId: "node-run-agent-1",
+        status: "running",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
+      }]
+    }, { id: "run-display", status: "running" });
+    const before = JSON.stringify({
+      runCommands: runView.runCommands,
+      runCommandSteps: runView.runCommandSteps
+    });
+
+    const html = renderRunsPageForRun(runView);
+
+    expect(html).toContain("Running");
+    expect(html).toContain("Ledger version");
+    expect(JSON.stringify({
+      runCommands: runView.runCommands,
+      runCommandSteps: runView.runCommandSteps
+    })).toBe(before);
+  });
+
   it("structures current output as fixed concise sections", () => {
     const longBody = "我已经检查了现有页面、整理了用户真正关心的判断顺序，并把可读结论放在前面。".repeat(8);
     const body = [
@@ -2047,3 +2212,97 @@ describe("RunsPage", () => {
     expect(managerCard).not.toContain("第1轮");
   });
 });
+
+function renderRunsPageForRun(
+  runView: BlueprintRunView,
+  language: "en" | "zh-CN" = "en"
+): string {
+  const blueprint = createRunPageBlueprint(runView.run.blueprintId, runView.run.blueprintName);
+  return renderToStaticMarkup(
+    <RunsPage
+      runs={[runView]}
+      blueprints={[blueprint]}
+      blueprint={blueprint}
+      selectedRunId={runView.run.id}
+      language={language}
+      t={messages[language]}
+      onSelectBlueprint={() => undefined}
+      onSelectRun={() => undefined}
+    />
+  );
+}
+
+function createRunPageBlueprint(id = "blueprint-run-page", name = "Run page blueprint"): BlueprintDefinition {
+  const now = "2026-05-28T00:00:00.000Z";
+  return {
+    id,
+    companyId: "company-1",
+    name,
+    version: 1,
+    nodes: [],
+    edges: [],
+    variables: {},
+    display: { viewport: { x: 0, y: 0, zoom: 1 } },
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function createRunPageRunView(
+  overrides: Partial<Omit<BlueprintRunView, "run">> = {},
+  runOverrides: Partial<BlueprintRunView["run"]> = {}
+): BlueprintRunView {
+  const now = "2026-05-28T00:00:00.000Z";
+  const run: BlueprintRunView["run"] = {
+    id: runOverrides.id ?? "run-page-1",
+    companyId: "company-1",
+    blueprintId: "blueprint-run-page",
+    blueprintName: "Run page blueprint",
+    blueprintVersion: 1,
+    status: runOverrides.status ?? "succeeded",
+    startedBy: "user-1",
+    startedAt: now,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCostUsd: 0,
+    runtimeRefs: [],
+    ...runOverrides
+  };
+  const nodeStatus = run.status === "running" || run.status === "queued" || run.status === "waiting_approval"
+    ? "running"
+    : "succeeded";
+  const base: BlueprintRunView = {
+    run,
+    nodeRuns: [{
+      id: "node-run-agent-1",
+      blueprintRunId: run.id,
+      blueprintId: run.blueprintId,
+      nodeId: "agent-1",
+      nodeLabel: "Research Agent",
+      nodeType: "agent",
+      status: nodeStatus,
+      queuedAt: "2026-05-28T00:00:30.000Z",
+      startedAt: "2026-05-28T00:01:00.000Z",
+      endedAt: nodeStatus === "succeeded" ? "2026-05-28T00:03:00.000Z" : undefined,
+      output: "Rendered output"
+    }],
+    events: [],
+    finalResult: null,
+    iterationSessions: [],
+    iterationRounds: [],
+    approvalRequests: [],
+    approvalDecisions: [],
+    artifacts: [],
+    releaseReports: [],
+    agentHumanReports: [],
+    agentHandoffs: [],
+    managerContextSnapshots: [],
+    runTimeline: [],
+    managerMail: []
+  };
+  return {
+    ...base,
+    ...overrides,
+    run
+  };
+}
