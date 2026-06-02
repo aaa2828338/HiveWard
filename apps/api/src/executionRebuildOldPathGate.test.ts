@@ -126,7 +126,8 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(executeNodeBody).toContain("await this.syncRunCommandStepFromNodeRun({ ...runningStep, nodeRunId: nodeRun.id });");
     expect(commandStepNodeRunBody).toContain("const step = await this.ensureNodeExecutionCommandStep(command, run, node, mode);");
     expect(commandStepNodeRunBody).toContain("return this.createRunningNodeRunFromExistingStep(blueprint, run, node, step, input);");
-    expect(existingStepNodeRunBody).toContain("stableNodeExecutionNodeRunId(step.stepKey)");
+    expect(existingStepNodeRunBody).toContain("findNodeRunById(run.id, step.nodeRunId)");
+    expect(existingStepNodeRunBody).toContain("step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey)");
     expect(existingStepNodeRunBody).toContain("await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef)");
     expect(methodBody(worker, "runPreflightAgentTask")).toContain("const step = await this.ensurePreflightCommandStep");
     expect(methodBody(worker, "runPreflightManagerFallback")).toContain("const step = await this.ensurePreflightCommandStep");
@@ -136,6 +137,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(releaseReportBody).toContain("\"release_report\"");
     expect(worker).not.toContain("legacyBootstrapCommands");
     expect(worker).not.toContain("legacyBackfill");
+    expect(worker).not.toContain("backfillLegacy");
   });
 
   it("keeps SQLite schema audit checks on execution facts", () => {
