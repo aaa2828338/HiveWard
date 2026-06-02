@@ -2833,7 +2833,6 @@ export class SqliteHivewardStore implements HivewardStore {
     for (const step of sanitized.runCommandSteps ?? []) this.upsertRunCommandStep(step);
     for (const session of sanitized.nodeExecutionSessions ?? []) this.upsertNodeExecutionSession(session);
     for (const event of sanitized.nodeSessionTranscriptEvents ?? []) this.upsertNodeSessionTranscriptEvent(event);
-    for (const binding of sanitized.approvalDiscussionBindings ?? []) this.upsertApprovalDiscussionBinding(binding);
   }
 
   private runViewFromRunRow(row: Row): BlueprintRunView {

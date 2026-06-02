@@ -8,6 +8,7 @@ import type {
   AgentHandoff,
   AgentHumanReport,
   ApprovalDecision,
+  ApprovalDiscussionBinding,
   ApprovalRequest,
   Artifact,
   BlueprintDefinition,
@@ -17,7 +18,11 @@ import type {
   HivewardChatMessage,
   HivewardChatSession,
   InboxItem,
-  ReleaseReport
+  NodeExecutionSession,
+  NodeSessionTranscriptEvent,
+  ReleaseReport,
+  RunCommand,
+  RunCommandStep
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../fileHivewardStore";
 import { acquireSqliteMaintenanceLock } from "./sqliteProcessLock";
@@ -251,6 +256,11 @@ type VerificationSnapshot = {
   runs: Array<{ id: string; blueprintId: string; status: string; finalResultHash: string | null }>;
   nodeRuns: Array<Pick<BlueprintNodeRun, "id" | "blueprintRunId" | "nodeId" | "iterationRoundId" | "status" | "error">>;
   events: Array<Pick<BlueprintNodeEvent, "id" | "blueprintRunId" | "nodeRunId" | "type" | "message" | "createdAt"> & { sequence: number }>;
+  runCommands: Array<Pick<RunCommand, "id" | "commandKey" | "runId" | "roundId" | "kind" | "status" | "currentRevision" | "currentStep">>;
+  runCommandSteps: Array<Pick<RunCommandStep, "id" | "commandId" | "stepKey" | "runId" | "roundId" | "revision" | "mode" | "nodeId" | "nodeRunId" | "status">>;
+  nodeExecutionSessions: Array<Pick<NodeExecutionSession, "id" | "runId" | "nodeRunId" | "nodeId" | "harnessId" | "nativeSessionId" | "policy" | "status" | "fallbackOfSessionId" | "resumedFromSessionId">>;
+  nodeSessionTranscriptEvents: Array<Pick<NodeSessionTranscriptEvent, "id" | "sessionId" | "sequence" | "runId" | "nodeRunId" | "role" | "kind" | "content">>;
+  approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "canCreateCandidate" | "reason">>;
   pendingApprovals: Array<Pick<ApprovalRequest, "id" | "kind" | "status" | "runId" | "roundId" | "revision">>;
   approvalDecisions: Array<Pick<ApprovalDecision, "id" | "approvalRequestId" | "action" | "actor" | "resultingStatus">>;
   inboxPending: Array<Pick<InboxItem, "id" | "status" | "type" | "blueprintId"> & { payloadHash: string }>;
@@ -269,6 +279,11 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
     runs: [],
     nodeRuns: [],
     events: [],
+    runCommands: [],
+    runCommandSteps: [],
+    nodeExecutionSessions: [],
+    nodeSessionTranscriptEvents: [],
+    approvalDiscussionBindings: [],
     pendingApprovals: [],
     approvalDecisions: [],
     inboxPending: [],
@@ -393,6 +408,64 @@ function collectArchiveSnapshot(snapshot: VerificationSnapshot, archive: Bluepri
     createdAt: event.createdAt,
     sequence: index + 1
   })));
+  snapshot.runCommands.push(...(archive.runCommands ?? []).map((command) => ({
+    id: command.id,
+    commandKey: command.commandKey,
+    runId: command.runId,
+    roundId: command.roundId,
+    kind: command.kind,
+    status: command.status,
+    currentRevision: command.currentRevision,
+    currentStep: command.currentStep
+  })));
+  snapshot.runCommandSteps.push(...(archive.runCommandSteps ?? []).map((step) => ({
+    id: step.id,
+    commandId: step.commandId,
+    stepKey: step.stepKey,
+    runId: step.runId,
+    roundId: step.roundId,
+    revision: step.revision,
+    mode: step.mode,
+    nodeId: step.nodeId,
+    nodeRunId: step.nodeRunId,
+    status: step.status
+  })));
+  snapshot.nodeExecutionSessions.push(...(archive.nodeExecutionSessions ?? []).map((session) => ({
+    id: session.id,
+    runId: session.runId,
+    nodeRunId: session.nodeRunId,
+    nodeId: session.nodeId,
+    harnessId: session.harnessId,
+    nativeSessionId: session.nativeSessionId,
+    policy: session.policy,
+    status: session.status,
+    fallbackOfSessionId: session.fallbackOfSessionId,
+    resumedFromSessionId: session.resumedFromSessionId
+  })));
+  snapshot.nodeSessionTranscriptEvents.push(...(archive.nodeSessionTranscriptEvents ?? []).map((event) => ({
+    id: event.id,
+    sessionId: event.sessionId,
+    sequence: event.sequence,
+    runId: event.runId,
+    nodeRunId: event.nodeRunId,
+    role: event.role,
+    kind: event.kind,
+    content: event.content
+  })));
+  snapshot.approvalDiscussionBindings.push(...(archive.approvalDiscussionBindings ?? []).map((binding) => ({
+    approvalRequestId: binding.approvalRequestId,
+    threadId: binding.threadId,
+    mode: binding.mode,
+    route: binding.route,
+    executorActor: binding.executorActor,
+    executorKind: binding.executorKind,
+    executorNodeRunId: binding.executorNodeRunId,
+    executorSessionId: binding.executorSessionId,
+    runtimeId: binding.runtimeId,
+    canStreamReply: binding.canStreamReply,
+    canCreateCandidate: binding.canCreateCandidate,
+    reason: binding.reason
+  })));
   snapshot.pendingApprovals.push(...(archive.approvalRequests ?? [])
     .filter((request) => request.status === "pending")
     .map((request) => ({
@@ -454,6 +527,11 @@ function collectSnapshotCounts(snapshot: VerificationSnapshot): Record<string, n
     runs: snapshot.runs.length,
     nodeRuns: snapshot.nodeRuns.length,
     events: snapshot.events.length,
+    runCommands: snapshot.runCommands.length,
+    runCommandSteps: snapshot.runCommandSteps.length,
+    nodeExecutionSessions: snapshot.nodeExecutionSessions.length,
+    nodeSessionTranscriptEvents: snapshot.nodeSessionTranscriptEvents.length,
+    approvalDiscussionBindings: snapshot.approvalDiscussionBindings.length,
     pendingApprovals: snapshot.pendingApprovals.length,
     approvalDecisions: snapshot.approvalDecisions.length,
     artifacts: snapshot.artifacts.length,
@@ -474,6 +552,10 @@ function compareIdentitySets(source: VerificationSnapshot, sqlite: VerificationS
     "runs",
     "nodeRuns",
     "events",
+    "runCommands",
+    "runCommandSteps",
+    "nodeExecutionSessions",
+    "nodeSessionTranscriptEvents",
     "pendingApprovals",
     "approvalDecisions",
     "artifacts",
@@ -489,6 +571,11 @@ function compareIdentitySets(source: VerificationSnapshot, sqlite: VerificationS
     if (JSON.stringify(sourceIds) !== JSON.stringify(sqliteIds)) {
       mismatches.push(`identity:${key}: source=${sourceIds.join("|")} sqlite=${sqliteIds.join("|")}`);
     }
+  }
+  const sourceBindingIds = source.approvalDiscussionBindings.map((item) => item.approvalRequestId).sort();
+  const sqliteBindingIds = sqlite.approvalDiscussionBindings.map((item) => item.approvalRequestId).sort();
+  if (JSON.stringify(sourceBindingIds) !== JSON.stringify(sqliteBindingIds)) {
+    mismatches.push(`identity:approvalDiscussionBindings: source=${sourceBindingIds.join("|")} sqlite=${sqliteBindingIds.join("|")}`);
   }
   return mismatches;
 }
@@ -565,6 +652,11 @@ function sortSnapshot(snapshot: VerificationSnapshot): void {
   snapshot.runs.sort(compareById);
   snapshot.nodeRuns.sort(compareById);
   snapshot.events.sort(compareByRunSequenceId);
+  snapshot.runCommands.sort(compareById);
+  snapshot.runCommandSteps.sort(compareById);
+  snapshot.nodeExecutionSessions.sort(compareById);
+  snapshot.nodeSessionTranscriptEvents.sort(compareBySessionSequenceId);
+  snapshot.approvalDiscussionBindings.sort(compareByApprovalRequestId);
   snapshot.pendingApprovals.sort(compareById);
   snapshot.approvalDecisions.sort(compareById);
   snapshot.inboxPending.sort(compareById);
@@ -582,6 +674,14 @@ function compareById(left: { id: string }, right: { id: string }): number {
 
 function compareByRunSequenceId(left: { blueprintRunId: string; sequence: number; id: string }, right: { blueprintRunId: string; sequence: number; id: string }): number {
   return left.blueprintRunId.localeCompare(right.blueprintRunId) || left.sequence - right.sequence || left.id.localeCompare(right.id);
+}
+
+function compareBySessionSequenceId(left: { sessionId: string; sequence: number; id: string }, right: { sessionId: string; sequence: number; id: string }): number {
+  return left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence || left.id.localeCompare(right.id);
+}
+
+function compareByApprovalRequestId(left: { approvalRequestId: string }, right: { approvalRequestId: string }): number {
+  return left.approvalRequestId.localeCompare(right.approvalRequestId);
 }
 
 function hashString(value: string): string {
