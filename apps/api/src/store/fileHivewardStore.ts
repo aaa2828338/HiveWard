@@ -31,6 +31,7 @@ import type {
   HivewardChatSession,
   AgentHandoff,
   AgentHumanReport,
+  ApprovalDiscussionBinding,
   ApprovalDecision,
   ApprovalReply,
   ApprovalRequest,
@@ -40,7 +41,15 @@ import type {
   IterationSession,
   ManagerContextSnapshot,
   ManagerMail,
+  NodeExecutionSession,
+  NodeExecutionSessionStatus,
+  NodeSessionTranscriptEvent,
   ReleaseReport,
+  RunCommand,
+  RunCommandKind,
+  RunCommandStatus,
+  RunCommandStep,
+  RunCommandStepStatus,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
   RoleDriverBinding,
@@ -123,6 +132,11 @@ export interface HivewardStoreIndex {
   inboxItems: Record<string, InboxItem[]>;
   iterationSessions: IterationSession[];
   iterationRounds: IterationRound[];
+  runCommands: RunCommand[];
+  runCommandSteps: RunCommandStep[];
+  nodeExecutionSessions: NodeExecutionSession[];
+  nodeSessionTranscriptEvents: NodeSessionTranscriptEvent[];
+  approvalDiscussionBindings: ApprovalDiscussionBinding[];
   approvalThreads: ApprovalThread[];
   approvalReplies: ApprovalReply[];
   approvalRequests: ApprovalRequest[];
@@ -239,6 +253,11 @@ export class FileHivewardStore implements HivewardStore {
           },
           iterationSessions: [],
           iterationRounds: [],
+          runCommands: [],
+          runCommandSteps: [],
+          nodeExecutionSessions: [],
+          nodeSessionTranscriptEvents: [],
+          approvalDiscussionBindings: [],
           approvalThreads: [],
           approvalReplies: [],
           approvalRequests: [],
@@ -1142,7 +1161,15 @@ export class FileHivewardStore implements HivewardStore {
       const companyId = this.getCurrentCompanyId(index);
       const run = index.runIndex.find((item) => item.id === blueprintRunId);
       if (!run || !companyId || run.companyId !== companyId) return undefined;
-      return this.readRunArchiveUnlocked(blueprintRunId);
+      const archive = await this.readRunArchiveUnlocked(blueprintRunId);
+      return {
+        ...archive,
+        runCommands: index.runCommands.filter((item) => item.runId === blueprintRunId),
+        runCommandSteps: index.runCommandSteps.filter((item) => item.runId === blueprintRunId),
+        nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === blueprintRunId),
+        nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === blueprintRunId),
+        approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, blueprintRunId)
+      };
     });
   }
 
@@ -1192,11 +1219,141 @@ export class FileHivewardStore implements HivewardStore {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
       if (!companyId) return [];
-      return Promise.all(
+      const archives = await Promise.all(
         index.runIndex
           .filter((run) => run.companyId === companyId)
           .map((run) => this.readRunArchiveUnlocked(run.id))
       );
+      return archives.map((archive) => ({
+        ...archive,
+        runCommands: index.runCommands.filter((item) => item.runId === archive.run.id),
+        runCommandSteps: index.runCommandSteps.filter((item) => item.runId === archive.run.id),
+        nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === archive.run.id),
+        nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === archive.run.id),
+        approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, archive.run.id)
+      }));
+    });
+  }
+
+  async createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const existing = index.runCommands.find((item) => item.commandKey === command.commandKey);
+      if (existing) return { command: existing, created: false };
+      index.runCommands.push(command);
+      await this.writeIndexUnlocked(index);
+      return { command, created: true };
+    });
+  }
+
+  async getRunCommand(id: string): Promise<RunCommand | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommands.find((item) => item.id === id);
+    });
+  }
+
+  async getRunCommandByKey(commandKey: string): Promise<RunCommand | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommands.find((item) => item.commandKey === commandKey);
+    });
+  }
+
+  async listRunCommands(filter: {
+    runId?: string;
+    roundId?: string;
+    kind?: RunCommandKind;
+    statuses?: RunCommandStatus[];
+  } = {}): Promise<RunCommand[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommands
+        .filter((command) =>
+          (!filter.runId || command.runId === filter.runId) &&
+          (!filter.roundId || command.roundId === filter.roundId) &&
+          (!filter.kind || command.kind === filter.kind) &&
+          (!filter.statuses?.length || filter.statuses.includes(command.status))
+        )
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async updateRunCommand(input: { id: string } & Partial<RunCommand>): Promise<RunCommand> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const commandIndex = index.runCommands.findIndex((item) => item.id === input.id);
+      if (commandIndex < 0) throw new Error(`Run command not found: ${input.id}`);
+      const updated: RunCommand = {
+        ...index.runCommands[commandIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      index.runCommands[commandIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
+    });
+  }
+
+  async createRunCommandStepIfAbsent(step: RunCommandStep): Promise<{ step: RunCommandStep; created: boolean }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const existing = index.runCommandSteps.find((item) => item.stepKey === step.stepKey);
+      if (existing) return { step: existing, created: false };
+      index.runCommandSteps.push(step);
+      await this.writeIndexUnlocked(index);
+      return { step, created: true };
+    });
+  }
+
+  async getRunCommandStep(id: string): Promise<RunCommandStep | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommandSteps.find((item) => item.id === id);
+    });
+  }
+
+  async getRunCommandStepByKey(stepKey: string): Promise<RunCommandStep | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommandSteps.find((item) => item.stepKey === stepKey);
+    });
+  }
+
+  async listRunCommandSteps(filter: {
+    commandId?: string;
+    runId?: string;
+    nodeRunId?: string;
+    statuses?: RunCommandStepStatus[];
+  } = {}): Promise<RunCommandStep[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runCommandSteps
+        .filter((step) =>
+          (!filter.commandId || step.commandId === filter.commandId) &&
+          (!filter.runId || step.runId === filter.runId) &&
+          (!filter.nodeRunId || step.nodeRunId === filter.nodeRunId) &&
+          (!filter.statuses?.length || filter.statuses.includes(step.status))
+        )
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async updateRunCommandStep(input: { id: string } & Partial<RunCommandStep>): Promise<RunCommandStep> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const stepIndex = index.runCommandSteps.findIndex((item) => item.id === input.id);
+      if (stepIndex < 0) throw new Error(`Run command step not found: ${input.id}`);
+      const updated: RunCommandStep = {
+        ...index.runCommandSteps[stepIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      index.runCommandSteps[stepIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
     });
   }
 
@@ -1221,7 +1378,7 @@ export class FileHivewardStore implements HivewardStore {
             ? archivesByRunId.get(request.runId)?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
             : undefined;
           const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
-          const selectedReplyId = readString(output?.selectedReplyId);
+          const selectedReplyId = request.selectedReplyId ?? readString(output?.selectedReplyId);
           const replies = mergePendingApprovalReplies(
             pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }), selectedReplyId),
             readPendingApprovalReplies(output?.replies, selectedReplyId)
@@ -1400,6 +1557,147 @@ export class FileHivewardStore implements HivewardStore {
       upsertById(index.iterationRounds, round);
       await this.writeIndexUnlocked(index);
       return round;
+    });
+  }
+
+  async createNodeExecutionSession(session: NodeExecutionSession): Promise<NodeExecutionSession> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      upsertById(index.nodeExecutionSessions, session);
+      await this.writeIndexUnlocked(index);
+      return session;
+    });
+  }
+
+  async listNodeExecutionSessions(filter: {
+    runId?: string;
+    nodeRunId?: string;
+    nodeId?: string;
+    statuses?: NodeExecutionSessionStatus[];
+  } = {}): Promise<NodeExecutionSession[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.nodeExecutionSessions
+        .filter((session) =>
+          (!filter.runId || session.runId === filter.runId) &&
+          (!filter.nodeRunId || session.nodeRunId === filter.nodeRunId) &&
+          (!filter.nodeId || session.nodeId === filter.nodeId) &&
+          (!filter.statuses?.length || filter.statuses.includes(session.status))
+        )
+        .slice()
+        .sort(compareNodeExecutionSession);
+    });
+  }
+
+  async getNodeExecutionSession(id: string): Promise<NodeExecutionSession | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.nodeExecutionSessions.find((session) => session.id === id);
+    });
+  }
+
+  async updateNodeExecutionSession(input: { id: string } & Partial<NodeExecutionSession>): Promise<NodeExecutionSession> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const sessionIndex = index.nodeExecutionSessions.findIndex((session) => session.id === input.id);
+      if (sessionIndex < 0) throw new Error(`Node execution session not found: ${input.id}`);
+      const updated: NodeExecutionSession = {
+        ...index.nodeExecutionSessions[sessionIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      index.nodeExecutionSessions[sessionIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
+    });
+  }
+
+  async appendNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): Promise<NodeSessionTranscriptEvent> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const duplicate = index.nodeSessionTranscriptEvents.find(
+        (candidate) => candidate.sessionId === event.sessionId && candidate.sequence === event.sequence && candidate.id !== event.id
+      );
+      if (duplicate) {
+        throw new Error(`Transcript sequence ${event.sequence} already exists for session ${event.sessionId}.`);
+      }
+      upsertById(index.nodeSessionTranscriptEvents, event);
+      await this.writeIndexUnlocked(index);
+      return event;
+    });
+  }
+
+  async listNodeSessionTranscriptEvents(filter: {
+    sessionId?: string;
+    runId?: string;
+    nodeRunId?: string;
+  } = {}): Promise<NodeSessionTranscriptEvent[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.nodeSessionTranscriptEvents
+        .filter((event) =>
+          (!filter.sessionId || event.sessionId === filter.sessionId) &&
+          (!filter.runId || event.runId === filter.runId) &&
+          (!filter.nodeRunId || event.nodeRunId === filter.nodeRunId)
+        )
+        .slice()
+        .sort(compareNodeSessionTranscriptEvent);
+    });
+  }
+
+  async createApprovalDiscussionBindingIfAbsent(
+    binding: ApprovalDiscussionBinding
+  ): Promise<{ binding: ApprovalDiscussionBinding; created: boolean }> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const existing = index.approvalDiscussionBindings.find((item) => item.approvalRequestId === binding.approvalRequestId);
+      if (existing) return { binding: existing, created: false };
+      index.approvalDiscussionBindings.push(binding);
+      await this.writeIndexUnlocked(index);
+      return { binding, created: true };
+    });
+  }
+
+  async getApprovalDiscussionBinding(approvalRequestId: string): Promise<ApprovalDiscussionBinding | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.approvalDiscussionBindings.find((binding) => binding.approvalRequestId === approvalRequestId);
+    });
+  }
+
+  async listApprovalDiscussionBindings(filter: {
+    approvalRequestIds?: string[];
+    runId?: string;
+  } = {}): Promise<ApprovalDiscussionBinding[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const approvalRequestIds = new Set(filter.approvalRequestIds ?? []);
+      const runApprovalIds = filter.runId
+        ? new Set(index.approvalRequests.filter((request) => request.runId === filter.runId).map((request) => request.id))
+        : undefined;
+      return index.approvalDiscussionBindings
+        .filter((binding) => approvalRequestIds.size === 0 || approvalRequestIds.has(binding.approvalRequestId))
+        .filter((binding) => !runApprovalIds || runApprovalIds.has(binding.approvalRequestId))
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.approvalRequestId.localeCompare(right.approvalRequestId));
+    });
+  }
+
+  async updateApprovalDiscussionBinding(
+    input: { approvalRequestId: string } & Partial<ApprovalDiscussionBinding>
+  ): Promise<ApprovalDiscussionBinding> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const bindingIndex = index.approvalDiscussionBindings.findIndex((binding) => binding.approvalRequestId === input.approvalRequestId);
+      if (bindingIndex < 0) throw new Error(`Approval discussion binding not found: ${input.approvalRequestId}`);
+      const updated: ApprovalDiscussionBinding = {
+        ...index.approvalDiscussionBindings[bindingIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      index.approvalDiscussionBindings[bindingIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
     });
   }
 
@@ -1724,6 +2022,11 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: {},
       iterationSessions: [],
       iterationRounds: [],
+      runCommands: [],
+      runCommandSteps: [],
+      nodeExecutionSessions: [],
+      nodeSessionTranscriptEvents: [],
+      approvalDiscussionBindings: [],
       approvalThreads: [],
       approvalReplies: [],
       approvalRequests: [],
@@ -1757,6 +2060,11 @@ export class FileHivewardStore implements HivewardStore {
       blueprintSnapshot: archive.blueprintSnapshot,
       nodeRuns: Array.isArray(archive.nodeRuns) ? archive.nodeRuns : [],
       events: Array.isArray(archive.events) ? archive.events : [],
+      runCommands: Array.isArray(archive.runCommands) ? archive.runCommands : [],
+      runCommandSteps: Array.isArray(archive.runCommandSteps) ? archive.runCommandSteps : [],
+      nodeExecutionSessions: Array.isArray(archive.nodeExecutionSessions) ? archive.nodeExecutionSessions : [],
+      nodeSessionTranscriptEvents: Array.isArray(archive.nodeSessionTranscriptEvents) ? archive.nodeSessionTranscriptEvents : [],
+      approvalDiscussionBindings: Array.isArray(archive.approvalDiscussionBindings) ? archive.approvalDiscussionBindings : [],
       finalResult: archive.finalResult ?? null
     });
   }
@@ -2032,6 +2340,11 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(rawIndex.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(rawIndex.iterationRounds),
+      runCommands: normalizeArray<RunCommand>(rawIndex.runCommands),
+      runCommandSteps: normalizeArray<RunCommandStep>(rawIndex.runCommandSteps),
+      nodeExecutionSessions: normalizeArray<NodeExecutionSession>(rawIndex.nodeExecutionSessions),
+      nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(rawIndex.nodeSessionTranscriptEvents),
+      approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(rawIndex.approvalDiscussionBindings),
       approvalThreads: normalizeArray<ApprovalThread>(rawIndex.approvalThreads),
       approvalReplies: normalizeArray<ApprovalReply>(rawIndex.approvalReplies),
       approvalRequests: normalizeArray<ApprovalRequest>(rawIndex.approvalRequests),
@@ -2087,6 +2400,11 @@ export class FileHivewardStore implements HivewardStore {
       inboxItems: normalizeInboxItems(state.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(state.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(state.iterationRounds),
+      runCommands: normalizeArray<RunCommand>(state.runCommands),
+      runCommandSteps: normalizeArray<RunCommandStep>(state.runCommandSteps),
+      nodeExecutionSessions: normalizeArray<NodeExecutionSession>(state.nodeExecutionSessions),
+      nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(state.nodeSessionTranscriptEvents),
+      approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(state.approvalDiscussionBindings),
       approvalThreads: normalizeArray<ApprovalThread>(state.approvalThreads),
       approvalReplies: normalizeArray<ApprovalReply>(state.approvalReplies),
       approvalRequests: normalizeArray<ApprovalRequest>(state.approvalRequests),
@@ -2130,6 +2448,11 @@ export class FileHivewardStore implements HivewardStore {
       finalResult: archive.finalResult,
       iterationSessions: index.iterationSessions.filter((item) => item.runId === runId),
       iterationRounds: index.iterationRounds.filter((item) => item.runId === runId),
+      runCommands: index.runCommands.filter((item) => item.runId === runId),
+      runCommandSteps: index.runCommandSteps.filter((item) => item.runId === runId),
+      nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === runId),
+      nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === runId),
+      approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, runId),
       approvalRequests: index.approvalRequests.filter((item) => item.runId === runId),
       approvalDecisions: index.approvalDecisions.filter((item) =>
         index.approvalRequests.some((request) => request.runId === runId && request.id === item.approvalRequestId)
@@ -2454,6 +2777,17 @@ function listApprovalRepliesFromIndex(
     .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
 }
 
+function filterApprovalDiscussionBindingsForRun(
+  index: HivewardStoreIndex,
+  runId: string
+): ApprovalDiscussionBinding[] {
+  const requestIds = new Set(index.approvalRequests.filter((request) => request.runId === runId).map((request) => request.id));
+  return index.approvalDiscussionBindings
+    .filter((binding) => requestIds.has(binding.approvalRequestId))
+    .slice()
+    .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.approvalRequestId.localeCompare(right.approvalRequestId));
+}
+
 function appendApprovalReplyFromDecision(
   index: HivewardStoreIndex,
   decision: ApprovalDecision,
@@ -2465,6 +2799,7 @@ function appendApprovalReplyFromDecision(
     threadId: approvalThreadIdForRequest(request),
     approvalRequestId: request.id,
     actor: decision.actor,
+    purpose: "message",
     body: decision.comment.trim(),
     createdAt: decision.createdAt,
     metadata: {
@@ -2478,7 +2813,7 @@ function appendApprovalReplyFromDecision(
 }
 
 function appendApprovalReplyToIndex(index: HivewardStoreIndex, reply: ApprovalReply): void {
-  upsertById(index.approvalReplies, reply);
+  upsertById(index.approvalReplies, { ...reply, purpose: reply.purpose ?? "message" });
   const threadIndex = index.approvalThreads.findIndex((thread) => thread.id === reply.threadId);
   if (threadIndex >= 0) {
     const thread = index.approvalThreads[threadIndex]!;
@@ -2908,6 +3243,7 @@ function pendingApprovalRepliesFromApprovalReplies(
   return replies.map((reply) => ({
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
     body: reply.body,
     createdAt: reply.createdAt,
     ...(selectedReplyId === reply.id ? { selected: true } : {})
@@ -2954,6 +3290,22 @@ function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstr
   });
 
   return upstream.length ? upstream : undefined;
+}
+
+function compareNodeExecutionSession(left: NodeExecutionSession, right: NodeExecutionSession): number {
+  return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() ||
+    new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime() ||
+    left.id.localeCompare(right.id);
+}
+
+function compareNodeSessionTranscriptEvent(
+  left: NodeSessionTranscriptEvent,
+  right: NodeSessionTranscriptEvent
+): number {
+  return left.sessionId.localeCompare(right.sessionId) ||
+    left.sequence - right.sequence ||
+    new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() ||
+    left.id.localeCompare(right.id);
 }
 
 function readOptionalString(value: unknown): string | undefined {

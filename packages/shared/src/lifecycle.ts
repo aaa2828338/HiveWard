@@ -1,4 +1,4 @@
-import type { BlueprintNodeType } from "./blueprint";
+import type { AgentRuntimeId, BlueprintNodeType } from "./blueprint";
 
 export type ManagerLifecycleMode = "none" | "self_iteration";
 export type ManagerDispatchMode = "sequential" | "self_dispatch";
@@ -111,15 +111,56 @@ export interface ApprovalThread {
 }
 
 export type ApprovalReplyActor = "user" | "agent" | "manager" | "system";
+export type ApprovalReplyPurpose = "message" | "candidate";
 
 export interface ApprovalReply {
   id: string;
   threadId: string;
   approvalRequestId?: string;
   actor: ApprovalReplyActor;
+  purpose?: ApprovalReplyPurpose;
   body: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
+}
+
+export type ApprovalDiscussionMode =
+  | "none"
+  | "message_only"
+  | "executor";
+
+export type ApprovalDiscussionRoute =
+  | "none"
+  | "message_only"
+  | "agent_approval"
+  | "requirement_agent"
+  | "requirement_manager"
+  | "release_report_manager"
+  | "function_manager"
+  | "function_summary";
+
+export type ApprovalDiscussionExecutorActor =
+  | "agent"
+  | "manager"
+  | "system";
+
+export interface ApprovalDiscussionBinding {
+  approvalRequestId: string;
+  threadId?: string;
+  mode: ApprovalDiscussionMode;
+  route: ApprovalDiscussionRoute;
+  executorActor?: ApprovalDiscussionExecutorActor;
+  executorKind?: ApprovalDiscussionRoute;
+  executorNodeId?: string;
+  executorNodeRunId?: string;
+  executorSessionId?: string;
+  runtimeId?: AgentRuntimeId;
+  canStreamReply: boolean;
+  canCreateCandidate: boolean;
+  reason?: string;
+  resolverVersion: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ApprovalRequest {
@@ -140,6 +181,7 @@ export interface ApprovalRequest {
   revision: number;
   replacesRequestId?: string;
   supersededByRequestId?: string;
+  selectedReplyId?: string;
   capabilities: ApprovalCapabilities;
   requestedBy: {
     type: "node" | "role" | "system";

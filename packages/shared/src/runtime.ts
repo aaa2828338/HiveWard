@@ -15,6 +15,72 @@ export interface RuntimeObjectRef {
   usageRef?: string;
 }
 
+export type NodeExecutionSessionPolicy =
+  | "refresh_per_run"
+  | "refresh_per_round"
+  | "preserve_across_rounds";
+
+export type NodeExecutionSessionStatus =
+  | "active"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "unavailable"
+  | "fallback";
+
+export interface NodeExecutionSession {
+  id: string;
+  runId: string;
+  nodeRunId: string;
+  nodeId: string;
+  agentSeatId?: string;
+  harnessId: RuntimeObjectSource;
+  nativeSessionId?: string;
+  runtimeRef?: RuntimeObjectRef;
+  policy: NodeExecutionSessionPolicy;
+  status: NodeExecutionSessionStatus;
+  statusReason?: string;
+  fallbackOfSessionId?: string;
+  resumedFromSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt?: string;
+}
+
+export type NodeSessionTranscriptEventRole =
+  | "user"
+  | "assistant"
+  | "system"
+  | "runtime";
+
+export type NodeSessionTranscriptEventKind =
+  | "user_message"
+  | "assistant_delta"
+  | "assistant_message"
+  | "runtime_started"
+  | "runtime_state"
+  | "runtime_done"
+  | "system_note";
+
+export interface NodeSessionTranscriptEvent {
+  id: string;
+  sessionId: string;
+  sequence: number;
+  runId: string;
+  nodeRunId: string;
+  role: NodeSessionTranscriptEventRole;
+  kind: NodeSessionTranscriptEventKind;
+  content?: string;
+  runtimeRef?: RuntimeObjectRef;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type RuntimeResumeMode =
+  | "started"
+  | "resumed"
+  | "fallback_started";
+
 export type ChatThinkingEffort = "off" | "minimal" | "low" | "medium" | "high" | "adaptive" | "xhigh" | "max";
 
 export interface RuntimeModel {
@@ -80,6 +146,8 @@ export interface StartAgentTaskInput {
   blueprintRunId: string;
   nodeRunId: string;
   source: RuntimeObjectSource;
+  nativeSessionId?: string;
+  executionSessionPolicy?: NodeExecutionSessionPolicy;
   agentId?: string;
   profileId?: string;
   agentName: string;
@@ -99,6 +167,8 @@ export interface StartedAgentTaskResult {
   taskId: string;
   runId: string;
   sessionKey: string;
+  nativeSessionId?: string;
+  resumeMode?: RuntimeResumeMode;
   source: RuntimeObjectSource;
   status: RuntimeExecutionStatus;
   error?: string;

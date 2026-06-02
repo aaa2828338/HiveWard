@@ -2,6 +2,7 @@ import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, Run
 import { normalizeRuntimeAccessPolicy } from "./lifecycle";
 import type {
   ApprovalDecision,
+  ApprovalDiscussionBinding,
   ApprovalReply,
   ApprovalRequest,
   ApprovalThread,
@@ -18,6 +19,7 @@ import type {
   RunTimelineItem,
   RuntimeAccessPolicy
 } from "./lifecycle";
+import type { NodeExecutionSession, NodeSessionTranscriptEvent } from "./runtime";
 
 export type AgentRuntimeId = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 
@@ -49,6 +51,36 @@ export type BlueprintNodeRunStatus =
   | "cancelled"
   | "skipped"
   | "waiting_approval";
+
+export type RunCommandKind =
+  | "self_iteration_prepare_round"
+  | "self_iteration_execute_round"
+  | "self_iteration_release_report"
+  | "regular_run";
+
+export type RunCommandStatus =
+  | "queued"
+  | "running"
+  | "waiting_approval"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type RunCommandStepStatus =
+  | "queued"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled";
+
+export type RunCommandStepMode =
+  | "research_resolution"
+  | "requirement_resolution"
+  | "revise_plan"
+  | "preflight_judgment"
+  | "context_snapshot"
+  | "release_report"
+  | "node_execution";
 
 export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
 
@@ -370,6 +402,44 @@ export interface BlueprintNodeRun {
   runtimeRef?: RuntimeObjectRef;
 }
 
+export interface RunCommand {
+  id: string;
+  commandKey: string;
+  blueprintId: string;
+  runId: string;
+  roundId?: string;
+  kind: RunCommandKind;
+  status: RunCommandStatus;
+  currentRevision: number;
+  currentStep?: RunCommandStepMode;
+  startedAt?: string;
+  endedAt?: string;
+  error?: string;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RunCommandStep {
+  id: string;
+  commandId: string;
+  stepKey: string;
+  runId: string;
+  roundId?: string;
+  revision: number;
+  mode: RunCommandStepMode;
+  nodeId: string;
+  nodeRunId?: string;
+  status: RunCommandStepStatus;
+  startedAt?: string;
+  endedAt?: string;
+  error?: string;
+  runtimeRef?: RuntimeObjectRef;
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BlueprintNodeEvent {
   id: string;
   blueprintRunId: string;
@@ -397,6 +467,11 @@ export interface BlueprintRunView {
   finalResult?: FinalRunResult | null;
   iterationSessions?: IterationSession[];
   iterationRounds?: IterationRound[];
+  runCommands?: RunCommand[];
+  runCommandSteps?: RunCommandStep[];
+  nodeExecutionSessions?: NodeExecutionSession[];
+  nodeSessionTranscriptEvents?: NodeSessionTranscriptEvent[];
+  approvalDiscussionBindings?: ApprovalDiscussionBinding[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];
   approvalThreads?: ApprovalThread[];
@@ -425,6 +500,11 @@ export interface BlueprintRunArchive {
   finalResult: FinalRunResult | null;
   iterationSessions?: IterationSession[];
   iterationRounds?: IterationRound[];
+  runCommands?: RunCommand[];
+  runCommandSteps?: RunCommandStep[];
+  nodeExecutionSessions?: NodeExecutionSession[];
+  nodeSessionTranscriptEvents?: NodeSessionTranscriptEvent[];
+  approvalDiscussionBindings?: ApprovalDiscussionBinding[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];
   approvalThreads?: ApprovalThread[];
