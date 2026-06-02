@@ -730,12 +730,78 @@ describe("run state sync", () => {
     expect([...readAcknowledgedTerminalRunIds(storage)]).toEqual([]);
   });
 
-  it("sorts transcript events by session, sequence, and createdAt fallback", () => {
+  it("sorts transcript events by command step order before session id fallback", () => {
     const runView = createRunView("succeeded");
+    runView.runCommands = [
+      {
+        id: "command-1",
+        commandKey: "run:run-1:root",
+        blueprintId: "blueprint-1",
+        runId: "run-1",
+        kind: "regular_run",
+        status: "succeeded",
+        currentRevision: 1,
+        createdAt: "2026-05-21T01:00:00.000Z",
+        updatedAt: "2026-05-21T01:06:00.000Z"
+      }
+    ];
+    runView.runCommandSteps = [
+      {
+        id: "step-b",
+        commandId: "command-1",
+        stepKey: "run:run-1:agent-b",
+        runId: "run-1",
+        revision: 1,
+        mode: "node_execution",
+        nodeId: "agent-b",
+        nodeRunId: "node-run-b",
+        status: "succeeded",
+        createdAt: "2026-05-21T01:01:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      },
+      {
+        id: "step-a",
+        commandId: "command-1",
+        stepKey: "run:run-1:agent-a",
+        runId: "run-1",
+        revision: 2,
+        mode: "node_execution",
+        nodeId: "agent-a",
+        nodeRunId: "node-run-a",
+        status: "succeeded",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      }
+    ];
+    runView.nodeExecutionSessions = [
+      {
+        id: "session-b",
+        runId: "run-1",
+        nodeRunId: "node-run-b",
+        nodeId: "agent-b",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "completed",
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      },
+      {
+        id: "session-a",
+        runId: "run-1",
+        nodeRunId: "node-run-a",
+        nodeId: "agent-a",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "completed",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      }
+    ];
     runView.nodeSessionTranscriptEvents = [
       createTranscriptEvent({
         id: "session-b-first",
         sessionId: "session-b",
+        nodeRunId: "node-run-b",
         sequence: 1,
         content: "B first",
         createdAt: "2026-05-21T01:03:00.000Z"
@@ -743,6 +809,7 @@ describe("run state sync", () => {
       createTranscriptEvent({
         id: "session-a-no-sequence-late",
         sessionId: "session-a",
+        nodeRunId: "node-run-a",
         sequence: undefined as unknown as number,
         content: "A late",
         createdAt: "2026-05-21T01:05:00.000Z"
@@ -750,6 +817,7 @@ describe("run state sync", () => {
       createTranscriptEvent({
         id: "session-a-first",
         sessionId: "session-a",
+        nodeRunId: "node-run-a",
         sequence: 1,
         content: "A first",
         createdAt: "2026-05-21T01:02:00.000Z"
@@ -757,6 +825,7 @@ describe("run state sync", () => {
       createTranscriptEvent({
         id: "session-a-no-sequence-early",
         sessionId: "session-a",
+        nodeRunId: "node-run-a",
         sequence: undefined as unknown as number,
         content: "A early",
         createdAt: "2026-05-21T01:04:00.000Z"
@@ -765,10 +834,10 @@ describe("run state sync", () => {
 
     expect(hasRunTranscriptEvents(runView)).toBe(true);
     expect(sortedRunTranscriptEventsForDisplay(runView).map((event) => event.id)).toEqual([
+      "session-b-first",
       "session-a-first",
       "session-a-no-sequence-early",
-      "session-a-no-sequence-late",
-      "session-b-first"
+      "session-a-no-sequence-late"
     ]);
   });
 
