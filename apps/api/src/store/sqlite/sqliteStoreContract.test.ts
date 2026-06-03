@@ -4,12 +4,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
+  AgentOutputEvent,
   ApprovalDiscussionBinding,
+  HumanActionRequest,
+  HumanActionResponse,
+  ManagerCommand,
   NodeExecutionSession,
   NodeSessionTranscriptEvent,
+  RunInterjection,
+  RunRoom,
   RunCommand,
-  RunCommandStep
+  RunCommandStep,
+  WorkerTask
 } from "@hiveward/shared";
+import { assertRunRoomFeedRow } from "@hiveward/shared";
 import type { HivewardStore } from "../hivewardStore";
 import { FileHivewardStore } from "../fileHivewardStore";
 import { SqliteDriver } from "./sqliteDriver";
@@ -344,6 +352,157 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         status: "sent"
       });
       await expect(store.listChatMessages(sessionRecord.id)).resolves.toEqual([expect.objectContaining({ content: "Hello" })]);
+    } finally {
+      close?.();
+    }
+  });
+
+  it("persists RunRoom foundation facts and rejects old owner shapes", async () => {
+    const { store, close } = await createHarness();
+    try {
+      const companyState = await store.createCompany({ name: "RunRoom Contract Company" });
+      const companyId = companyState.selectedCompanyId;
+      if (!companyId) throw new Error("Expected selected company.");
+
+      const runRoom: RunRoom = {
+        id: "run-room-contract",
+        companyId,
+        blueprintId: "contract-blueprint",
+        status: "open",
+        title: "Contract RunRoom",
+        summary: "RunRoom contract foundation.",
+        managerRoleId: "manager-contract",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createRunRoom(runRoom)).resolves.toMatchObject({ id: runRoom.id, status: "open" });
+      await expect(store.createRunRoom({ ...runRoom, id: "run-room-paused", status: "paused" as RunRoom["status"] }))
+        .rejects.toThrow(/RunRoom\.status/);
+
+      const interjection: RunInterjection = {
+        id: "run-interjection-contract",
+        runRoomId: runRoom.id,
+        target: "manager",
+        messageMarkdown: "Please inspect the latest result.",
+        createdByRoleId: "user-contract",
+        createdAt: contractNow
+      };
+      await expect(store.appendRunInterjection(interjection)).resolves.toMatchObject({ id: interjection.id, target: "manager" });
+      await expect(store.appendRunInterjection({ ...interjection, id: "run-interjection-worker", target: "worker" as RunInterjection["target"] }))
+        .rejects.toThrow(/RunInterjection\.target/);
+
+      const command: ManagerCommand = {
+        id: "manager-command-contract",
+        runRoomId: runRoom.id,
+        managerRoleId: "manager-contract",
+        action: "dispatch_worker_task",
+        status: "queued",
+        instructionMarkdown: "Dispatch one worker task.",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.appendManagerCommand(command)).resolves.toMatchObject({ id: command.id, action: "dispatch_worker_task" });
+      await expect(store.appendManagerCommand({ ...command, id: "manager-command-plural", action: "dispatch_worker_tasks" as ManagerCommand["action"] }))
+        .rejects.toThrow(/ManagerCommand\.action/);
+
+      const workerTask: WorkerTask = {
+        id: "worker-task-contract",
+        runRoomId: runRoom.id,
+        managerCommandId: command.id,
+        workerSeatId: "worker-contract",
+        title: "Worker contract task",
+        instructionMarkdown: "Execute exactly one task.",
+        status: "queued",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createWorkerTask(workerTask)).resolves.toMatchObject({ id: workerTask.id, status: "queued" });
+      await expect(store.createWorkerTask({
+        ...workerTask,
+        id: "worker-task-missing-command",
+        managerCommandId: undefined
+      } as unknown as WorkerTask)).rejects.toThrow(/WorkerTask\.managerCommandId/);
+      await expect(store.createWorkerTask({ ...workerTask, id: "worker-task-second-active", status: "running" }))
+        .rejects.toThrow(/active WorkerTask/);
+
+      const request: HumanActionRequest = {
+        id: "human-action-request-contract",
+        runRoomId: runRoom.id,
+        sourceContextType: "run_room",
+        sourceContextId: runRoom.id,
+        responseIntent: "decision_required",
+        status: "pending",
+        title: "Decision needed",
+        bodyMarkdown: "Choose the next step.",
+        createdByRoleId: "manager-contract",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.appendHumanActionRequest(request)).resolves.toMatchObject({
+        id: request.id,
+        sourceContextType: "run_room",
+        responseIntent: "decision_required"
+      });
+      await expect(store.appendHumanActionRequest({ ...request, id: "human-action-request-inbox", sourceContextType: "inbox" as HumanActionRequest["sourceContextType"] }))
+        .rejects.toThrow(/HumanActionRequest\.sourceContextType/);
+      await expect(store.appendHumanActionRequest({ ...request, id: "human-action-request-approval", responseIntent: "approval" as HumanActionRequest["responseIntent"] }))
+        .rejects.toThrow(/HumanActionRequest\.responseIntent/);
+
+      const response: HumanActionResponse = {
+        id: "human-action-response-contract",
+        requestId: request.id,
+        messageMarkdown: "Continue with the worker output.",
+        createdByRoleId: "user-contract",
+        createdAt: contractNow
+      };
+      await expect(store.appendHumanActionResponse(response)).resolves.toMatchObject({
+        id: response.id,
+        messageMarkdown: response.messageMarkdown
+      });
+
+      await expect(store.listInboxProjections({ sourceContextType: "run_room" })).resolves.toEqual([
+        expect.objectContaining({
+          id: `inbox-projection-${request.id}`,
+          humanActionRequestId: request.id,
+          responseIntent: "decision_required",
+          latestResponseAt: contractNow
+        })
+      ]);
+      expect(typeof (store as unknown as { createInboxProjection?: unknown }).createInboxProjection).toBe("undefined");
+      await expect(store.listBlueprintKanbanCards({ companyId })).resolves.toEqual([
+        expect.objectContaining({
+          id: `blueprint-kanban-${runRoom.id}`,
+          runRoomId: runRoom.id,
+          lane: "open"
+        })
+      ]);
+
+      const event: AgentOutputEvent = {
+        id: "agent-output-event-contract",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "manager",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Manager output.",
+        createdAt: contractNow
+      };
+      await expect(store.appendAgentOutputEvent(event)).resolves.toMatchObject({ id: event.id, ownerType: "run_room" });
+      await expect(store.appendAgentOutputEvent({ ...event, id: "agent-output-event-inbox", ownerType: "inbox_item" as AgentOutputEvent["ownerType"], sequence: 2 }))
+        .rejects.toThrow(/AgentOutputEvent\.ownerType/);
+      await expect(store.listAgentOutputEvents({ ownerType: "run_room", ownerId: runRoom.id })).resolves.toEqual([
+        expect.objectContaining({ id: event.id, sequence: 1 })
+      ]);
+
+      expect(() => assertRunRoomFeedRow({
+        id: "run-room-feed-execution-output",
+        runRoomId: runRoom.id,
+        sourceType: "worker",
+        displayMode: "execution_output",
+        bodyMarkdown: "Worker output.",
+        actions: { canReply: true },
+        createdAt: contractNow
+      })).toThrow(/execution_output/);
     } finally {
       close?.();
     }

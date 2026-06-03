@@ -4,14 +4,19 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { fileURLToPath } from "node:url";
 import { nanoid } from "nanoid";
 import type {
+  AgentOutputEvent,
   AgentRuntimeId,
+  BlueprintKanbanCard,
   CatalogSnapshot,
   CompanyOverview,
   CompanyProfile,
   ArchitectureBlueprintView,
   CompanyRoleDirectory,
   CompanyRoleProfile,
+  HumanActionRequest,
+  HumanActionResponse,
   InboxItem,
+  InboxProjection,
   InboxItemType,
   PendingApprovalItem,
   PortableBlueprintPackage,
@@ -40,6 +45,7 @@ import type {
   Artifact,
   IterationRound,
   IterationSession,
+  ManagerCommand,
   ManagerContextSnapshot,
   ManagerMail,
   NodeExecutionSession,
@@ -51,12 +57,22 @@ import type {
   RunCommandStatus,
   RunCommandStep,
   RunCommandStepStatus,
+  RunInterjection,
+  RunRoom,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
   RoleDriverBinding,
-  RuntimeObjectRef
+  RuntimeObjectRef,
+  WorkerTask
 } from "@hiveward/shared";
 import {
+  assertAgentOutputEvent,
+  assertHumanActionRequest,
+  assertHumanActionResponse,
+  assertManagerCommand,
+  assertRunInterjection,
+  assertRunRoom,
+  assertWorkerTask,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultCompanies,
@@ -64,6 +80,7 @@ import {
   createDefaultWorkspaceDashboard,
   defaultCompanyId,
   hydrateImportedBlueprint,
+  isActiveWorkerTaskStatus,
   normalizeWorkspaceDashboard,
   readBlueprintNodeEventRuntimeRef,
   readBlueprintNodeRunRuntimeRef,
@@ -136,6 +153,13 @@ export interface HivewardStoreIndex {
   iterationRounds: IterationRound[];
   runCommands: RunCommand[];
   runCommandSteps: RunCommandStep[];
+  runRooms: RunRoom[];
+  runInterjections: RunInterjection[];
+  managerCommands: ManagerCommand[];
+  workerTasks: WorkerTask[];
+  humanActionRequests: HumanActionRequest[];
+  humanActionResponses: HumanActionResponse[];
+  agentOutputEvents: AgentOutputEvent[];
   nodeExecutionSessions: NodeExecutionSession[];
   nodeSessionTranscriptEvents: NodeSessionTranscriptEvent[];
   approvalDiscussionBindings: ApprovalDiscussionBinding[];
@@ -257,6 +281,13 @@ export class FileHivewardStore implements HivewardStore {
           iterationRounds: [],
           runCommands: [],
           runCommandSteps: [],
+          runRooms: [],
+          runInterjections: [],
+          managerCommands: [],
+          workerTasks: [],
+          humanActionRequests: [],
+          humanActionResponses: [],
+          agentOutputEvents: [],
           nodeExecutionSessions: [],
           nodeSessionTranscriptEvents: [],
           approvalDiscussionBindings: [],
@@ -1237,6 +1268,291 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
+  async createRunRoom(runRoom: RunRoom): Promise<RunRoom> {
+    return this.enqueue(async () => {
+      assertRunRoom(runRoom);
+      const index = await this.readIndexUnlocked();
+      if (index.runRooms.some((item) => item.id === runRoom.id)) {
+        throw new Error(`RunRoom already exists: ${runRoom.id}`);
+      }
+      index.runRooms.push(runRoom);
+      await this.writeIndexUnlocked(index);
+      return runRoom;
+    });
+  }
+
+  async getRunRoom(id: string): Promise<RunRoom | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runRooms.find((item) => item.id === id);
+    });
+  }
+
+  async listRunRooms(filter: { companyId?: string; blueprintId?: string; status?: RunRoom["status"] } = {}): Promise<RunRoom[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runRooms
+        .filter((runRoom) =>
+          (!filter.companyId || runRoom.companyId === filter.companyId) &&
+          (!filter.blueprintId || runRoom.blueprintId === filter.blueprintId) &&
+          (!filter.status || runRoom.status === filter.status)
+        )
+        .slice()
+        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async updateRunRoom(input: { id: string } & Partial<RunRoom>): Promise<RunRoom> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const runRoomIndex = index.runRooms.findIndex((item) => item.id === input.id);
+      if (runRoomIndex < 0) throw new Error(`RunRoom not found: ${input.id}`);
+      const updated: RunRoom = {
+        ...index.runRooms[runRoomIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      assertRunRoom(updated);
+      index.runRooms[runRoomIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
+    });
+  }
+
+  async appendRunInterjection(interjection: RunInterjection): Promise<RunInterjection> {
+    return this.enqueue(async () => {
+      assertRunInterjection(interjection);
+      const index = await this.readIndexUnlocked();
+      requireRunRoomFromIndex(index, interjection.runRoomId);
+      if (index.runInterjections.some((item) => item.id === interjection.id)) {
+        throw new Error(`RunInterjection already exists: ${interjection.id}`);
+      }
+      index.runInterjections.push(interjection);
+      await this.writeIndexUnlocked(index);
+      return interjection;
+    });
+  }
+
+  async listRunInterjections(filter: { runRoomId?: string } = {}): Promise<RunInterjection[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.runInterjections
+        .filter((interjection) => !filter.runRoomId || interjection.runRoomId === filter.runRoomId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async appendManagerCommand(command: ManagerCommand): Promise<ManagerCommand> {
+    return this.enqueue(async () => {
+      assertManagerCommand(command);
+      const index = await this.readIndexUnlocked();
+      requireRunRoomFromIndex(index, command.runRoomId);
+      if (index.managerCommands.some((item) => item.id === command.id)) {
+        throw new Error(`ManagerCommand already exists: ${command.id}`);
+      }
+      index.managerCommands.push(command);
+      await this.writeIndexUnlocked(index);
+      return command;
+    });
+  }
+
+  async getManagerCommand(id: string): Promise<ManagerCommand | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.managerCommands.find((item) => item.id === id);
+    });
+  }
+
+  async listManagerCommands(filter: {
+    runRoomId?: string;
+    action?: ManagerCommand["action"];
+    statuses?: ManagerCommand["status"][];
+  } = {}): Promise<ManagerCommand[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.managerCommands
+        .filter((command) =>
+          (!filter.runRoomId || command.runRoomId === filter.runRoomId) &&
+          (!filter.action || command.action === filter.action) &&
+          (!filter.statuses?.length || filter.statuses.includes(command.status))
+        )
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async createWorkerTask(task: WorkerTask): Promise<WorkerTask> {
+    return this.enqueue(async () => {
+      assertWorkerTask(task);
+      const index = await this.readIndexUnlocked();
+      requireRunRoomFromIndex(index, task.runRoomId);
+      const command = index.managerCommands.find((item) => item.id === task.managerCommandId);
+      if (!command) throw new Error(`ManagerCommand not found for WorkerTask.managerCommandId: ${task.managerCommandId}`);
+      if (command.runRoomId !== task.runRoomId) {
+        throw new Error(`WorkerTask.managerCommandId ${task.managerCommandId} belongs to a different RunRoom.`);
+      }
+      if (index.workerTasks.some((item) => item.id === task.id)) {
+        throw new Error(`WorkerTask already exists: ${task.id}`);
+      }
+      if (isActiveWorkerTaskStatus(task.status) && index.workerTasks.some((item) => item.runRoomId === task.runRoomId && isActiveWorkerTaskStatus(item.status))) {
+        throw new Error(`RunRoom already has an active WorkerTask: ${task.runRoomId}`);
+      }
+      index.workerTasks.push(task);
+      await this.writeIndexUnlocked(index);
+      return task;
+    });
+  }
+
+  async getWorkerTask(id: string): Promise<WorkerTask | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.workerTasks.find((item) => item.id === id);
+    });
+  }
+
+  async listWorkerTasks(filter: {
+    runRoomId?: string;
+    managerCommandId?: string;
+    statuses?: WorkerTask["status"][];
+  } = {}): Promise<WorkerTask[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.workerTasks
+        .filter((task) =>
+          (!filter.runRoomId || task.runRoomId === filter.runRoomId) &&
+          (!filter.managerCommandId || task.managerCommandId === filter.managerCommandId) &&
+          (!filter.statuses?.length || filter.statuses.includes(task.status))
+        )
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async appendHumanActionRequest(request: HumanActionRequest): Promise<HumanActionRequest> {
+    return this.enqueue(async () => {
+      assertHumanActionRequest(request);
+      const index = await this.readIndexUnlocked();
+      if (request.runRoomId) requireRunRoomFromIndex(index, request.runRoomId);
+      if (index.humanActionRequests.some((item) => item.id === request.id)) {
+        throw new Error(`HumanActionRequest already exists: ${request.id}`);
+      }
+      index.humanActionRequests.push(request);
+      await this.writeIndexUnlocked(index);
+      return request;
+    });
+  }
+
+  async getHumanActionRequest(id: string): Promise<HumanActionRequest | undefined> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.humanActionRequests.find((item) => item.id === id);
+    });
+  }
+
+  async listHumanActionRequests(filter: {
+    runRoomId?: string;
+    sourceContextType?: HumanActionRequest["sourceContextType"];
+    responseIntent?: HumanActionRequest["responseIntent"];
+    status?: HumanActionRequest["status"];
+  } = {}): Promise<HumanActionRequest[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.humanActionRequests
+        .filter((request) =>
+          (!filter.runRoomId || request.runRoomId === filter.runRoomId) &&
+          (!filter.sourceContextType || request.sourceContextType === filter.sourceContextType) &&
+          (!filter.responseIntent || request.responseIntent === filter.responseIntent) &&
+          (!filter.status || request.status === filter.status)
+        )
+        .slice()
+        .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse> {
+    return this.enqueue(async () => {
+      assertHumanActionResponse(response);
+      const index = await this.readIndexUnlocked();
+      if (!index.humanActionRequests.some((item) => item.id === response.requestId)) {
+        throw new Error(`HumanActionRequest not found: ${response.requestId}`);
+      }
+      if (index.humanActionResponses.some((item) => item.id === response.id)) {
+        throw new Error(`HumanActionResponse already exists: ${response.id}`);
+      }
+      index.humanActionResponses.push(response);
+      await this.writeIndexUnlocked(index);
+      return response;
+    });
+  }
+
+  async listHumanActionResponses(filter: { requestId?: string } = {}): Promise<HumanActionResponse[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.humanActionResponses
+        .filter((response) => !filter.requestId || response.requestId === filter.requestId)
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
+  async listInboxProjections(filter: {
+    sourceContextType?: InboxProjection["sourceContextType"];
+    responseIntent?: InboxProjection["responseIntent"];
+    status?: InboxProjection["status"];
+  } = {}): Promise<InboxProjection[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return projectInboxProjections(index.humanActionRequests, index.humanActionResponses)
+        .filter((projection) =>
+          (!filter.sourceContextType || projection.sourceContextType === filter.sourceContextType) &&
+          (!filter.responseIntent || projection.responseIntent === filter.responseIntent) &&
+          (!filter.status || projection.status === filter.status)
+        );
+    });
+  }
+
+  async listBlueprintKanbanCards(filter: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] } = {}): Promise<BlueprintKanbanCard[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return projectBlueprintKanbanCards(index.runRooms)
+        .filter((card) =>
+          (!filter.companyId || card.companyId === filter.companyId) &&
+          (!filter.blueprintId || card.blueprintId === filter.blueprintId) &&
+          (!filter.lane || card.lane === filter.lane)
+        );
+    });
+  }
+
+  async appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent> {
+    return this.enqueue(async () => {
+      assertAgentOutputEvent(event);
+      const index = await this.readIndexUnlocked();
+      if (index.agentOutputEvents.some((item) => item.id === event.id)) {
+        throw new Error(`AgentOutputEvent already exists: ${event.id}`);
+      }
+      if (index.agentOutputEvents.some((item) => item.ownerType === event.ownerType && item.ownerId === event.ownerId && item.sequence === event.sequence)) {
+        throw new Error(`AgentOutputEvent sequence ${event.sequence} already exists for ${event.ownerType}:${event.ownerId}`);
+      }
+      index.agentOutputEvents.push(event);
+      await this.writeIndexUnlocked(index);
+      return event;
+    });
+  }
+
+  async listAgentOutputEvents(filter: { ownerType?: AgentOutputEvent["ownerType"]; ownerId?: string } = {}): Promise<AgentOutputEvent[]> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      return index.agentOutputEvents
+        .filter((event) =>
+          (!filter.ownerType || event.ownerType === filter.ownerType) &&
+          (!filter.ownerId || event.ownerId === filter.ownerId)
+        )
+        .slice()
+        .sort((left, right) => left.sequence - right.sequence || new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
+    });
+  }
+
   async createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -2075,6 +2391,13 @@ export class FileHivewardStore implements HivewardStore {
       iterationRounds: [],
       runCommands: [],
       runCommandSteps: [],
+      runRooms: [],
+      runInterjections: [],
+      managerCommands: [],
+      workerTasks: [],
+      humanActionRequests: [],
+      humanActionResponses: [],
+      agentOutputEvents: [],
       nodeExecutionSessions: [],
       nodeSessionTranscriptEvents: [],
       approvalDiscussionBindings: [],
@@ -2396,6 +2719,13 @@ export class FileHivewardStore implements HivewardStore {
       iterationRounds: normalizeArray<IterationRound>(rawIndex.iterationRounds),
       runCommands: normalizeArray<RunCommand>(rawIndex.runCommands),
       runCommandSteps: normalizeArray<RunCommandStep>(rawIndex.runCommandSteps),
+      runRooms: normalizeArray<RunRoom>(rawIndex.runRooms),
+      runInterjections: normalizeArray<RunInterjection>(rawIndex.runInterjections),
+      managerCommands: normalizeArray<ManagerCommand>(rawIndex.managerCommands),
+      workerTasks: normalizeArray<WorkerTask>(rawIndex.workerTasks),
+      humanActionRequests: normalizeArray<HumanActionRequest>(rawIndex.humanActionRequests),
+      humanActionResponses: normalizeArray<HumanActionResponse>(rawIndex.humanActionResponses),
+      agentOutputEvents: normalizeArray<AgentOutputEvent>(rawIndex.agentOutputEvents),
       nodeExecutionSessions: normalizeArray<NodeExecutionSession>(rawIndex.nodeExecutionSessions),
       nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(rawIndex.nodeSessionTranscriptEvents),
       approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(rawIndex.approvalDiscussionBindings),
@@ -2459,6 +2789,13 @@ export class FileHivewardStore implements HivewardStore {
       iterationRounds: normalizeArray<IterationRound>(state.iterationRounds),
       runCommands: normalizeArray<RunCommand>(state.runCommands),
       runCommandSteps: normalizeArray<RunCommandStep>(state.runCommandSteps),
+      runRooms: normalizeArray<RunRoom>(state.runRooms),
+      runInterjections: normalizeArray<RunInterjection>(state.runInterjections),
+      managerCommands: normalizeArray<ManagerCommand>(state.managerCommands),
+      workerTasks: normalizeArray<WorkerTask>(state.workerTasks),
+      humanActionRequests: normalizeArray<HumanActionRequest>(state.humanActionRequests),
+      humanActionResponses: normalizeArray<HumanActionResponse>(state.humanActionResponses),
+      agentOutputEvents: normalizeArray<AgentOutputEvent>(state.agentOutputEvents),
       nodeExecutionSessions: normalizeArray<NodeExecutionSession>(state.nodeExecutionSessions),
       nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(state.nodeSessionTranscriptEvents),
       approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(state.approvalDiscussionBindings),
@@ -2764,6 +3101,56 @@ function normalizeInboxItemType(value: unknown): InboxItemType {
 
 function normalizeArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
+}
+
+function requireRunRoomFromIndex(index: HivewardStoreIndex, runRoomId: string): RunRoom {
+  const runRoom = index.runRooms.find((item) => item.id === runRoomId);
+  if (!runRoom) throw new Error(`RunRoom not found: ${runRoomId}`);
+  return runRoom;
+}
+
+function projectInboxProjections(
+  requests: HumanActionRequest[],
+  responses: HumanActionResponse[]
+): InboxProjection[] {
+  const latestResponseByRequestId = new Map<string, string>();
+  for (const response of responses) {
+    const existing = latestResponseByRequestId.get(response.requestId);
+    if (!existing || Date.parse(response.createdAt) > Date.parse(existing)) {
+      latestResponseByRequestId.set(response.requestId, response.createdAt);
+    }
+  }
+  return requests
+    .map((request) => ({
+      id: `inbox-projection-${request.id}`,
+      humanActionRequestId: request.id,
+      sourceContextType: request.sourceContextType,
+      sourceContextId: request.sourceContextId,
+      responseIntent: request.responseIntent,
+      status: request.status,
+      title: request.title,
+      bodyMarkdown: request.bodyMarkdown,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+      latestResponseAt: latestResponseByRequestId.get(request.id)
+    }))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
+}
+
+function projectBlueprintKanbanCards(runRooms: RunRoom[]): BlueprintKanbanCard[] {
+  return runRooms
+    .map((runRoom) => ({
+      id: `blueprint-kanban-${runRoom.id}`,
+      runRoomId: runRoom.id,
+      companyId: runRoom.companyId,
+      blueprintId: runRoom.blueprintId,
+      runId: runRoom.runId,
+      lane: runRoom.status,
+      title: runRoom.title ?? runRoom.id,
+      summary: runRoom.summary,
+      updatedAt: runRoom.updatedAt
+    }))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }
 
 function upsertById<T extends { id: string }>(items: T[], item: T): void {

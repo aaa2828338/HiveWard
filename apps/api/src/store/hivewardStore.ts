@@ -1,6 +1,7 @@
 import type {
   AgentHandoff,
   AgentHumanReport,
+  AgentOutputEvent,
   AgentRuntimeId,
   ArchitectureBlueprintView,
   ApprovalDiscussionBinding,
@@ -11,6 +12,7 @@ import type {
   Artifact,
   BlueprintDefinition,
   BlueprintImportDefaults,
+  BlueprintKanbanCard,
   BlueprintNodeEvent,
   BlueprintNodeRun,
   BlueprintRun,
@@ -25,9 +27,13 @@ import type {
   HarnessId,
   HivewardChatMessage,
   HivewardChatSession,
+  HumanActionRequest,
+  HumanActionResponse,
   InboxItem,
+  InboxProjection,
   IterationRound,
   IterationSession,
+  ManagerCommand,
   ManagerContextSnapshot,
   ManagerMail,
   NodeExecutionSession,
@@ -41,8 +47,11 @@ import type {
   RunCommandStatus,
   RunCommandStep,
   RunCommandStepStatus,
+  RunInterjection,
+  RunRoom,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
+  WorkerTask,
   WorkspaceDashboard
 } from "@hiveward/shared";
 
@@ -224,6 +233,36 @@ export interface HivewardStore {
   listRunSummaries(): Promise<BlueprintRunSummary[]>;
   listRunViews(): Promise<BlueprintRunView[]>;
   listRunArchives(): Promise<BlueprintRunArchive[]>;
+  createRunRoom(runRoom: RunRoom): Promise<RunRoom>;
+  getRunRoom(id: string): Promise<RunRoom | undefined>;
+  listRunRooms(filter?: { companyId?: string; blueprintId?: string; status?: RunRoom["status"] }): Promise<RunRoom[]>;
+  updateRunRoom(input: { id: string } & Partial<RunRoom>): Promise<RunRoom>;
+  appendRunInterjection(interjection: RunInterjection): Promise<RunInterjection>;
+  listRunInterjections(filter?: { runRoomId?: string }): Promise<RunInterjection[]>;
+  appendManagerCommand(command: ManagerCommand): Promise<ManagerCommand>;
+  getManagerCommand(id: string): Promise<ManagerCommand | undefined>;
+  listManagerCommands(filter?: { runRoomId?: string; action?: ManagerCommand["action"]; statuses?: ManagerCommand["status"][] }): Promise<ManagerCommand[]>;
+  createWorkerTask(task: WorkerTask): Promise<WorkerTask>;
+  getWorkerTask(id: string): Promise<WorkerTask | undefined>;
+  listWorkerTasks(filter?: { runRoomId?: string; managerCommandId?: string; statuses?: WorkerTask["status"][] }): Promise<WorkerTask[]>;
+  appendHumanActionRequest(request: HumanActionRequest): Promise<HumanActionRequest>;
+  getHumanActionRequest(id: string): Promise<HumanActionRequest | undefined>;
+  listHumanActionRequests(filter?: {
+    runRoomId?: string;
+    sourceContextType?: HumanActionRequest["sourceContextType"];
+    responseIntent?: HumanActionRequest["responseIntent"];
+    status?: HumanActionRequest["status"];
+  }): Promise<HumanActionRequest[]>;
+  appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse>;
+  listHumanActionResponses(filter?: { requestId?: string }): Promise<HumanActionResponse[]>;
+  listInboxProjections(filter?: {
+    sourceContextType?: InboxProjection["sourceContextType"];
+    responseIntent?: InboxProjection["responseIntent"];
+    status?: InboxProjection["status"];
+  }): Promise<InboxProjection[]>;
+  listBlueprintKanbanCards(filter?: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] }): Promise<BlueprintKanbanCard[]>;
+  appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent>;
+  listAgentOutputEvents(filter?: { ownerType?: AgentOutputEvent["ownerType"]; ownerId?: string }): Promise<AgentOutputEvent[]>;
   createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }>;
   getRunCommand(id: string): Promise<RunCommand | undefined>;
   getRunCommandByKey(commandKey: string): Promise<RunCommand | undefined>;

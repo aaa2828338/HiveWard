@@ -6,6 +6,7 @@ import { nanoid } from "nanoid";
 import type {
   AgentHandoff,
   AgentHumanReport,
+  AgentOutputEvent,
   AgentOutputEnvelope,
   AgentRuntimeId,
   ArchitectureBlueprintView,
@@ -24,6 +25,7 @@ import type {
   BlueprintRunArchive,
   BlueprintRunSummary,
   BlueprintRunView,
+  BlueprintKanbanCard,
   CatalogSnapshot,
   ChatAttachment,
   ChatRoleScope,
@@ -34,10 +36,14 @@ import type {
   HarnessId,
   HivewardChatMessage,
   HivewardChatSession,
+  HumanActionRequest,
+  HumanActionResponse,
   InboxItem,
+  InboxProjection,
   InboxItemType,
   IterationRound,
   IterationSession,
+  ManagerCommand,
   ManagerContextSnapshot,
   ManagerMail,
   NodeExecutionSession,
@@ -52,11 +58,21 @@ import type {
   RunCommandStatus,
   RunCommandStep,
   RunCommandStepStatus,
+  RunInterjection,
+  RunRoom,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
+  WorkerTask,
   WorkspaceDashboard
 } from "@hiveward/shared";
 import {
+  assertAgentOutputEvent,
+  assertHumanActionRequest,
+  assertHumanActionResponse,
+  assertManagerCommand,
+  assertRunInterjection,
+  assertRunRoom,
+  assertWorkerTask,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultBlueprints,
@@ -64,6 +80,7 @@ import {
   createDefaultWorkspaceDashboard,
   defaultCompanyId,
   hydrateImportedBlueprint,
+  isActiveWorkerTaskStatus,
   normalizeWorkspaceDashboard,
   readBlueprintNodeEventRuntimeRef,
   readBlueprintNodeRunRuntimeRef,
@@ -188,6 +205,13 @@ export class SqliteHivewardStore implements HivewardStore {
     agentHumanReports: number;
     agentHandoffs: number;
     inboxItems: number;
+    runRooms: number;
+    runInterjections: number;
+    managerCommands: number;
+    workerTasks: number;
+    humanActionRequests: number;
+    humanActionResponses: number;
+    agentOutputEvents: number;
     chatSessions: number;
     chatMessages: number;
   }> {
@@ -202,6 +226,13 @@ export class SqliteHivewardStore implements HivewardStore {
       agentHumanReports: 0,
       agentHandoffs: 0,
       inboxItems: 0,
+      runRooms: 0,
+      runInterjections: 0,
+      managerCommands: 0,
+      workerTasks: 0,
+      humanActionRequests: 0,
+      humanActionResponses: 0,
+      agentOutputEvents: 0,
       chatSessions: 0,
       chatMessages: 0
     };
@@ -298,6 +329,43 @@ export class SqliteHivewardStore implements HivewardStore {
         });
       }
     }
+    const runRooms = await source.listRunRooms();
+    const runInterjections = await source.listRunInterjections();
+    const managerCommands = await source.listManagerCommands();
+    const workerTasks = await source.listWorkerTasks();
+    const humanActionRequests = await source.listHumanActionRequests();
+    const humanActionResponses = await source.listHumanActionResponses();
+    const agentOutputEvents = await source.listAgentOutputEvents();
+    this.driver.transaction(() => {
+      for (const runRoom of runRooms) {
+        this.insertRunRoom(runRoom);
+        counts.runRooms += 1;
+      }
+      for (const interjection of runInterjections) {
+        this.insertRunInterjection(interjection);
+        counts.runInterjections += 1;
+      }
+      for (const command of managerCommands) {
+        this.insertManagerCommand(command);
+        counts.managerCommands += 1;
+      }
+      for (const task of workerTasks) {
+        this.insertWorkerTask(task);
+        counts.workerTasks += 1;
+      }
+      for (const request of humanActionRequests) {
+        this.insertHumanActionRequest(request);
+        counts.humanActionRequests += 1;
+      }
+      for (const response of humanActionResponses) {
+        this.insertHumanActionResponse(response);
+        counts.humanActionResponses += 1;
+      }
+      for (const event of agentOutputEvents) {
+        this.insertAgentOutputEvent(event);
+        counts.agentOutputEvents += 1;
+      }
+    });
     await source.selectCompany(selectedCompanyId);
     this.setSelectedCompanyId(selectedCompanyId ?? companies[0]?.id ?? null, new Date().toISOString());
     return counts;
@@ -994,6 +1062,197 @@ export class SqliteHivewardStore implements HivewardStore {
   async listRunArchives(): Promise<BlueprintRunArchive[]> {
     const summaries = await this.listRunSummaries();
     return summaries.map((run) => this.requireRunArchive(run.id));
+  }
+
+  async createRunRoom(runRoom: RunRoom): Promise<RunRoom> {
+    return this.driver.transaction(() => {
+      assertRunRoom(runRoom);
+      this.insertRunRoom(runRoom);
+      return runRoom;
+    });
+  }
+
+  async getRunRoom(id: string): Promise<RunRoom | undefined> {
+    return this.getRunRoomByIdSync(id);
+  }
+
+  async listRunRooms(filter: { companyId?: string; blueprintId?: string; status?: RunRoom["status"] } = {}): Promise<RunRoom[]> {
+    return this.readRunRooms(filter);
+  }
+
+  async updateRunRoom(input: { id: string } & Partial<RunRoom>): Promise<RunRoom> {
+    return this.driver.transaction(() => {
+      const current = this.getRunRoomByIdSync(input.id);
+      if (!current) throw new Error(`RunRoom not found: ${input.id}`);
+      const updated: RunRoom = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      assertRunRoom(updated);
+      this.upsertRunRoom(updated);
+      return updated;
+    });
+  }
+
+  async appendRunInterjection(interjection: RunInterjection): Promise<RunInterjection> {
+    return this.driver.transaction(() => {
+      assertRunInterjection(interjection);
+      this.requireRunRoomById(interjection.runRoomId);
+      this.insertRunInterjection(interjection);
+      return interjection;
+    });
+  }
+
+  async listRunInterjections(filter: { runRoomId?: string } = {}): Promise<RunInterjection[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runRoomId) {
+      clauses.push("run_room_id = ?");
+      values.push(filter.runRoomId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM run_interjections ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(runInterjectionFromRow);
+  }
+
+  async appendManagerCommand(command: ManagerCommand): Promise<ManagerCommand> {
+    return this.driver.transaction(() => {
+      assertManagerCommand(command);
+      this.requireRunRoomById(command.runRoomId);
+      this.insertManagerCommand(command);
+      return command;
+    });
+  }
+
+  async getManagerCommand(id: string): Promise<ManagerCommand | undefined> {
+    return this.getManagerCommandByIdSync(id);
+  }
+
+  async listManagerCommands(filter: {
+    runRoomId?: string;
+    action?: ManagerCommand["action"];
+    statuses?: ManagerCommand["status"][];
+  } = {}): Promise<ManagerCommand[]> {
+    return this.readManagerCommands(filter);
+  }
+
+  async createWorkerTask(task: WorkerTask): Promise<WorkerTask> {
+    return this.driver.transaction(() => {
+      assertWorkerTask(task);
+      this.requireRunRoomById(task.runRoomId);
+      const command = this.getManagerCommandByIdSync(task.managerCommandId);
+      if (!command) throw new Error(`ManagerCommand not found for WorkerTask.managerCommandId: ${task.managerCommandId}`);
+      if (command.runRoomId !== task.runRoomId) {
+        throw new Error(`WorkerTask.managerCommandId ${task.managerCommandId} belongs to a different RunRoom.`);
+      }
+      if (isActiveWorkerTaskStatus(task.status)) {
+        const active = this.readWorkerTasks({ runRoomId: task.runRoomId }).find((candidate) => isActiveWorkerTaskStatus(candidate.status));
+        if (active) throw new Error(`RunRoom already has an active WorkerTask: ${task.runRoomId}`);
+      }
+      this.insertWorkerTask(task);
+      return task;
+    });
+  }
+
+  async getWorkerTask(id: string): Promise<WorkerTask | undefined> {
+    const row = this.driver.db.prepare("SELECT * FROM worker_tasks WHERE id = ?").get(id) as Row | undefined;
+    return row ? workerTaskFromRow(row) : undefined;
+  }
+
+  async listWorkerTasks(filter: {
+    runRoomId?: string;
+    managerCommandId?: string;
+    statuses?: WorkerTask["status"][];
+  } = {}): Promise<WorkerTask[]> {
+    return this.readWorkerTasks(filter);
+  }
+
+  async appendHumanActionRequest(request: HumanActionRequest): Promise<HumanActionRequest> {
+    return this.driver.transaction(() => {
+      assertHumanActionRequest(request);
+      if (request.runRoomId) this.requireRunRoomById(request.runRoomId);
+      this.insertHumanActionRequest(request);
+      return request;
+    });
+  }
+
+  async getHumanActionRequest(id: string): Promise<HumanActionRequest | undefined> {
+    const row = this.driver.db.prepare("SELECT * FROM human_action_requests WHERE id = ?").get(id) as Row | undefined;
+    return row ? humanActionRequestFromRow(row) : undefined;
+  }
+
+  async listHumanActionRequests(filter: {
+    runRoomId?: string;
+    sourceContextType?: HumanActionRequest["sourceContextType"];
+    responseIntent?: HumanActionRequest["responseIntent"];
+    status?: HumanActionRequest["status"];
+  } = {}): Promise<HumanActionRequest[]> {
+    return this.readHumanActionRequests(filter);
+  }
+
+  async appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse> {
+    return this.driver.transaction(() => {
+      assertHumanActionResponse(response);
+      if (!this.getHumanActionRequestByIdSync(response.requestId)) {
+        throw new Error(`HumanActionRequest not found: ${response.requestId}`);
+      }
+      this.insertHumanActionResponse(response);
+      return response;
+    });
+  }
+
+  async listHumanActionResponses(filter: { requestId?: string } = {}): Promise<HumanActionResponse[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.requestId) {
+      clauses.push("request_id = ?");
+      values.push(filter.requestId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM human_action_responses ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(humanActionResponseFromRow);
+  }
+
+  async listInboxProjections(filter: {
+    sourceContextType?: InboxProjection["sourceContextType"];
+    responseIntent?: InboxProjection["responseIntent"];
+    status?: InboxProjection["status"];
+  } = {}): Promise<InboxProjection[]> {
+    return projectInboxProjectionsFromFacts(
+      this.readHumanActionRequests(filter),
+      await this.listHumanActionResponses()
+    );
+  }
+
+  async listBlueprintKanbanCards(filter: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] } = {}): Promise<BlueprintKanbanCard[]> {
+    return projectBlueprintKanbanCardsFromRunRooms(
+      this.readRunRooms({ companyId: filter.companyId, blueprintId: filter.blueprintId, status: filter.lane })
+    );
+  }
+
+  async appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent> {
+    return this.driver.transaction(() => {
+      assertAgentOutputEvent(event);
+      this.insertAgentOutputEvent(event);
+      return event;
+    });
+  }
+
+  async listAgentOutputEvents(filter: { ownerType?: AgentOutputEvent["ownerType"]; ownerId?: string } = {}): Promise<AgentOutputEvent[]> {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.ownerType) {
+      clauses.push("owner_type = ?");
+      values.push(filter.ownerType);
+    }
+    if (filter.ownerId) {
+      clauses.push("owner_id = ?");
+      values.push(filter.ownerId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM agent_output_events ${where} ORDER BY sequence, created_at, id`).all(...values) as Row[])
+      .map(agentOutputEventFromRow);
   }
 
   async createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }> {
@@ -2353,6 +2612,13 @@ export class SqliteHivewardStore implements HivewardStore {
       iterationRounds: (this.driver.db.prepare("SELECT * FROM iteration_rounds").all() as Row[]).map(iterationRoundFromRow),
       runCommands: this.readRunCommands(),
       runCommandSteps: this.readRunCommandSteps(),
+      runRooms: this.readRunRooms(),
+      runInterjections: (this.driver.db.prepare("SELECT * FROM run_interjections ORDER BY created_at, id").all() as Row[]).map(runInterjectionFromRow),
+      managerCommands: this.readManagerCommands(),
+      workerTasks: this.readWorkerTasks(),
+      humanActionRequests: this.readHumanActionRequests(),
+      humanActionResponses: (this.driver.db.prepare("SELECT * FROM human_action_responses ORDER BY created_at, id").all() as Row[]).map(humanActionResponseFromRow),
+      agentOutputEvents: (this.driver.db.prepare("SELECT * FROM agent_output_events ORDER BY owner_type, owner_id, sequence").all() as Row[]).map(agentOutputEventFromRow),
       nodeExecutionSessions: this.readNodeExecutionSessions(),
       nodeSessionTranscriptEvents: this.readNodeSessionTranscriptEvents(),
       approvalDiscussionBindings: this.readApprovalDiscussionBindings(),
@@ -2916,6 +3182,296 @@ export class SqliteHivewardStore implements HivewardStore {
   private readEvents(runId: string): BlueprintNodeEvent[] {
     return (this.driver.db.prepare("SELECT * FROM run_events WHERE run_id = ? ORDER BY sequence").all(runId) as Row[])
       .map(eventFromRow);
+  }
+
+  private getRunRoomByIdSync(id: string): RunRoom | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM run_rooms WHERE id = ?").get(id) as Row | undefined;
+    return row ? runRoomFromRow(row) : undefined;
+  }
+
+  private requireRunRoomById(id: string): RunRoom {
+    const runRoom = this.getRunRoomByIdSync(id);
+    if (!runRoom) throw new Error(`RunRoom not found: ${id}`);
+    return runRoom;
+  }
+
+  private readRunRooms(filter: { companyId?: string; blueprintId?: string; status?: RunRoom["status"] } = {}): RunRoom[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.companyId) {
+      clauses.push("company_id = ?");
+      values.push(filter.companyId);
+    }
+    if (filter.blueprintId) {
+      clauses.push("blueprint_id = ?");
+      values.push(filter.blueprintId);
+    }
+    if (filter.status) {
+      clauses.push("status = ?");
+      values.push(filter.status);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM run_rooms ${where} ORDER BY updated_at DESC, id`).all(...values) as Row[])
+      .map(runRoomFromRow);
+  }
+
+  private insertRunRoom(runRoom: RunRoom): void {
+    this.driver.db.prepare(
+      `INSERT INTO run_rooms (
+        id, company_id, blueprint_id, run_id, status, title, summary, manager_role_id,
+        metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      runRoom.id,
+      runRoom.companyId,
+      runRoom.blueprintId,
+      runRoom.runId,
+      runRoom.status,
+      runRoom.title,
+      runRoom.summary,
+      runRoom.managerRoleId,
+      optionalJson(runRoom.metadata),
+      runRoom.createdAt,
+      runRoom.updatedAt
+    );
+  }
+
+  private upsertRunRoom(runRoom: RunRoom): void {
+    this.driver.db.prepare(
+      `INSERT INTO run_rooms (
+        id, company_id, blueprint_id, run_id, status, title, summary, manager_role_id,
+        metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        company_id = excluded.company_id,
+        blueprint_id = excluded.blueprint_id,
+        run_id = excluded.run_id,
+        status = excluded.status,
+        title = excluded.title,
+        summary = excluded.summary,
+        manager_role_id = excluded.manager_role_id,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at`
+    ).run(
+      runRoom.id,
+      runRoom.companyId,
+      runRoom.blueprintId,
+      runRoom.runId,
+      runRoom.status,
+      runRoom.title,
+      runRoom.summary,
+      runRoom.managerRoleId,
+      optionalJson(runRoom.metadata),
+      runRoom.createdAt,
+      runRoom.updatedAt
+    );
+  }
+
+  private insertRunInterjection(interjection: RunInterjection): void {
+    this.driver.db.prepare(
+      `INSERT INTO run_interjections (
+        id, run_room_id, target, message_markdown, created_by_role_id, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      interjection.id,
+      interjection.runRoomId,
+      interjection.target,
+      interjection.messageMarkdown,
+      interjection.createdByRoleId,
+      optionalJson(interjection.metadata),
+      interjection.createdAt
+    );
+  }
+
+  private getManagerCommandByIdSync(id: string): ManagerCommand | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM manager_commands WHERE id = ?").get(id) as Row | undefined;
+    return row ? managerCommandFromRow(row) : undefined;
+  }
+
+  private readManagerCommands(filter: {
+    runRoomId?: string;
+    action?: ManagerCommand["action"];
+    statuses?: ManagerCommand["status"][];
+  } = {}): ManagerCommand[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runRoomId) {
+      clauses.push("run_room_id = ?");
+      values.push(filter.runRoomId);
+    }
+    if (filter.action) {
+      clauses.push("action = ?");
+      values.push(filter.action);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      values.push(...filter.statuses);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM manager_commands ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(managerCommandFromRow);
+  }
+
+  private insertManagerCommand(command: ManagerCommand): void {
+    this.driver.db.prepare(
+      `INSERT INTO manager_commands (
+        id, run_room_id, manager_role_id, action, status, worker_task_id,
+        human_action_request_id, instruction_markdown, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      command.id,
+      command.runRoomId,
+      command.managerRoleId,
+      command.action,
+      command.status,
+      command.workerTaskId,
+      command.humanActionRequestId,
+      command.instructionMarkdown,
+      optionalJson(command.metadata),
+      command.createdAt,
+      command.updatedAt
+    );
+  }
+
+  private readWorkerTasks(filter: {
+    runRoomId?: string;
+    managerCommandId?: string;
+    statuses?: WorkerTask["status"][];
+  } = {}): WorkerTask[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runRoomId) {
+      clauses.push("run_room_id = ?");
+      values.push(filter.runRoomId);
+    }
+    if (filter.managerCommandId) {
+      clauses.push("manager_command_id = ?");
+      values.push(filter.managerCommandId);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      values.push(...filter.statuses);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM worker_tasks ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(workerTaskFromRow);
+  }
+
+  private insertWorkerTask(task: WorkerTask): void {
+    this.driver.db.prepare(
+      `INSERT INTO worker_tasks (
+        id, run_room_id, manager_command_id, worker_seat_id, title, instruction_markdown,
+        status, started_at, ended_at, error, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      task.id,
+      task.runRoomId,
+      task.managerCommandId,
+      task.workerSeatId,
+      task.title,
+      task.instructionMarkdown,
+      task.status,
+      task.startedAt,
+      task.endedAt,
+      task.error,
+      optionalJson(task.metadata),
+      task.createdAt,
+      task.updatedAt
+    );
+  }
+
+  private getHumanActionRequestByIdSync(id: string): HumanActionRequest | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM human_action_requests WHERE id = ?").get(id) as Row | undefined;
+    return row ? humanActionRequestFromRow(row) : undefined;
+  }
+
+  private readHumanActionRequests(filter: {
+    runRoomId?: string;
+    sourceContextType?: HumanActionRequest["sourceContextType"];
+    responseIntent?: HumanActionRequest["responseIntent"];
+    status?: HumanActionRequest["status"];
+  } = {}): HumanActionRequest[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runRoomId) {
+      clauses.push("run_room_id = ?");
+      values.push(filter.runRoomId);
+    }
+    if (filter.sourceContextType) {
+      clauses.push("source_context_type = ?");
+      values.push(filter.sourceContextType);
+    }
+    if (filter.responseIntent) {
+      clauses.push("response_intent = ?");
+      values.push(filter.responseIntent);
+    }
+    if (filter.status) {
+      clauses.push("status = ?");
+      values.push(filter.status);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM human_action_requests ${where} ORDER BY updated_at DESC, id`).all(...values) as Row[])
+      .map(humanActionRequestFromRow);
+  }
+
+  private insertHumanActionRequest(request: HumanActionRequest): void {
+    this.driver.db.prepare(
+      `INSERT INTO human_action_requests (
+        id, run_room_id, source_context_type, source_context_id, response_intent, status,
+        title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      request.id,
+      request.runRoomId,
+      request.sourceContextType,
+      request.sourceContextId,
+      request.responseIntent,
+      request.status,
+      request.title,
+      request.bodyMarkdown,
+      request.createdByRoleId,
+      optionalJson(request.metadata),
+      request.createdAt,
+      request.updatedAt
+    );
+  }
+
+  private insertHumanActionResponse(response: HumanActionResponse): void {
+    this.driver.db.prepare(
+      `INSERT INTO human_action_responses (
+        id, request_id, message_markdown, created_by_role_id, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      response.id,
+      response.requestId,
+      response.messageMarkdown,
+      response.createdByRoleId,
+      optionalJson(response.metadata),
+      response.createdAt
+    );
+  }
+
+  private insertAgentOutputEvent(event: AgentOutputEvent): void {
+    this.driver.db.prepare(
+      `INSERT INTO agent_output_events (
+        id, owner_type, owner_id, actor_type, kind, sequence, body_markdown, delta,
+        source_type, source_id, runtime_state_json, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      event.id,
+      event.ownerType,
+      event.ownerId,
+      event.actorType,
+      event.kind,
+      event.sequence,
+      event.bodyMarkdown,
+      event.delta,
+      event.sourceType,
+      event.sourceId,
+      optionalJson(event.runtimeState),
+      optionalJson(event.metadata),
+      event.createdAt
+    );
   }
 
   private getRunCommandByIdSync(id: string): RunCommand | undefined {
@@ -3630,6 +4186,158 @@ function eventFromRow(row: Row): BlueprintNodeEvent {
     createdAt: requireString(row.created_at),
     runtimeRef: parseOptionalJson(row.openclaw_ref_json) as BlueprintNodeEvent["runtimeRef"]
   };
+}
+
+function runRoomFromRow(row: Row): RunRoom {
+  return {
+    id: requireString(row.id),
+    companyId: requireString(row.company_id),
+    blueprintId: readString(row.blueprint_id),
+    runId: readString(row.run_id),
+    status: requireString(row.status) as RunRoom["status"],
+    title: readString(row.title),
+    summary: readString(row.summary),
+    managerRoleId: readString(row.manager_role_id),
+    metadata: parseOptionalJson(row.metadata_json) as RunRoom["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function runInterjectionFromRow(row: Row): RunInterjection {
+  return {
+    id: requireString(row.id),
+    runRoomId: requireString(row.run_room_id),
+    target: requireString(row.target) as RunInterjection["target"],
+    messageMarkdown: requireString(row.message_markdown),
+    createdByRoleId: readString(row.created_by_role_id),
+    metadata: parseOptionalJson(row.metadata_json) as RunInterjection["metadata"],
+    createdAt: requireString(row.created_at)
+  };
+}
+
+function managerCommandFromRow(row: Row): ManagerCommand {
+  return {
+    id: requireString(row.id),
+    runRoomId: requireString(row.run_room_id),
+    managerRoleId: readString(row.manager_role_id),
+    action: requireString(row.action) as ManagerCommand["action"],
+    status: requireString(row.status) as ManagerCommand["status"],
+    workerTaskId: readString(row.worker_task_id),
+    humanActionRequestId: readString(row.human_action_request_id),
+    instructionMarkdown: readString(row.instruction_markdown),
+    metadata: parseOptionalJson(row.metadata_json) as ManagerCommand["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function workerTaskFromRow(row: Row): WorkerTask {
+  return {
+    id: requireString(row.id),
+    runRoomId: requireString(row.run_room_id),
+    managerCommandId: requireString(row.manager_command_id),
+    workerSeatId: readString(row.worker_seat_id),
+    title: readString(row.title),
+    instructionMarkdown: readString(row.instruction_markdown),
+    status: requireString(row.status) as WorkerTask["status"],
+    startedAt: readString(row.started_at),
+    endedAt: readString(row.ended_at),
+    error: readString(row.error),
+    metadata: parseOptionalJson(row.metadata_json) as WorkerTask["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function humanActionRequestFromRow(row: Row): HumanActionRequest {
+  return {
+    id: requireString(row.id),
+    runRoomId: readString(row.run_room_id),
+    sourceContextType: requireString(row.source_context_type) as HumanActionRequest["sourceContextType"],
+    sourceContextId: requireString(row.source_context_id),
+    responseIntent: requireString(row.response_intent) as HumanActionRequest["responseIntent"],
+    status: requireString(row.status) as HumanActionRequest["status"],
+    title: requireString(row.title),
+    bodyMarkdown: requireString(row.body_markdown),
+    createdByRoleId: readString(row.created_by_role_id),
+    metadata: parseOptionalJson(row.metadata_json) as HumanActionRequest["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function humanActionResponseFromRow(row: Row): HumanActionResponse {
+  return {
+    id: requireString(row.id),
+    requestId: requireString(row.request_id),
+    messageMarkdown: requireString(row.message_markdown),
+    createdByRoleId: readString(row.created_by_role_id),
+    metadata: parseOptionalJson(row.metadata_json) as HumanActionResponse["metadata"],
+    createdAt: requireString(row.created_at)
+  };
+}
+
+function agentOutputEventFromRow(row: Row): AgentOutputEvent {
+  return {
+    id: requireString(row.id),
+    ownerType: requireString(row.owner_type) as AgentOutputEvent["ownerType"],
+    ownerId: requireString(row.owner_id),
+    actorType: requireString(row.actor_type) as AgentOutputEvent["actorType"],
+    kind: requireString(row.kind) as AgentOutputEvent["kind"],
+    sequence: readNumber(row.sequence, 0),
+    bodyMarkdown: readString(row.body_markdown),
+    delta: readString(row.delta),
+    sourceType: readString(row.source_type),
+    sourceId: readString(row.source_id),
+    runtimeState: parseOptionalJson(row.runtime_state_json) as AgentOutputEvent["runtimeState"],
+    metadata: parseOptionalJson(row.metadata_json) as AgentOutputEvent["metadata"],
+    createdAt: requireString(row.created_at)
+  };
+}
+
+function projectInboxProjectionsFromFacts(
+  requests: HumanActionRequest[],
+  responses: HumanActionResponse[]
+): InboxProjection[] {
+  const latestResponseByRequestId = new Map<string, string>();
+  for (const response of responses) {
+    const existing = latestResponseByRequestId.get(response.requestId);
+    if (!existing || Date.parse(response.createdAt) > Date.parse(existing)) {
+      latestResponseByRequestId.set(response.requestId, response.createdAt);
+    }
+  }
+  return requests
+    .map((request) => ({
+      id: `inbox-projection-${request.id}`,
+      humanActionRequestId: request.id,
+      sourceContextType: request.sourceContextType,
+      sourceContextId: request.sourceContextId,
+      responseIntent: request.responseIntent,
+      status: request.status,
+      title: request.title,
+      bodyMarkdown: request.bodyMarkdown,
+      createdAt: request.createdAt,
+      updatedAt: request.updatedAt,
+      latestResponseAt: latestResponseByRequestId.get(request.id)
+    }))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
+}
+
+function projectBlueprintKanbanCardsFromRunRooms(runRooms: RunRoom[]): BlueprintKanbanCard[] {
+  return runRooms
+    .map((runRoom) => ({
+      id: `blueprint-kanban-${runRoom.id}`,
+      runRoomId: runRoom.id,
+      companyId: runRoom.companyId,
+      blueprintId: runRoom.blueprintId,
+      runId: runRoom.runId,
+      lane: runRoom.status,
+      title: runRoom.title ?? runRoom.id,
+      summary: runRoom.summary,
+      updatedAt: runRoom.updatedAt
+    }))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }
 
 function runCommandFromRow(row: Row): RunCommand {

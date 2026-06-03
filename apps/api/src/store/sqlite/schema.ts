@@ -777,6 +777,110 @@ const sqliteExecutionFactConstraintStatements = [
   `CREATE INDEX IF NOT EXISTS idx_approval_discussion_bindings_mode ON approval_discussion_bindings(mode)`
 ];
 
+const sqliteRunRoomFoundationStatements = [
+  `CREATE TABLE IF NOT EXISTS run_rooms (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    blueprint_id TEXT,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    status TEXT NOT NULL CHECK (status IN ('open','completed','failed','cancelled')),
+    title TEXT,
+    summary TEXT,
+    manager_role_id TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS run_interjections (
+    id TEXT PRIMARY KEY,
+    run_room_id TEXT NOT NULL REFERENCES run_rooms(id) ON DELETE CASCADE,
+    target TEXT NOT NULL CHECK (target IN ('manager')),
+    message_markdown TEXT NOT NULL,
+    created_by_role_id TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS manager_commands (
+    id TEXT PRIMARY KEY,
+    run_room_id TEXT NOT NULL REFERENCES run_rooms(id) ON DELETE CASCADE,
+    manager_role_id TEXT,
+    action TEXT NOT NULL CHECK (action IN ('dispatch_worker_task','request_human_action','cancel_worker_task','summarize_run_room','complete_run_room')),
+    status TEXT NOT NULL CHECK (status IN ('queued','running','waiting_user','succeeded','failed','cancelled')),
+    worker_task_id TEXT,
+    human_action_request_id TEXT,
+    instruction_markdown TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS worker_tasks (
+    id TEXT PRIMARY KEY,
+    run_room_id TEXT NOT NULL REFERENCES run_rooms(id) ON DELETE CASCADE,
+    manager_command_id TEXT NOT NULL REFERENCES manager_commands(id) ON DELETE CASCADE,
+    worker_seat_id TEXT,
+    title TEXT,
+    instruction_markdown TEXT,
+    status TEXT NOT NULL CHECK (status IN ('queued','running','waiting_user','succeeded','failed','cancelled')),
+    started_at TEXT,
+    ended_at TEXT,
+    error TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_worker_tasks_one_active_per_run_room
+    ON worker_tasks(run_room_id)
+    WHERE status IN ('queued','running','waiting_user')`,
+  `CREATE TABLE IF NOT EXISTS human_action_requests (
+    id TEXT PRIMARY KEY,
+    run_room_id TEXT REFERENCES run_rooms(id) ON DELETE SET NULL,
+    source_context_type TEXT NOT NULL CHECK (source_context_type IN ('run_room','executive_chat','blueprint_governance')),
+    source_context_id TEXT NOT NULL,
+    response_intent TEXT NOT NULL CHECK (response_intent IN ('decision_required','reply_required','review_required')),
+    status TEXT NOT NULL CHECK (status IN ('pending','responded','closed','cancelled')),
+    title TEXT NOT NULL,
+    body_markdown TEXT NOT NULL,
+    created_by_role_id TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS human_action_responses (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL REFERENCES human_action_requests(id) ON DELETE CASCADE,
+    message_markdown TEXT NOT NULL,
+    created_by_role_id TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS agent_output_events (
+    id TEXT PRIMARY KEY,
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('executive_chat','run_room','manager_command','worker_task','human_action_request','blueprint_governance')),
+    owner_id TEXT NOT NULL,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ceo','leader','manager','worker','system')),
+    kind TEXT NOT NULL CHECK (kind IN ('message_started','message_delta','message_completed','runtime_state','tool_state','message_failed')),
+    sequence INTEGER NOT NULL CHECK (sequence >= 1),
+    body_markdown TEXT,
+    delta TEXT,
+    source_type TEXT,
+    source_id TEXT,
+    runtime_state_json TEXT,
+    metadata_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(owner_type, owner_id, sequence)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_run_rooms_company_status ON run_rooms(company_id, status, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_rooms_blueprint_status ON run_rooms(blueprint_id, status, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_run_interjections_run_room_created ON run_interjections(run_room_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_manager_commands_run_room_status ON manager_commands(run_room_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_worker_tasks_run_room_status ON worker_tasks(run_room_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_worker_tasks_manager_command ON worker_tasks(manager_command_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_human_action_requests_context_status ON human_action_requests(source_context_type, response_intent, status, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_human_action_requests_run_room ON human_action_requests(run_room_id, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_human_action_responses_request_created ON human_action_responses(request_id, created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_agent_output_events_owner_sequence ON agent_output_events(owner_type, owner_id, sequence)`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -829,6 +933,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "execution_fact_constraints",
     checksum: checksumStatements(sqliteExecutionFactConstraintStatements),
     up: sqliteExecutionFactConstraintStatements
+  },
+  {
+    version: 9,
+    name: "run_room_foundation",
+    checksum: checksumStatements(sqliteRunRoomFoundationStatements),
+    up: sqliteRunRoomFoundationStatements
   }
 ];
 
@@ -844,6 +954,13 @@ export const sqliteRequiredSchema = {
   node_run_payloads: ["node_run_id", "input_json", "output_json", "raw_result_json", "updated_at"],
   run_commands: ["id", "command_key", "blueprint_id", "run_id", "kind", "status", "current_revision", "created_at", "updated_at"],
   run_command_steps: ["id", "command_id", "step_key", "run_id", "revision", "mode", "node_id", "status", "created_at", "updated_at"],
+  run_rooms: ["id", "company_id", "status", "created_at", "updated_at"],
+  run_interjections: ["id", "run_room_id", "target", "message_markdown", "created_at"],
+  manager_commands: ["id", "run_room_id", "action", "status", "created_at", "updated_at"],
+  worker_tasks: ["id", "run_room_id", "manager_command_id", "status", "created_at", "updated_at"],
+  human_action_requests: ["id", "source_context_type", "source_context_id", "response_intent", "status", "title", "body_markdown", "created_at", "updated_at"],
+  human_action_responses: ["id", "request_id", "message_markdown", "created_at"],
+  agent_output_events: ["id", "owner_type", "owner_id", "actor_type", "kind", "sequence", "created_at"],
   node_execution_sessions: ["id", "run_id", "node_run_id", "node_id", "harness_id", "policy", "status", "created_at", "updated_at"],
   node_session_transcript_events: ["id", "session_id", "sequence", "run_id", "node_run_id", "role", "kind", "created_at"],
   approval_discussion_bindings: ["approval_request_id", "mode", "route", "can_stream_reply", "can_create_candidate", "resolver_version", "created_at", "updated_at"],
@@ -869,6 +986,13 @@ export const sqliteRequiredIndexes = {
   node_runs: ["idx_node_runs_run_status", "idx_node_runs_run_round_node"],
   run_commands: ["idx_run_commands_run_status", "idx_run_commands_round_kind"],
   run_command_steps: ["idx_run_command_steps_command_status", "idx_run_command_steps_node_run"],
+  run_rooms: ["idx_run_rooms_company_status", "idx_run_rooms_blueprint_status"],
+  run_interjections: ["idx_run_interjections_run_room_created"],
+  manager_commands: ["idx_manager_commands_run_room_status"],
+  worker_tasks: ["idx_worker_tasks_run_room_status", "idx_worker_tasks_manager_command", "idx_worker_tasks_one_active_per_run_room"],
+  human_action_requests: ["idx_human_action_requests_context_status", "idx_human_action_requests_run_room"],
+  human_action_responses: ["idx_human_action_responses_request_created"],
+  agent_output_events: ["idx_agent_output_events_owner_sequence"],
   node_execution_sessions: ["idx_node_execution_sessions_run_node", "idx_node_execution_sessions_native"],
   node_session_transcript_events: ["idx_node_transcript_session_seq"],
   approval_discussion_bindings: ["idx_approval_discussion_bindings_mode"],
@@ -887,7 +1011,8 @@ export const sqliteRequiredUniqueConstraints = [
   { table: "run_command_steps", columns: ["step_key"] },
   { table: "node_session_transcript_events", columns: ["session_id", "sequence"] },
   { table: "run_timeline_items", columns: ["run_id", "sequence"] },
-  { table: "agent_outputs", columns: ["node_run_id"] }
+  { table: "agent_outputs", columns: ["node_run_id"] },
+  { table: "agent_output_events", columns: ["owner_type", "owner_id", "sequence"] }
 ];
 
 export const sqliteRequiredForeignKeys = [
@@ -897,6 +1022,14 @@ export const sqliteRequiredForeignKeys = [
   { table: "run_command_steps", from: "command_id", targetTable: "run_commands", to: "id" },
   { table: "run_command_steps", from: "run_id", targetTable: "runs", to: "id" },
   { table: "run_command_steps", from: "node_run_id", targetTable: "node_runs", to: "id" },
+  { table: "run_rooms", from: "company_id", targetTable: "companies", to: "id" },
+  { table: "run_rooms", from: "run_id", targetTable: "runs", to: "id" },
+  { table: "run_interjections", from: "run_room_id", targetTable: "run_rooms", to: "id" },
+  { table: "manager_commands", from: "run_room_id", targetTable: "run_rooms", to: "id" },
+  { table: "worker_tasks", from: "run_room_id", targetTable: "run_rooms", to: "id" },
+  { table: "worker_tasks", from: "manager_command_id", targetTable: "manager_commands", to: "id" },
+  { table: "human_action_requests", from: "run_room_id", targetTable: "run_rooms", to: "id" },
+  { table: "human_action_responses", from: "request_id", targetTable: "human_action_requests", to: "id" },
   { table: "node_execution_sessions", from: "run_id", targetTable: "runs", to: "id" },
   { table: "node_execution_sessions", from: "node_run_id", targetTable: "node_runs", to: "id" },
   { table: "node_execution_sessions", from: "fallback_of_session_id", targetTable: "node_execution_sessions", to: "id" },
@@ -924,6 +1057,18 @@ export const sqliteRequiredChecks = [
   { table: "run_commands", contains: "current_step IS NULL OR current_step IN ('research_resolution','requirement_resolution','revise_plan','preflight_judgment','context_snapshot','release_report','node_execution')" },
   { table: "run_command_steps", contains: "status IN ('queued','running','waiting_approval','succeeded','failed','cancelled')" },
   { table: "run_command_steps", contains: "mode IN ('research_resolution','requirement_resolution','revise_plan','preflight_judgment','context_snapshot','release_report','node_execution')" },
+  { table: "run_rooms", contains: "status IN ('open','completed','failed','cancelled')" },
+  { table: "run_interjections", contains: "target IN ('manager')" },
+  { table: "manager_commands", contains: "action IN ('dispatch_worker_task','request_human_action','cancel_worker_task','summarize_run_room','complete_run_room')" },
+  { table: "manager_commands", contains: "status IN ('queued','running','waiting_user','succeeded','failed','cancelled')" },
+  { table: "worker_tasks", contains: "status IN ('queued','running','waiting_user','succeeded','failed','cancelled')" },
+  { table: "human_action_requests", contains: "source_context_type IN ('run_room','executive_chat','blueprint_governance')" },
+  { table: "human_action_requests", contains: "response_intent IN ('decision_required','reply_required','review_required')" },
+  { table: "human_action_requests", contains: "status IN ('pending','responded','closed','cancelled')" },
+  { table: "agent_output_events", contains: "owner_type IN ('executive_chat','run_room','manager_command','worker_task','human_action_request','blueprint_governance')" },
+  { table: "agent_output_events", contains: "actor_type IN ('user','ceo','leader','manager','worker','system')" },
+  { table: "agent_output_events", contains: "kind IN ('message_started','message_delta','message_completed','runtime_state','tool_state','message_failed')" },
+  { table: "agent_output_events", contains: "sequence >= 1" },
   { table: "node_execution_sessions", contains: "policy IN ('refresh_per_run','refresh_per_round','preserve_across_rounds')" },
   { table: "node_execution_sessions", contains: "status IN ('active','paused','completed','failed','unavailable','fallback')" },
   { table: "node_session_transcript_events", contains: "role IN ('user','assistant','system','runtime')" },

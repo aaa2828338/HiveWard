@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import type {
   AgentHandoff,
   AgentHumanReport,
+  AgentOutputEvent,
   ApprovalDecision,
   ApprovalDiscussionBinding,
   ApprovalRequest,
@@ -15,14 +16,20 @@ import type {
   BlueprintNodeEvent,
   BlueprintNodeRun,
   BlueprintRunArchive,
+  HumanActionRequest,
+  HumanActionResponse,
   HivewardChatMessage,
   HivewardChatSession,
   InboxItem,
+  ManagerCommand,
   NodeExecutionSession,
   NodeSessionTranscriptEvent,
   ReleaseReport,
+  RunInterjection,
+  RunRoom,
   RunCommand,
-  RunCommandStep
+  RunCommandStep,
+  WorkerTask
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../fileHivewardStore";
 import { acquireSqliteMaintenanceLock } from "./sqliteProcessLock";
@@ -258,6 +265,13 @@ type VerificationSnapshot = {
   events: Array<Pick<BlueprintNodeEvent, "id" | "blueprintRunId" | "nodeRunId" | "type" | "message" | "createdAt"> & { sequence: number }>;
   runCommands: Array<Pick<RunCommand, "id" | "commandKey" | "runId" | "roundId" | "kind" | "status" | "currentRevision" | "currentStep">>;
   runCommandSteps: Array<Pick<RunCommandStep, "id" | "commandId" | "stepKey" | "runId" | "roundId" | "revision" | "mode" | "nodeId" | "nodeRunId" | "status">>;
+  runRooms: Array<Pick<RunRoom, "id" | "companyId" | "blueprintId" | "runId" | "status" | "title" | "updatedAt">>;
+  runInterjections: Array<Pick<RunInterjection, "id" | "runRoomId" | "target" | "messageMarkdown" | "createdAt">>;
+  managerCommands: Array<Pick<ManagerCommand, "id" | "runRoomId" | "action" | "status" | "createdAt">>;
+  workerTasks: Array<Pick<WorkerTask, "id" | "runRoomId" | "managerCommandId" | "status" | "createdAt">>;
+  humanActionRequests: Array<Pick<HumanActionRequest, "id" | "runRoomId" | "sourceContextType" | "sourceContextId" | "responseIntent" | "status" | "title" | "updatedAt">>;
+  humanActionResponses: Array<Pick<HumanActionResponse, "id" | "requestId" | "messageMarkdown" | "createdAt">>;
+  agentOutputEvents: Array<Pick<AgentOutputEvent, "id" | "ownerType" | "ownerId" | "actorType" | "kind" | "sequence" | "bodyMarkdown" | "createdAt">>;
   nodeExecutionSessions: Array<Pick<NodeExecutionSession, "id" | "runId" | "nodeRunId" | "nodeId" | "harnessId" | "nativeSessionId" | "policy" | "status" | "fallbackOfSessionId" | "resumedFromSessionId">>;
   nodeSessionTranscriptEvents: Array<Pick<NodeSessionTranscriptEvent, "id" | "sessionId" | "sequence" | "runId" | "nodeRunId" | "role" | "kind" | "content">>;
   approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "canCreateCandidate" | "reason">>;
@@ -281,6 +295,13 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
     events: [],
     runCommands: [],
     runCommandSteps: [],
+    runRooms: [],
+    runInterjections: [],
+    managerCommands: [],
+    workerTasks: [],
+    humanActionRequests: [],
+    humanActionResponses: [],
+    agentOutputEvents: [],
     nodeExecutionSessions: [],
     nodeSessionTranscriptEvents: [],
     approvalDiscussionBindings: [],
@@ -371,6 +392,62 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
       })));
     }
   }
+  snapshot.runRooms.push(...(await store.listRunRooms()).map((runRoom) => ({
+    id: runRoom.id,
+    companyId: runRoom.companyId,
+    blueprintId: runRoom.blueprintId,
+    runId: runRoom.runId,
+    status: runRoom.status,
+    title: runRoom.title,
+    updatedAt: runRoom.updatedAt
+  })));
+  snapshot.runInterjections.push(...(await store.listRunInterjections()).map((interjection) => ({
+    id: interjection.id,
+    runRoomId: interjection.runRoomId,
+    target: interjection.target,
+    messageMarkdown: interjection.messageMarkdown,
+    createdAt: interjection.createdAt
+  })));
+  snapshot.managerCommands.push(...(await store.listManagerCommands()).map((command) => ({
+    id: command.id,
+    runRoomId: command.runRoomId,
+    action: command.action,
+    status: command.status,
+    createdAt: command.createdAt
+  })));
+  snapshot.workerTasks.push(...(await store.listWorkerTasks()).map((task) => ({
+    id: task.id,
+    runRoomId: task.runRoomId,
+    managerCommandId: task.managerCommandId,
+    status: task.status,
+    createdAt: task.createdAt
+  })));
+  snapshot.humanActionRequests.push(...(await store.listHumanActionRequests()).map((request) => ({
+    id: request.id,
+    runRoomId: request.runRoomId,
+    sourceContextType: request.sourceContextType,
+    sourceContextId: request.sourceContextId,
+    responseIntent: request.responseIntent,
+    status: request.status,
+    title: request.title,
+    updatedAt: request.updatedAt
+  })));
+  snapshot.humanActionResponses.push(...(await store.listHumanActionResponses()).map((response) => ({
+    id: response.id,
+    requestId: response.requestId,
+    messageMarkdown: response.messageMarkdown,
+    createdAt: response.createdAt
+  })));
+  snapshot.agentOutputEvents.push(...(await store.listAgentOutputEvents()).map((event) => ({
+    id: event.id,
+    ownerType: event.ownerType,
+    ownerId: event.ownerId,
+    actorType: event.actorType,
+    kind: event.kind,
+    sequence: event.sequence,
+    bodyMarkdown: event.bodyMarkdown,
+    createdAt: event.createdAt
+  })));
   await store.selectCompany(selectedCompanyId);
   sortSnapshot(snapshot);
   return snapshot;
@@ -529,6 +606,13 @@ function collectSnapshotCounts(snapshot: VerificationSnapshot): Record<string, n
     events: snapshot.events.length,
     runCommands: snapshot.runCommands.length,
     runCommandSteps: snapshot.runCommandSteps.length,
+    runRooms: snapshot.runRooms.length,
+    runInterjections: snapshot.runInterjections.length,
+    managerCommands: snapshot.managerCommands.length,
+    workerTasks: snapshot.workerTasks.length,
+    humanActionRequests: snapshot.humanActionRequests.length,
+    humanActionResponses: snapshot.humanActionResponses.length,
+    agentOutputEvents: snapshot.agentOutputEvents.length,
     nodeExecutionSessions: snapshot.nodeExecutionSessions.length,
     nodeSessionTranscriptEvents: snapshot.nodeSessionTranscriptEvents.length,
     approvalDiscussionBindings: snapshot.approvalDiscussionBindings.length,
@@ -554,6 +638,13 @@ function compareIdentitySets(source: VerificationSnapshot, sqlite: VerificationS
     "events",
     "runCommands",
     "runCommandSteps",
+    "runRooms",
+    "runInterjections",
+    "managerCommands",
+    "workerTasks",
+    "humanActionRequests",
+    "humanActionResponses",
+    "agentOutputEvents",
     "nodeExecutionSessions",
     "nodeSessionTranscriptEvents",
     "pendingApprovals",
@@ -654,6 +745,13 @@ function sortSnapshot(snapshot: VerificationSnapshot): void {
   snapshot.events.sort(compareByRunSequenceId);
   snapshot.runCommands.sort(compareById);
   snapshot.runCommandSteps.sort(compareById);
+  snapshot.runRooms.sort(compareById);
+  snapshot.runInterjections.sort(compareById);
+  snapshot.managerCommands.sort(compareById);
+  snapshot.workerTasks.sort(compareById);
+  snapshot.humanActionRequests.sort(compareById);
+  snapshot.humanActionResponses.sort(compareById);
+  snapshot.agentOutputEvents.sort(compareByOwnerSequenceId);
   snapshot.nodeExecutionSessions.sort(compareById);
   snapshot.nodeSessionTranscriptEvents.sort(compareBySessionSequenceId);
   snapshot.approvalDiscussionBindings.sort(compareByApprovalRequestId);
@@ -678,6 +776,13 @@ function compareByRunSequenceId(left: { blueprintRunId: string; sequence: number
 
 function compareBySessionSequenceId(left: { sessionId: string; sequence: number; id: string }, right: { sessionId: string; sequence: number; id: string }): number {
   return left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence || left.id.localeCompare(right.id);
+}
+
+function compareByOwnerSequenceId(left: { ownerType: string; ownerId: string; sequence: number; id: string }, right: { ownerType: string; ownerId: string; sequence: number; id: string }): number {
+  return left.ownerType.localeCompare(right.ownerType) ||
+    left.ownerId.localeCompare(right.ownerId) ||
+    left.sequence - right.sequence ||
+    left.id.localeCompare(right.id);
 }
 
 function compareByApprovalRequestId(left: { approvalRequestId: string }, right: { approvalRequestId: string }): number {
