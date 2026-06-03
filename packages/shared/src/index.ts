@@ -12,3 +12,4 @@ export * from "./roleSkills";
 export * from "./lifecycle";
 export * from "./runRoom";
 export * from "./agentOutput";
+export * from "./executiveCommand";

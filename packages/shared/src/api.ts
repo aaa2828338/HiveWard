@@ -605,7 +605,6 @@ export interface ChatStreamTimings {
   hivewardPreprocessMs: number;
   runtimeMs: number;
   hivewardPostprocessMs: number;
-  inboxSubmissionMs?: number;
   runtimeAcceptedMs?: number;
   runtimeFirstDeltaMs?: number;
   openclawMs?: number;
@@ -658,7 +657,6 @@ export type RuntimeChatEvent =
 
 export interface ChatSessionHistoryResponse {
   messages: ChatHistoryMessage[];
-  inboxItems?: InboxItem[];
 }
 
 export interface OpenClawConfigResponse {

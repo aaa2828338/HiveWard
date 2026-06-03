@@ -63,6 +63,9 @@ import type {
   ChatThinkingEffort,
   CreateChatSessionRequest,
   CreateHivewardChatSessionRequest,
+  ExecuteExecutiveCommandResponse,
+  ExecutiveCommand,
+  ExecutiveCommandResult,
   InboxDiscussionMode,
   InboxItem,
   RejectInboxItemRequest,
@@ -78,7 +81,10 @@ import type {
   ApprovalThread,
   BlueprintDefinition,
   BlueprintRun,
+  BlueprintRunView,
   HivewardChatSession,
+  HumanActionRequest,
+  RunRoom,
   StartBlueprintRunRequest,
   ApplyHivewardUpdateResponse,
   ApplyHivewardUpdateRequest,
@@ -94,7 +100,7 @@ import type {
   ListApprovalThreadsResponse
 } from "@hiveward/shared";
 import { approvalThreadIdForRequest, claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
-import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hivewardInboxSubmissionSchema } from "@hiveward/shared";
+import { buildHivewardRoleSkillPrompt, parseExecutiveCommand } from "@hiveward/shared";
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { InboxSubmissionService } from "../services/inboxSubmissionService";
@@ -171,16 +177,6 @@ interface ChatHistoryProjection {
   runtimeRef?: ChatRuntimeRef;
 }
 
-type ChatInboxSubmissionResult = {
-  item: InboxItem;
-  output: string;
-};
-
-type ChatInboxSubmissionBlock = {
-  fullMatch: string;
-  json: string;
-};
-
 type StreamHivewardChatSessionInput = {
   sessionId: string;
   body: SendChatSessionMessageRequest;
@@ -189,7 +185,6 @@ type StreamHivewardChatSessionInput = {
   openClawConfigStore: OpenClawConfigStore;
   adapter: RuntimeAdapter;
   res: Response;
-  inboxSubmissionService: InboxSubmissionService;
 };
 
 type ResolvedChatSessionMessage = {
@@ -1120,6 +1115,44 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  router.post("/api/chat/sessions/:sessionId/executive-commands", async (req, res) => {
+    let command: ExecutiveCommand;
+    try {
+      command = normalizeExecutiveCommandRequest(req.body);
+    } catch (error) {
+      res.status(400).json({
+        error: {
+          code: "executive_command_invalid",
+          message: error instanceof Error ? error.message : "Invalid executive command."
+        }
+      });
+      return;
+    }
+
+    try {
+      const sessionId = readRouteParam(req.params.sessionId, "sessionId");
+      const session = await store.getChatSession(sessionId);
+      if (!session) {
+        res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
+        return;
+      }
+      const result = await executeExecutiveCommand(store, session, command);
+      const response: ExecuteExecutiveCommandResponse = { command, result };
+      res.status(result.status === "completed" ? 201 : 202).json(response);
+    } catch (error) {
+      if (error instanceof ApiBadRequestError) {
+        res.status(error.statusCode).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
+      res.status(500).json({
+        error: {
+          code: "executive_command_failed",
+          message: error instanceof Error ? error.message : "Executive command failed."
+        }
+      });
+    }
+  });
+
   router.post("/api/chat/sessions/:sessionId/end", async (req, res, next) => {
     try {
       const session = await store.endChatSession(readRouteParam(req.params.sessionId, "sessionId"));
@@ -1155,8 +1188,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       store,
       openClawConfigStore,
       adapter,
-      res,
-      inboxSubmissionService
+      res
     });
   });
 
@@ -1240,7 +1272,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
 
     try {
       const messages = await adapter.getSessionMessages(sessionKey);
-      res.json(await syncChatHistoryInboxSubmissions(store, messages, inboxSubmissionService));
+      res.json({ messages });
     } catch (error) {
       res.status(502).json({
         error: {
@@ -1548,6 +1580,165 @@ function normalizeUpdateChatSessionTitleRequest(value: unknown): UpdateChatSessi
   };
 }
 
+function normalizeExecutiveCommandRequest(value: unknown): ExecutiveCommand {
+  if (!isPlainRecord(value)) {
+    throw new Error("Executive command request must be a JSON object.");
+  }
+  const unknownKeys = Object.keys(value).filter((key) => key !== "command");
+  if (unknownKeys.length) {
+    throw new Error(`Executive command request contains unsupported fields: ${unknownKeys.join(", ")}.`);
+  }
+  return parseExecutiveCommand(value.command);
+}
+
+async function executeExecutiveCommand(
+  store: HivewardStore,
+  session: HivewardChatSession,
+  command: ExecutiveCommand
+): Promise<ExecutiveCommandResult> {
+  assertExecutiveCommandRoleScope(session, command);
+  switch (command.action) {
+    case "inspect_blueprint": {
+      const blueprint = await requireBlueprint(store, command.payload.blueprintId);
+      return { status: "completed", action: command.action, blueprint };
+    }
+    case "summarize_blueprint": {
+      const blueprint = await requireBlueprint(store, command.payload.blueprintId);
+      return {
+        status: "completed",
+        action: command.action,
+        summary: {
+          blueprintId: blueprint.id,
+          name: blueprint.name,
+          version: blueprint.version,
+          nodeCount: blueprint.nodes.length,
+          edgeCount: blueprint.edges.length
+        }
+      };
+    }
+    case "start_blueprint_run":
+      return createExecutiveBlueprintRun(store, session, command, command.payload.blueprintId, command.payload.startedBy);
+    case "batch_start_blueprint_runs": {
+      const runs: BlueprintRunView[] = [];
+      const runRooms: RunRoom[] = [];
+      for (const blueprintId of command.payload.blueprintIds) {
+        const result = await createExecutiveBlueprintRun(store, session, command, blueprintId, command.payload.startedBy);
+        runs.push(result.run);
+        runRooms.push(result.runRoom);
+      }
+      return { status: "completed", action: command.action, runs, runRooms };
+    }
+    case "request_human_action":
+      return {
+        status: "completed",
+        action: command.action,
+        humanActionRequest: await createExecutiveHumanActionRequest(store, session, command)
+      };
+    case "create_blueprint_draft":
+    case "update_blueprint_draft":
+    case "govern_blueprint_version":
+      return {
+        status: "accepted",
+        action: command.action,
+        sourceRole: command.sourceRole,
+        roleScope: session.roleScope
+      };
+  }
+}
+
+function assertExecutiveCommandRoleScope(session: HivewardChatSession, command: ExecutiveCommand): void {
+  const role = session.roleScope?.role;
+  if (role !== "ceo" && role !== "leader") {
+    throw new ApiBadRequestError("executive_command_role_scope_required", "Executive command requires a CEO or Leader chat roleScope.");
+  }
+  if (role !== command.sourceRole) {
+    throw new ApiBadRequestError("executive_command_role_mismatch", "Executive command sourceRole must match the chat session roleScope.");
+  }
+}
+
+async function requireBlueprint(store: HivewardStore, blueprintId: string): Promise<BlueprintDefinition> {
+  const blueprint = await store.getBlueprint(blueprintId);
+  if (!blueprint) {
+    throw new ApiBadRequestError("executive_command_blueprint_not_found", "Executive command blueprint was not found.");
+  }
+  return blueprint;
+}
+
+async function createExecutiveBlueprintRun(
+  store: HivewardStore,
+  session: HivewardChatSession,
+  command: Extract<ExecutiveCommand, { action: "start_blueprint_run" | "batch_start_blueprint_runs" }>,
+  blueprintId: string,
+  startedBy: string | undefined
+): Promise<Extract<ExecutiveCommandResult, { action: "start_blueprint_run" }>> {
+  const blueprint = await requireBlueprint(store, blueprintId);
+  const run = await store.createBlueprintRun(blueprint, startedBy ?? executiveRoleId(session, command));
+  const now = new Date().toISOString();
+  const runRoom: RunRoom = await store.createRunRoom({
+    id: `run-room-${nanoid(10)}`,
+    companyId: blueprint.companyId,
+    blueprintId: blueprint.id,
+    runId: run.id,
+    status: "open",
+    title: command.action === "start_blueprint_run" ? command.payload.title ?? `${blueprint.name} run` : `${blueprint.name} run`,
+    summary: command.action === "start_blueprint_run" ? command.payload.summary : undefined,
+    managerRoleId: session.roleScope?.role === "leader" ? session.roleScope.leaderId : undefined,
+    createdAt: now,
+    updatedAt: now,
+    metadata: {
+      sourceContextType: "executive_chat",
+      chatSessionId: session.id,
+      executiveCommandAction: command.action,
+      sourceRole: command.sourceRole
+    }
+  });
+  const view = await store.getRunView(run.id);
+  if (!view) {
+    throw new Error(`Blueprint run view was not created: ${run.id}`);
+  }
+  return { status: "completed", action: "start_blueprint_run", run: view, runRoom };
+}
+
+async function createExecutiveHumanActionRequest(
+  store: HivewardStore,
+  session: HivewardChatSession,
+  command: Extract<ExecutiveCommand, { action: "request_human_action" }>
+): Promise<HumanActionRequest> {
+  const payload = command.payload;
+  const sourceContextId = payload.sourceContextType === "executive_chat"
+    ? payload.sourceContextId ?? session.id
+    : payload.sourceContextId ?? payload.blueprintId;
+  if (!sourceContextId) {
+    throw new ApiBadRequestError(
+      "executive_command_source_context_required",
+      "Blueprint governance human action requests require sourceContextId or blueprintId."
+    );
+  }
+  const now = new Date().toISOString();
+  return store.appendHumanActionRequest({
+    id: `human-action-request-${nanoid(10)}`,
+    sourceContextType: payload.sourceContextType,
+    sourceContextId,
+    responseIntent: payload.responseIntent,
+    status: "pending",
+    title: payload.title,
+    bodyMarkdown: payload.bodyMarkdown,
+    createdByRoleId: payload.createdByRoleId ?? executiveRoleId(session, command),
+    createdAt: now,
+    updatedAt: now,
+    metadata: {
+      chatSessionId: session.id,
+      executiveCommandAction: command.action,
+      sourceRole: command.sourceRole
+    }
+  });
+}
+
+function executiveRoleId(session: HivewardChatSession, command: Pick<ExecutiveCommand, "sourceRole">): string {
+  if (command.sourceRole === "leader") return session.roleScope?.leaderId ?? "leader";
+  return session.roleScope?.companyId ? "ceo" : "ceo";
+}
+
 function normalizeCreateLeaderDelegationRequest(value: unknown): CreateLeaderDelegationRequest {
   if (!isPlainRecord(value)) {
     throw new Error("Leader delegation request must be a JSON object.");
@@ -1755,8 +1946,7 @@ async function streamHivewardChatSession({
   store,
   openClawConfigStore,
   adapter,
-  res,
-  inboxSubmissionService
+  res
 }: StreamHivewardChatSessionInput): Promise<void> {
   let session = await store.getChatSession(sessionId);
   if (!session) {
@@ -1969,59 +2159,14 @@ async function streamHivewardChatSession({
 
   const finalOutput = doneEvent.output ?? streamedOutput;
   await outputWriteQueue.catch(() => undefined);
-  const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
-  let submission: ChatInboxSubmissionResult | undefined;
-  let inboxSubmissionMs: number | undefined;
-  let finalDoneEvent: ChatDoneEvent = doneEvent;
   let assistantOutput = finalOutput || doneEvent.error || "";
 
-  if (doneEvent.status === "succeeded" && submissionBlock) {
-    try {
-      const submissionStartedAtMs = Date.now();
-      submission = await materializeChatInboxSubmission(
-        inboxSubmissionService,
-        resolvedRequestBody,
-        finalOutput,
-        submissionBlock
-      );
-      inboxSubmissionMs = Date.now() - submissionStartedAtMs;
-    } catch (submissionError) {
-      const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
-      const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
-      await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
-        chatSessionId,
-        { type: "delta", text: failedOutput, replace: true },
-        requestBody,
-        runtimeActivities
-      ));
-      finalDoneEvent = {
-        ...doneEvent,
-        status: "failed",
-        output: failedOutput,
-        error: message
-      };
-      assistantOutput = failedOutput;
-    }
-  }
-
-  if (submission) {
-    assistantOutput = submission.output;
-    await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
-      chatSessionId,
-      { type: "delta", text: submission.output, replace: true },
-      requestBody,
-      runtimeActivities
-    ));
-    finalDoneEvent = { ...doneEvent, output: submission.output };
-  }
-
   const finalEventWithTimings = withChatStreamTimings(
-    finalDoneEvent,
+    doneEvent,
     requestStartedAtMs,
     runtimeStartedAtMs,
     runtimeFinishedAtMs,
     postprocessStartedAtMs,
-    inboxSubmissionMs,
     runtimeAcceptedAtMs,
     runtimeFirstDeltaAtMs
   );
@@ -2092,295 +2237,13 @@ async function buildSelectedBlueprintDraftingContext(
     `- blueprintId: ${blueprint.id}`,
     `- name: ${blueprint.name}`,
     "- Modify this selected blueprint instead of creating an unrelated new blueprint.",
-    "- When submitting a hiveward-inbox blueprint_proposal, set blueprintId to this blueprint id.",
+    "- Use the structured ExecutiveCommand channel for real HiveWard actions, and set blueprintId to this blueprint id when the command targets this blueprint.",
     "- The blueprintPackage should contain one complete replacement definition for the selected blueprint, including nodes, edges, variables, and display.",
     "Current selected blueprint JSON:",
     "```json",
     JSON.stringify(portableBlueprint, null, 2),
     "```"
   ].join("\n");
-}
-
-async function syncChatHistoryInboxSubmissions(
-  store: HivewardStore,
-  messages: ChatHistoryMessage[],
-  inboxSubmissionService: InboxSubmissionService
-): Promise<{ messages: ChatHistoryMessage[]; inboxItems: InboxItem[] }> {
-  let knownInboxItems: InboxItem[] | undefined;
-  const syncedItems = new Map<string, InboxItem>();
-  const syncedMessages: ChatHistoryMessage[] = [];
-
-  for (const message of messages) {
-    if (message.role !== "assistant") {
-      syncedMessages.push(message);
-      continue;
-    }
-
-    const block = extractChatInboxSubmissionBlock(message.content);
-    if (!block) {
-      syncedMessages.push(message);
-      continue;
-    }
-
-    try {
-      const parsed = parseChatInboxSubmissionBlock(block);
-      knownInboxItems ??= await store.listInboxItems();
-      const existing = findExistingChatInboxSubmission(knownInboxItems, parsed);
-      if (existing) {
-        const type = readOptionalString(parsed.type);
-        if (type === "leader_delegation" || type === "blueprint_proposal") {
-          await inboxSubmissionService.ensureApprovalRequest(existing, type);
-        }
-        syncedItems.set(existing.id, existing);
-        const output = buildChatInboxSubmissionSuccessOutput(stripChatInboxSubmissionBlock(message.content, block.fullMatch), existing);
-        syncedMessages.push({ ...message, content: output });
-        continue;
-      }
-
-      const submission = await materializeChatInboxSubmission(
-        inboxSubmissionService,
-        buildHistoryInboxChatRequest(parsed),
-        message.content,
-        block
-      );
-      if (submission) {
-        knownInboxItems = [submission.item, ...knownInboxItems];
-        syncedItems.set(submission.item.id, submission.item);
-        syncedMessages.push({ ...message, content: submission.output });
-        continue;
-      }
-
-      syncedMessages.push(message);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Invalid Hiveward inbox submission.";
-      syncedMessages.push({
-        ...message,
-        content: buildChatInboxSubmissionFailureOutput(message.content, block.fullMatch, errorMessage)
-      });
-    }
-  }
-
-  return {
-    messages: syncedMessages,
-    inboxItems: [...syncedItems.values()]
-  };
-}
-
-function buildHistoryInboxChatRequest(parsed: Record<string, unknown>): ResolvedChatSessionMessage {
-  const type = readOptionalString(parsed.type);
-  const leaderId = readOptionalString(parsed.leaderId) ?? readOptionalString(parsed.targetRoleId);
-  const blueprintId = readOptionalString(parsed.blueprintId);
-  return {
-    harnessId: "openclaw",
-    message: "",
-    attachments: [],
-    includePlatformContext: false,
-    mode: "blueprint",
-    roleScope: {
-      role: type === "leader_delegation" ? "ceo" : "leader",
-      leaderId,
-      blueprintId
-    }
-  };
-}
-
-function findExistingChatInboxSubmission(items: InboxItem[], parsed: Record<string, unknown>): InboxItem | undefined {
-  const type = readOptionalString(parsed.type);
-  if (type !== "leader_delegation" && type !== "blueprint_proposal") return undefined;
-
-  const title = readOptionalString(parsed.title);
-  const blueprintId = readOptionalString(parsed.blueprintId);
-  const leaderId = readOptionalString(parsed.leaderId);
-  const firstBlueprintId = readBlueprintPackageFirstBlueprintId(parsed.blueprintPackage);
-  const diffSummary = readOptionalString(parsed.diffSummary);
-
-  return items.find((item) => {
-    if (item.type !== type) return false;
-    if (title && item.title !== title) return false;
-    if (blueprintId && item.blueprintId && item.blueprintId !== blueprintId) return false;
-
-    if (type === "leader_delegation") {
-      return !leaderId || readPayloadString(item.payload, "leaderId") === leaderId;
-    }
-
-    const itemFirstBlueprintId = readBlueprintPackageFirstBlueprintId(item.payload?.blueprintPackage);
-    if (firstBlueprintId) return itemFirstBlueprintId === firstBlueprintId;
-    if (diffSummary) return readPayloadString(item.payload, "diffSummary") === diffSummary;
-    return Boolean(title || blueprintId);
-  });
-}
-
-function readPayloadString(payload: Record<string, unknown> | undefined, key: string): string | undefined {
-  return isPlainRecord(payload) ? readOptionalString(payload[key]) : undefined;
-}
-
-function readBlueprintPackageFirstBlueprintId(value: unknown): string | undefined {
-  if (!isPlainRecord(value) || !Array.isArray(value.blueprints)) return undefined;
-  const firstBlueprint = value.blueprints[0];
-  return isPlainRecord(firstBlueprint) ? readOptionalString(firstBlueprint.id) : undefined;
-}
-
-async function materializeChatInboxSubmission(
-  inboxSubmissionService: InboxSubmissionService,
-  chatRequest: ResolvedChatSessionMessage,
-  output: string,
-  block = extractChatInboxSubmissionBlock(output)
-): Promise<ChatInboxSubmissionResult | undefined> {
-  if (!block) return undefined;
-  const parsed = parseChatInboxSubmissionBlock(block);
-
-  const type = readOptionalString(parsed.type);
-  const createdByRoleId =
-    readOptionalString(parsed.createdByRoleId) ??
-    chatRequest.roleScope?.leaderId ??
-    (chatRequest.roleScope?.role === "ceo" ? "ceo" : undefined);
-  const blueprintId = readOptionalString(parsed.blueprintId) ?? chatRequest.roleScope?.blueprintId;
-  const outputWithoutBlock = stripChatInboxSubmissionBlock(output, block.fullMatch);
-
-  if (type === "leader_delegation") {
-    const { item } = await inboxSubmissionService.submitLeaderDelegation(normalizeCreateLeaderDelegationRequest({
-      ...parsed,
-      blueprintId,
-      createdByRoleId
-    }));
-    return { item, output: buildChatInboxSubmissionSuccessOutput(outputWithoutBlock, item) };
-  }
-
-  if (type === "blueprint_proposal") {
-    const { item } = await inboxSubmissionService.submitBlueprintProposal(normalizeCreateBlueprintProposalRequest({
-      ...parsed,
-      blueprintId,
-      createdByRoleId,
-      targetRoleId: readOptionalString(parsed.targetRoleId) ?? chatRequest.roleScope?.leaderId,
-      runtimeId: readOptionalAgentRuntimeId(parsed.runtimeId) ?? runtimeIdForChatHarness(chatRequest.harnessId)
-    }));
-    return { item, output: buildChatInboxSubmissionSuccessOutput(outputWithoutBlock, item) };
-  }
-
-  throw new Error("Hiveward inbox submission type must be leader_delegation or blueprint_proposal.");
-}
-
-function buildChatInboxSubmissionSuccessOutput(outputWithoutBlock: string, item: InboxItem): string {
-  const visibleOutput = outputWithoutBlock.trim() || `已提交「${item.title}」到收件箱。`;
-  const approvalHint = "已提交到收件箱，请前往收件箱审批。";
-  if (visibleOutput.includes(approvalHint)) return visibleOutput;
-  return [visibleOutput, "", approvalHint].join("\n").trim();
-}
-
-function parseChatInboxSubmissionBlock(block: ChatInboxSubmissionBlock): Record<string, unknown> {
-  const parsed = parseChatInboxSubmissionJson(block.json);
-  if (!isPlainRecord(parsed)) {
-    throw new Error("Hiveward inbox submission block must contain a JSON object.");
-  }
-  validateChatInboxSubmissionSchema(parsed);
-  return parsed;
-}
-
-function validateChatInboxSubmissionSchema(parsed: Record<string, unknown>): void {
-  const schema = readOptionalString(parsed.schema);
-  if (schema && schema !== hivewardInboxSubmissionSchema) {
-    throw new Error(`Unsupported Hiveward inbox submission schema: ${schema}. Expected ${hivewardInboxSubmissionSchema}.`);
-  }
-}
-
-function parseChatInboxSubmissionJson(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch (error) {
-    const repaired = repairExtraJsonObjectClosers(value);
-    if (repaired !== value) {
-      try {
-        return JSON.parse(repaired) as unknown;
-      } catch {
-        // Keep the original parser error because its location matches the model output.
-      }
-    }
-    throw error;
-  }
-}
-
-function repairExtraJsonObjectClosers(value: string): string {
-  const stack: string[] = [];
-  let repaired = "";
-  let inString = false;
-  let escaped = false;
-
-  for (const char of value) {
-    repaired += char;
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === "\"") {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === "\"") {
-      inString = true;
-      continue;
-    }
-    if (char === "{") {
-      stack.push("{");
-      continue;
-    }
-    if (char === "[") {
-      stack.push("[");
-      continue;
-    }
-    if (char === "}") {
-      if (stack.at(-1) === "{") {
-        stack.pop();
-        continue;
-      }
-      repaired = repaired.slice(0, -1);
-      continue;
-    }
-    if (char === "]") {
-      if (stack.at(-1) === "[") stack.pop();
-    }
-  }
-
-  return repaired;
-}
-
-function extractChatInboxSubmissionBlock(output: string): ChatInboxSubmissionBlock | undefined {
-  const matches = [
-    /```hiveward-inbox\s*([\s\S]*?)```/i.exec(output),
-    /(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n```(?:json)?\s*([\s\S]*?)```/i.exec(output),
-    /(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n(\{[\s\S]*\})\s*$/i.exec(output)
-  ];
-  const match = matches.find(Boolean);
-  if (!match) return undefined;
-  return {
-    fullMatch: match[0],
-    json: normalizeChatInboxSubmissionJson(match[1] ?? "")
-  };
-}
-
-function normalizeChatInboxSubmissionJson(value: string): string {
-  return value
-    .trim()
-    .replace(/^json\s*\n/i, "")
-    .trim();
-}
-
-function stripChatInboxSubmissionBlock(output: string, block: string): string {
-  return output
-    .replace(block, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function buildChatInboxSubmissionFailureOutput(output: string, block: string, errorMessage: string): string {
-  const visibleOutput = stripChatInboxSubmissionBlock(output, block);
-  return [
-    visibleOutput || "Hiveward inbox submission failed.",
-    "",
-    `Inbox submission failed: ${errorMessage}`
-  ].join("\n").trim();
 }
 
 const hivewardPlatformContext = [
@@ -2394,15 +2257,8 @@ const hivewardPlatformContext = [
 const hivewardBlueprintDraftingGuidance = [
   "Blueprint build mode:",
   "The user selected HiveWard Build blueprint mode. Treat the turn as a request to produce a governed blueprint proposal unless they explicitly ask for draft-only, discussion-only, or read-only work.",
-  "If there is enough information, produce a concrete importable blueprint package with proposal text, JSON or patch details, preview, and diff summary for Hiveward inbox approval. If essential information is missing, ask for that information instead of fabricating the package.",
-  "Do not describe a natural-language idea as approved or imported until the Hiveward inbox item has been approved and the backend import completed."
-].join("\n");
-
-const hivewardBlueprintSubmissionContext = [
-  hivewardBlueprintDraftingGuidance,
-  "End the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item. Do not omit the block after only describing the proposal.",
-  "",
-  hivewardInboxSubmissionContract
+  "If there is enough information, produce a concrete importable blueprint package with proposal text, JSON or patch details, preview, and diff summary for executive review. If essential information is missing, ask for that information instead of fabricating the package.",
+  "Do not describe a natural-language idea as approved, imported, or running until a structured ExecutiveCommand or another real API performs that action."
 ].join("\n");
 
 const hivewardSkillSplitGuidance = [
@@ -2428,78 +2284,16 @@ const hivewardSkillSplitGuidance = [
   "A usable decomposition response must identify source completeness, list inspected package parts, include a Skill IR summary, explain classification confidence, list unresolved assumptions, and include blueprint exposure metadata for future CEO catalog matching.",
   "For script-backed skills, the proposal states where required scripts live, whether those paths will exist after import, required permissions, side effects, validation commands, and any approval requirement.",
   "Before formal submission, explain the skill purpose, inferred inputs and outputs, proposed agents, manager-slot structure, validation checkpoints, and unresolved questions.",
-  "If the user asks to submit for approval before enough skill material exists, ask for the missing material instead of fabricating a blueprint package."
+  "If the user asks to submit for approval before enough skill material exists, ask for the missing material instead of fabricating a blueprint package.",
+  "Use the structured ExecutiveCommand channel for real HiveWard actions. Do not encode platform actions in Markdown."
 ].join("\n");
 
-const hivewardSkillSplitSubmissionContext = [
-  hivewardSkillSplitGuidance,
-  "If the user explicitly asks to submit the generated blueprint for approval, end the response with one hiveward-inbox fenced block so Hiveward can create the real inbox item.",
-  "",
-  hivewardInboxSubmissionContract
-].join("\n");
-
-function buildBlueprintDraftingContext(message: string): string {
-  return shouldSuppressBlueprintSubmissionContract(message)
-    ? hivewardBlueprintDraftingGuidance
-    : hivewardBlueprintSubmissionContext;
+function buildBlueprintDraftingContext(_message: string): string {
+  return hivewardBlueprintDraftingGuidance;
 }
 
-function buildSkillSplitContext(message: string): string {
-  return shouldIncludeBlueprintSubmissionContract(message)
-    ? hivewardSkillSplitSubmissionContext
-    : hivewardSkillSplitGuidance;
-}
-
-function shouldIncludeBlueprintSubmissionContract(message: string): boolean {
-  const normalized = message.toLowerCase();
-  if (shouldSuppressBlueprintSubmissionContract(message)) return false;
-
-  const asksBlueprintCreation = includesAny(normalized, [
-    "create blueprint",
-    "generate blueprint",
-    "build blueprint",
-    "design blueprint",
-    "new blueprint",
-    "blueprint package"
-  ]) || (
-    message.includes("蓝图") &&
-    includesAny(message, ["创建", "生成", "新建", "设计", "构建", "搭建", "做一个", "建一个"])
-  );
-
-  return (
-    asksBlueprintCreation ||
-    includesAny(normalized, ["submit", "approval", "approve", "inbox", "proposal", "import"]) ||
-    includesAny(message, ["提交", "审批", "批准", "收件箱", "提案", "导入", "邮件"])
-  );
-}
-
-function shouldSuppressBlueprintSubmissionContract(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return includesAny(normalized, [
-    "draft only",
-    "do not submit",
-    "don't submit",
-    "without submitting",
-    "discussion only",
-    "read-only",
-    "read only"
-  ]) || includesAny(message, [
-    "只要草稿",
-    "只生成草稿",
-    "先别提交",
-    "不要提交",
-    "不用提交",
-    "别放收件箱",
-    "不要放收件箱",
-    "不发邮件",
-    "先讨论",
-    "只讨论",
-    "只读"
-  ]);
-}
-
-function includesAny(value: string, needles: string[]): boolean {
-  return needles.some((needle) => value.includes(needle));
+function buildSkillSplitContext(_message: string): string {
+  return hivewardSkillSplitGuidance;
 }
 
 function writeAgentOutputEvent(
@@ -2642,7 +2436,6 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
   runtimeStartedAtMs: number,
   runtimeFinishedAtMs: number,
   postprocessStartedAtMs: number,
-  inboxSubmissionMs: number | undefined,
   runtimeAcceptedAtMs: number | undefined,
   runtimeFirstDeltaAtMs: number | undefined
 ): T {
@@ -2654,7 +2447,6 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
       hivewardPreprocessMs: Math.max(0, runtimeStartedAtMs - requestStartedAtMs),
       runtimeMs: Math.max(0, runtimeFinishedAtMs - runtimeStartedAtMs),
       hivewardPostprocessMs: Math.max(0, completedAtMs - postprocessStartedAtMs),
-      inboxSubmissionMs,
       runtimeAcceptedMs: runtimeAcceptedAtMs === undefined ? undefined : Math.max(0, runtimeAcceptedAtMs - runtimeStartedAtMs),
       runtimeFirstDeltaMs: runtimeFirstDeltaAtMs === undefined ? undefined : Math.max(0, runtimeFirstDeltaAtMs - runtimeStartedAtMs)
     }

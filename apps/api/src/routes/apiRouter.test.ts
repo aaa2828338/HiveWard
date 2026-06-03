@@ -30,7 +30,7 @@ import type {
   WorkspaceDashboard,
   ApprovalRequest
 } from "@hiveward/shared";
-import { hivewardInboxSubmissionSchema, resolveApprovalCapabilities } from "@hiveward/shared";
+import { resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
 import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
@@ -38,6 +38,7 @@ import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 
 const oldInboxCreatedChatOutputEventName = ["inbox", "item", "created"].join("_");
+const historicalInboxSubmissionSchema = "hiveward.inbox-submission/v1";
 
 class TrackingAdapter extends MockRuntimeAdapter {
   runtimeOverviewCalls = 0;
@@ -3110,14 +3111,14 @@ describe("apiRouter", () => {
     }
   });
 
-  it("includes the inbox submission contract for skill split approval requests", async () => {
+  it("does not include the inbox submission contract for skill split approval requests", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
           harnessId: "codex",
-          message: "已经拿到 skill 内容了，请提交拆分后的蓝图提案到审批",
+          message: "Submit the decomposed skill blueprint for approval.",
           attachments: [],
           modelId: "codex/test-default",
           thinkingEffort: "medium",
@@ -3130,15 +3131,16 @@ describe("apiRouter", () => {
 
         expect(response.status, text).toBe(200);
         expect(adapter.lastChatStreamInput?.message).toContain("Skill split mode:");
-        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+        expect(adapter.lastChatStreamInput?.message).toContain("Use the structured ExecutiveCommand channel");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("hiveward-inbox");
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("includes the inbox submission contract for Chinese blueprint approval requests", async () => {
+  it("does not include the inbox submission contract for Leader blueprint approval requests", async () => {
     const fixture = await createStoreFixture();
     const adapter = new TrackingAdapter();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
@@ -3151,7 +3153,7 @@ describe("apiRouter", () => {
       await withApiServer(fixture.store, async (baseUrl) => {
         const response = await streamSessionChat(baseUrl, {
           harnessId: "codex",
-          message: "\u8bf7\u628a\u8fd9\u4e2a\u84dd\u56fe\u63d0\u6848\u63d0\u4ea4\u5230\u5ba1\u6279",
+          message: "Please submit this blueprint proposal for approval.",
           attachments: [],
           modelId: "codex/test-default",
           thinkingEffort: "medium",
@@ -3167,75 +3169,12 @@ describe("apiRouter", () => {
         expect(response.status, text).toBe(200);
         expect(adapter.lastChatStreamInput?.source).toBe("codex");
         expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-leader"]);
-        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
+        expect(adapter.lastChatStreamInput?.message).toContain("Use the structured ExecutiveCommand channel");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
+        expect(adapter.lastChatStreamInput?.message).not.toContain("hiveward-inbox");
       }, adapter);
     } finally {
       restoreEnv("CODEX_HOME", previousCodexHome);
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("includes the inbox submission contract for Chinese blueprint creation requests", async () => {
-    const fixture = await createStoreFixture();
-    const adapter = new TrackingAdapter();
-    const codexHome = join(fixture.dir, "codex-home");
-    const previousCodexHome = process.env.CODEX_HOME;
-    mkdirSync(join(codexHome, "skills", "hiveward-ceo"), { recursive: true });
-    writeFileSync(join(codexHome, "skills", "hiveward-ceo", "SKILL.md"), "# CEO\n");
-    process.env.CODEX_HOME = codexHome;
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "codex",
-          message: "请帮我创建一个用于测试 Manager 自分发能力的蓝图。",
-          attachments: [],
-          modelId: "codex/test-default",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "ceo"
-          }
-        });
-        const text = await response.text();
-
-        expect(response.status, text).toBe(200);
-        expect(adapter.lastChatStreamInput?.skillIds).toEqual(["hiveward-ceo"]);
-        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
-        expect(adapter.lastChatStreamInput?.message).toContain("End the response with one hiveward-inbox fenced block");
-        expect(adapter.lastChatStreamInput?.message).toContain("A self_dispatch manager is itself a runnable decision node");
-        expect(adapter.lastChatStreamInput?.message).toContain("Use the current chat harness runtime");
-      }, adapter);
-    } finally {
-      restoreEnv("CODEX_HOME", previousCodexHome);
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("includes the inbox submission contract by default in blueprint build mode", async () => {
-    const fixture = await createStoreFixture();
-    const adapter = new TrackingAdapter();
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "codex",
-          message: "把这套收件箱审批线程逻辑整理成下一阶段可落地方案。",
-          attachments: [],
-          modelId: "codex/test-default",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "ceo"
-          }
-        });
-        const text = await response.text();
-
-        expect(response.status, text).toBe(200);
-        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).toContain("End the response with one hiveward-inbox fenced block");
-      }, adapter);
-    } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
@@ -3400,55 +3339,25 @@ describe("apiRouter", () => {
 
         expect(response.status, text).toBe(200);
         expect(adapter.lastChatStreamInput?.message).not.toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).not.toContain(hivewardInboxSubmissionSchema);
+        expect(adapter.lastChatStreamInput?.message).not.toContain("hiveward-inbox");
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("turns formal chat inbox submission blocks into pending inbox items", async () => {
+  it("streams hiveward-inbox markdown as ordinary chat output without creating inbox items", async () => {
     const fixture = await createStoreFixture();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
     const output = [
       "I prepared the concrete package and submitted it for inbox approval.",
       "```hiveward-inbox",
       JSON.stringify({
-        schema: hivewardInboxSubmissionSchema,
+        schema: historicalInboxSubmissionSchema,
         type: "blueprint_proposal",
         blueprintId: blueprint.id,
         title: "Review generated blueprint package",
-        summary: "Approve the generated package before Hiveward imports it.",
-        diffSummary: "Creates a pending package review from chat.",
-        blueprintPackage: {
-          schema: "hiveward.blueprint-package/v1",
-          exportedAt: "2026-05-23T00:00:00.000Z",
-          blueprints: [
-            {
-              id: "review-generated-blueprint-package",
-              name: "Review generated blueprint package",
-              description: "A test blueprint package submitted from chat.",
-              version: 1,
-              nodes: [
-                {
-                  id: "brief",
-                  type: "agent",
-                  runtimeId: "openclaw",
-                  position: { x: 0, y: 0 },
-                  config: {
-                    label: "Brief",
-                    agentName: "brief-agent",
-                    prompt: "Write a brief.",
-                    tools: []
-                  }
-                }
-              ],
-              edges: [],
-              variables: {},
-              display: { viewport: { x: 0, y: 0, zoom: 1 } }
-            }
-          ]
-        }
+        summary: "Approve the generated package before Hiveward imports it."
       }),
       "```"
     ].join("\n");
@@ -3473,408 +3382,31 @@ describe("apiRouter", () => {
         const text = await response.text();
 
         expect(response.status, text).toBe(200);
+        expect(text).toContain("hiveward-inbox");
         expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-        expect(text).toContain("\"replace\":true");
-        expect(text).toContain("Review generated blueprint package");
-        expect(text).toContain("已提交到收件箱，请前往收件箱审批。");
-        expect(adapter.lastChatStreamInput?.message).toContain("HiveWard appointment:");
-        expect(adapter.lastChatStreamInput?.message).toContain("Installed external skill:");
-        expect(adapter.lastChatStreamInput?.message).toContain("hiveward-leader");
-        expect(adapter.lastChatStreamInput?.message).not.toContain("SKILL.md");
-        expect(adapter.lastChatStreamInput?.message).toContain("Leader owns exactly one bound business blueprint");
-        expect(adapter.lastChatStreamInput?.message).not.toContain("The Leader is the permanent role seat bound to exactly one business blueprint.");
-        expect(adapter.lastChatStreamInput?.message).not.toContain("Hiveward role scope:");
-        expect(adapter.lastChatStreamInput?.message).toContain("HIVEWARD_INBOX_SUBMISSION_CONTRACT v1");
-        expect(adapter.lastChatStreamInput?.message).toContain(hivewardInboxSubmissionSchema);
-
-        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
-        const inboxBody = await readOkJson<{ items: Array<{ id: string; title: string; status: string; type: string; blueprintId?: string }> }>(inboxResponse);
-        expect(inboxBody.items[0]).toMatchObject({
-          title: "Review generated blueprint package",
-          status: "pending",
-          type: "blueprint_proposal",
-          blueprintId: blueprint.id
-        });
-        const inboxItemId = inboxBody.items[0]!.id;
-
-        const approvalRequestsResponse = await fetch(`${baseUrl}/api/approval-requests`);
-        const approvalRequestsBody = await readOkJson<{ approvalRequests: ApprovalRequest[] }>(approvalRequestsResponse);
-        const inboxApproval = approvalRequestsBody.approvalRequests.find(
-          (request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === inboxItemId
-        );
-        expect(inboxApproval).toMatchObject({
-          kind: "blueprint_proposal",
-          status: "pending",
-          title: "Review generated blueprint package",
-          payloadRef: inboxItemId,
-          sourceRef: { type: "inbox_item", id: inboxItemId }
-        });
-        expect(inboxApproval?.runId).toBeUndefined();
-
-        const approvalThreadsResponse = await fetch(`${baseUrl}/api/approval-threads?status=open`);
-        const approvalThreadsBody = await readOkJson<{ approvalThreads: Array<{ currentRequestId?: string; kind: string; status: string }> }>(
-          approvalThreadsResponse
-        );
-        expect(approvalThreadsBody.approvalThreads).toEqual([
-          expect.objectContaining({
-            currentRequestId: inboxApproval!.id,
-            kind: "blueprint_proposal",
-            status: "open"
-          })
-        ]);
-
-        const replyResponse = await fetch(`${baseUrl}/api/inbox/${inboxItemId}/reply`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Please tighten the generated package before I approve it." })
-        });
-        const replyBody = await readOkJson<{ item: { replies?: Array<{ role: string; body: string }> } }>(replyResponse);
-        expect(replyBody.item.replies).toMatchObject([
-          {
-            role: "user",
-            body: "Please tighten the generated package before I approve it."
-          }
-        ]);
-
-        const approveResponse = await fetch(`${baseUrl}/api/inbox/${inboxItemId}/approve`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({})
-        });
-        const approveBody = await readOkJson<{ importedBlueprints?: Array<{ name: string }> }>(approveResponse);
-        expect(approveBody.importedBlueprints?.[0]).toMatchObject({
-          name: "Review generated blueprint package"
-        });
-
-        const blueprintsResponse = await fetch(`${baseUrl}/api/blueprints`);
-        const blueprintsBody = await readOkJson<{ blueprints: Array<{ name: string }> }>(blueprintsResponse);
-        expect(blueprintsBody.blueprints.some((item) => item.name === "Review generated blueprint package")).toBe(true);
+        expect(text).not.toContain("\"replace\":true");
+        const session = (await fixture.store.listChatSessions())[0]!;
+        const events = await fixture.store.listAgentOutputEvents({ ownerType: "chat_session", ownerId: session.id });
+        const assistant = events.find((event) => event.kind === "message_completed" && event.metadata?.role === "assistant");
+        expect(assistant?.bodyMarkdown).toContain("hiveward-inbox");
+        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("reports invalid chat inbox submission blocks without creating inbox items", async () => {
+  it("does not repair malformed hiveward-inbox markdown into an inbox item", async () => {
     const fixture = await createStoreFixture();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
-    const output = [
-      "Okay, submitting this package for approval.",
-      "HIVEWARD-INBOX",
-      "```json",
-      JSON.stringify({
-        schema: hivewardInboxSubmissionSchema,
-        type: "blueprint_proposal",
-        blueprintId: blueprint.id,
-        title: "Incomplete package",
-        summary: "This should not become an inbox item."
-      }),
-      "```"
-    ].join("\n");
-    const adapter = new ChatOutputAdapter(output);
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "openclaw",
-          nativeSessionId: "main",
-          message: "Submit this incomplete package for approval.",
-          attachments: [],
-          modelId: "openclaw/default",
-          agentId: "main",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "leader",
-            leaderId: "leader-test",
-            blueprintId: blueprint.id
-          }
-        });
-        const text = await response.text();
-
-        expect(response.status, text).toBe(200);
-        expect(text).toContain("\"replace\":true");
-        expect(text).toContain("\"status\":\"failed\"");
-        expect(text).toContain("Blueprint proposal request requires blueprintPackage.");
-        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-
-        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
-        const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
-        expect(inboxBody.items).toEqual([]);
-      }, adapter);
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("uses the selected chat harness as the default runtime when approving generated blueprint proposals", async () => {
-    const fixture = await createStoreFixture();
-    const blueprint = (await fixture.store.listBlueprints())[0]!;
-    const previousCodexDefault = process.env.HIVEWARD_CODEX_DEFAULT_MODEL;
-    process.env.HIVEWARD_CODEX_DEFAULT_MODEL = "codex/proposal-default";
-    const output = [
-      "I prepared a Codex-backed blueprint package for approval.",
-      "```hiveward-inbox",
-      JSON.stringify({
-        schema: hivewardInboxSubmissionSchema,
-        type: "blueprint_proposal",
-        blueprintId: blueprint.id,
-        title: "Codex runtime proposal",
-        summary: "Approve a generated package from a Codex chat session.",
-        diffSummary: "Creates a single agent blueprint.",
-        preview: {},
-        blueprintPackage: {
-          schema: "hiveward.blueprint-package/v1",
-          exportedAt: "2026-05-24T00:00:00.000Z",
-          blueprints: [
-            {
-              id: "codex-runtime-proposal",
-              name: "Codex runtime proposal",
-              version: 1,
-              nodes: [
-                {
-                  id: "brief",
-                  type: "agent",
-                  position: { x: 0, y: 0 },
-                  config: {
-                    label: "Brief",
-                    agentName: "brief-agent",
-                    prompt: "Write a brief.",
-                    tools: []
-                  }
-                }
-              ],
-              edges: [],
-              variables: {},
-              display: { viewport: { x: 0, y: 0, zoom: 1 } }
-            }
-          ]
-        }
-      }),
-      "```"
-    ].join("\n");
-    const adapter = new ChatOutputAdapter(output);
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "codex",
-          nativeSessionId: "codex-session",
-          message: "Submit this blueprint package for approval.",
-          attachments: [],
-          modelId: "codex/proposal-default",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "leader",
-            leaderId: "leader-test",
-            blueprintId: blueprint.id
-          }
-        });
-        const text = await response.text();
-        expect(response.status, text).toBe(200);
-        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-
-        const inbox = await readOkJson<{ items: Array<{ id: string; payload?: Record<string, unknown> }> }>(
-          await fetch(`${baseUrl}/api/inbox`)
-        );
-        expect(inbox.items[0]?.payload?.runtimeId).toBe("codex");
-
-        const approved = await readOkJson<{ importedBlueprints?: BlueprintDefinition[] }>(
-          await fetch(`${baseUrl}/api/inbox/${inbox.items[0]!.id}/approve`, { method: "POST" })
-        );
-        const importedNode = approved.importedBlueprints?.[0]?.nodes.find((node) => node.id === "brief");
-        const importedConfig = importedNode?.config as AgentNodeConfig | undefined;
-        expect(importedNode?.runtimeId).toBe("codex");
-        expect(importedConfig?.modelId).toBe("codex/proposal-default");
-        expect(importedConfig?.openclawAgentId).toBeUndefined();
-      }, adapter);
-    } finally {
-      restoreEnv("HIVEWARD_CODEX_DEFAULT_MODEL", previousCodexDefault);
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects unsupported Hiveward inbox submission schema versions", async () => {
-    const fixture = await createStoreFixture();
-    const blueprint = (await fixture.store.listBlueprints())[0]!;
-    const output = [
-      "Okay, submitting this package for approval.",
-      "```hiveward-inbox",
-      JSON.stringify({
-        schema: "hiveward.inbox-submission/v0",
-        type: "blueprint_proposal",
-        blueprintId: blueprint.id,
-        title: "Old schema package",
-        summary: "This should not become an inbox item.",
-        blueprintPackage: {
-          schema: "hiveward.blueprint-package/v1",
-          exportedAt: "2026-05-23T00:00:00.000Z",
-          blueprints: [
-            {
-              id: "old-schema-blueprint",
-              name: "Old schema package",
-              version: 1,
-              nodes: [],
-              edges: [],
-              variables: {},
-              display: { viewport: { x: 0, y: 0, zoom: 1 } }
-            }
-          ]
-        }
-      }),
-      "```"
-    ].join("\n");
-    const adapter = new ChatOutputAdapter(output);
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "openclaw",
-          nativeSessionId: "main",
-          message: "Submit this old schema package for approval.",
-          attachments: [],
-          modelId: "openclaw/default",
-          agentId: "main",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "leader",
-            leaderId: "leader-test",
-            blueprintId: blueprint.id
-          }
-        });
-        const text = await response.text();
-
-        expect(response.status, text).toBe(200);
-        expect(text).toContain("\"status\":\"failed\"");
-        expect(text).toContain(`Expected ${hivewardInboxSubmissionSchema}.`);
-        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-      }, adapter);
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects chat blueprint proposals that use unsupported Hiveward node types", async () => {
-    const fixture = await createStoreFixture();
-    const blueprint = (await fixture.store.listBlueprints())[0]!;
-    const output = [
-      "Okay, submitting this package for approval.",
-      "```hiveward-inbox",
-      JSON.stringify({
-        schema: hivewardInboxSubmissionSchema,
-        type: "blueprint_proposal",
-        blueprintId: blueprint.id,
-        title: "Unsupported node proposal",
-        summary: "This should fail before it becomes an inbox item.",
-        blueprintPackage: {
-          schema: "hiveward.blueprint-package/v1",
-          exportedAt: "2026-05-23T00:00:00.000Z",
-          blueprints: [
-            {
-              id: "unsupported-node-blueprint",
-              name: "Unsupported node proposal",
-              version: 1,
-              nodes: [
-                {
-                  id: "fetch",
-                  type: "http.get",
-                  position: { x: 0, y: 0 },
-                  config: { label: "Fetch" }
-                }
-              ],
-              edges: [],
-              variables: {},
-              display: { viewport: { x: 0, y: 0, zoom: 1 } }
-            }
-          ]
-        }
-      }),
-      "```"
-    ].join("\n");
-    const adapter = new ChatOutputAdapter(output);
-    try {
-      await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await streamSessionChat(baseUrl, {
-          harnessId: "openclaw",
-          nativeSessionId: "main",
-          message: "Submit this unsupported package for approval.",
-          attachments: [],
-          modelId: "openclaw/default",
-          agentId: "main",
-          thinkingEffort: "medium",
-          mode: "blueprint",
-          roleScope: {
-            role: "leader",
-            leaderId: "leader-test",
-            blueprintId: blueprint.id
-          }
-        });
-        const text = await response.text();
-
-        expect(response.status, text).toBe(200);
-        expect(text).toContain("\"status\":\"failed\"");
-        expect(text).toContain("Unsupported blueprint node type: http.get.");
-        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-
-        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
-        const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
-        expect(inboxBody.items).toEqual([]);
-      }, adapter);
-    } finally {
-      rmSync(fixture.dir, { recursive: true, force: true });
-    }
-  });
-
-  it("repairs common model JSON and edge-shape mistakes in chat blueprint proposals", async () => {
-    const fixture = await createStoreFixture();
-    const blueprint = (await fixture.store.listBlueprints())[0]!;
-    const validSubmission = {
-      schema: hivewardInboxSubmissionSchema,
+    const malformedSubmission = JSON.stringify({
+      schema: historicalInboxSubmissionSchema,
       type: "blueprint_proposal",
       blueprintId: blueprint.id,
-      title: "Repaired X blueprint proposal",
-      summary: "This proposal has a common extra closing brace and from/to edges.",
-      blueprintPackage: {
-        schema: "hiveward.blueprint-package/v1",
-        exportedAt: "2026-05-23T00:00:00.000Z",
-        blueprints: [
-          {
-            id: "repaired-x-blueprint",
-            name: "Repaired X blueprint proposal",
-            version: 1,
-            nodes: [
-              {
-                id: "fetch",
-                type: "agent",
-                runtimeId: "openclaw",
-                position: { x: 0, y: 0 },
-                config: {
-                  label: "Fetch",
-                  agentName: "fetch-agent",
-                  prompt: "Fetch X trending data.",
-                  tools: []
-                }
-              },
-              {
-                id: "render",
-                type: "agent",
-                runtimeId: "openclaw",
-                position: { x: 320, y: 0 },
-                config: {
-                  label: "Render",
-                  agentName: "render-agent",
-                  prompt: "Render an HTML report from upstream data.",
-                  tools: []
-                }
-              }
-            ],
-            edges: [{ from: "fetch", to: "render" }],
-            variables: {},
-            display: { viewport: { x: 0, y: 0, zoom: 1 } }
-          }
-        ]
-      }
-    };
-    const malformedSubmission = JSON.stringify(validSubmission).replace(/}]}}$/, "}}]}}");
+      title: "Malformed package",
+      summary: "This is historical chat text only."
+    }).replace(/}$/, "}}");
     const adapter = new ChatOutputAdapter([
       "Okay, submitting this package for approval.",
       "```hiveward-inbox",
@@ -3887,7 +3419,7 @@ describe("apiRouter", () => {
         const response = await streamSessionChat(baseUrl, {
           harnessId: "openclaw",
           nativeSessionId: "main",
-          message: "Submit this package for approval.",
+          message: "Submit this malformed package for approval.",
           attachments: [],
           modelId: "openclaw/default",
           agentId: "main",
@@ -3902,48 +3434,230 @@ describe("apiRouter", () => {
         const text = await response.text();
 
         expect(response.status, text).toBe(200);
-        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
+        expect(text).toContain("hiveward-inbox");
         expect(text).not.toContain("Inbox submission failed");
-
-        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
-        const inboxBody = await readOkJson<{ items: Array<{ id: string; title: string }> }>(inboxResponse);
-        expect(inboxBody.items[0]).toMatchObject({ title: "Repaired X blueprint proposal" });
-
-        const approveResponse = await fetch(`${baseUrl}/api/inbox/${inboxBody.items[0]!.id}/approve`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({})
-        });
-        const approveBody = await readOkJson<{ importedBlueprints?: Array<{ edges: Array<{ source: string; target: string }> }> }>(approveResponse);
-        expect(approveBody.importedBlueprints?.[0]?.edges[0]).toMatchObject({
-          source: "fetch",
-          target: "render"
-        });
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
+        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("proxies native chat history by session key", async () => {
+  it("accepts inspect_blueprint executive commands", async () => {
     const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("session-demo-1")}`);
-        const body = await readOkJson<{ messages: Array<{ role: string; content: string }> }>(response);
-
-        expect(body.messages.length).toBeGreaterThan(0);
-        expect(body.messages[0]).toMatchObject({
-          role: "user",
-          content: "Mock runtime session history."
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "inspect_blueprint",
+              sourceRole: "ceo",
+              payload: { blueprintId: blueprint.id }
+            }
+          })
         });
+        const body = await readOkJson<{ result: { action: string; blueprint: { id: string } } }>(response);
+
+        expect(body.result.action).toBe("inspect_blueprint");
+        expect(body.result.blueprint.id).toBe(blueprint.id);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("syncs Hiveward inbox submissions from native chat history without duplicates", async () => {
+  it("starts a blueprint run through executive command without creating WorkerTask", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Leader", mode: "chat", roleScope: { role: "leader", leaderId: "leader-test", blueprintId: blueprint.id } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "start_blueprint_run",
+              sourceRole: "leader",
+              payload: { blueprintId: blueprint.id, startedBy: "leader-test", title: "Executive run" }
+            }
+          })
+        });
+        const body = await readOkJson<{ result: { action: string; run: { run: { blueprintId: string } }; runRoom: { runId: string; blueprintId: string; status: string } } }>(response);
+
+        expect(body.result.action).toBe("start_blueprint_run");
+        expect(body.result.run.run.blueprintId).toBe(blueprint.id);
+        expect(body.result.runRoom).toMatchObject({ blueprintId: blueprint.id, status: "open" });
+        expect(await fixture.store.listWorkerTasks()).toEqual([]);
+        expect(await fixture.store.listRunRooms({ blueprintId: blueprint.id })).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates human action requests for executive chat and blueprint governance contexts", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        for (const command of [
+          {
+            action: "request_human_action",
+            sourceRole: "ceo",
+            payload: {
+              sourceContextType: "executive_chat",
+              responseIntent: "reply_required",
+              title: "Executive clarification",
+              bodyMarkdown: "Please clarify this request."
+            }
+          },
+          {
+            action: "request_human_action",
+            sourceRole: "ceo",
+            payload: {
+              sourceContextType: "blueprint_governance",
+              blueprintId: blueprint.id,
+              responseIntent: "decision_required",
+              title: "Govern blueprint",
+              bodyMarkdown: "Approve this governance step."
+            }
+          }
+        ]) {
+          const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ command })
+          });
+          expect(response.status, await response.text()).toBe(201);
+        }
+
+        expect(await fixture.store.listHumanActionRequests({ sourceContextType: "executive_chat" })).toHaveLength(1);
+        expect(await fixture.store.listHumanActionRequests({ sourceContextType: "blueprint_governance" })).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects executive human action requests that claim run_room context", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "request_human_action",
+              sourceRole: "ceo",
+              payload: {
+                sourceContextType: "run_room",
+                sourceContextId: "run-room-forbidden",
+                responseIntent: "decision_required",
+                title: "Forbidden",
+                bodyMarkdown: "This must not become a run-room request."
+              }
+            }
+          })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status).toBe(400);
+        expect(body.error?.code).toBe("executive_command_invalid");
+        expect(body.error?.message).toContain("cannot be run_room");
+        expect(await fixture.store.listHumanActionRequests()).toEqual([]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects worker dispatch executive command actions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        for (const action of ["dispatch_worker_task", "dispatch_worker_tasks"]) {
+          const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ command: { action, sourceRole: "ceo", payload: {} } })
+          });
+          const body = await response.json() as { error?: { message?: string } };
+          expect(response.status).toBe(400);
+          expect(body.error?.message).toContain("cannot dispatch WorkerTask");
+        }
+        expect(await fixture.store.listWorkerTasks()).toEqual([]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects malformed executive command payloads without repairing them", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "start_blueprint_run",
+              sourceRole: "ceo",
+              payload: `{"blueprintId":"${blueprint.id}"}}`
+            }
+          })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status).toBe(400);
+        expect(body.error?.code).toBe("executive_command_invalid");
+        expect(body.error?.message).toContain("payload must be a JSON object");
+        expect(await fixture.store.listRunRooms()).toEqual([]);
+        expect(await fixture.store.listWorkerTasks()).toEqual([]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("proxies native chat history without materializing hiveward-inbox markdown", async () => {
     const fixture = await createStoreFixture();
     const blueprint = (await fixture.store.listBlueprints())[0]!;
     const now = new Date().toISOString();
@@ -3951,41 +3665,11 @@ describe("apiRouter", () => {
       "I prepared the package for approval.",
       "```hiveward-inbox",
       JSON.stringify({
-        schema: hivewardInboxSubmissionSchema,
+        schema: historicalInboxSubmissionSchema,
         type: "blueprint_proposal",
         blueprintId: blueprint.id,
         title: "History synced blueprint package",
-        summary: "Created from a native runtime history response.",
-        diffSummary: "Adds a history-synced blueprint package.",
-        blueprintPackage: {
-          schema: "hiveward.blueprint-package/v1",
-          exportedAt: "2026-05-23T00:00:00.000Z",
-          blueprints: [
-            {
-              id: "history-synced-blueprint",
-              name: "History synced blueprint package",
-              description: "Valid proposal recovered from native history.",
-              version: 1,
-              nodes: [
-                {
-                  id: "brief",
-                  type: "agent",
-                  runtimeId: "openclaw",
-                  position: { x: 0, y: 0 },
-                  config: {
-                    label: "Brief",
-                    agentName: "brief-agent",
-                    prompt: "Write a brief.",
-                    tools: []
-                  }
-                }
-              ],
-              edges: [],
-              variables: {},
-              display: { viewport: { x: 0, y: 0, zoom: 1 } }
-            }
-          ]
-        }
+        summary: "Created from a native runtime history response."
       }),
       "```"
     ].join("\n");
@@ -4006,46 +3690,17 @@ describe("apiRouter", () => {
 
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const firstResponse = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("agent:main:dashboard:history-sync")}`);
-        const firstBody = await readOkJson<{
+        const response = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("agent:main:dashboard:history-sync")}`);
+        const body = await readOkJson<{
           messages: Array<{ role: string; content: string }>;
-          inboxItems?: Array<{ id: string; title: string; status: string; type: string }>;
-        }>(firstResponse);
+          inboxItems?: unknown[];
+        }>(response);
 
-        expect(firstBody.messages[1]?.content).toContain("I prepared the package for approval.");
-        expect(firstBody.messages[1]?.content).toContain("已提交到收件箱，请前往收件箱审批。");
-        expect(firstBody.messages[1]?.content).not.toContain("hiveward-inbox");
-        expect(firstBody.inboxItems?.[0]).toMatchObject({
-          title: "History synced blueprint package",
-          status: "pending",
-          type: "blueprint_proposal"
-        });
-        const firstInboxItemId = firstBody.inboxItems?.[0]?.id;
-        expect(firstInboxItemId).toBeTruthy();
-
-        const firstApprovalRequestsResponse = await fetch(`${baseUrl}/api/approval-requests`);
-        const firstApprovalRequestsBody = await readOkJson<{ approvalRequests: ApprovalRequest[] }>(firstApprovalRequestsResponse);
-        expect(
-          firstApprovalRequestsBody.approvalRequests.filter(
-            (request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === firstInboxItemId
-          )
-        ).toHaveLength(1);
-
-        const secondResponse = await fetch(`${baseUrl}/api/chat/history?sessionKey=${encodeURIComponent("agent:main:dashboard:history-sync")}`);
-        const secondBody = await readOkJson<{ inboxItems?: Array<{ id: string }> }>(secondResponse);
-        expect(secondBody.inboxItems?.[0]?.id).toBe(firstBody.inboxItems?.[0]?.id);
-
-        const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
-        const inboxBody = await readOkJson<{ items: Array<{ title: string }> }>(inboxResponse);
-        expect(inboxBody.items.filter((item) => item.title === "History synced blueprint package")).toHaveLength(1);
-
-        const secondApprovalRequestsResponse = await fetch(`${baseUrl}/api/approval-requests`);
-        const secondApprovalRequestsBody = await readOkJson<{ approvalRequests: ApprovalRequest[] }>(secondApprovalRequestsResponse);
-        expect(
-          secondApprovalRequestsBody.approvalRequests.filter(
-            (request) => request.sourceRef?.type === "inbox_item" && request.sourceRef.id === firstInboxItemId
-          )
-        ).toHaveLength(1);
+        expect(body.messages[1]?.content).toContain("I prepared the package for approval.");
+        expect(body.messages[1]?.content).toContain("hiveward-inbox");
+        expect(body.inboxItems).toBeUndefined();
+        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });

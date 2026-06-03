@@ -1092,8 +1092,6 @@ export function ChatPage({
                 </div>
               ) : (
                 messages.map((message) => {
-                  const visibleContent =
-                    message.role === "assistant" ? stripHivewardInboxSubmissionBlocks(message.content) : message.content;
                   const runtimeActivities = message.runtimeActivities ?? message.runtimeRef?.activity ?? [];
                   return (
                     <article
@@ -1107,7 +1105,7 @@ export function ChatPage({
                         {message.role === "user" ? copy.youAvatar : <Bot size={16} />}
                       </div>
                       <div className={`chat-message chat-message-${message.role} ${message.status ?? ""}`}>
-                        {visibleContent ? <MarkdownRenderer value={visibleContent} className="chat-message-body" /> : null}
+                        {message.content ? <MarkdownRenderer value={message.content} className="chat-message-body" /> : null}
                         {shouldShowRuntimeStatus(message) && message.runtimeStatus ? (
                           <div className="chat-message-runtime-status">
                             <Loader2 className="spin" size={15} />
@@ -1129,7 +1127,7 @@ export function ChatPage({
                             ))}
                           </div>
                         ) : null}
-                        {!visibleContent && !shouldShowRuntimeStatus(message) ? (
+                        {!message.content && !shouldShowRuntimeStatus(message) ? (
                           <div className="chat-message-pending">
                             <Loader2 className="spin" size={15} />
                             {message.progressText ?? copy.waiting(formatHarnessLabel(message.harnessId ?? harnessId))}
@@ -1541,15 +1539,6 @@ function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: 
 function formatDurationMs(value: number): string {
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}s`;
   return `${Math.max(0, Math.round(value))}ms`;
-}
-
-function stripHivewardInboxSubmissionBlocks(content: string): string {
-  return content
-    .replace(/```hiveward-inbox\s*[\s\S]*?```/gi, "")
-    .replace(/(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n```(?:json)?\s*[\s\S]*?```/gi, "")
-    .replace(/(?:^|\n)\s*(?:#{1,6}\s*)?hiveward-inbox\s*\n\{[\s\S]*\}\s*$/gi, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
 }
 
 function toRuntimeRef(

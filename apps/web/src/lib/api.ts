@@ -84,7 +84,9 @@
   WorkspaceDashboard,
   BlueprintDefinition,
   BlueprintResponse,
-  BlueprintRunResponse
+  BlueprintRunResponse,
+  ExecutiveCommand,
+  ExecuteExecutiveCommandResponse
 } from "@hiveward/shared";
 
 const importMetaEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
@@ -245,6 +247,13 @@ export const api = {
     }
 
     await consumeChatStreamResponse(response, handlers);
+  },
+
+  async executeExecutiveCommand(sessionId: string, command: ExecutiveCommand): Promise<ExecuteExecutiveCommandResponse> {
+    return request<ExecuteExecutiveCommandResponse>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/executive-commands`, {
+      method: "POST",
+      body: JSON.stringify({ command })
+    });
   },
 
   async createChatSession(input: CreateChatSessionRequest): Promise<CreateChatSessionResponse> {
