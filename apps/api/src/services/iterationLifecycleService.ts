@@ -12,7 +12,7 @@ import type {
   ReleaseReport
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import type { ApprovalActionResult, LifecycleApprovalOutcome } from "./lifecycleApprovalService";
+import type { ApprovalActionResult, ApprovalDiscussionBindingDraft, LifecycleApprovalOutcome } from "./lifecycleApprovalService";
 import { ApprovalService } from "./lifecycleApprovalService";
 export class IterationService {
   constructor(
@@ -95,6 +95,7 @@ export class IterationService {
     managerNode: BlueprintNode;
     summary: string;
     artifacts: Artifact[];
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<{ round: IterationRound; releaseReport: ReleaseReport; approvalRequest: ApprovalRequest } | undefined> {
     const round = await this.currentExecutingRound(input.run.id);
     if (!round) return undefined;
@@ -122,7 +123,8 @@ export class IterationService {
       round: artifactPublished,
       managerNode: input.managerNode,
       summary: input.summary,
-      artifacts: input.artifacts
+      artifacts: input.artifacts,
+      discussionBinding: input.discussionBinding
     });
   }
 
@@ -135,12 +137,18 @@ export class IterationService {
     threadId?: string;
     replacesRequestId?: string;
     closeReplacedRequest?: boolean;
+    discussionBinding?: ApprovalDiscussionBindingDraft;
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
     const zh = usesChineseText(input.body) || usesChineseText(input.managerNode.config.label);
-    const title = zh
-      ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
-      : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
+    const blocked = input.metadata?.researchStatus === "blocked";
+    const title = blocked
+      ? zh
+        ? `第 ${input.round.roundNumber} 轮问题上报${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+        : `Round ${input.round.roundNumber} Issue Report${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+      : zh
+        ? `第 ${input.round.roundNumber} 轮执行计划${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`
+        : `Round ${input.round.roundNumber} Execution Plan${input.revision && input.revision > 1 ? ` v${input.revision}` : ""}`;
     const request = await this.approvalService.createRequest({
       runId: input.session.runId,
       roundId: input.round.id,
@@ -157,8 +165,9 @@ export class IterationService {
       revision: input.revision,
       replacesRequestId: input.replacesRequestId,
       closeReplacedRequest: input.closeReplacedRequest,
+      discussionBinding: input.discussionBinding,
       capabilities: input.metadata?.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false }
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
         : undefined
     });
     await this.store.upsertIterationRound({
@@ -186,6 +195,7 @@ export class IterationService {
     managerNode: BlueprintNode;
     summary: string;
     artifacts: Artifact[];
+    discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<{ round: IterationRound; releaseReport: ReleaseReport; approvalRequest: ApprovalRequest }> {
     const session = await this.requireSession(input.round.sessionId);
     const finalRound = input.round.roundNumber >= session.maxRounds;
@@ -223,7 +233,8 @@ export class IterationService {
         label: input.managerNode.config.label,
         nodeId: input.managerNode.id
       },
-      finalRound
+      finalRound,
+      discussionBinding: input.discussionBinding
     });
     const releaseReport: ReleaseReport = {
       id: reportId,
@@ -302,6 +313,7 @@ export class IterationService {
     }
     if (result.decision.action === "approve" || result.decision.action === "auto_approve") {
       const now = result.decision.createdAt;
+      const humanFeedback = await this.approvalService.buildApprovalHumanFeedback(result.approvalRequest, result.decision);
       await this.store.upsertIterationRound({ ...round, status: "report_approved" });
       await this.store.upsertIterationRound({ ...round, status: "completed", endedAt: now });
       await this.store.appendRunTimelineItem({
@@ -321,7 +333,7 @@ export class IterationService {
             sessionId: session.id,
             roundId: nextRound.id,
             previousReportRequestId: result.approvalRequest.id,
-            humanFeedback: result.decision.comment
+            humanFeedback
           }
         };
       }
@@ -366,6 +378,7 @@ export class IterationService {
     request: ApprovalRequest,
     kind: "requirement_published" | "release_report_published"
   ): Promise<unknown> {
+    if (!request.runId) return Promise.resolve();
     return this.store.appendRunTimelineItem({
       id: `timeline-${nanoid(10)}`,
       runId: request.runId,

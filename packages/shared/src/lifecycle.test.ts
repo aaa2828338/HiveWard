@@ -6,30 +6,47 @@ import {
   capabilitiesAllow,
   resolveApprovalCapabilities,
   resolveApprovalThreadStatus,
+  type ApprovalDecisionAction,
   type ApprovalRequest
 } from "./lifecycle";
 
+const removedRevisionAction = (action: "request_changes" | "revise"): ApprovalDecisionAction =>
+  action as unknown as ApprovalDecisionAction;
+
 describe("lifecycle contracts", () => {
-  it("keeps reply as message-only while explicit decisions can trigger workflow", () => {
+  it("keeps reply as message-only while canonical decisions can trigger workflow", () => {
     expect(approvalActionIsMessageOnly("reply")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("reply")).toBe(false);
     expect(approvalActionCanTriggerWorkflow("approve")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("complete")).toBe(true);
     expect(approvalActionCanTriggerWorkflow("terminate")).toBe(true);
-    expect(approvalActionCanTriggerWorkflow("request_changes")).toBe(true);
-    expect(approvalActionCanTriggerWorkflow("revise")).toBe(true);
+    expect(approvalActionCanTriggerWorkflow("return_for_revision")).toBe(true);
+    expect(approvalActionCanTriggerWorkflow(removedRevisionAction("request_changes"))).toBe(false);
+    expect(approvalActionCanTriggerWorkflow(removedRevisionAction("revise"))).toBe(false);
     expect(approvalActionCanTriggerWorkflow("reject")).toBe(false);
   });
 
-  it("does not enable future request-change actions through the default capability matrix", () => {
+  it("declares a single return-for-revision capability by request kind", () => {
     const requirement = resolveApprovalCapabilities("iteration_requirement_plan", "pending");
     const release = resolveApprovalCapabilities("manager_release_report", "pending");
+    const agent = resolveApprovalCapabilities("agent_proposal", "pending");
+    const delegation = resolveApprovalCapabilities("leader_delegation", "pending");
 
     expect(capabilitiesAllow(requirement, "reply")).toBe(true);
-    expect(capabilitiesAllow(requirement, "request_changes")).toBe(false);
-    expect(capabilitiesAllow(requirement, "revise")).toBe(false);
+    expect(capabilitiesAllow(requirement, "return_for_revision")).toBe(true);
+    expect(capabilitiesAllow(requirement, removedRevisionAction("request_changes"))).toBe(false);
+    expect(capabilitiesAllow(requirement, removedRevisionAction("revise"))).toBe(false);
     expect(capabilitiesAllow(release, "complete")).toBe(true);
-    expect(capabilitiesAllow(release, "request_changes")).toBe(false);
+    expect(capabilitiesAllow(release, "return_for_revision")).toBe(true);
+    expect(capabilitiesAllow(release, removedRevisionAction("request_changes"))).toBe(false);
+    expect(capabilitiesAllow(release, removedRevisionAction("revise"))).toBe(false);
+    expect(capabilitiesAllow(agent, "return_for_revision")).toBe(true);
+    expect(capabilitiesAllow(agent, removedRevisionAction("request_changes"))).toBe(false);
+    expect(capabilitiesAllow(agent, removedRevisionAction("revise"))).toBe(false);
+    expect(agent).not.toHaveProperty("requestChanges");
+    expect(agent).not.toHaveProperty("revise");
+    expect(capabilitiesAllow(delegation, removedRevisionAction("request_changes"))).toBe(false);
+    expect(capabilitiesAllow(delegation, removedRevisionAction("revise"))).toBe(false);
   });
 
   it("derives thread state from request lifecycle without splitting revisions into facts", () => {

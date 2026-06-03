@@ -1,5 +1,4 @@
 import type {
-  BlueprintNodeRun,
   BlueprintNodeRunStatus,
   BlueprintRunStatus,
   BlueprintRunSummary,
@@ -11,6 +10,7 @@ import type {
 
 export type RunPollingView = "blueprint" | "runs";
 export type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
+export type RunTranscriptEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 
 export const acknowledgedTerminalRunIdsStorageKey = "hiveward-acknowledged-terminal-run-ids";
 
@@ -54,12 +54,101 @@ export function resolveRunViewDisplayStatus(runView?: BlueprintRunView): Bluepri
   return isActiveRunView(runView) ? "running" : runView.run.status;
 }
 
+export function sortedRunTranscriptEventsForDisplay(runView: BlueprintRunView): RunTranscriptEvent[] {
+  const sessionOrder = buildTranscriptSessionOrder(runView);
+  return [...(runView.nodeSessionTranscriptEvents ?? [])].sort((left, right) => {
+    const sessionOrderDelta = (sessionOrder.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER) -
+      (sessionOrder.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER);
+    if (sessionOrderDelta !== 0) return sessionOrderDelta;
+    const sequenceOrder = toSortableSequence(left.sequence) - toSortableSequence(right.sequence);
+    if (sequenceOrder !== 0) return sequenceOrder;
+    return toSortableTimestamp(left.createdAt) - toSortableTimestamp(right.createdAt);
+  });
+}
+
+export function hasRunTranscriptEvents(runView: BlueprintRunView): boolean {
+  return sortedRunTranscriptEventsForDisplay(runView).length > 0;
+}
+
 function hasActiveNodeRun(runView: BlueprintRunView): boolean {
   return runView.nodeRuns.some((nodeRun) => isActiveNodeRunStatus(nodeRun.status));
 }
 
 function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
   return status === "queued" || status === "running" || status === "waiting_approval";
+}
+
+function toSortableTimestamp(value: string): number {
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function toSortableSequence(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function buildTranscriptSessionOrder(runView: BlueprintRunView): Map<string, number> {
+  const commands = [...(runView.runCommands ?? [])].sort((left, right) =>
+    compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id)
+  );
+  const commandOrderById = new Map(commands.map((command, index) => [command.id, index]));
+  const steps = [...(runView.runCommandSteps ?? [])].sort((left, right) => {
+    const commandOrder = (commandOrderById.get(left.commandId) ?? Number.MAX_SAFE_INTEGER) -
+      (commandOrderById.get(right.commandId) ?? Number.MAX_SAFE_INTEGER);
+    if (commandOrder !== 0) return commandOrder;
+    const revisionOrder = left.revision - right.revision;
+    if (revisionOrder !== 0) return revisionOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
+  });
+  const stepOrderByNodeRunId = new Map<string, number>();
+  steps.forEach((step, index) => {
+    if (step.nodeRunId && !stepOrderByNodeRunId.has(step.nodeRunId)) {
+      stepOrderByNodeRunId.set(step.nodeRunId, index);
+    }
+  });
+
+  const firstEventBySessionId = new Map<string, RunTranscriptEvent>();
+  for (const event of runView.nodeSessionTranscriptEvents ?? []) {
+    const current = firstEventBySessionId.get(event.sessionId);
+    if (!current || compareTranscriptEvents(event, current) < 0) {
+      firstEventBySessionId.set(event.sessionId, event);
+    }
+  }
+
+  const sessionIds = new Set<string>();
+  for (const session of runView.nodeExecutionSessions ?? []) sessionIds.add(session.id);
+  for (const event of runView.nodeSessionTranscriptEvents ?? []) sessionIds.add(event.sessionId);
+
+  const sessionsById = new Map((runView.nodeExecutionSessions ?? []).map((session) => [session.id, session]));
+  const orderedSessionIds = [...sessionIds].sort((leftId, rightId) => {
+    const leftSession = sessionsById.get(leftId);
+    const rightSession = sessionsById.get(rightId);
+    const leftEvent = firstEventBySessionId.get(leftId);
+    const rightEvent = firstEventBySessionId.get(rightId);
+    const leftStepOrder = stepOrderByNodeRunId.get(leftSession?.nodeRunId ?? leftEvent?.nodeRunId ?? "") ?? Number.MAX_SAFE_INTEGER;
+    const rightStepOrder = stepOrderByNodeRunId.get(rightSession?.nodeRunId ?? rightEvent?.nodeRunId ?? "") ?? Number.MAX_SAFE_INTEGER;
+    if (leftStepOrder !== rightStepOrder) return leftStepOrder - rightStepOrder;
+    const timestampOrder = toSortableTimestamp(leftSession?.createdAt ?? leftEvent?.createdAt ?? "") -
+      toSortableTimestamp(rightSession?.createdAt ?? rightEvent?.createdAt ?? "");
+    if (timestampOrder !== 0) return timestampOrder;
+    return leftId.localeCompare(rightId);
+  });
+
+  return new Map(orderedSessionIds.map((sessionId, index) => [sessionId, index]));
+}
+
+function compareTranscriptEvents(left: RunTranscriptEvent, right: RunTranscriptEvent): number {
+  const sequenceOrder = toSortableSequence(left.sequence) - toSortableSequence(right.sequence);
+  if (sequenceOrder !== 0) return sequenceOrder;
+  const timestampOrder = toSortableTimestamp(left.createdAt) - toSortableTimestamp(right.createdAt);
+  if (timestampOrder !== 0) return timestampOrder;
+  return left.id.localeCompare(right.id);
+}
+
+function compareByTimestampThenId(leftDate: string, rightDate: string, leftId: string, rightId: string): number {
+  const timestampOrder = toSortableTimestamp(leftDate) - toSortableTimestamp(rightDate);
+  if (timestampOrder !== 0) return timestampOrder;
+  return leftId.localeCompare(rightId);
 }
 
 function hasFailedNodeRun(runView: BlueprintRunView): boolean {
@@ -133,54 +222,10 @@ export function syncApprovalsForRun(
   current: PendingApprovalItem[],
   runView: BlueprintRunView
 ): PendingApprovalItem[] {
-  const approvalRequests = runView.approvalRequests ?? [];
-  const approvalsForRun = approvalRequests.length > 0
-    ? approvalRequests.map((request) => buildApprovalItemFromRequest(runView, request))
-    : buildLegacyApprovalItems(current, runView);
+  const approvalsForRun = (runView.approvalRequests ?? []).map((request) => buildApprovalItemFromRequest(runView, request));
 
   return [...approvalsForRun, ...current.filter((approval) => approval.blueprintRunId !== runView.run.id)]
     .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
-}
-
-function buildLegacyApprovalItems(current: PendingApprovalItem[], runView: BlueprintRunView): PendingApprovalItem[] {
-  const previousForRun = new Map(
-    current
-      .filter((approval) => approval.blueprintRunId === runView.run.id)
-      .map((approval) => [approval.nodeRunId, approval])
-  );
-  return runView.nodeRuns.flatMap((nodeRun) => {
-    const approval = buildLegacyApprovalItemFromNodeRun(runView, nodeRun);
-    if (approval) return [approval];
-
-    const previous = previousForRun.get(nodeRun.id);
-    if (!previous) return [];
-    if (nodeRun.status === "succeeded") {
-      return [
-        {
-          ...previous,
-          status: "approved" as const,
-          decidedAt: nodeRun.endedAt,
-          canApprove: false,
-          canReply: false,
-          canReject: false
-        }
-      ];
-    }
-    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
-      return [
-        {
-          ...previous,
-          status: "rejected" as const,
-          decidedAt: nodeRun.endedAt,
-          decisionComment: nodeRun.error,
-          canApprove: false,
-          canReply: false,
-          canReject: false
-        }
-      ];
-    }
-    return [];
-  });
 }
 
 function buildApprovalItemFromRequest(
@@ -189,13 +234,12 @@ function buildApprovalItemFromRequest(
 ): PendingApprovalItem {
   const nodeRun = request.nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === request.nodeRunId) : undefined;
   const upstream = readPendingApprovalUpstream(nodeRun?.input);
-  const output = isRecord(nodeRun?.output) && nodeRun.output.approvalType === "agent" ? nodeRun.output : undefined;
   const replies = mergePendingApprovalReplies(
     readApprovalFactReplies(runView, request),
-    readApprovalDecisionReplies(runView, request.id),
-    readPendingApprovalReplies(output?.replies)
+    readApprovalDecisionReplies(runView, request.id)
   );
-  const selectedReplyId = readOptionalString(output?.selectedReplyId);
+  const selectedReplyId = request.selectedReplyId ?? null;
+  const discussion = readApprovalRequestDiscussion(runView, request.id);
   const isPending = request.status === "pending";
   return {
     approvalRequestId: request.id,
@@ -211,46 +255,17 @@ function buildApprovalItemFromRequest(
     startedAt: runView.run.startedAt,
     requestedAt: request.requestedAt,
     status: isPending ? nodeRun?.status === "running" ? "replying" : "pending" : request.status,
-    reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+    reviewOutput: request.body,
+    discussion,
     ...(replies ? { replies } : {}),
-    ...(selectedReplyId ? { selectedReplyId } : {}),
+    selectedReplyId,
     canApprove: request.capabilities.approve,
     canReject: request.capabilities.reject,
     canReply: request.capabilities.reply,
     canComplete: request.capabilities.complete,
     canTerminate: request.capabilities.terminate,
+    canReturnForRevision: request.capabilities.returnForRevision === true,
     decidedAt: isPending ? undefined : request.updatedAt,
-    ...(upstream ? { upstream } : {})
-  };
-}
-
-function buildLegacyApprovalItemFromNodeRun(
-  runView: BlueprintRunView,
-  nodeRun: BlueprintNodeRun
-): PendingApprovalItem | undefined {
-  const output = isRecord(nodeRun.output) ? nodeRun.output : undefined;
-  if (!output || output.approvalType !== "agent") return undefined;
-  if (nodeRun.status !== "waiting_approval" && nodeRun.status !== "running") return undefined;
-
-  const upstream = readPendingApprovalUpstream(nodeRun.input);
-  const replies = readPendingApprovalReplies(output.replies);
-  const isReplying = nodeRun.status === "running";
-  return {
-    blueprintId: runView.run.blueprintId,
-    blueprintName: runView.run.blueprintName,
-    blueprintRunId: runView.run.id,
-    nodeRunId: nodeRun.id,
-    nodeId: nodeRun.nodeId,
-    nodeLabel: nodeRun.nodeLabel,
-    startedBy: runView.run.startedBy,
-    startedAt: runView.run.startedAt,
-    requestedAt: nodeRun.startedAt ?? nodeRun.queuedAt,
-    status: isReplying ? "replying" : "pending",
-    ...("reviewOutput" in output ? { reviewOutput: output.reviewOutput } : {}),
-    ...(replies ? { replies } : {}),
-    canApprove: !isReplying,
-    canReject: !isReplying,
-    canReply: !isReplying,
     ...(upstream ? { upstream } : {})
   };
 }
@@ -261,21 +276,6 @@ function sortRunSummaries(summaries: BlueprintRunSummary[]): BlueprintRunSummary
 
 function readOptionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function readPendingApprovalReplies(value: unknown): PendingApprovalItem["replies"] {
-  if (!Array.isArray(value)) return undefined;
-  const replies = value.flatMap((item) => {
-    if (!isRecord(item)) return [];
-    const id = readOptionalString(item.id);
-    const role: "assistant" | "user" | undefined =
-      item.role === "assistant" || item.role === "user" ? item.role : undefined;
-    const body = readOptionalString(item.body);
-    const createdAt = readOptionalString(item.createdAt);
-    if (!id || !role || !body || !createdAt) return [];
-    return [{ id, role, body, createdAt }];
-  });
-  return replies.length ? replies : undefined;
 }
 
 function readApprovalFactReplies(runView: BlueprintRunView, request: ApprovalRequest): PendingApprovalItem["replies"] {
@@ -290,6 +290,7 @@ function pendingApprovalReplyFromApprovalReply(reply: ApprovalReply): NonNullabl
   return {
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
     body: reply.body,
     createdAt: reply.createdAt
   };
@@ -301,11 +302,26 @@ function readApprovalDecisionReplies(runView: BlueprintRunView, approvalRequestI
     return [{
       id: decision.id,
       role: "user" as const,
+      purpose: "message" as const,
       body: decision.comment,
       createdAt: decision.createdAt
     }];
   });
   return replies.length ? replies : undefined;
+}
+
+function readApprovalRequestDiscussion(
+  runView: BlueprintRunView,
+  approvalRequestId: string
+): PendingApprovalItem["discussion"] {
+  return (runView.approvalRequestDiscussions ?? [])
+    .find((candidate) => candidate.approvalRequestId === approvalRequestId)
+    ?.discussion ?? {
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "backend_discussion_projection_missing"
+    };
 }
 
 function mergePendingApprovalReplies(

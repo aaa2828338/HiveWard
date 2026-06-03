@@ -2,43 +2,28 @@ import { describe, expect, it } from "vitest";
 import type { ApprovalRequest, BlueprintRunStatus, BlueprintRunSummary, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
 import {
   acknowledgedTerminalRunIdsStorageKey,
+  hasRunTranscriptEvents,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
   resolveRunViewStatus,
   selectRunPollingTarget,
   shouldShowBlueprintWorkspaceRunState,
+  sortedRunTranscriptEventsForDisplay,
   syncApprovalsForRun,
   writeAcknowledgedTerminalRunIds
 } from "./run-state";
 
 describe("run state sync", () => {
-  it("derives pending inbox items from a waiting Agent approval in run detail", () => {
+  it("does not synthesize pending approvals from legacy node output", () => {
     const runView = createRunView("waiting_approval");
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals).toEqual([
-      {
-        blueprintId: "blueprint-1",
-        blueprintName: "Blueprint 1",
-        blueprintRunId: "run-1",
-        nodeRunId: "node-run-agent",
-        nodeId: "agent",
-        nodeLabel: "Agent",
-        startedBy: "tester",
-        startedAt: "2026-05-21T01:00:00.000Z",
-        requestedAt: "2026-05-21T01:02:00.000Z",
-        status: "pending",
-        reviewOutput: "draft answer",
-        canApprove: true,
-        canReply: true,
-        canReject: true
-      }
-    ]);
+    expect(approvals).toEqual([]);
   });
 
-  it("derives Agent approval reply state from a waiting agent node", () => {
+  it("ignores legacy node output replies when request facts are missing", () => {
     const runView = createRunView("waiting_approval");
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
@@ -67,32 +52,10 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]).toMatchObject({
-      nodeId: "delivery",
-      nodeLabel: "Delivery",
-      reviewOutput: "draft answer",
-      status: "pending",
-      canApprove: true,
-      canReply: true,
-      canReject: true,
-      replies: [
-        {
-          id: "reply-1",
-          role: "user",
-          body: "Tighten the wording.",
-          createdAt: "2026-05-21T01:03:00.000Z"
-        },
-        {
-          id: "reply-2",
-          role: "assistant",
-          body: "final answer",
-          createdAt: "2026-05-21T01:04:00.000Z"
-        }
-      ]
-    });
+    expect(approvals).toEqual([]);
   });
 
-  it("carries previous node output into pending inbox items", () => {
+  it("does not project upstream from legacy node output without approval requests", () => {
     const previousOutput = {
       title: "Launch decision",
       body: "Ship the approved HTML page to the team channel."
@@ -101,17 +64,10 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]?.upstream).toEqual([
-      {
-        nodeId: "summary",
-        nodeLabel: "Summary",
-        nodeRunId: "node-run-summary",
-        output: previousOutput
-      }
-    ]);
+    expect(approvals).toEqual([]);
   });
 
-  it("keeps an approval visible while a reply rerun is in progress", () => {
+  it("does not keep a legacy harness approval visible while the node is running", () => {
     const runView = createRunView("running");
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
@@ -131,22 +87,7 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]).toMatchObject({
-      nodeRunId: "node-run-agent",
-      status: "replying",
-      reviewOutput: "draft answer",
-      canApprove: false,
-      canReply: false,
-      canReject: false,
-      replies: [
-        {
-          id: "reply-1",
-          role: "user",
-          body: "Tighten the wording.",
-          createdAt: "2026-05-21T01:03:00.000Z"
-        }
-      ]
-    });
+    expect(approvals).toEqual([]);
   });
 
   it("keeps replied lifecycle approvals distinct from rejected approvals", () => {
@@ -211,6 +152,47 @@ describe("run state sync", () => {
           createdAt: "2026-05-21T01:05:00.000Z"
         }
       ]
+    });
+  });
+
+  it("maps return-for-revision capability into pending approval items", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-change",
+        kind: "agent_proposal",
+        status: "pending",
+        capabilities: {
+          approve: true,
+          reject: true,
+          reply: true,
+          complete: false,
+          terminate: false,
+          returnForRevision: true
+        }
+      }),
+      createApprovalRequest({
+        id: "approval-plan-revise",
+        kind: "iteration_requirement_plan",
+        status: "pending",
+        capabilities: {
+          approve: true,
+          reject: true,
+          reply: true,
+          complete: false,
+          terminate: false,
+          returnForRevision: true
+        }
+      })
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-agent-change")).toMatchObject({
+      canReturnForRevision: true
+    });
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-plan-revise")).toMatchObject({
+      canReturnForRevision: true
     });
   });
 
@@ -296,38 +278,227 @@ describe("run state sync", () => {
       {
         id: "reply-fact-1",
         role: "user",
+        purpose: "message",
         body: "Give me a shippable version.",
         createdAt: "2026-05-21T01:06:00.000Z"
       }
     ]);
   });
 
-  it("keeps an approved approval visible but non-actionable after completion", () => {
-    const existing: PendingApprovalItem[] = [
+  it("uses ApprovalRequest selectedReplyId instead of node output selection", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent",
+        selectedReplyId: "reply-candidate"
+      })
+    ];
+    runView.approvalReplies = [
       {
-        blueprintId: "blueprint-1",
-        blueprintName: "Blueprint 1",
-        blueprintRunId: "run-1",
+        id: "reply-candidate",
+        threadId: "approval-thread-agent-1",
+        approvalRequestId: "approval-agent-1",
+        actor: "agent",
+        purpose: "candidate",
+        body: "candidate answer",
+        createdAt: "2026-05-21T01:07:00.000Z"
+      }
+    ];
+    runView.nodeRuns[0] = {
+      ...runView.nodeRuns[0]!,
+      output: {
+        approvalType: "agent",
+        reviewOutput: "draft answer",
+        selectedReplyId: "legacy-node-selected",
+        replies: [
+          {
+            id: "reply-message",
+            role: "assistant",
+            body: "ordinary message",
+            createdAt: "2026-05-21T01:06:00.000Z"
+          },
+          {
+            id: "reply-candidate",
+            role: "assistant",
+            purpose: "candidate",
+            body: "candidate answer",
+            createdAt: "2026-05-21T01:07:00.000Z"
+          }
+        ]
+      }
+    };
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.selectedReplyId).toBe("reply-candidate");
+    expect(approvals[0]?.replies).toEqual([
+      {
+        id: "reply-candidate",
+        role: "assistant",
+        purpose: "candidate",
+        body: "candidate answer",
+        createdAt: "2026-05-21T01:07:00.000Z"
+      }
+    ]);
+    expect(approvals[0]?.replies?.[0]).not.toHaveProperty("selected");
+  });
+
+  it("uses backend-projected approval discussion capabilities", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+    runView.approvalRequestDiscussions = [
+      {
+        approvalRequestId: "approval-agent-1",
+        discussion: {
+          mode: "executor",
+          canStreamReply: true,
+          canCreateCandidate: true,
+          executorKind: "agent_approval"
+        }
+      }
+    ];
+    runView.approvalDiscussionBindings = [
+      {
+        approvalRequestId: "approval-agent-1",
+        threadId: "approval-thread-agent-1",
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: "agent",
+        executorNodeRunId: "node-run-agent",
+        executorSessionId: "session-agent-1",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      }
+    ];
+    runView.nodeExecutionSessions = [
+      {
+        id: "session-agent-1",
+        runId: "run-1",
         nodeRunId: "node-run-agent",
         nodeId: "agent",
-        nodeLabel: "Agent",
-        startedBy: "tester",
-        startedAt: "2026-05-21T01:00:00.000Z",
-        requestedAt: "2026-05-21T01:02:00.000Z",
-        reviewOutput: "draft answer",
-        canApprove: true,
-        canReply: true,
-        canReject: true
+        harnessId: "openclaw",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:02:00.000Z"
       }
     ];
 
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "executor",
+      canStreamReply: true,
+      canCreateCandidate: true,
+      executorKind: "agent_approval"
+    });
+  });
+
+  it("does not resolve raw approval discussion bindings in the browser", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-raw",
+        threadId: "approval-thread-agent-raw",
+        kind: "agent_proposal",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+    runView.approvalRequestDiscussions = [
+      {
+        approvalRequestId: "approval-agent-raw",
+        discussion: {
+          mode: "none",
+          canStreamReply: false,
+          canCreateCandidate: false,
+          reason: "executor_session_unavailable"
+        }
+      }
+    ];
+    runView.approvalDiscussionBindings = [
+      {
+        approvalRequestId: "approval-agent-raw",
+        threadId: "approval-thread-agent-raw",
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: "agent",
+        executorNodeRunId: "node-run-agent",
+        executorSessionId: "session-agent-raw",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      }
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_session_unavailable"
+    });
+  });
+
+  it("marks missing approval discussion projection unavailable instead of synthesizing message-only", () => {
+    const runView = createRunView("waiting_approval");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-legacy-1",
+        kind: "generic_message",
+        nodeRunId: "node-run-agent"
+      })
+    ];
+
+    const approvals = syncApprovalsForRun([], runView);
+
+    expect(approvals[0]?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "backend_discussion_projection_missing"
+    });
+    expect(approvals[0]?.selectedReplyId).toBeNull();
+  });
+
+  it("keeps an approved request-backed approval visible but non-actionable after completion", () => {
     const runView = createRunView("succeeded");
+    runView.approvalRequests = [
+      createApprovalRequest({
+        id: "approval-agent-1",
+        kind: "agent_proposal",
+        status: "approved",
+        nodeRunId: "node-run-agent",
+        body: "draft answer",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      })
+    ];
     runView.nodeRuns[0] = {
       ...runView.nodeRuns[0]!,
       endedAt: "2026-05-21T01:05:00.000Z"
     };
 
-    expect(syncApprovalsForRun(existing, runView)[0]).toMatchObject({
+    expect(syncApprovalsForRun([], runView)[0]).toMatchObject({
+      approvalRequestId: "approval-agent-1",
       nodeRunId: "node-run-agent",
       status: "approved",
       decidedAt: "2026-05-21T01:05:00.000Z",
@@ -482,6 +653,121 @@ describe("run state sync", () => {
 
     expect([...readAcknowledgedTerminalRunIds(storage)]).toEqual([]);
   });
+
+  it("sorts transcript events by command step order before session id fallback", () => {
+    const runView = createRunView("succeeded");
+    runView.runCommands = [
+      {
+        id: "command-1",
+        commandKey: "run:run-1:root",
+        blueprintId: "blueprint-1",
+        runId: "run-1",
+        kind: "regular_run",
+        status: "succeeded",
+        currentRevision: 1,
+        createdAt: "2026-05-21T01:00:00.000Z",
+        updatedAt: "2026-05-21T01:06:00.000Z"
+      }
+    ];
+    runView.runCommandSteps = [
+      {
+        id: "step-b",
+        commandId: "command-1",
+        stepKey: "run:run-1:agent-b",
+        runId: "run-1",
+        revision: 1,
+        mode: "node_execution",
+        nodeId: "agent-b",
+        nodeRunId: "node-run-b",
+        status: "succeeded",
+        createdAt: "2026-05-21T01:01:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      },
+      {
+        id: "step-a",
+        commandId: "command-1",
+        stepKey: "run:run-1:agent-a",
+        runId: "run-1",
+        revision: 2,
+        mode: "node_execution",
+        nodeId: "agent-a",
+        nodeRunId: "node-run-a",
+        status: "succeeded",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      }
+    ];
+    runView.nodeExecutionSessions = [
+      {
+        id: "session-b",
+        runId: "run-1",
+        nodeRunId: "node-run-b",
+        nodeId: "agent-b",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "completed",
+        createdAt: "2026-05-21T01:03:00.000Z",
+        updatedAt: "2026-05-21T01:03:00.000Z"
+      },
+      {
+        id: "session-a",
+        runId: "run-1",
+        nodeRunId: "node-run-a",
+        nodeId: "agent-a",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "completed",
+        createdAt: "2026-05-21T01:02:00.000Z",
+        updatedAt: "2026-05-21T01:05:00.000Z"
+      }
+    ];
+    runView.nodeSessionTranscriptEvents = [
+      createTranscriptEvent({
+        id: "session-b-first",
+        sessionId: "session-b",
+        nodeRunId: "node-run-b",
+        sequence: 1,
+        content: "B first",
+        createdAt: "2026-05-21T01:03:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-no-sequence-late",
+        sessionId: "session-a",
+        nodeRunId: "node-run-a",
+        sequence: undefined as unknown as number,
+        content: "A late",
+        createdAt: "2026-05-21T01:05:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-first",
+        sessionId: "session-a",
+        nodeRunId: "node-run-a",
+        sequence: 1,
+        content: "A first",
+        createdAt: "2026-05-21T01:02:00.000Z"
+      }),
+      createTranscriptEvent({
+        id: "session-a-no-sequence-early",
+        sessionId: "session-a",
+        nodeRunId: "node-run-a",
+        sequence: undefined as unknown as number,
+        content: "A early",
+        createdAt: "2026-05-21T01:04:00.000Z"
+      })
+    ];
+
+    expect(hasRunTranscriptEvents(runView)).toBe(true);
+    expect(sortedRunTranscriptEventsForDisplay(runView).map((event) => event.id)).toEqual([
+      "session-b-first",
+      "session-a-first",
+      "session-a-no-sequence-early",
+      "session-a-no-sequence-late"
+    ]);
+  });
+
+  it("detects runs without transcript facts", () => {
+    expect(hasRunTranscriptEvents(createRunView("succeeded"))).toBe(false);
+  });
 });
 
 function createRunView(
@@ -582,6 +868,23 @@ function toRunStatus(nodeStatus: "waiting_approval" | "succeeded" | "running" | 
   if (nodeStatus === "failed") return "failed";
   if (nodeStatus === "succeeded") return "succeeded";
   return nodeStatus;
+}
+
+function createTranscriptEvent(
+  overrides: Partial<NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number]>
+): NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number] {
+  return {
+    id: "transcript-event-1",
+    sessionId: "session-a",
+    sequence: 1,
+    runId: "run-1",
+    nodeRunId: "node-run-agent",
+    role: "assistant",
+    kind: "assistant_message",
+    content: "Transcript content",
+    createdAt: "2026-05-21T01:02:00.000Z",
+    ...overrides
+  };
 }
 
 function createMemoryStorage(): Pick<Storage, "getItem" | "setItem"> {

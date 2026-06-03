@@ -2,6 +2,13 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import type {
+  ApprovalDiscussionBinding,
+  NodeExecutionSession,
+  NodeSessionTranscriptEvent,
+  RunCommand,
+  RunCommandStep
+} from "@hiveward/shared";
 import { FileHivewardStore } from "../fileHivewardStore";
 import {
   contractNow,
@@ -41,7 +48,8 @@ describe("JSON to SQLite migration", () => {
     });
     await source.upsertNodeRun(nodeRun);
     await source.appendEvent(createContractEvent(run.id, nodeRun.id, 1));
-    await source.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+    const approval = await source.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+    await seedMigrationExecutionFacts(source, run.id, nodeRun, approval.id);
     await source.upsertArtifact(createContractArtifact(run.id, nodeRun.id));
     await source.upsertAgentHumanReport(createContractHumanReport(run.id, nodeRun.id));
     await source.upsertAgentHandoff(createContractHandoff(run.id, nodeRun.id));
@@ -53,7 +61,101 @@ describe("JSON to SQLite migration", () => {
     expect(migration.counts.runs).toBeGreaterThanOrEqual(1);
 
     const verification = await verifySqliteMigration({ dataDir, sqlitePath });
-    expect(verification).toMatchObject({ ok: true, mismatches: [] });
+    expect(verification).toMatchObject({
+      ok: true,
+      mismatches: [],
+      source: expect.objectContaining({
+        runCommands: 1,
+        runCommandSteps: 1,
+        nodeExecutionSessions: 1,
+        nodeSessionTranscriptEvents: 1,
+        approvalDiscussionBindings: 1
+      }),
+      sqlite: expect.objectContaining({
+        runCommands: 1,
+        runCommandSteps: 1,
+        nodeExecutionSessions: 1,
+        nodeSessionTranscriptEvents: 1,
+        approvalDiscussionBindings: 1
+      })
+    });
+  });
+
+  it("backfills historical pending approvals with canonical unavailable discussion bindings", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-approval-binding-backfill-"));
+    const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await source.init();
+    const blueprint = await source.saveBlueprint(createContractBlueprint());
+    const run = await source.createBlueprintRun(blueprint, "migration-user");
+    const nodeRun = createContractNodeRun(run, { result: { migrated: true } }, "waiting_approval");
+    await source.upsertNodeRun(nodeRun);
+    const approval = await source.upsertApprovalRequest({
+      ...createContractApproval(run.id, nodeRun.id),
+      id: "approval-missing-discussion-binding",
+      threadId: "thread-missing-discussion-binding"
+    });
+
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+
+    const sqlite = new SqliteHivewardStore(sqlitePath, { seedDefaults: false });
+    await sqlite.init();
+    try {
+      const view = await sqlite.getRunView(run.id);
+      expect(view?.approvalDiscussionBindings).toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          threadId: approval.threadId,
+          mode: "none",
+          route: "none",
+          canStreamReply: false,
+          canCreateCandidate: false,
+          reason: "historical_discussion_binding_unavailable",
+          resolverVersion: 1
+        })
+      ]);
+      expect(view?.approvalRequestDiscussions).toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          discussion: {
+            mode: "none",
+            canStreamReply: false,
+            canCreateCandidate: false,
+            reason: "historical_discussion_binding_unavailable"
+          }
+        })
+      ]);
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it("fails verification when migrated execution facts are missing", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-migration-execution-fact-drift-"));
+    const source = new FileHivewardStore(join(dataDir, "hiveward-store.json"));
+    await source.init();
+    const blueprint = await source.saveBlueprint(createContractBlueprint());
+    const run = await source.createBlueprintRun(blueprint, "migration-user");
+    const nodeRun = createContractNodeRun(run, { result: { migrated: true } });
+    await source.upsertNodeRun(nodeRun);
+    const approval = await source.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+    const facts = await seedMigrationExecutionFacts(source, run.id, nodeRun, approval.id);
+
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    await migrateJsonToSqlite({ dataDir, sqlitePath });
+    const driver = new SqliteDriver(sqlitePath);
+    try {
+      driver.db.prepare("DELETE FROM run_command_steps WHERE id = ?").run(facts.step.id);
+    } finally {
+      driver.close();
+    }
+
+    const verification = await verifySqliteMigration({ dataDir, sqlitePath });
+    expect(verification.ok).toBe(false);
+    expect(verification.mismatches).toContain("count:runCommandSteps: source=1 sqlite=0");
+    expect(verification.identityMismatches).toEqual(expect.arrayContaining([
+      expect.stringContaining("identity:runCommandSteps")
+    ]));
   });
 
   it("preserves a legacy artifact nodeRunId that has no matching node_run row", async () => {
@@ -244,3 +346,88 @@ describe("JSON to SQLite migration", () => {
     expect(existsSync(join(dataDir, "artifacts", "objects", "sha256", "aa", "referenced.md"))).toBe(true);
   });
 });
+
+async function seedMigrationExecutionFacts(
+  source: FileHivewardStore,
+  runId: string,
+  nodeRun: ReturnType<typeof createContractNodeRun>,
+  approvalRequestId: string
+): Promise<{
+  command: RunCommand;
+  step: RunCommandStep;
+  session: NodeExecutionSession;
+  transcriptEvent: NodeSessionTranscriptEvent;
+  binding: ApprovalDiscussionBinding;
+}> {
+  const command: RunCommand = {
+    id: "run-command-migration",
+    commandKey: `migration:${runId}:execute`,
+    blueprintId: nodeRun.blueprintId,
+    runId,
+    kind: "regular_run",
+    status: "succeeded",
+    currentRevision: 1,
+    currentStep: "node_execution",
+    createdAt: contractNow,
+    updatedAt: contractNow
+  };
+  await source.createRunCommandIfAbsent(command);
+  const step: RunCommandStep = {
+    id: "run-command-step-migration",
+    commandId: command.id,
+    stepKey: `${command.commandKey}:node:${nodeRun.id}`,
+    runId,
+    revision: 1,
+    mode: "node_execution",
+    nodeId: nodeRun.nodeId,
+    nodeRunId: nodeRun.id,
+    status: "succeeded",
+    createdAt: contractNow,
+    updatedAt: contractNow
+  };
+  await source.createRunCommandStepIfAbsent(step);
+  const session: NodeExecutionSession = {
+    id: "node-execution-session-migration",
+    runId,
+    nodeRunId: nodeRun.id,
+    nodeId: nodeRun.nodeId,
+    agentSeatId: "migration-agent",
+    harnessId: "codex",
+    nativeSessionId: "native-migration",
+    policy: "preserve_across_rounds",
+    status: "completed",
+    createdAt: contractNow,
+    updatedAt: contractNow,
+    lastUsedAt: contractNow
+  };
+  await source.createNodeExecutionSession(session);
+  const transcriptEvent = await source.appendNodeSessionTranscriptEvent({
+    id: "node-session-transcript-migration",
+    sessionId: session.id,
+    runId,
+    nodeRunId: nodeRun.id,
+    role: "runtime",
+    kind: "runtime_done",
+    content: "Runtime completed.",
+    createdAt: contractNow
+  });
+  const binding: ApprovalDiscussionBinding = {
+    approvalRequestId,
+    threadId: approvalRequestId,
+    mode: "executor",
+    route: "agent_approval",
+    executorActor: "agent",
+    executorKind: "agent_approval",
+    executorNodeId: nodeRun.nodeId,
+    executorNodeRunId: nodeRun.id,
+    executorSessionId: session.id,
+    runtimeId: "codex",
+    canStreamReply: true,
+    canCreateCandidate: true,
+    resolverVersion: 1,
+    createdAt: contractNow,
+    updatedAt: contractNow
+  };
+  await source.createApprovalDiscussionBinding(binding);
+  return { command, step, session, transcriptEvent, binding };
+}

@@ -13,7 +13,7 @@ import { mapCodexSandbox, normalizeTaskRuntimeAccessPolicy } from "./permissions
 import { buildSdkChatPrompt, mapCodexReasoningEffort } from "./chat-envelope";
 import { buildPromptEnvelope, toCodexOutputSchema, validateOutputSchema } from "./prompt-envelope";
 import { runtimeLabelFromRecord } from "./runtime-state";
-import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
+import { buildRuntimeResumeProof, createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { assertGitWorkspace, resolveSdkWorkingDirectory } from "./workspace";
 
@@ -120,7 +120,8 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     const now = new Date().toISOString();
     const taskId = `codex-task-${nanoid(10)}`;
     const runId = `codex-run-${nanoid(10)}`;
-    const sessionKey = `codex-session-${input.nodeRunId}`;
+    const sessionKey = input.nativeSessionId ?? `codex-session-${input.nodeRunId}`;
+    const resumeAttempted = Boolean(input.nativeSessionId);
 
     let workingDirectory: string;
     try {
@@ -128,7 +129,22 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
       assertGitWorkspace(workingDirectory, this.options.workspaceRoot);
     } catch (error) {
-      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId, "started");
+    }
+
+    if (input.nativeSessionId) {
+      const codex = this.createCodexClient();
+      if (!codex.resumeThread) {
+        return this.failedStart(
+          taskId,
+          runId,
+          sessionKey,
+          "native_resume_unsupported: Codex runtime cannot prove native task resume for this session.",
+          now,
+          input.nativeSessionId,
+          "started"
+        );
+      }
     }
 
     const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
@@ -168,6 +184,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: "codex",
+      ...buildRuntimeResumeProof(input, undefined, { resumeAttempted, resumable: false }),
       status: "running",
       updatedAt: now
     };
@@ -209,25 +226,45 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
 
       const outputSchema = toCodexOutputSchema(input.outputSchema);
       const codex = this.createCodexClient();
-      const thread = codex.startThread({
+      const threadOptions: ThreadOptions = {
         model: input.modelId,
         workingDirectory,
         sandboxMode: mapCodexSandbox(permissionProfile),
         approvalPolicy: "never",
         networkAccessEnabled: runtimeAccessPolicy.network === "enabled",
         webSearchMode: runtimeAccessPolicy.webSearch
-      });
+      };
+      if (input.nativeSessionId && !codex.resumeThread) {
+        return createTerminalTaskResult({
+          taskId,
+          runId,
+          sessionKey,
+          ...buildRuntimeResumeProof(input, undefined, { resumeAttempted: false, resumable: false }),
+          source: "codex",
+          status: "failed",
+          error: "native_resume_unsupported: Codex runtime cannot prove native task resume for this session."
+        });
+      }
+      const thread = input.nativeSessionId
+        ? codex.resumeThread!(input.nativeSessionId, threadOptions)
+        : codex.startThread(threadOptions);
       const turn = await thread.run(buildPromptEnvelope({ ...input, outputSchema }), {
         outputSchema,
         signal: abortController.signal
       });
-      sessionKey = thread.id ?? sessionKey;
+      const providerSessionId = thread.id ?? undefined;
+      sessionKey = providerSessionId ?? sessionKey;
+      const proof = buildRuntimeResumeProof(input, providerSessionId, {
+        resumeAttempted: Boolean(input.nativeSessionId),
+        resumable: Boolean(providerSessionId)
+      });
 
       if (!validateOutputSchema(turn.finalResponse, input.outputSchema)) {
         return createTerminalTaskResult({
           taskId,
           runId,
           sessionKey,
+          ...proof,
           source: "codex",
           status: "failed",
           error: formatAgentSdkError("invalid_output", "SDK output does not match outputSchema."),
@@ -239,6 +276,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...proof,
         source: "codex",
         status: "succeeded",
         output: turn.finalResponse,
@@ -253,6 +291,10 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...buildRuntimeResumeProof(input, undefined, {
+          resumeAttempted: Boolean(input.nativeSessionId),
+          resumable: false
+        }),
         source: "codex",
         status: "failed",
         error: formatAgentSdkProviderError("Codex", error)
@@ -260,11 +302,21 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  private failedStart(taskId: string, runId: string, sessionKey: string, error: string, updatedAt: string): StartedAgentTaskResult {
+  private failedStart(
+    taskId: string,
+    runId: string,
+    sessionKey: string,
+    error: string,
+    updatedAt: string,
+    nativeSessionId?: string,
+    resumeMode: StartedAgentTaskResult["resumeMode"] = "started"
+  ): StartedAgentTaskResult {
     return {
       taskId,
       runId,
       sessionKey,
+      ...buildRuntimeResumeProof({ nativeSessionId }, undefined, { resumeAttempted: false, resumable: false }),
+      resumeMode,
       source: "codex",
       status: "failed",
       error,
@@ -277,6 +329,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
+      resumeMode: "started",
       source: "codex",
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")

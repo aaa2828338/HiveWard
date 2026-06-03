@@ -1,4 +1,4 @@
-import type { AgentTaskResult, RuntimeExecutionStatus, RuntimeUsageFact, WaitForAgentTaskInput } from "@hiveward/shared";
+import type { AgentTaskResult, RuntimeExecutionStatus, RuntimeUsageFact, StartAgentTaskInput, WaitForAgentTaskInput } from "@hiveward/shared";
 import type { AgentSdkTaskRecord } from "./types";
 
 export class AgentSdkTaskRegistry {
@@ -59,6 +59,14 @@ export function createTerminalTaskResult({
   taskId,
   runId,
   sessionKey,
+  nativeSessionId,
+  resumeMode = "started",
+  resumeRequested = false,
+  resumeAttempted = false,
+  resumeProven = false,
+  providerSessionId,
+  providerStartedNewSession = false,
+  resumable = false,
   source,
   status,
   error,
@@ -69,6 +77,14 @@ export function createTerminalTaskResult({
   taskId: string;
   runId: string;
   sessionKey: string;
+  nativeSessionId?: string;
+  resumeMode?: AgentTaskResult["resumeMode"];
+  resumeRequested?: boolean;
+  resumeAttempted?: boolean;
+  resumeProven?: boolean;
+  providerSessionId?: string;
+  providerStartedNewSession?: boolean;
+  resumable?: boolean;
   source: AgentTaskResult["source"];
   status: RuntimeExecutionStatus;
   error?: string;
@@ -80,11 +96,64 @@ export function createTerminalTaskResult({
     taskId,
     runId,
     sessionKey,
+    nativeSessionId,
+    resumeMode,
+    resumeRequested,
+    resumeAttempted,
+    resumeProven,
+    providerSessionId,
+    providerStartedNewSession,
+    resumable,
     source,
     status,
     error,
     output,
     usage,
     updatedAt
+  };
+}
+
+export function buildRuntimeResumeProof(
+  input: Pick<StartAgentTaskInput, "nativeSessionId">,
+  providerSessionId: string | undefined,
+  options: { resumeAttempted?: boolean; resumable?: boolean } = {}
+): Pick<
+  AgentTaskResult,
+  "nativeSessionId" |
+    "resumeMode" |
+    "resumeRequested" |
+    "resumeAttempted" |
+    "resumeProven" |
+    "providerSessionId" |
+    "providerStartedNewSession" |
+    "resumable"
+> {
+  const resumeRequested = Boolean(input.nativeSessionId);
+  const resumeAttempted = resumeRequested && options.resumeAttempted === true;
+  const providerStartedNewSession = Boolean(
+    resumeRequested &&
+    providerSessionId &&
+    providerSessionId !== input.nativeSessionId
+  );
+  const resumeProven = Boolean(
+    resumeRequested &&
+    resumeAttempted &&
+    providerSessionId &&
+    providerSessionId === input.nativeSessionId
+  );
+  const nativeSessionId = !resumeRequested || resumeProven
+    ? providerSessionId
+    : undefined;
+  return {
+    nativeSessionId,
+    resumeMode: resumeProven ? "resumed" : "started",
+    resumeRequested,
+    resumeAttempted,
+    resumeProven,
+    providerSessionId,
+    providerStartedNewSession,
+    resumable: providerStartedNewSession
+      ? false
+      : options.resumable ?? Boolean(providerSessionId)
   };
 }

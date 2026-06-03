@@ -23,11 +23,12 @@ describe("SqliteDriver schema migrations", () => {
     const first = new SqliteDriver(sqlitePath);
     const v1 = sqliteMigrations[0]!;
     for (const statement of v1.up) first.db.exec(statement);
-    first.db.prepare(
+    const insertApproval = first.db.prepare(
       `INSERT INTO approval_requests (
         id, run_id, kind, status, title, body, revision, capabilities_json, requested_by_json, requested_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+    );
+    insertApproval.run(
       "approval-v1",
       "run-v1",
       "agent_proposal",
@@ -40,14 +41,55 @@ describe("SqliteDriver schema migrations", () => {
       "2026-05-29T00:00:00.000Z",
       "2026-05-29T00:00:00.000Z"
     );
-    first.db.prepare(
+    insertApproval.run(
+      "approval-v1-requirement",
+      "run-v1",
+      "iteration_requirement_plan",
+      "pending",
+      "Review v1 requirement",
+      "Approve the v1 requirement.",
+      1,
+      JSON.stringify({ approve: true, reject: true, reply: true, complete: false, terminate: false, revise: true }),
+      JSON.stringify({ type: "node", label: "Manager" }),
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z"
+    );
+    insertApproval.run(
+      "approval-v1-release",
+      "run-v1",
+      "manager_release_report",
+      "pending",
+      "Review v1 release",
+      "Approve the v1 release.",
+      1,
+      JSON.stringify({ approve: true, reject: true, reply: true, complete: true, terminate: false, revise: true }),
+      JSON.stringify({ type: "node", label: "Manager" }),
+      "2026-05-29T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z"
+    );
+    const insertReply = first.db.prepare(
       "INSERT INTO approval_replies (id, approval_request_id, message, actor, created_at) VALUES (?, ?, ?, ?, ?)"
-    ).run(
+    );
+    insertReply.run(
       "reply-v1",
       "approval-v1",
       "Please revise.",
       "user",
       "2026-05-29T00:01:00.000Z"
+    );
+    insertReply.run(
+      "reply-v1-requirement",
+      "approval-v1-requirement",
+      "Revise the requirement.",
+      "user",
+      "2026-05-29T00:02:00.000Z"
+    );
+    insertReply.run(
+      "reply-v1-release",
+      "approval-v1-release",
+      "Start another round from this feedback.",
+      "user",
+      "2026-05-29T00:03:00.000Z"
     );
     first.db.prepare(
       "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)"
@@ -74,10 +116,80 @@ describe("SqliteDriver schema migrations", () => {
     }).metadata_json)).toMatchObject({
       legacySource: "approval_replies_v1",
       legacyAction: "reply",
-      legacyMeaning: "message_only",
+      legacyMeaning: "legacy_agent_rerun_feedback",
       requestKind: "agent_proposal"
     });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1-requirement") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "legacy_requirement_revision_feedback",
+      requestKind: "iteration_requirement_plan"
+    });
+    expect(JSON.parse((upgraded.db.prepare("SELECT metadata_json FROM approval_replies WHERE id = ?").get("reply-v1-release") as {
+      metadata_json: string;
+    }).metadata_json)).toMatchObject({
+      legacySource: "approval_replies_v1",
+      legacyAction: "reply",
+      legacyMeaning: "legacy_release_report_feedback",
+      requestKind: "manager_release_report"
+    });
     upgraded.close();
+  });
+
+  it("rejects legacy execution fact enum values during the v8 constraint migration", () => {
+    const driver = createV7ExecutionFactsDriver("hiveward-schema-v7-bad-enum-");
+    try {
+      driver.db.prepare(
+        `INSERT INTO run_commands (
+          id, command_key, blueprint_id, run_id, kind, status, current_revision,
+          current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        "command-v7-bad-enum",
+        "command-key-v7-bad-enum",
+        "blueprint-v7",
+        "run-v7",
+        "regular_run",
+        "running",
+        0,
+        "old_preflight_guess",
+        contractNow,
+        contractNow
+      );
+
+      expect(() => driver.migrate()).toThrow(/CHECK constraint failed/);
+    } finally {
+      driver.close();
+    }
+  });
+
+  it("rejects legacy dangling execution session references during the v8 constraint migration", () => {
+    const driver = createV7ExecutionFactsDriver("hiveward-schema-v7-dangling-session-");
+    try {
+      driver.db.prepare(
+        `INSERT INTO node_execution_sessions (
+          id, run_id, node_run_id, node_id, harness_id, policy, status,
+          fallback_of_session_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        "session-v7-dangling",
+        "run-v7",
+        "node-run-v7",
+        "agent-node-v7",
+        "codex",
+        "preserve_across_rounds",
+        "active",
+        "missing-session-v7",
+        contractNow,
+        contractNow
+      );
+
+      expect(() => driver.migrate()).toThrow(/FOREIGN KEY constraint failed/);
+    } finally {
+      driver.close();
+    }
   });
 
   it("fails closed when an applied migration checksum changes", () => {
@@ -262,6 +374,57 @@ describe("SqliteDriver schema migrations", () => {
     driver.close();
   });
 });
+
+const contractNow = "2026-05-29T00:00:00.000Z";
+
+function createV7ExecutionFactsDriver(tmpPrefix: string): SqliteDriver {
+  const sqlitePath = join(mkdtempSync(join(tmpdir(), tmpPrefix)), "hiveward.sqlite");
+  const driver = new SqliteDriver(sqlitePath);
+  for (const migration of sqliteMigrations.slice(0, 7)) {
+    for (const statement of migration.up) driver.db.exec(statement);
+    driver.db.prepare(
+      "INSERT INTO schema_migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)"
+    ).run(migration.version, migration.name, contractNow, migration.checksum);
+  }
+  expect(driver.currentSchemaVersion()).toBe(7);
+  seedExecutionFactParents(driver);
+  return driver;
+}
+
+function seedExecutionFactParents(driver: SqliteDriver): void {
+  driver.db.prepare(
+    "INSERT INTO companies (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)"
+  ).run("company-v7", "Migration Company", contractNow, contractNow);
+  driver.db.prepare(
+    `INSERT INTO runs (
+      id, company_id, blueprint_id, blueprint_version, status, started_by, started_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    "run-v7",
+    "company-v7",
+    "blueprint-v7",
+    1,
+    "running",
+    "migration-test",
+    contractNow,
+    contractNow
+  );
+  driver.db.prepare(
+    `INSERT INTO node_runs (
+      id, run_id, blueprint_id, node_id, node_label, node_type, status, queued_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    "node-run-v7",
+    "run-v7",
+    "blueprint-v7",
+    "agent-node-v7",
+    "Agent",
+    "agent",
+    "running",
+    contractNow,
+    contractNow
+  );
+}
 
 function listColumnNames(driver: SqliteDriver, table: string): string[] {
   return (driver.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name);

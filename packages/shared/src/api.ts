@@ -105,6 +105,7 @@ export interface ApprovalRequestResponse {
 
 export interface ReplyApprovalRequestRequest {
   message: string;
+  discussionMode?: InboxDiscussionMode;
 }
 
 export interface CompleteApprovalRequestRequest {
@@ -173,25 +174,10 @@ export interface ApproveInboxItemResponse {
   importedBlueprints?: BlueprintDefinition[];
 }
 
-export interface ApproveBlueprintRunRequest {
-  nodeRunId?: string;
-  comment?: string;
-  selectedReplyId?: string;
-}
+export type InboxDiscussionMode = "reply" | "candidate";
 
-export interface SelectBlueprintRunApprovalRequest {
-  nodeRunId: string;
-  selectedReplyId: string;
-}
-
-export interface RejectBlueprintRunRequest {
-  nodeRunId?: string;
-  comment?: string;
-}
-
-export interface ReplyBlueprintRunApprovalRequest {
-  nodeRunId: string;
-  message: string;
+export interface SelectApprovalRequestReplyRequest {
+  selectedReplyId: string | null;
 }
 
 export interface DashboardStateResponse {

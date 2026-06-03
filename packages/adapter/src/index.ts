@@ -244,10 +244,26 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     const outputTokens = Math.max(80, Math.round((input.prompt.length + inputSize) / 3));
     const inputTokens = Math.max(60, Math.round(input.prompt.length / 2));
 
+    if (input.nativeSessionId) {
+      return {
+        taskId,
+        runId,
+        sessionKey: input.nativeSessionId,
+        nativeSessionId: input.nativeSessionId,
+        resumeMode: "started",
+        source: "openclaw",
+        status: "failed",
+        error: "native_resume_unsupported: Mock runtime adapter does not expose a verifiable native resume path.",
+        updatedAt: now
+      };
+    }
+
     this.agentResults.set(taskId, {
       taskId,
       runId,
       sessionKey: `oc-session-${input.blueprintRunId}`,
+      nativeSessionId: `oc-session-${input.blueprintRunId}`,
+      resumeMode: "started",
       source: "openclaw",
       status: "succeeded",
       output: `${input.agentName} completed through runtime adapter. Prompt boundary stayed outside Hiveward runtime.`,
@@ -267,6 +283,8 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
       taskId,
       runId,
       sessionKey: `oc-session-${input.blueprintRunId}`,
+      nativeSessionId: `oc-session-${input.blueprintRunId}`,
+      resumeMode: "started",
       source: "openclaw",
       status: "running",
       updatedAt: now

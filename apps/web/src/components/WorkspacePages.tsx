@@ -49,7 +49,6 @@ import type {
   BlueprintNode,
   BlueprintNodeEvent,
   BlueprintNodeRun,
-  BlueprintNodeRunStatus,
   BlueprintRunStatus,
   BlueprintRunView
 } from "@hiveward/shared";
@@ -59,6 +58,7 @@ import {
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
+  sortedRunTranscriptEventsForDisplay,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
 import { resolveApiResourceUrl } from "../lib/api";
@@ -68,11 +68,13 @@ import { MarkdownRenderer } from "./MarkdownRenderer";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
-type RunAgentHumanReport = NonNullable<BlueprintRunView["agentHumanReports"]>[number];
-type RunTimelineTraceItem = NonNullable<BlueprintRunView["runTimeline"]>[number];
-type RunIterationRound = NonNullable<BlueprintRunView["iterationRounds"]>[number];
+type RunCommandFact = NonNullable<BlueprintRunView["runCommands"]>[number];
+type RunCommandStepFact = NonNullable<BlueprintRunView["runCommandSteps"]>[number];
+type RunExecutionSession = NonNullable<BlueprintRunView["nodeExecutionSessions"]>[number];
+type RunTranscriptProjectionEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
 type RunOutputTabKey = "current" | "artifacts" | "release";
+type TraceActorKind = "manager" | "agent" | "user" | "system";
 
 type IdentitySpec = {
   key: string;
@@ -201,13 +203,12 @@ type TraceIssue = {
   key: string;
   index: number;
   label: string;
-  kind: "node" | "report" | "timeline" | "round_research";
-  actorKind: "manager" | "agent" | "user" | "system";
+  kind: "node" | "report" | "timeline" | "round_research" | "execution";
+  actorKind: TraceActorKind;
   depth: number;
   node?: BlueprintNode;
   nodeRun?: BlueprintNodeRun;
-  humanReport?: RunAgentHumanReport;
-  timelineItem?: RunTimelineTraceItem;
+  executionRow?: RunExecutionTraceRow;
   issueStatus: TraceIssueStatus;
   statusLabel: string;
   roundLabel?: string;
@@ -220,12 +221,22 @@ type TraceIssue = {
   events: BlueprintNodeEvent[];
 };
 
-type TraceIssueBuildContext = {
-  humanReportByNodeRunId: Map<string, RunAgentHumanReport>;
-  artifactsByNodeRunId: Map<string, RunArtifact[]>;
-  eventsByNodeRunId: Map<string, BlueprintNodeEvent[]>;
-  nodeRunById: Map<string, BlueprintNodeRun>;
-  roundById: Map<string, RunIterationRound>;
+type RunExecutionTraceRow = {
+  key: string;
+  command?: RunCommandFact;
+  step?: RunCommandStepFact;
+  session?: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  node?: BlueprintNode;
+  mode?: RunCommandStepFact["mode"];
+  actorLabel: string;
+  actorKind: TraceActorKind;
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  createdAt: string;
+  order: number;
+  runtimeRefs: Array<NonNullable<RunCommandStepFact["runtimeRef"]>>;
 };
 
 export function CompanyDirectoryPage({
@@ -564,13 +575,12 @@ export function RunsPage({
   const issues = useMemo<TraceIssue[]>(() => {
     return buildTraceIssues(activeRun, blueprint, t, language);
   }, [
-    activeRun?.events,
-    activeRun?.nodeRuns,
-    activeRun?.agentHumanReports,
-    activeRun?.artifacts,
-    activeRun?.runTimeline,
-    activeRun?.iterationRounds,
-    activeRun?.approvalRequests,
+    activeRun?.run.id,
+    activeRun?.run.startedAt,
+    activeRun?.runCommands,
+    activeRun?.runCommandSteps,
+    activeRun?.nodeExecutionSessions,
+    activeRun?.nodeSessionTranscriptEvents,
     activeRun?.run.status,
     t,
     language,
@@ -823,6 +833,8 @@ export function RunsPage({
             <h3>{t.trace.modelOutput}</h3>
           </div>
           <div className="content-card stack-card trace-output-column run-output-column">
+            {activeRun && <RunExecutionProjectionPanel runView={activeRun} language={language} />}
+
             <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
               {outputTabs.map((tab) => (
                 <button
@@ -941,6 +953,360 @@ function getRunReportLayerCopy(language: Language) {
   };
 }
 
+function RunExecutionProjectionPanel({
+  runView,
+  language
+}: {
+  runView: BlueprintRunView;
+  language: Language;
+}) {
+  const copy = getRunExecutionProjectionCopy(language);
+  const commands = sortRunCommands(runView.runCommands ?? []);
+  const stepsByCommandId = groupRunCommandSteps(runView.runCommandSteps ?? []);
+  const sessions = sortRunExecutionSessions(runView.nodeExecutionSessions ?? []);
+  const transcriptEvents = sortedRunTranscriptEventsForDisplay(runView);
+  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
+  const transcriptSessionIds = sessionIdsForTranscript(sessions, eventsBySessionId, transcriptEvents);
+  const hasTranscript = transcriptEvents.length > 0;
+  const hasExecutionFacts = commands.length > 0 || (runView.runCommandSteps ?? []).length > 0 || sessions.length > 0 || hasTranscript;
+
+  return (
+    <section className="run-execution-projection run-output-section" aria-label={copy.title}>
+      <div className="run-output-section-header">
+        <div>
+          <h4>{copy.title}</h4>
+          <p>{copy.hint}</p>
+        </div>
+        <span className="status-pill status-default">{copy.readOnly}</span>
+      </div>
+
+      <div className="run-execution-grid">
+        <section className="run-execution-block" aria-label={copy.commandsTitle}>
+          <div className="run-execution-block-header">
+            <strong>{copy.commandsTitle}</strong>
+            <span>{copy.count(commands.length)}</span>
+          </div>
+          {commands.length === 0 ? (
+            <div className="empty-state compact-empty-state">{copy.noCommands}</div>
+          ) : (
+            <div className="run-command-list">
+              {commands.map((command) => {
+                const steps = stepsByCommandId.get(command.id) ?? [];
+                return (
+                  <article className="run-command-card" key={command.id}>
+                    <div className="run-command-card-header">
+                      <div>
+                        <strong>{runCommandKindLabel(command.kind, language)}</strong>
+                        <span>{command.commandKey}</span>
+                      </div>
+                      <span className={`status-pill ${runExecutionProjectionStatusClass(command.status)}`}>
+                        {runExecutionStatusLabel(command.status, language)}
+                      </span>
+                    </div>
+                    <dl className="run-execution-meta">
+                      <div>
+                        <dt>{copy.currentStep}</dt>
+                        <dd>{command.currentStep ? runCommandStepModeLabel(command.currentStep, language) : copy.none}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.ledgerVersion}</dt>
+                        <dd>{command.currentRevision}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.updated}</dt>
+                        <dd>{formatTraceTime(command.updatedAt, language)}</dd>
+                      </div>
+                    </dl>
+                    {command.error && <MarkdownRenderer value={command.error} className="run-execution-error" />}
+                    {steps.length === 0 ? (
+                      <div className="run-command-step-empty">{copy.noSteps}</div>
+                    ) : (
+                      <ol className="run-command-step-list">
+                        {steps.map((step) => (
+                          <li key={step.id}>
+                            <span className={`status-pill ${runExecutionProjectionStatusClass(step.status)}`}>
+                              {runExecutionStatusLabel(step.status, language)}
+                            </span>
+                            <div>
+                              <strong>{runCommandStepModeLabel(step.mode, language)}</strong>
+                              <span>{copy.stepMeta(step.revision, nodeLabelForStep(runView, step))}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="run-execution-block run-transcript-block" aria-label={copy.transcriptTitle}>
+          <div className="run-execution-block-header">
+            <strong>{copy.transcriptTitle}</strong>
+            <span>{hasTranscript ? copy.transcriptAvailable : copy.transcriptMissing}</span>
+          </div>
+          {hasTranscript ? (
+            <div className="run-session-list">
+              {transcriptSessionIds.map((sessionId) => {
+                const session = sessions.find((candidate) => candidate.id === sessionId);
+                const events = eventsBySessionId.get(sessionId) ?? [];
+                return (
+                  <article className="run-session-card" key={sessionId}>
+                    <div className="run-session-card-header">
+                      <div>
+                        <strong>{nodeLabelForRunSession(runView, session, events[0])}</strong>
+                        <span>{session?.nativeSessionId ?? sessionId}</span>
+                      </div>
+                      <span className={`status-pill ${runExecutionProjectionStatusClass(session?.status ?? "default")}`}>
+                        {session ? runExecutionStatusLabel(session.status, language) : copy.sessionMissing}
+                      </span>
+                    </div>
+                    <dl className="run-execution-meta">
+                      <div>
+                        <dt>{copy.harness}</dt>
+                        <dd>{session?.harnessId ?? copy.unknown}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.policy}</dt>
+                        <dd>{session ? runSessionPolicyLabel(session.policy, language) : copy.unknown}</dd>
+                      </div>
+                      <div>
+                        <dt>{copy.updated}</dt>
+                        <dd>{session ? formatTraceTime(session.updatedAt, language) : copy.unknown}</dd>
+                      </div>
+                    </dl>
+                    {session?.statusReason && (
+                      <MarkdownRenderer value={session.statusReason} className="run-execution-system-note" />
+                    )}
+                    <div className="run-transcript-event-list">
+                      {events.map((event) => (
+                        <RunTranscriptEventRow key={event.id} event={event} language={language} />
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="run-execution-missing-facts">
+              <strong>{hasExecutionFacts ? copy.transcriptUnavailable : copy.executionFactsMissing}</strong>
+              <span>{hasExecutionFacts ? copy.noTranscriptHint : copy.noExecutionFactsHint}</span>
+              {!hasExecutionFacts && <div className="empty-state compact-empty-state">{copy.unsupportedHistoricalRun}</div>}
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function RunTranscriptEventRow({
+  event,
+  language
+}: {
+  event: RunTranscriptProjectionEvent;
+  language: Language;
+}) {
+  const copy = getRunExecutionProjectionCopy(language);
+  const content = event.content?.trim();
+
+  return (
+    <div className={`run-transcript-event run-transcript-event-${event.kind}`}>
+      <div className="run-transcript-event-meta">
+        <strong>{runTranscriptEventLabel(event.kind, event.role, language)}</strong>
+        <time dateTime={event.createdAt}>{formatTraceTime(event.createdAt, language)}</time>
+      </div>
+      {event.kind === "system_note" ? (
+        <div className="run-execution-system-note">
+          <strong>{copy.systemNote}</strong>
+          <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
+        </div>
+      ) : (
+        <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
+      )}
+    </div>
+  );
+}
+
+function getRunExecutionProjectionCopy(language: Language) {
+  const zh = language === "zh-CN";
+  return {
+    title: zh ? "\u6267\u884c\u8d26\u672c" : "Execution ledger",
+    hint: zh
+      ? "\u53ea\u8bfb\u5c55\u793a command\u3001step\u3001execution session \u548c transcript \u4e8b\u5b9e\u3002"
+      : "Read-only projection of command, step, execution session, and transcript facts.",
+    readOnly: zh ? "\u53ea\u8bfb" : "Read-only",
+    commandsTitle: zh ? "\u6307\u4ee4\u548c\u6b65\u9aa4" : "Commands and steps",
+    transcriptTitle: "Session transcript",
+    transcriptAvailable: zh ? "\u5df2\u8bb0\u5f55 transcript" : "Transcript recorded",
+    transcriptMissing: zh ? "\u7f3a\u5c11 transcript" : "Transcript missing",
+    noCommands: zh ? "\u6ca1\u6709 command \u4e8b\u5b9e\u3002" : "No command facts recorded.",
+    noSteps: zh ? "\u6ca1\u6709 step \u8bb0\u5f55\u3002" : "No step records.",
+    currentStep: zh ? "\u5f53\u524d\u6b65\u9aa4" : "Current step",
+    ledgerVersion: zh ? "\u8d26\u672c\u7248\u672c" : "Ledger version",
+    updated: zh ? "\u66f4\u65b0" : "Updated",
+    none: zh ? "\u65e0" : "None",
+    count: (value: number) => zh ? `${value} \u6761` : `${value}`,
+    stepMeta: (version: number, nodeLabel: string) =>
+      zh ? `v${version} / ${nodeLabel}` : `v${version} / ${nodeLabel}`,
+    harness: "Harness",
+    policy: "Policy",
+    unknown: zh ? "\u672a\u77e5" : "Unknown",
+    sessionMissing: zh ? "\u7f3a\u5c11 session" : "Session missing",
+    transcriptUnavailable: zh ? "Transcript \u4e0d\u53ef\u7528" : "Transcript unavailable",
+    executionFactsMissing: zh ? "\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931" : "Execution facts missing",
+    noTranscriptHint: zh
+      ? "\u6ca1\u6709 transcript facts\uff1b\u6b64\u9875\u4e0d\u4ece timeline \u5386\u53f2\u6216\u65e7 node output \u5408\u6210 transcript\u3002"
+      : "No transcript facts are available; this page does not synthesize transcript content from timeline history or old node output.",
+    noExecutionFactsHint: zh
+      ? "\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts\uff1b\u6b64 run \u4e0d\u80fd\u663e\u793a canonical execution trace\u3002"
+      : "No command, step, execution session, or transcript facts are available; this run cannot show a canonical execution trace.",
+    unsupportedHistoricalRun: zh
+      ? "\u5386\u53f2 run \u7f3a\u5c11 canonical execution facts\uff0c\u5df2\u660e\u786e\u6807\u8bb0\u4e3a\u4e0d\u652f\u6301\u6295\u5f71\u3002"
+      : "Historical run is missing canonical execution facts, so execution projection is unsupported.",
+    systemNote: zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note",
+    noEventContent: zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content."
+  };
+}
+
+function sortRunCommands(commands: RunCommandFact[]): RunCommandFact[] {
+  return [...commands].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
+}
+
+function sortRunCommandSteps(steps: RunCommandStepFact[]): RunCommandStepFact[] {
+  return [...steps].sort((left, right) => {
+    const revisionOrder = left.revision - right.revision;
+    if (revisionOrder !== 0) return revisionOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
+  });
+}
+
+function sortRunExecutionSessions(sessions: RunExecutionSession[]): RunExecutionSession[] {
+  return [...sessions].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
+}
+
+function groupRunCommandSteps(steps: RunCommandStepFact[]): Map<string, RunCommandStepFact[]> {
+  const grouped = new Map<string, RunCommandStepFact[]>();
+  for (const step of sortRunCommandSteps(steps)) {
+    grouped.set(step.commandId, [...(grouped.get(step.commandId) ?? []), step]);
+  }
+  return grouped;
+}
+
+function groupRunTranscriptEvents(events: RunTranscriptProjectionEvent[]): Map<string, RunTranscriptProjectionEvent[]> {
+  const grouped = new Map<string, RunTranscriptProjectionEvent[]>();
+  for (const event of events) {
+    grouped.set(event.sessionId, [...(grouped.get(event.sessionId) ?? []), event]);
+  }
+  return grouped;
+}
+
+function sessionIdsForTranscript(
+  sessions: RunExecutionSession[],
+  eventsBySessionId: Map<string, RunTranscriptProjectionEvent[]>,
+  orderedEvents: RunTranscriptProjectionEvent[]
+): string[] {
+  const emitted = new Set<string>();
+  const orderedEventSessionIds: string[] = [];
+  for (const event of orderedEvents) {
+    if (emitted.has(event.sessionId)) continue;
+    emitted.add(event.sessionId);
+    orderedEventSessionIds.push(event.sessionId);
+  }
+  const sessionOnlyIds = sessions.map((session) => session.id).filter((sessionId) => !emitted.has(sessionId));
+  for (const sessionId of sessionOnlyIds) emitted.add(sessionId);
+  const eventOnlyIds = [...eventsBySessionId.keys()].filter((sessionId) => !emitted.has(sessionId)).sort();
+  return [...orderedEventSessionIds, ...sessionOnlyIds, ...eventOnlyIds];
+}
+
+function nodeLabelForStep(runView: BlueprintRunView, step: RunCommandStepFact): string {
+  return runView.nodeRuns.find((nodeRun) => nodeRun.id === step.nodeRunId)?.nodeLabel ??
+    runView.nodeRuns.find((nodeRun) => nodeRun.nodeId === step.nodeId)?.nodeLabel ??
+    step.nodeId;
+}
+
+function nodeLabelForRunSession(
+  runView: BlueprintRunView,
+  session: RunExecutionSession | undefined,
+  firstEvent: RunTranscriptProjectionEvent | undefined
+): string {
+  const nodeRunId = session?.nodeRunId ?? firstEvent?.nodeRunId;
+  const nodeRun = nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === nodeRunId) : undefined;
+  return nodeRun?.nodeLabel ?? session?.nodeId ?? firstEvent?.nodeRunId ?? "Session";
+}
+
+function runCommandKindLabel(kind: RunCommandFact["kind"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (kind === "self_iteration_prepare_round") return zh ? "\u81ea\u8fed\u4ee3\u51c6\u5907" : "Self-iteration prepare";
+  if (kind === "self_iteration_execute_round") return zh ? "\u81ea\u8fed\u4ee3\u6267\u884c" : "Self-iteration execute";
+  if (kind === "self_iteration_release_report") return zh ? "\u81ea\u8fed\u4ee3\u62a5\u544a" : "Self-iteration report";
+  return zh ? "\u5e38\u89c4\u8fd0\u884c" : "Regular run";
+}
+
+function runCommandStepModeLabel(mode: RunCommandStepFact["mode"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (mode === "research_resolution") return zh ? "\u7814\u7a76\u68b3\u7406" : "Research resolution";
+  if (mode === "requirement_resolution") return zh ? "\u9700\u6c42\u68b3\u7406" : "Requirement resolution";
+  if (mode === "revise_plan") return zh ? "\u8ba1\u5212\u66f4\u65b0" : "Plan update";
+  if (mode === "preflight_judgment") return zh ? "\u6267\u884c\u524d\u5224\u65ad" : "Preflight judgment";
+  if (mode === "context_snapshot") return zh ? "\u4e0a\u4e0b\u6587\u5feb\u7167" : "Context snapshot";
+  if (mode === "release_report") return zh ? "\u53d1\u5e03\u62a5\u544a" : "Release report";
+  return zh ? "\u8282\u70b9\u6267\u884c" : "Node execution";
+}
+
+function runSessionPolicyLabel(policy: RunExecutionSession["policy"], language: Language): string {
+  const zh = language === "zh-CN";
+  if (policy === "refresh_per_run") return zh ? "\u6bcf\u6b21 run \u5237\u65b0" : "Refresh per run";
+  if (policy === "refresh_per_round") return zh ? "\u6bcf\u8f6e\u5237\u65b0" : "Refresh per round";
+  return zh ? "\u8de8\u8f6e\u4fdd\u7559" : "Preserve across rounds";
+}
+
+function runTranscriptEventLabel(
+  kind: RunTranscriptProjectionEvent["kind"],
+  role: RunTranscriptProjectionEvent["role"],
+  language: Language
+): string {
+  const zh = language === "zh-CN";
+  if (kind === "system_note") return zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note";
+  if (kind === "runtime_started") return zh ? "\u8fd0\u884c\u65f6\u542f\u52a8" : "Runtime started";
+  if (kind === "runtime_state") return zh ? "\u8fd0\u884c\u65f6\u72b6\u6001" : "Runtime state";
+  if (kind === "runtime_done") return zh ? "\u8fd0\u884c\u65f6\u5b8c\u6210" : "Runtime done";
+  if (kind === "assistant_delta") return zh ? "\u52a9\u624b\u589e\u91cf" : "Assistant delta";
+  if (kind === "assistant_message") return zh ? "\u52a9\u624b\u6700\u7ec8\u6d88\u606f" : "Assistant final message";
+  if (kind === "user_message") return zh ? "\u7528\u6237\u6d88\u606f" : "User message";
+  return role;
+}
+
+function runExecutionStatusLabel(status: string, language: Language): string {
+  const zh = language === "zh-CN";
+  if (status === "queued") return zh ? "\u6392\u961f\u4e2d" : "Queued";
+  if (status === "running" || status === "active") return zh ? "\u8fd0\u884c\u4e2d" : "Running";
+  if (status === "waiting_approval" || status === "paused") return zh ? "\u7b49\u5f85\u4e2d" : "Waiting";
+  if (status === "succeeded" || status === "completed") return zh ? "\u5df2\u5b8c\u6210" : "Completed";
+  if (status === "failed") return zh ? "\u5931\u8d25" : "Failed";
+  if (status === "cancelled") return zh ? "\u5df2\u53d6\u6d88" : "Cancelled";
+  if (status === "unavailable") return zh ? "\u4e0d\u53ef\u7528" : "Unavailable";
+  if (status === "fallback") return zh ? "\u964d\u7ea7" : "Fallback";
+  return status;
+}
+
+function runExecutionProjectionStatusClass(status: string): string {
+  if (status === "queued" || status === "running" || status === "waiting_approval" || status === "active" || status === "paused") {
+    return "status-running";
+  }
+  if (status === "succeeded" || status === "completed") return "status-succeeded";
+  if (status === "failed" || status === "cancelled" || status === "unavailable") return "status-failed";
+  return "status-default";
+}
+
+function compareByTimestampThenId(leftDate: string, rightDate: string, leftId: string, rightId: string): number {
+  const timestampOrder = toSafeTimestamp(leftDate) - toSafeTimestamp(rightDate);
+  if (timestampOrder !== 0) return timestampOrder;
+  return leftId.localeCompare(rightId);
+}
+
 export function buildCurrentOutputDisplayBody({
   bodyMd,
   artifacts,
@@ -960,11 +1326,12 @@ export function buildCurrentOutputDisplayBody({
   const body = localizeHumanReportBody(bodyMd.trim(), language);
   const summarySplit = splitSummarySection(body);
   const deliverySplit = splitDeliverySection(summarySplit.bodyWithoutSummary);
+  const artifactSplit = splitArtifactSections(deliverySplit.bodyWithoutDelivery);
   const deliveryItems = collectDeliveryItems(artifacts, language);
   const deliveryBody = deliveryItems.length ? formatDeliveryItems(deliveryItems) : noneText(language);
   const artifactBody = artifacts.length ? formatArtifactSummaryItems(artifacts) : noneText(language);
   const managerReason = actorKind === "manager" ? conciseSectionBody(reason, language) : undefined;
-  const freeOutputSplit = splitPromotedOutputSections(deliverySplit.bodyWithoutDelivery);
+  const freeOutputSplit = splitPromotedOutputSections(artifactSplit.bodyWithoutArtifacts);
   const freeOutputParts = [
     freeOutputSplit.freeBody.trim(),
     ...timelineDetails.filter((detail) => detail.trim())
@@ -1098,7 +1465,7 @@ function isArtifactHeading(line: string): boolean {
 }
 
 function formatDeliveryItems(items: Array<{ label: string; location: string }>): string {
-  return items.map((item) => `- ${item.label}: ${item.location}`).join("\n");
+  return items.map((item) => `- ${item.label}: ${formatLocationAsLink(item.location)}`).join("\n");
 }
 
 function formatArtifactSummaryItems(artifacts: RunArtifact[]): string {
@@ -1111,6 +1478,17 @@ function formatArtifactSummaryItems(artifacts: RunArtifact[]): string {
     const previewPolicy = artifact.previewPolicy && artifact.previewPolicy !== "none" ? ` · ${artifact.previewPolicy}` : "";
     return `- ${linkedLabel}${kind || previewPolicy ? ` (${kind}${previewPolicy})` : ""}`;
   }).join("\n");
+}
+
+function formatLocationAsLink(location: string): string {
+  if (!isMarkdownLinkTarget(location)) return location;
+  const label = location.replace(/]/g, "\\]");
+  const href = location.replace(/\)/g, "%29");
+  return `[${label}](${href})`;
+}
+
+function isMarkdownLinkTarget(location: string): boolean {
+  return /^(?:https?:\/\/|\/|#|mailto:|localhost\b|127\.0\.0\.1\b)/i.test(location);
 }
 
 function noneText(language: Language): string {
@@ -1211,13 +1589,12 @@ export function ApprovalsPage({
   inboxItems,
   language,
   t,
-  onApprove,
+  actionPending = false,
   onApproveApprovalRequest,
   onComplete,
-  onReject,
   onRejectApprovalRequest,
-  onReply,
   onReplyApprovalRequest,
+  onReturnForRevisionApprovalRequest,
   onSelectApprovalReply,
   onReplyInboxItem,
   onApproveInboxItem,
@@ -1228,14 +1605,13 @@ export function ApprovalsPage({
   inboxItems: InboxItem[];
   language: Language;
   t: Messages;
-  onApprove: (blueprintRunId: string, nodeRunId: string, comment?: string, selectedReplyId?: string) => void;
-  onApproveApprovalRequest: (approvalRequestId: string, comment?: string, selectedReplyId?: string) => void;
+  actionPending?: boolean;
+  onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
-  onReject: (blueprintRunId: string, nodeRunId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onReply: (blueprintRunId: string, nodeRunId: string, message: string) => void;
-  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
-  onSelectApprovalReply: (blueprintRunId: string, nodeRunId: string, selectedReplyId: string) => void;
+  onReplyApprovalRequest: (approvalRequestId: string, message: string, discussionMode?: "reply" | "candidate") => void;
+  onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
+  onSelectApprovalReply: (approvalRequestId: string, selectedReplyId: string | null) => void;
   onReplyInboxItem: (itemId: string, message: string) => void;
   onApproveInboxItem: (itemId: string, comment?: string) => void;
   onRejectInboxItem: (itemId: string, comment?: string) => void;
@@ -1272,12 +1648,25 @@ export function ApprovalsPage({
       : undefined;
   const selectedApproval = selectedApprovalThread?.approval;
   const selectedInboxApproved = selectedInboxItem?.status === "approved";
-  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved);
-  const canReplyToSelection = Boolean(selectedApproval?.canReply || selectedInboxOperable);
-  const canApproveSelection = Boolean(
-    selectedApproval ? selectedApproval.canApprove !== false || selectedApproval.canComplete === true : selectedInboxOperable
+  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved && !actionPending);
+  const selectedApprovalOperable = hasActionableApprovalRequest(selectedApproval);
+  const canReplyToApproval = Boolean(!actionPending && selectedApprovalOperable && canSendApprovalDiscussionReply(selectedApproval));
+  const canCreateCandidateForSelection = Boolean(
+    !actionPending &&
+    selectedApproval?.approvalRequestId &&
+    selectedApproval.discussion?.canCreateCandidate === true &&
+    isActionableApprovalThread(selectedApproval)
   );
-  const canRejectSelection = Boolean((selectedApproval && selectedApproval.canReject) || selectedInboxOperable);
+  const canReplyToSelection = Boolean(canReplyToApproval || selectedInboxOperable);
+  const canApproveSelection = Boolean(
+    !actionPending && (selectedApproval ? selectedApprovalOperable && (selectedApproval.canApprove !== false || selectedApproval.canComplete === true) : selectedInboxOperable)
+  );
+  const canRejectSelection = Boolean(!actionPending && ((selectedApprovalOperable && selectedApproval?.canReject) || selectedInboxOperable));
+  const canReturnForRevisionSelection = Boolean(
+    !actionPending &&
+    selectedApproval?.approvalRequestId &&
+    selectedApproval.canReturnForRevision
+  );
   const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
   const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
   const selectedMessages = useMemo(
@@ -1337,8 +1726,10 @@ export function ApprovalsPage({
     setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
   };
 
-  const sendLocalReply = () => {
-    if (!selectedThreadKey || !canReplyToSelection) return;
+  const sendApprovalDiscussion = (discussionMode: "reply" | "candidate") => {
+    if (!selectedThreadKey || !selectedApproval) return;
+    if (discussionMode === "reply" && !canReplyToApproval) return;
+    if (discussionMode === "candidate" && !canCreateCandidateForSelection) return;
     const body = selectedReplyDraft.trim();
     if (!body) return;
     const reply = {
@@ -1346,44 +1737,52 @@ export function ApprovalsPage({
       body,
       createdAt: new Date().toISOString()
     };
-    if (selectedApproval?.canReply) {
-      const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
-      const pendingHarnessReply = shouldWaitForHarnessReply
-        ? {
-            id: `${reply.id}:pending`,
-            harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
-            createdAt: reply.createdAt
-          }
-        : undefined;
-      flushSync(() => {
-        setLocalReplies((current) => ({
-          ...current,
-          [selectedThreadKey]: [
-            ...(current[selectedThreadKey] ?? []),
-            reply
-          ]
-        }));
-        if (pendingHarnessReply) {
-          setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
-        } else {
-          setPendingHarnessReplies((current) => {
-            if (!current[selectedThreadKey]) return current;
-            const next = { ...current };
-            delete next[selectedThreadKey];
-            return next;
-          });
+    const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
+    const pendingHarnessReply = shouldWaitForHarnessReply
+      ? {
+          id: `${reply.id}:pending`,
+          harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
+          createdAt: reply.createdAt
         }
-        setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
-      });
-      window.setTimeout(() => {
-        if (selectedApproval.approvalRequestId) {
-          onReplyApprovalRequest(selectedApproval.approvalRequestId, body);
-          return;
-        }
-        onReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, body);
-      }, 0);
+      : undefined;
+    flushSync(() => {
+      setLocalReplies((current) => ({
+        ...current,
+        [selectedThreadKey]: [
+          ...(current[selectedThreadKey] ?? []),
+          reply
+        ]
+      }));
+      if (pendingHarnessReply) {
+        setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
+      } else {
+        setPendingHarnessReplies((current) => {
+          if (!current[selectedThreadKey]) return current;
+          const next = { ...current };
+          delete next[selectedThreadKey];
+          return next;
+        });
+      }
+      setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
+    });
+    window.setTimeout(() => {
+      if (selectedApproval.approvalRequestId) onReplyApprovalRequest(selectedApproval.approvalRequestId, body, discussionMode);
+    }, 0);
+  };
+
+  const sendLocalReply = () => {
+    if (!selectedThreadKey || !canReplyToSelection) return;
+    if (selectedApproval) {
+      sendApprovalDiscussion("reply");
       return;
     }
+    const body = selectedReplyDraft.trim();
+    if (!body) return;
+    const reply = {
+      id: makeLocalInboxReplyId(),
+      body,
+      createdAt: new Date().toISOString()
+    };
     flushSync(() => {
       setLocalReplies((current) => ({
         ...current,
@@ -1401,6 +1800,10 @@ export function ApprovalsPage({
     }
   };
 
+  const generateCandidateReply = () => {
+    sendApprovalDiscussion("candidate");
+  };
+
   const approveSelectedThread = () => {
     const comment = selectedReplyDraft.trim() || undefined;
     if (selectedInboxItem && !selectedInboxApproved) {
@@ -1408,12 +1811,8 @@ export function ApprovalsPage({
       clearReplyDraft();
       return;
     }
-    if (selectedApproval && selectedApproval.canApprove !== false) {
-      if (selectedApproval.approvalRequestId) {
-        onApproveApprovalRequest(selectedApproval.approvalRequestId, comment, selectedApproval.selectedReplyId);
-      } else {
-        onApprove(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment, selectedApproval.selectedReplyId);
-      }
+    if (selectedApproval?.approvalRequestId && selectedApproval.canApprove !== false) {
+      onApproveApprovalRequest(selectedApproval.approvalRequestId, comment);
       clearReplyDraft();
       return;
     }
@@ -1423,9 +1822,16 @@ export function ApprovalsPage({
     }
   };
 
-  const selectApprovalSolution = (solutionId: string) => {
-    if (!selectedApproval || selectedApproval.canApprove === false) return;
-    onSelectApprovalReply(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, solutionId);
+  const selectApprovalCandidate = (candidateReplyId: string) => {
+    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
+    const reply = (selectedApproval.replies ?? []).find((candidate) => candidate.id === candidateReplyId);
+    if (reply?.purpose !== "candidate") return;
+    onSelectApprovalReply(selectedApproval.approvalRequestId, candidateReplyId);
+  };
+
+  const selectOriginalApprovalContent = () => {
+    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
+    onSelectApprovalReply(selectedApproval.approvalRequestId, null);
   };
 
   const rejectSelectedThread = () => {
@@ -1436,12 +1842,15 @@ export function ApprovalsPage({
       return;
     }
     if (selectedApproval?.canReject) {
-      if (selectedApproval.approvalRequestId) {
-        onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
-      } else {
-        onReject(selectedApproval.blueprintRunId, selectedApproval.nodeRunId, comment);
-      }
+      if (selectedApproval.approvalRequestId) onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
     }
+    clearReplyDraft();
+  };
+
+  const returnForRevisionSelectedThread = () => {
+    const feedback = selectedReplyDraft.trim();
+    if (!selectedApproval?.approvalRequestId || !feedback) return;
+    onReturnForRevisionApprovalRequest(selectedApproval.approvalRequestId, feedback);
     clearReplyDraft();
   };
 
@@ -1526,7 +1935,7 @@ export function ApprovalsPage({
                             className="inbox-row-action primary-action"
                             title={processed ? inboxCopy.processedAction : t.actions.approve}
                             aria-label={t.actions.approve}
-                            disabled={processed}
+                            disabled={processed || actionPending}
                             onClick={() => onApproveInboxItem(item.id)}
                           >
                             <BadgeCheck size={16} />
@@ -1536,7 +1945,7 @@ export function ApprovalsPage({
                             className="inbox-row-action danger-action"
                             title={processed ? inboxCopy.processedAction : inboxCopy.reject}
                             aria-label={inboxCopy.reject}
-                            disabled={processed}
+                            disabled={processed || actionPending}
                             onClick={() => onRejectInboxItem(item.id)}
                           >
                             <Trash2 size={15} />
@@ -1549,7 +1958,7 @@ export function ApprovalsPage({
                   const approval = thread.approval;
                   const selected = selectedThread?.kind === "approval" && thread.id === selectedThread.id;
                   const processed = !isActionableApprovalThread(approval);
-                  const canApproveOrComplete = approval.canApprove !== false || approval.canComplete === true;
+                  const canApproveOrComplete = Boolean(approval.approvalRequestId && (approval.canApprove !== false || approval.canComplete === true));
                   const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
                   return (
                     <article
@@ -1584,17 +1993,13 @@ export function ApprovalsPage({
                           className="inbox-row-action primary-action"
                           title={canApproveOrComplete ? approveOrCompleteLabel : inboxCopy.processedAction}
                           aria-label={approveOrCompleteLabel}
-                          disabled={!canApproveOrComplete}
+                          disabled={!canApproveOrComplete || actionPending}
                           onClick={() => {
                             if (approval.canApprove === false && approval.canComplete && approval.approvalRequestId) {
                               onComplete(approval.approvalRequestId);
                               return;
                             }
-                            if (approval.approvalRequestId) {
-                              onApproveApprovalRequest(approval.approvalRequestId, undefined, approval.selectedReplyId);
-                              return;
-                            }
-                            onApprove(approval.blueprintRunId, approval.nodeRunId, undefined, approval.selectedReplyId);
+                            if (approval.approvalRequestId) onApproveApprovalRequest(approval.approvalRequestId);
                           }}
                         >
                           <BadgeCheck size={16} />
@@ -1604,13 +2009,9 @@ export function ApprovalsPage({
                           className="inbox-row-action danger-action"
                           title={inboxCopy.reject}
                           aria-label={inboxCopy.reject}
-                          disabled={!approval.canReject}
+                          disabled={!approval.approvalRequestId || !approval.canReject || actionPending}
                           onClick={() => {
-                            if (approval.approvalRequestId) {
-                              onRejectApprovalRequest(approval.approvalRequestId);
-                              return;
-                            }
-                            onReject(approval.blueprintRunId, approval.nodeRunId);
+                            if (approval.approvalRequestId) onRejectApprovalRequest(approval.approvalRequestId);
                           }}
                         >
                           <Trash2 size={15} />
@@ -1640,11 +2041,17 @@ export function ApprovalsPage({
             canApprove={canApproveSelection}
             canReject={canRejectSelection}
             canReply={canReplyToSelection}
+            canCreateCandidate={canCreateCandidateForSelection}
+            canReturnForRevision={canReturnForRevisionSelection}
             onReject={rejectSelectedThread}
             onReplyDraftChange={updateReplyDraft}
-            onSelectSolution={selectApprovalSolution}
+            onReturnForRevision={returnForRevisionSelectedThread}
+            onSelectCandidate={selectApprovalCandidate}
+            onSelectOriginal={selectOriginalApprovalContent}
+            onSendCandidate={generateCandidateReply}
             onSendReply={sendLocalReply}
             replyDraft={selectedReplyDraft}
+            returnForRevisionLabel={selectedApproval?.kind === "agent_proposal" ? inboxCopy.returnForRevision : inboxCopy.regenerate}
           />
         </div>
       </section>
@@ -1683,8 +2090,6 @@ type InboxThreadListItem =
 type InboxApprovalThreadListItem = Extract<InboxThreadListItem, { kind: "approval" }>;
 
 const allInboxBlueprintFilterValue = "__all_blueprints__";
-const approvalReviewOutputSolutionId = "reviewOutput";
-
 const inboxTimeFilterOptions = [
   { value: "all" },
   { value: "today" },
@@ -1710,11 +2115,13 @@ type InboxConversationMessage = {
   speaker: string;
   body: string;
   createdAt?: string;
+  categoryLabel?: string;
   progressText?: string;
   pending?: boolean;
-  solutionId?: string;
-  selectedSolution?: boolean;
-  canUseAsSolution?: boolean;
+  candidateReplyId?: string;
+  selectedCandidate?: boolean;
+  selectedOriginal?: boolean;
+  selectOriginal?: boolean;
 };
 
 function InboxConversationPanel({
@@ -1727,12 +2134,18 @@ function InboxConversationPanel({
   replyDraft,
   canApprove,
   canReject,
+  canCreateCandidate,
   canReply,
+  canReturnForRevision,
   onApprove,
   onReject,
   onReplyDraftChange,
-  onSelectSolution,
-  onSendReply
+  onReturnForRevision,
+  onSelectCandidate,
+  onSelectOriginal,
+  onSendCandidate,
+  onSendReply,
+  returnForRevisionLabel
 }: {
   approval?: PendingApprovalItem;
   approveLabel: string;
@@ -1743,15 +2156,24 @@ function InboxConversationPanel({
   replyDraft: string;
   canApprove: boolean;
   canReject: boolean;
+  canCreateCandidate: boolean;
   canReply: boolean;
+  canReturnForRevision: boolean;
   onApprove: () => void;
   onReject: () => void;
   onReplyDraftChange: (value: string) => void;
-  onSelectSolution: (solutionId: string) => void;
+  onReturnForRevision: () => void;
+  onSelectCandidate: (candidateReplyId: string) => void;
+  onSelectOriginal: () => void;
+  onSendCandidate: () => void;
   onSendReply: () => void;
+  returnForRevisionLabel: string;
 }) {
   const threadRef = useRef<HTMLDivElement | null>(null);
   const hasSelection = Boolean(inboxItem || approval);
+  const returnForRevisionDescription = returnForRevisionLabel === copy.regenerate
+    ? copy.regenerateDescription
+    : copy.returnForRevisionDescription;
   const title = inboxItem?.title ?? (approval ? approvalSubject(approval) : copy.noSelectionTitle);
   const subtitle = inboxItem
     ? inboxItem.blueprintName ?? inboxItem.targetRoleId ?? inboxItem.createdByRoleId
@@ -1760,6 +2182,8 @@ function InboxConversationPanel({
       : "";
   const statusLabel = inboxItem ? inboxStatusLabel(inboxItem.status, language) : approval ? copy.approvalRequest : "";
   const typeLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : undefined;
+  const discussionUnavailable =
+    approval && !canReply && !canCreateCandidate && (!approval.discussion || approval.discussion.mode === "none");
 
   useEffect(() => {
     const thread = threadRef.current;
@@ -1797,6 +2221,7 @@ function InboxConversationPanel({
               <div className={`chat-message chat-message-${message.role}`}>
                 <div className="chat-message-speaker">
                   <strong>{message.speaker}</strong>
+                  {message.categoryLabel && <span>{message.categoryLabel}</span>}
                   {message.createdAt && <span>{formatDateTime(message.createdAt, language)}</span>}
                 </div>
                 {message.pending ? (
@@ -1807,17 +2232,34 @@ function InboxConversationPanel({
                 ) : (
                   <MarkdownRenderer value={message.body} className="chat-message-body" />
                 )}
-                {message.canUseAsSolution && message.solutionId && (
+                {(message.selectedOriginal || message.selectOriginal || message.candidateReplyId) && (
                   <div className="inbox-message-actions">
-                    <button
-                      type="button"
-                      className={`inbox-solution-button${message.selectedSolution ? " selected" : ""}`}
-                      disabled={!canApprove || message.selectedSolution}
-                      onClick={() => onSelectSolution(message.solutionId!)}
-                    >
-                      <Check size={14} />
-                      {message.selectedSolution ? copy.solutionSelected : copy.useSolution}
-                    </button>
+                    {message.selectedOriginal ? (
+                      <span className="inbox-solution-button selected">
+                        <Check size={14} />
+                        {copy.originalSelected}
+                      </span>
+                    ) : message.selectOriginal ? (
+                      <button
+                        type="button"
+                        className="inbox-solution-button"
+                        disabled={!canApprove}
+                        onClick={onSelectOriginal}
+                      >
+                        <Check size={14} />
+                        {copy.useOriginal}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className={`inbox-solution-button${message.selectedCandidate ? " selected" : ""}`}
+                        disabled={!canApprove || message.selectedCandidate}
+                        onClick={() => message.candidateReplyId && onSelectCandidate(message.candidateReplyId)}
+                      >
+                        <Check size={14} />
+                        {message.selectedCandidate ? copy.candidateSelected : copy.useCandidate}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -1829,8 +2271,8 @@ function InboxConversationPanel({
       <div className="chat-composer inbox-conversation-composer">
         <textarea
           value={replyDraft}
-          disabled={!canReply}
-          placeholder={!hasSelection ? copy.noSelectionBody : canReply ? copy.replyPlaceholder : copy.processedPlaceholder}
+          disabled={!canReply && !canCreateCandidate && !canReturnForRevision}
+          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canCreateCandidate || canReturnForRevision ? copy.replyPlaceholder : copy.processedPlaceholder}
           onChange={(event) => onReplyDraftChange(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
@@ -1840,9 +2282,23 @@ function InboxConversationPanel({
           }}
         />
         <div className="inbox-conversation-actions">
-          <button type="button" disabled={!canReply || !replyDraft.trim()} onClick={onSendReply}>
+          <button type="button" disabled={!canReply} onClick={onSendReply}>
             <Send size={15} />
             {copy.sendReply}
+          </button>
+          <button type="button" disabled={!canCreateCandidate} onClick={onSendCandidate}>
+            <BotMessageSquare size={15} />
+            {copy.generateCandidate}
+          </button>
+          <button
+            type="button"
+            disabled={!canReturnForRevision || !replyDraft.trim()}
+            title={returnForRevisionDescription}
+            aria-label={returnForRevisionDescription}
+            onClick={onReturnForRevision}
+          >
+            <RefreshCw size={15} />
+            {returnForRevisionLabel}
           </button>
           <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
             <BadgeCheck size={15} />
@@ -1853,6 +2309,11 @@ function InboxConversationPanel({
             {copy.reject}
           </button>
         </div>
+        {discussionUnavailable && (
+          <p className="inbox-composer-note">
+            {copy.discussionUnavailable}
+          </p>
+        )}
       </div>
     </section>
   );
@@ -1862,35 +2323,46 @@ type InboxCopy = {
   allBlueprints: string;
   approvalRequest: string;
   approve: string;
+  candidateReply: string;
+  candidateSelected: string;
   complete: string;
   blueprintFilter: string;
   conversation: string;
   decidedAt: string;
   decisionComment: string;
   detailTitle: string;
+  discussionUnavailable: string;
   emptyFilterBody: string;
   emptyFilterTitle: string;
   emptyListBody: string;
   emptyListTitle: string;
   from: string;
+  generateCandidate: string;
   listTitle: string;
   listMetric: (visibleCount: number, totalCount: number, pendingCount: number) => string;
   noSelectionBody: string;
   noSelectionTitle: string;
   noUpstreamOutput: string;
   openedAt: string;
+  originalContent: string;
+  originalSelected: string;
   payload: string;
   processedAction: string;
   processedPlaceholder: string;
+  regenerate: string;
+  regenerateDescription: string;
   reject: string;
+  messageReply: string;
   replyPlaceholder: string;
+  returnForRevision: string;
+  returnForRevisionDescription: string;
   sendReply: string;
-  solutionSelected: string;
   status: string;
   system: string;
   timeFilter: string;
   to: string;
-  useSolution: string;
+  useCandidate: string;
+  useOriginal: string;
   waitingHarness: (harnessLabel: string) => string;
   you: string;
   youAvatar: string;
@@ -1908,37 +2380,48 @@ function getInboxCopy(language: Language): InboxCopy {
       allBlueprints: "全部蓝图",
       approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
       approve: "\u6279\u51c6",
+      candidateReply: "\u5019\u9009\u56de\u590d",
+      candidateSelected: "\u5df2\u9009\u7528\u5019\u9009",
       complete: "\u5b8c\u6210",
       blueprintFilter: "蓝图",
       conversation: "\u5bf9\u8bdd",
       decidedAt: "处理时间",
       decisionComment: "处理备注",
       detailTitle: "\u5bf9\u8bdd\u8be6\u60c5",
+      discussionUnavailable: "\u8fd9\u4e2a\u5386\u53f2\u5ba1\u6279\u6ca1\u6709\u53ef\u7528\u7684\u8ba8\u8bba\u80fd\u529b\u6295\u5f71\u3002",
       emptyFilterBody: "调整蓝图或时间筛选后可以继续查看历史收件。",
       emptyFilterTitle: "当前筛选没有收件",
       emptyListBody: "\u65b0\u7684\u4eba\u5de5\u5ba1\u6279\u4f1a\u6309\u65f6\u95f4\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
       emptyListTitle: "当前没有收件",
       from: "\u6765\u81ea",
+      generateCandidate: "\u751f\u6210\u5019\u9009",
       listTitle: "\u6536\u4ef6",
       listMetric: (visibleCount, totalCount, pendingCount) =>
         `显示 ${visibleCount}/${totalCount} 封，${pendingCount} 封待处理`,
-      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u56de\u590d\u6846\u3002",
+      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u7559\u8a00\u6846\u3002",
       noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
       noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
       openedAt: "\u53d1\u8d77\u65f6\u95f4",
+      originalContent: "\u539f\u59cb\u5ba1\u6279\u5185\u5bb9",
+      originalSelected: "\u5df2\u9009\u539f\u59cb\u5185\u5bb9",
       payload: "\u8be6\u7ec6\u5185\u5bb9",
       processedAction: "已处理，不能重复操作",
-      processedPlaceholder: "这封收件已经处理，不能继续回复或再次审批。",
+      processedPlaceholder: "这封收件已经处理，不能继续留言或再次审批。",
+      regenerate: "\u91cd\u65b0\u751f\u6210",
+      regenerateDescription: "\u91cd\u65b0\u8fd0\u884c\u5e76\u751f\u6210\u65b0\u7248\u672c",
       reject: "\u9a73\u56de",
-      replyPlaceholder: "\u8f93\u5165\u56de\u590d\uff0cShift+Enter \u6362\u884c...",
-      sendReply: "\u56de\u590d",
-      solutionSelected: "\u5df2\u9009\u7528",
+      messageReply: "\u666e\u901a\u7559\u8a00",
+      replyPlaceholder: "\u8f93\u5165\u7559\u8a00\uff0c\u4e0d\u4f1a\u6539\u53d8\u6d41\u7a0b\uff1bShift+Enter \u6362\u884c...",
+      returnForRevision: "\u9000\u56de\u4fee\u8ba2",
+      returnForRevisionDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u4fee\u8ba2\u7248\u672c",
+      sendReply: "\u7559\u8a00",
       status: "状态",
       system: "HiveWard",
       timeFilter: "时间",
       to: "\u53d1\u7ed9",
-      useSolution: "\u4f7f\u7528\u6b64\u65b9\u6848",
-      waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u56de\u590d...`,
+      useCandidate: "\u4f7f\u7528\u6b64\u5019\u9009",
+      useOriginal: "\u9009\u56de\u539f\u59cb\u5185\u5bb9",
+      waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u8f93\u51fa...`,
       you: "\u4f60",
       youAvatar: "\u4f60"
     };
@@ -1948,37 +2431,48 @@ function getInboxCopy(language: Language): InboxCopy {
     allBlueprints: "All blueprints",
     approvalRequest: "Approval request",
     approve: "Approve",
+    candidateReply: "Candidate reply",
+    candidateSelected: "Candidate selected",
     complete: "Complete",
     blueprintFilter: "Blueprint",
     conversation: "Conversation",
     decidedAt: "Decided",
     decisionComment: "Decision note",
     detailTitle: "Conversation detail",
+    discussionUnavailable: "Discussion capability is unavailable for this legacy approval.",
     emptyFilterBody: "Change the blueprint or time filter to view more inbox history.",
     emptyFilterTitle: "No inbox items match this filter",
     emptyListBody: "New human approvals will appear here by request time.",
     emptyListTitle: "No inbox items",
     from: "From",
+    generateCandidate: "Generate candidate",
     listTitle: "Messages",
     listMetric: (visibleCount, totalCount, pendingCount) =>
       `${visibleCount}/${totalCount} shown, ${pendingCount} pending`,
-    noSelectionBody: "Select a message on the left to show its conversation and reply box here.",
+    noSelectionBody: "Select a message on the left to show its conversation and comment box here.",
     noSelectionTitle: "Select a message",
     noUpstreamOutput: "No previous node output was captured.",
     openedAt: "Opened",
+    originalContent: "Original approval content",
+    originalSelected: "Original content selected",
     payload: "Payload",
     processedAction: "Already processed",
     processedPlaceholder: "This inbox item has already been processed.",
+    regenerate: "Regenerate",
+    regenerateDescription: "Rerun this step and generate a new version",
     reject: "Reject",
-    replyPlaceholder: "Reply, Shift+Enter for a new line...",
-    sendReply: "Reply",
-    solutionSelected: "Selected",
+    messageReply: "Message reply",
+    replyPlaceholder: "Add a comment; comments do not change the workflow. Shift+Enter for a new line...",
+    returnForRevision: "Return for revision",
+    returnForRevisionDescription: "Ask the Agent to create a revised version from this comment",
+    sendReply: "Comment",
     status: "Status",
     system: "HiveWard",
     timeFilter: "Time",
     to: "To",
-    useSolution: "Use this option",
-    waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel}...`,
+    useCandidate: "Use this option",
+    useOriginal: "Use original",
+    waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel} output...`,
     you: "You",
     youAvatar: "You"
   };
@@ -2095,6 +2589,18 @@ function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
   return approval.status === undefined || approval.status === "pending";
 }
 
+function hasActionableApprovalRequest(
+  approval: PendingApprovalItem | undefined,
+): approval is PendingApprovalItem & { approvalRequestId: string } {
+  return Boolean(approval?.approvalRequestId && isActionableApprovalThread(approval));
+}
+
+function canSendApprovalDiscussionReply(approval: PendingApprovalItem): boolean {
+  if (!isActionableApprovalThread(approval)) return false;
+  const discussion = approval.discussion;
+  return Boolean(discussion && (discussion.mode === "message_only" || discussion.canStreamReply));
+}
+
 function approvalStatusClassName(approval: PendingApprovalItem): string {
   if (approval.status === "approved") return "status-approved";
   if (approval.status === "completed") return "status-approved";
@@ -2111,19 +2617,19 @@ function approvalStatusLabel(approval: PendingApprovalItem, language: Language, 
     if (approval.status === "approved") return "已批准";
     if (approval.status === "completed") return "已完成";
     if (approval.status === "rejected") return "已驳回";
-    if (approval.status === "replied") return "已回复";
+    if (approval.status === "replied") return "已留言";
     if (approval.status === "terminated") return "已终止";
     if (approval.status === "superseded") return "已替换";
-    if (approval.status === "replying") return "回复中";
+    if (approval.status === "replying") return "处理中";
     return "待处理";
   }
   if (approval.status === "approved") return "Approved";
   if (approval.status === "completed") return "Completed";
   if (approval.status === "rejected") return "Rejected";
-  if (approval.status === "replied") return "Replied";
+  if (approval.status === "replied") return "Commented";
   if (approval.status === "terminated") return "Terminated";
   if (approval.status === "superseded") return "Superseded";
-  if (approval.status === "replying") return "Replying";
+  if (approval.status === "replying") return "Working";
   return t.status.waiting_approval;
 }
 
@@ -2171,7 +2677,10 @@ function formalInboxTypeLabel(type: InboxItem["type"], language: Language): stri
 }
 
 function approvalSubject(approval: PendingApprovalItem): string {
-  if (approval.kind === "iteration_requirement_plan") return "Round Execution Plan";
+  if (approval.kind === "iteration_requirement_plan") {
+    if (approval.canApprove === false && approval.canReturnForRevision) return "问题上报";
+    return "计划确认";
+  }
   return approval.nodeLabel || approval.blueprintName;
 }
 
@@ -2299,11 +2808,11 @@ function buildInboxConversationMessages({
           speaker: reply.role === "user" ? copy.you : approval?.nodeLabel ?? copy.system,
           body: reply.body,
           createdAt: reply.createdAt,
-          ...(reply.role === "assistant"
+          categoryLabel: reply.purpose === "candidate" ? copy.candidateReply : copy.messageReply,
+          ...(reply.purpose === "candidate"
             ? {
-                solutionId: reply.id,
-                selectedSolution: approval?.selectedReplyId === reply.id || reply.selected === true,
-                canUseAsSolution: true
+                candidateReplyId: reply.id,
+                selectedCandidate: approval?.selectedReplyId === reply.id
               }
             : {})
         }))
@@ -2394,16 +2903,16 @@ function buildApprovalConversation(
   copy: InboxCopy,
   t: Messages
 ): InboxConversationMessage[] {
-  const selectedReplyId = approval.selectedReplyId ?? approvalReviewOutputSolutionId;
+  const selectedReplyId = approval.selectedReplyId ?? null;
   return approvalContentBlocks(approval, copy, t).map((block) => ({
     id: block.key,
     role: "assistant" as const,
     speaker: block.label,
     body: block.body,
     createdAt: approval.requestedAt,
-    solutionId: approvalReviewOutputSolutionId,
-    selectedSolution: selectedReplyId === approvalReviewOutputSolutionId,
-    canUseAsSolution: true
+    categoryLabel: copy.originalContent,
+    selectedOriginal: selectedReplyId === null,
+    selectOriginal: selectedReplyId !== null
   }));
 }
 
@@ -3842,83 +4351,50 @@ function buildTraceIssues(
 ): TraceIssue[] {
   if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
-  const context = buildTraceIssueContext(activeRun);
-  const nodeRunIds = new Set(activeRun.nodeRuns.map((nodeRun) => nodeRun.id));
-  const humanReportIds = new Set((activeRun.agentHumanReports ?? []).map((report) => report.id));
-  const nodeTimelineItemsByNodeRunId = buildNodeRunTimelineItemMap(activeRun, nodeRunIds);
-  const managerContainerNodeRunIds = managerContainerNodeRunIdsWithDecisionReports(activeRun);
-  const visibleNodeRuns = activeRun.nodeRuns.filter(
-    (nodeRun) =>
-      nodeRun.nodeType !== "manager_slot" &&
-      !managerContainerNodeRunIds.has(nodeRun.id) &&
-      !isSupersededPreflightJudgmentNodeRun(activeRun, nodeRun)
-  );
-  const nodeItems = visibleNodeRuns.map((nodeRun, order) => ({
-    kind: "node" as const,
-    nodeRun,
-    order,
-    createdAt: traceTimestampForNodeRun(nodeRun)
-  }));
-  const roundResearchItems = buildRoundResearchTraceItems(activeRun).map((round, order) => ({
-    kind: "round_research" as const,
-    round,
-    order: -10_000 + order,
-    createdAt: round.startedAt
-  }));
-  const timelineItems = buildRunTimelineTraceItems(activeRun, nodeRunIds, humanReportIds, language).map((timelineItem, order) => ({
-    kind: "timeline" as const,
-    timelineItem,
-    order: visibleNodeRuns.length + order,
-    createdAt: timelineItem.createdAt
-  }));
-  const reportItems = (activeRun.agentHumanReports ?? [])
-    .filter((report) => !nodeRunIds.has(report.nodeRunId))
-    .map((humanReport, order) => ({
-      kind: "report" as const,
-      humanReport,
-      order: visibleNodeRuns.length + roundResearchItems.length + timelineItems.length + order,
-      createdAt: humanReport.createdAt
-    }));
+  const executionRows = buildRunExecutionTraceRows(activeRun, nodesById);
+  if (executionRows.length > 0) {
+    return executionRows
+      .sort(compareExecutionTraceRows)
+      .map((row, index) => createExecutionTraceIssue(row, index + 1, t, language));
+  }
 
-  return [...roundResearchItems, ...nodeItems, ...timelineItems, ...reportItems]
-    .sort(compareTraceChronologyItems)
-    .map((item, index) => {
-      if (item.kind === "round_research") {
-        return createRoundResearchTraceIssue(activeRun, blueprint, item.round, index + 1, t, language);
-      }
-      if (item.kind === "node") {
-        const node = nodesById.get(item.nodeRun.nodeId);
-        return createNodeTraceIssue(
-          context,
-          item.nodeRun,
-          node,
-          nodeTimelineItemsByNodeRunId.get(item.nodeRun.id) ?? [],
-          index + 1,
-          node?.parentId ? 1 : 0,
-          t,
-          language
-        );
-      }
-      if (item.kind === "timeline") {
-        return createTimelineTraceIssue(activeRun, item.timelineItem, index + 1, t, language);
-      }
-      return createReportTraceIssue(context, item.humanReport, index + 1, t, language);
-    });
+  return [createMissingExecutionFactsTraceIssue(activeRun, 1, t, language)];
 }
 
-function buildTraceIssueContext(activeRun: BlueprintRunView): TraceIssueBuildContext {
-  const humanReportByNodeRunId = new Map<string, RunAgentHumanReport>();
-  for (const report of activeRun.agentHumanReports ?? []) {
-    if (!humanReportByNodeRunId.has(report.nodeRunId)) {
-      humanReportByNodeRunId.set(report.nodeRunId, report);
-    }
-  }
+function createMissingExecutionFactsTraceIssue(
+  activeRun: BlueprintRunView,
+  index: number,
+  t: Messages,
+  language: Language
+): TraceIssue {
+  const zh = language === "zh-CN";
+  const title = zh ? "\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931" : "Execution facts missing";
+  const body = [
+    `## ${title}`,
+    "",
+    zh
+      ? "\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts\uff0c\u56e0\u6b64\u6b64 run \u4e0d\u80fd\u751f\u6210 canonical execution trace\u3002"
+      : "No command, step, execution session, or transcript facts are available, so this run cannot produce a canonical execution trace.",
+    "",
+    zh
+      ? "\u8fd0\u884c\u9875\u4e0d\u4f1a\u4ece timeline \u5386\u53f2\u3001node id \u524d\u7f00\u6216\u65e7 node output \u518d\u6784\u9020\u7b2c\u4e8c\u5957 trace\u3002"
+      : "The run page does not reconstruct a second trace from timeline history, node id prefixes, or old node output."
+  ].join("\n");
   return {
-    humanReportByNodeRunId,
-    artifactsByNodeRunId: groupByNodeRunId(activeRun.artifacts ?? []),
-    eventsByNodeRunId: groupByNodeRunId(activeRun.events),
-    nodeRunById: new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun])),
-    roundById: new Map((activeRun.iterationRounds ?? []).map((round) => [round.id, round]))
+    key: `execution-facts-missing:${activeRun.run.id}`,
+    index,
+    label: title,
+    kind: "execution",
+    actorKind: "system",
+    depth: 0,
+    issueStatus: "failed",
+    statusLabel: zh ? "\u7f3a\u5c11\u4e8b\u5b9e" : "Missing facts",
+    roleTag: roleTagForActorKind("system", language),
+    workTags: [zh ? "\u4e8b\u5b9e\u7f3a\u5931" : "Missing facts"],
+    timestamp: activeRun.run.startedAt,
+    outputPreview: summarizeOutput(body, t),
+    outputBody: body,
+    events: []
   };
 }
 
@@ -3936,351 +4412,450 @@ function groupByNodeRunId<T extends { nodeRunId?: string }>(items: T[]): Map<str
   return grouped;
 }
 
-function buildRoundResearchTraceItems(activeRun: BlueprintRunView): RunIterationRound[] {
-  return (activeRun.iterationRounds ?? [])
-    .filter((round) => round.researchStatus === "context_sufficient")
-    .filter((round) => !activeRun.nodeRuns.some((nodeRun) =>
-      nodeRun.iterationRoundId === round.id && preflightModeFromNodeRunId(nodeRun.id) === "research_resolution"
-    ));
-}
-
-function buildNodeRunTimelineItemMap(
+function buildRunExecutionTraceRows(
   activeRun: BlueprintRunView,
-  nodeRunIds: Set<string>
-): Map<string, RunTimelineTraceItem[]> {
-  const itemsByNodeRunId = new Map<string, RunTimelineTraceItem[]>();
-  for (const item of activeRun.runTimeline ?? []) {
-    if ((item.kind !== "node_started" && item.kind !== "node_output") || !item.payloadRef || !nodeRunIds.has(item.payloadRef)) {
+  nodesById: Map<string, BlueprintNode>
+): RunExecutionTraceRow[] {
+  const rows: RunExecutionTraceRow[] = [];
+  const commands = sortRunCommands(activeRun.runCommands ?? []);
+  const stepsByCommandId = groupRunCommandSteps(activeRun.runCommandSteps ?? []);
+  const allSteps = sortRunCommandStepsForTrace(activeRun);
+  const sessions = sortRunSessionsForTrace(activeRun);
+  const transcriptEvents = sortedRunTranscriptEventsForDisplay(activeRun);
+  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
+  const sessionsByNodeRunId = groupSessionsByNodeRunId(sessions);
+  const eventsByNodeRunId = groupByNodeRunId(transcriptEvents);
+  const consumedStepIds = new Set<string>();
+  const consumedSessionIds = new Set<string>();
+  let order = 0;
+
+  for (const command of commands) {
+    const steps = stepsByCommandId.get(command.id) ?? [];
+    if (steps.length === 0) {
+      rows.push(buildCommandOnlyTraceRow(activeRun, command, order++));
       continue;
     }
-    const existing = itemsByNodeRunId.get(item.payloadRef) ?? [];
-    existing.push(item);
-    itemsByNodeRunId.set(item.payloadRef, existing);
+
+    for (const step of steps) {
+      consumedStepIds.add(step.id);
+      const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
+      if (stepSessions.length === 0) {
+        const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
+        rows.push(buildStepTraceRow({
+          activeRun,
+          nodesById,
+          command,
+          step,
+          session: undefined,
+          transcriptEvents: stepEvents,
+          order: order++
+        }));
+        markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
+        continue;
+      }
+
+      for (const session of stepSessions) {
+        consumedSessionIds.add(session.id);
+        rows.push(buildStepTraceRow({
+          activeRun,
+          nodesById,
+          command,
+          step,
+          session,
+          transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+          order: order++
+        }));
+      }
+    }
   }
-  return itemsByNodeRunId;
-}
 
-function managerContainerNodeRunIdsWithDecisionReports(activeRun: BlueprintRunView): Set<string> {
-  const ids = new Set<string>();
-  for (const report of activeRun.agentHumanReports ?? []) {
-    const match = report.nodeRunId.match(/^(.+)-manager-decision-\d+$/);
-    if (match?.[1]) ids.add(match[1]);
+  const commandIds = new Set(commands.map((command) => command.id));
+  for (const step of allSteps) {
+    if (consumedStepIds.has(step.id) || commandIds.has(step.commandId)) continue;
+    const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
+    if (stepSessions.length === 0) {
+      const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
+      rows.push(buildStepTraceRow({
+        activeRun,
+        nodesById,
+        command: undefined,
+        step,
+        session: undefined,
+        transcriptEvents: stepEvents,
+        order: order++
+      }));
+      markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
+      continue;
+    }
+    for (const session of stepSessions) {
+      consumedSessionIds.add(session.id);
+      rows.push(buildStepTraceRow({
+        activeRun,
+        nodesById,
+        command: undefined,
+        step,
+        session,
+        transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+        order: order++
+      }));
+    }
   }
-  return ids;
+
+  for (const session of sessions) {
+    if (consumedSessionIds.has(session.id)) continue;
+    rows.push(buildSessionOnlyTraceRow({
+      activeRun,
+      nodesById,
+      session,
+      transcriptEvents: eventsBySessionId.get(session.id) ?? [],
+      order: order++
+    }));
+    consumedSessionIds.add(session.id);
+  }
+
+  for (const [sessionId, events] of eventsBySessionId) {
+    if (consumedSessionIds.has(sessionId)) continue;
+    rows.push(buildTranscriptOnlyTraceRow({
+      activeRun,
+      nodesById,
+      sessionId,
+      transcriptEvents: events,
+      order: order++
+    }));
+  }
+
+  return rows;
 }
 
-function isSupersededPreflightJudgmentNodeRun(activeRun: BlueprintRunView, nodeRun: BlueprintNodeRun): boolean {
-  if (preflightModeFromNodeRunId(nodeRun.id) !== "preflight_judgment") return false;
-  return (activeRun.approvalRequests ?? []).some((approval) =>
-    approval.kind === "iteration_requirement_plan" &&
-    approval.roundId === nodeRun.iterationRoundId
-  );
-}
-
-function buildRunTimelineTraceItems(
+function buildCommandOnlyTraceRow(
   activeRun: BlueprintRunView,
-  nodeRunIds: Set<string>,
-  humanReportIds: Set<string>,
-  language: Language
-): RunTimelineTraceItem[] {
-  const visible = (activeRun.runTimeline ?? [])
-    .filter((item) => isVisibleRunTimelineKind(item.kind))
-    .filter((item) => item.kind !== "node_output" || !item.payloadRef || (!humanReportIds.has(item.payloadRef) && !nodeRunIds.has(item.payloadRef)))
-    .filter((item) => item.kind !== "node_started" || !item.payloadRef || !nodeRunIds.has(item.payloadRef));
-  const eventFallback = visible.length === 0
-    ? buildRunEventTimelineFallbackItems(activeRun, nodeRunIds, language)
-    : [];
-  return [...visible, ...eventFallback];
+  command: RunCommandFact,
+  order: number
+): RunExecutionTraceRow {
+  return {
+    key: `execution-command:${command.id}`,
+    command,
+    transcriptEvents: [],
+    actorLabel: runCommandKindLabel(command.kind, "en"),
+    actorKind: "system",
+    status: command.status,
+    startedAt: command.startedAt,
+    endedAt: command.endedAt,
+    createdAt: command.startedAt ?? command.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: []
+  };
 }
 
-function buildRunEventTimelineFallbackItems(
-  activeRun: BlueprintRunView,
-  nodeRunIds: Set<string>,
-  language: Language
-): RunTimelineTraceItem[] {
-  const nodeRunsById = new Map(activeRun.nodeRuns.map((nodeRun) => [nodeRun.id, nodeRun]));
-  return activeRun.events.flatMap((event, index) => {
-    const kind = runEventTimelineKind(event.type);
-    if (!kind) return [];
-    if (!isVisibleRunTimelineKind(kind)) return [];
-    if (event.nodeRunId && nodeRunIds.has(event.nodeRunId)) return [];
-    const nodeRun = event.nodeRunId ? nodeRunsById.get(event.nodeRunId) : undefined;
-    return [{
-      id: `event-timeline-${event.id}`,
-      runId: event.blueprintRunId,
-      sequence: index + 1,
-      createdAt: event.createdAt,
-      actorNodeId: event.nodeRunId,
-      actorLabel: nodeRun?.nodeLabel ?? runEventActorLabel(event, language),
-      kind,
-      title: runEventTimelineTitle(event, nodeRun, language),
-      body: event.message,
-      payloadRef: event.nodeRunId
-    }];
+function buildStepTraceRow({
+  activeRun,
+  nodesById,
+  command,
+  step,
+  session,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  command?: RunCommandFact;
+  step: RunCommandStepFact;
+  session?: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const node = nodesById.get(step.nodeId);
+  const runtimeRefs = collectExecutionRuntimeRefs(step.runtimeRef, session?.runtimeRef, transcriptEvents);
+  const actorLabel = node?.config.label ?? step.nodeId;
+  return {
+    key: `execution-step:${step.id}${session ? `:${session.id}` : ""}`,
+    command,
+    step,
+    session,
+    transcriptEvents,
+    node,
+    mode: step.mode,
+    actorLabel,
+    actorKind: traceActorKindForBlueprintNode(node),
+    status: step.status,
+    startedAt: step.startedAt ?? session?.createdAt,
+    endedAt: step.endedAt,
+    createdAt: step.startedAt ?? session?.createdAt ?? transcriptEvents[0]?.createdAt ?? step.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs
+  };
+}
+
+function buildSessionOnlyTraceRow({
+  activeRun,
+  nodesById,
+  session,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  session: RunExecutionSession;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const node = nodesById.get(session.nodeId);
+  return {
+    key: `execution-session:${session.id}`,
+    session,
+    transcriptEvents,
+    node,
+    actorLabel: node?.config.label ?? session.nodeId,
+    actorKind: traceActorKindForBlueprintNode(node),
+    status: session.status,
+    startedAt: session.createdAt,
+    endedAt: session.status === "completed" || session.status === "failed" ? session.updatedAt : undefined,
+    createdAt: session.createdAt ?? transcriptEvents[0]?.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: collectExecutionRuntimeRefs(session.runtimeRef, undefined, transcriptEvents)
+  };
+}
+
+function buildTranscriptOnlyTraceRow({
+  activeRun,
+  nodesById,
+  sessionId,
+  transcriptEvents,
+  order
+}: {
+  activeRun: BlueprintRunView;
+  nodesById: Map<string, BlueprintNode>;
+  sessionId: string;
+  transcriptEvents: RunTranscriptProjectionEvent[];
+  order: number;
+}): RunExecutionTraceRow {
+  const firstEvent = transcriptEvents[0];
+  return {
+    key: `execution-transcript:${sessionId}`,
+    transcriptEvents,
+    actorLabel: firstEvent?.nodeRunId ?? sessionId,
+    actorKind: "agent",
+    status: activeRun.run.status,
+    startedAt: firstEvent?.createdAt,
+    endedAt: transcriptEvents.at(-1)?.createdAt,
+    createdAt: firstEvent?.createdAt ?? activeRun.run.startedAt,
+    order,
+    runtimeRefs: collectExecutionRuntimeRefs(undefined, undefined, transcriptEvents)
+  };
+}
+
+function sortRunCommandStepsForTrace(activeRun: BlueprintRunView): RunCommandStepFact[] {
+  const commandOrderById = new Map(sortRunCommands(activeRun.runCommands ?? []).map((command, index) => [command.id, index]));
+  return [...(activeRun.runCommandSteps ?? [])].sort((left, right) => {
+    const commandOrder = (commandOrderById.get(left.commandId) ?? Number.MAX_SAFE_INTEGER) -
+      (commandOrderById.get(right.commandId) ?? Number.MAX_SAFE_INTEGER);
+    if (commandOrder !== 0) return commandOrder;
+    const revisionOrder = left.revision - right.revision;
+    if (revisionOrder !== 0) return revisionOrder;
+    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
   });
 }
 
-function runEventTimelineKind(type: BlueprintNodeEvent["type"]): RunTimelineTraceItem["kind"] | undefined {
-  if (type === "blueprint.run.started") return "round_started";
-  if (type === "blueprint.run.completed") return "run_completed";
-  if (type === "blueprint.run.failed") return "run_failed";
-  if (type === "blueprint.run.cancelled") return "run_cancelled";
-  if (type === "node.run.queued" || type === "node.run.started" || type === "node.run.waiting_approval") return "node_started";
-  if (type === "node.run.completed" || type === "node.run.failed" || type === "node.run.cancelled") return "node_output";
-  return undefined;
+function sortRunSessionsForTrace(activeRun: BlueprintRunView): RunExecutionSession[] {
+  const stepOrderByNodeRunId = new Map<string, number>();
+  sortRunCommandStepsForTrace(activeRun).forEach((step, index) => {
+    if (step.nodeRunId && !stepOrderByNodeRunId.has(step.nodeRunId)) {
+      stepOrderByNodeRunId.set(step.nodeRunId, index);
+    }
+  });
+  const firstEventBySessionId = new Map<string, RunTranscriptProjectionEvent>();
+  for (const event of sortedRunTranscriptEventsForDisplay(activeRun)) {
+    if (!firstEventBySessionId.has(event.sessionId)) firstEventBySessionId.set(event.sessionId, event);
+  }
+  return [...(activeRun.nodeExecutionSessions ?? [])].sort((left, right) => {
+    const stepOrder = (stepOrderByNodeRunId.get(left.nodeRunId) ?? Number.MAX_SAFE_INTEGER) -
+      (stepOrderByNodeRunId.get(right.nodeRunId) ?? Number.MAX_SAFE_INTEGER);
+    if (stepOrder !== 0) return stepOrder;
+    const timestampOrder = toSafeTimestamp(left.createdAt ?? firstEventBySessionId.get(left.id)?.createdAt ?? "") -
+      toSafeTimestamp(right.createdAt ?? firstEventBySessionId.get(right.id)?.createdAt ?? "");
+    if (timestampOrder !== 0) return timestampOrder;
+    return left.id.localeCompare(right.id);
+  });
 }
 
-function runEventActorLabel(event: BlueprintNodeEvent, language: Language): string {
-  if (event.nodeRunId) return language === "zh-CN" ? "运行节点" : "Run node";
-  return language === "zh-CN" ? "运行" : "Run";
+function groupSessionsByNodeRunId(sessions: RunExecutionSession[]): Map<string, RunExecutionSession[]> {
+  const grouped = new Map<string, RunExecutionSession[]>();
+  for (const session of sessions) {
+    grouped.set(session.nodeRunId, [...(grouped.get(session.nodeRunId) ?? []), session]);
+  }
+  return grouped;
 }
 
-function runEventTimelineTitle(
-  event: BlueprintNodeEvent,
-  nodeRun: BlueprintNodeRun | undefined,
-  language: Language
-): string {
-  const zh = language === "zh-CN";
-  const nodeLabel = nodeRun?.nodeLabel ?? (zh ? "运行节点" : "Run node");
-  if (event.type === "blueprint.run.started") return zh ? "运行已开始" : "Run started";
-  if (event.type === "blueprint.run.completed") return zh ? "运行已完成" : "Run completed";
-  if (event.type === "blueprint.run.failed") return zh ? "运行失败" : "Run failed";
-  if (event.type === "blueprint.run.cancelled") return zh ? "运行已取消" : "Run cancelled";
-  if (event.type === "node.run.queued") return zh ? `${nodeLabel} 已排队` : `${nodeLabel} queued`;
-  if (event.type === "node.run.started") return zh ? `${nodeLabel} 已开始` : `${nodeLabel} started`;
-  if (event.type === "node.run.waiting_approval") return zh ? `${nodeLabel} 等待审批` : `${nodeLabel} waiting for approval`;
-  if (event.type === "node.run.completed") return zh ? `${nodeLabel} 已完成` : `${nodeLabel} completed`;
-  if (event.type === "node.run.failed") return zh ? `${nodeLabel} 失败` : `${nodeLabel} failed`;
-  if (event.type === "node.run.cancelled") return zh ? `${nodeLabel} 已取消` : `${nodeLabel} cancelled`;
-  return event.message;
+function sessionsForStep(
+  step: RunCommandStepFact,
+  sessionsByNodeRunId: Map<string, RunExecutionSession[]>
+): RunExecutionSession[] {
+  return step.nodeRunId ? sessionsByNodeRunId.get(step.nodeRunId) ?? [] : [];
 }
 
-function isVisibleRunTimelineKind(kind: RunTimelineTraceItem["kind"]): boolean {
-  return kind === "node_started" ||
-    kind === "node_output" ||
-    kind === "requirement_published" ||
-    kind === "release_report_published" ||
-    kind === "round_failed" ||
-    kind === "round_cancelled" ||
-    kind === "run_failed" ||
-    kind === "run_cancelled";
+function transcriptEventsForStepWithoutSession(
+  step: RunCommandStepFact,
+  eventsByNodeRunId: Map<string, RunTranscriptProjectionEvent[]>,
+  consumedSessionIds: Set<string>
+): RunTranscriptProjectionEvent[] {
+  return step.nodeRunId
+    ? (eventsByNodeRunId.get(step.nodeRunId) ?? []).filter((event) => !consumedSessionIds.has(event.sessionId))
+    : [];
 }
 
-function createNodeTraceIssue(
-  context: TraceIssueBuildContext,
-  nodeRun: BlueprintNodeRun,
-  node: BlueprintNode | undefined,
-  timelineItems: RunTimelineTraceItem[],
+function markConsumedTranscriptSessionIds(
+  events: RunTranscriptProjectionEvent[],
+  consumedSessionIds: Set<string>
+): void {
+  for (const event of events) consumedSessionIds.add(event.sessionId);
+}
+
+function collectExecutionRuntimeRefs(
+  stepRuntimeRef: RunCommandStepFact["runtimeRef"] | undefined,
+  sessionRuntimeRef: RunExecutionSession["runtimeRef"] | undefined,
+  transcriptEvents: RunTranscriptProjectionEvent[]
+): Array<NonNullable<RunCommandStepFact["runtimeRef"]>> {
+  const refs = [stepRuntimeRef, sessionRuntimeRef, ...transcriptEvents.map((event) => event.runtimeRef)]
+    .filter((ref): ref is NonNullable<RunCommandStepFact["runtimeRef"]> => Boolean(ref));
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.source}:${ref.sourceId}:${ref.taskId ?? ""}:${ref.sessionKey ?? ""}:${ref.messageId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function compareExecutionTraceRows(left: RunExecutionTraceRow, right: RunExecutionTraceRow): number {
+  return left.order - right.order || toSafeTimestamp(left.createdAt) - toSafeTimestamp(right.createdAt) || left.key.localeCompare(right.key);
+}
+
+function createExecutionTraceIssue(
+  row: RunExecutionTraceRow,
   index: number,
-  depth: number,
   t: Messages,
   language: Language
 ): TraceIssue {
-  const baseLabel = nodeRun.nodeLabel || node?.config.label || nodeRun.nodeId;
-  const label = formatNodeTraceLabel(baseLabel, nodeRun, language);
-  const humanReport = context.humanReportByNodeRunId.get(nodeRun.id);
-  const reportArtifacts = context.artifactsByNodeRunId.get(nodeRun.id) ?? [];
-  const actorKind = traceActorKindForNodeRun(nodeRun);
-  const managerReason = actorKind === "manager" && isDispatchManagerNodeRun(nodeRun)
-    ? readManagerOutputReason(nodeRun.output)
-    : undefined;
-  const contextSnapshotBody = preflightModeFromNodeRunId(nodeRun.id) === "context_snapshot"
-    ? buildContextSnapshotReadableBody(nodeRun.output, humanReport?.bodyMd, language)
-    : undefined;
-  const readableSource = contextSnapshotBody ?? (humanReport
-    ? humanReport.bodyMd
-    : buildReadableNodeOutputBody(nodeRun.output, nodeRun.error, t) ?? buildRunningNodeProgressBody(nodeRun, language));
-  const displaySource = managerReason && !humanReport && readableSource?.trim() === managerReason.trim()
-    ? ""
-    : readableSource;
-  const previewSource = readableSource ? buildCurrentOutputPreviewBody(readableSource, language) : undefined;
-  const outputBody = readableSource
-    ? buildCurrentOutputDisplayBody({
-        bodyMd: displaySource ?? "",
-        artifacts: reportArtifacts,
-        language,
-        actorKind,
-        reason: managerReason,
-        timelineDetails: nodeTimelineDetailBodies(timelineItems, language)
-      })
-    : undefined;
-  const round = roundForNodeRun(context, nodeRun);
-  const displayRoundNumber = managerRoundNumberForNodeRun(nodeRun) ?? round?.roundNumber;
-  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
+  const label = executionTraceRowLabel(row, language);
+  const body = buildExecutionTraceIssueBody(row, language);
+  const previewSource = row.transcriptEvents.at(-1)?.content ??
+    row.step?.error ??
+    row.command?.error ??
+    executionTraceRowSummary(row, language);
   return {
-    key: nodeRun.id,
+    key: row.key,
     index,
     label,
-    kind: "node",
-    actorKind,
-    depth,
-    node,
-    nodeRun,
-    humanReport,
-    issueStatus: toIssueStatus(nodeRun.status),
-    statusLabel: statusLabelForNodeRun(nodeRun.status, t),
-    roundLabel,
-    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
-    roleTag: roleTagForActorKind(actorKind, language),
-    workTags: workTagsForNodeRun(nodeRun, label, language),
-    timestamp: traceTimestampForNodeRun(nodeRun),
-    outputPreview: summarizeOutput(previewSource ?? nodeRun.output, t),
-    outputBody,
-    events: context.eventsByNodeRunId.get(nodeRun.id) ?? []
-  };
-}
-
-function nodeTimelineDetailBodies(
-  timelineItems: RunTimelineTraceItem[],
-  language: Language
-): string[] {
-  return timelineItems
-    .filter((item) => item.kind === "node_output")
-    .map((item) => localizeTimelineBody(item.body, language)?.trim())
-    .filter((body): body is string => Boolean(body));
-}
-
-function createReportTraceIssue(
-  context: TraceIssueBuildContext,
-  humanReport: RunAgentHumanReport,
-  index: number,
-  t: Messages,
-  language: Language
-): TraceIssue {
-  const reportArtifacts = context.artifactsByNodeRunId.get(humanReport.nodeRunId) ?? [];
-  const nodeRun = context.nodeRunById.get(humanReport.nodeRunId);
-  const round = nodeRun ? roundForNodeRun(context, nodeRun) : roundForReport(context, humanReport);
-  const displayRoundNumber = managerRoundNumberForReport(humanReport, nodeRun) ?? round?.roundNumber;
-  const actorKind = nodeRun ? traceActorKindForNodeRun(nodeRun) : traceActorKindFromLabel(humanReport.nodeLabel);
-  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
-  const managerReason = actorKind === "manager" ? readManagerOutputReason(nodeRun?.output) : undefined;
-  const previewSource = buildCurrentOutputPreviewBody(humanReport.bodyMd, language);
-  const body = buildCurrentOutputDisplayBody({
-    bodyMd: humanReport.bodyMd,
-    artifacts: reportArtifacts,
-    language,
-    actorKind,
-    reason: managerReason
-  });
-  return {
-    key: `report:${humanReport.id}`,
-    index,
-    label: formatReportTraceLabel(humanReport.nodeLabel, humanReport.nodeRunId, language),
-    kind: "report",
-    actorKind,
-    depth: 0,
-    humanReport,
-    issueStatus: "completed",
-    statusLabel: t.trace.completed,
-    roundLabel,
-    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
-    roleTag: roleTagForActorKind(actorKind, language),
-    workTags: workTagsForReport(humanReport, nodeRun, language),
-    timestamp: humanReport.createdAt,
-    outputPreview: summarizeOutput(previewSource, t),
+    kind: "execution",
+    actorKind: row.actorKind,
+    depth: row.node?.parentId ? 1 : 0,
+    node: row.node,
+    executionRow: row,
+    issueStatus: toExecutionTraceIssueStatus(row.status),
+    statusLabel: runExecutionStatusLabel(row.status, language),
+    roleTag: roleTagForActorKind(row.actorKind, language),
+    workTags: workTagsForExecutionTraceRow(row, label, language),
+    timestamp: row.startedAt ?? row.createdAt,
+    outputPreview: summarizeOutput(buildCurrentOutputPreviewBody(previewSource, language), t),
     outputBody: body,
     events: []
   };
 }
 
-function createRoundResearchTraceIssue(
-  activeRun: BlueprintRunView,
-  blueprint: BlueprintDefinition | undefined,
-  round: RunIterationRound,
-  index: number,
-  t: Messages,
-  language: Language
-): TraceIssue {
-  const researchBody = buildRoundResearchTraceBody(round, language);
-  const body = buildCurrentOutputDisplayBody({
-    bodyMd: researchBody,
-    artifacts: [],
-    language,
-    actorKind: "manager"
-  });
-  return {
-    key: `round-research:${round.id}`,
-    index,
-    label: roundResearchManagerLabel(activeRun, blueprint, language),
-    kind: "round_research",
-    actorKind: "manager",
-    depth: 0,
-    issueStatus: "completed",
-    statusLabel: traceIssueStatusLabel("completed", language),
-    roundLabel: formatRoundRibbonLabel(round.roundNumber, language),
-    roundTone: roundTone(round.roundNumber),
-    roleTag: roleTagForActorKind("manager", language),
-    workTags: [preflightWorkTag("research_resolution", language)],
-    timestamp: round.startedAt,
-    outputPreview: summarizeOutput(buildCurrentOutputPreviewBody(researchBody, language), t),
-    outputBody: body,
-    events: []
-  };
+function executionTraceRowLabel(row: RunExecutionTraceRow, language: Language): string {
+  const actor = cleanTraceActorLabel(row.actorLabel);
+  const mode = row.mode ? runCommandStepModeLabel(row.mode, language) : undefined;
+  return mode ? `${actor} / ${mode}` : actor;
 }
 
-function roundResearchManagerLabel(
-  activeRun: BlueprintRunView,
-  blueprint: BlueprintDefinition | undefined,
-  language: Language
-): string {
-  const blueprintManager = blueprint?.nodes.find((node) => node.type === "manager")?.config.label;
-  const runManager = activeRun.nodeRuns.find((nodeRun) => nodeRun.nodeType === "manager")?.nodeLabel;
-  const reportManager = activeRun.agentHumanReports?.find((report) => traceActorKindFromLabel(report.nodeLabel) === "manager")?.nodeLabel;
-  return cleanTraceActorLabel(blueprintManager ?? runManager ?? reportManager ?? "Manager");
-}
-
-function buildRoundResearchTraceBody(round: RunIterationRound, language: Language): string {
+function buildExecutionTraceIssueBody(row: RunExecutionTraceRow, language: Language): string {
   const zh = language === "zh-CN";
-  const lead = zh
-    ? "已复用上一轮上下文，判断不需要额外调研。"
-    : "Reused previous round context and determined no additional research is needed.";
-  const status = round.researchStatus ? roundResearchStatusLabel(round.researchStatus, language) : undefined;
-  const summary = round.researchSummary?.trim();
+  const facts = [
+    row.mode ? `${zh ? "\u6a21\u5f0f" : "Mode"}: ${runCommandStepModeLabel(row.mode, language)}` : undefined,
+    row.command ? `${zh ? "\u547d\u4ee4" : "Command"}: ${runCommandKindLabel(row.command.kind, language)} (${row.command.commandKey})` : undefined,
+    row.step ? `${zh ? "\u6b65\u9aa4" : "Step"}: ${row.step.stepKey}` : undefined,
+    `${zh ? "\u72b6\u6001" : "Status"}: ${runExecutionStatusLabel(row.status, language)}`,
+    row.startedAt ? `${zh ? "\u5f00\u59cb" : "Started"}: ${formatTraceTime(row.startedAt, language)}` : undefined,
+    row.endedAt ? `${zh ? "\u7ed3\u675f" : "Ended"}: ${formatTraceTime(row.endedAt, language)}` : undefined,
+    row.session ? `${zh ? "Session" : "Session"}: ${row.session.nativeSessionId ?? row.session.id}` : undefined,
+    row.session ? `${zh ? "Harness" : "Harness"}: ${row.session.harnessId}` : undefined
+  ].filter((line): line is string => Boolean(line));
+  const runtimeRefs = row.runtimeRefs.map(formatRuntimeObjectRefForTrace);
+  const transcriptLines = row.transcriptEvents.flatMap((event) => {
+    const content = event.content?.trim();
+    return [
+      `### ${runTranscriptEventLabel(event.kind, event.role, language)}`,
+      `${zh ? "\u65f6\u95f4" : "Time"}: ${formatTraceTime(event.createdAt, language)}`,
+      content || (zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content.")
+    ];
+  });
   return [
-    `## ${zh ? "\u8c03\u7814\u5224\u65ad" : "Research decision"}`,
+    `## ${zh ? "\u6267\u884c\u4e8b\u5b9e" : "Execution facts"}`,
     "",
-    lead,
+    executionTraceRowSummary(row, language),
     "",
-    `## ${zh ? "\u7cfb\u7edf\u8bb0\u5f55" : "System record"}`,
-    "",
-    status ? `${zh ? "\u8c03\u7814\u72b6\u6001" : "Research status"}：${status}` : undefined,
-    round.planSource ? `${zh ? "\u8ba1\u5212\u6765\u6e90" : "Plan source"}：${round.planSource}` : undefined,
-    summary ? "" : undefined,
-    summary ? `## ${zh ? "\u590d\u7528\u4f9d\u636e" : "Reused context"}` : undefined,
-    summary ? "" : undefined,
-    summary
-  ].filter((part): part is string => part !== undefined).join("\n").trim();
+    facts.join("\n"),
+    runtimeRefs.length > 0 ? "" : undefined,
+    runtimeRefs.length > 0 ? `## ${zh ? "\u8fd0\u884c\u65f6\u5f15\u7528" : "Runtime refs"}` : undefined,
+    runtimeRefs.length > 0 ? "" : undefined,
+    runtimeRefs.join("\n"),
+    transcriptLines.length > 0 ? "" : undefined,
+    transcriptLines.length > 0 ? `## ${zh ? "Transcript" : "Transcript"}` : undefined,
+    transcriptLines.length > 0 ? "" : undefined,
+    transcriptLines.join("\n\n")
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0).join("\n");
 }
 
-function roundResearchStatusLabel(status: NonNullable<RunIterationRound["researchStatus"]>, language: Language): string {
+function executionTraceRowSummary(row: RunExecutionTraceRow, language: Language): string {
   const zh = language === "zh-CN";
-  if (status === "context_sufficient") return zh ? "\u4e0a\u4e0b\u6587\u8db3\u591f" : "Context sufficient";
-  if (status === "not_required") return zh ? "\u65e0\u9700\u8c03\u7814" : "Not required";
-  if (status === "user_provided") return zh ? "\u7528\u6237\u5df2\u63d0\u4f9b" : "User provided";
-  if (status === "agent_generated") return zh ? "Agent \u751f\u6210" : "Agent generated";
-  if (status === "manager_fallback") return zh ? "Manager \u5224\u65ad" : "Manager fallback";
-  if (status === "assumption_based") return zh ? "\u57fa\u4e8e\u5047\u8bbe" : "Assumption based";
-  if (status === "blocked") return zh ? "\u5df2\u963b\u585e" : "Blocked";
-  return status;
-}
-
-function formatNodeTraceLabel(label: string, nodeRun: BlueprintNodeRun, language: Language): string {
-  if (isReleaseReportNodeRun(nodeRun)) {
-    const roundNumber = managerRoundNumberForNodeRun(nodeRun);
-    if (language === "zh-CN") {
-      return roundNumber ? `\u7b2c ${roundNumber} \u8f6e\u62a5\u544a\u53d1\u5e03` : "\u62a5\u544a\u53d1\u5e03";
-    }
-    return roundNumber ? `Round ${roundNumber} report publish` : "Report publish";
+  const mode = row.mode ? runCommandStepModeLabel(row.mode, language) : undefined;
+  const actor = cleanTraceActorLabel(row.actorLabel);
+  if (mode) {
+    return zh
+      ? `${actor} \u7684 ${mode} \u6b65\u9aa4\u6765\u81ea command/step/session/transcript \u4e8b\u5b9e\u3002`
+      : `${actor} ${mode} is projected from command, step, session, and transcript facts.`;
   }
-  return cleanTraceActorLabel(label);
+  return zh
+    ? `${actor} \u6765\u81ea execution fact \u6295\u5f71\u3002`
+    : `${actor} is projected from execution facts.`;
 }
 
-function formatReportTraceLabel(label: string, nodeRunId: string, language: Language): string {
-  return localizeReportNodeLabel(label, language);
+function formatRuntimeObjectRefForTrace(ref: NonNullable<RunCommandStepFact["runtimeRef"]>): string {
+  const parts = [
+    `${ref.source}:${ref.sourceId}`,
+    ref.taskId ? `task=${ref.taskId}` : undefined,
+    ref.sessionKey ? `session=${ref.sessionKey}` : undefined,
+    ref.messageId ? `message=${ref.messageId}` : undefined
+  ].filter((part): part is string => Boolean(part));
+  return `- ${parts.join(" / ")}`;
 }
 
-function localizeReportNodeLabel(label: string, language: Language): string {
-  return cleanTraceActorLabel(label);
+function toExecutionTraceIssueStatus(status: string): TraceIssueStatus {
+  if (status === "queued" || status === "running" || status === "waiting_approval" || status === "active" || status === "paused") {
+    return "in_progress";
+  }
+  if (status === "failed" || status === "cancelled" || status === "unavailable") return "failed";
+  return "completed";
+}
+
+function workTagsForExecutionTraceRow(row: RunExecutionTraceRow, label: string, language: Language): string[] {
+  if (row.mode) return [workTagForExecutionMode(row.mode, language)];
+  if (row.command?.kind === "self_iteration_release_report") return [reportPublishWorkTag(language)];
+  return [workTagFromLabel(label, language)];
+}
+
+function workTagForExecutionMode(mode: RunCommandStepFact["mode"], language: Language): string {
+  if (isRunPreflightMode(mode)) return preflightWorkTag(mode, language);
+  if (mode === "release_report") return reportPublishWorkTag(language);
+  return language === "zh-CN" ? "\u6267\u884c" : "Execution";
+}
+
+function isRunPreflightMode(mode: RunCommandStepFact["mode"]): mode is RunPreflightMode {
+  return mode === "research_resolution" ||
+    mode === "requirement_resolution" ||
+    mode === "revise_plan" ||
+    mode === "preflight_judgment" ||
+    mode === "context_snapshot";
 }
 
 function cleanTraceActorLabel(label: string): string {
@@ -4290,185 +4865,10 @@ function cleanTraceActorLabel(label: string): string {
     .trim();
 }
 
-function preflightModeFromNodeRunId(nodeRunId: string): RunPreflightMode | undefined {
-  if (!nodeRunId.startsWith("preflight-")) return undefined;
-  if (nodeRunId.startsWith("preflight-research_resolution-")) return "research_resolution";
-  if (nodeRunId.startsWith("preflight-requirement_resolution-")) return "requirement_resolution";
-  if (nodeRunId.startsWith("preflight-revise_plan-")) return "revise_plan";
-  if (nodeRunId.startsWith("preflight-preflight_judgment-")) return "preflight_judgment";
-  if (nodeRunId.startsWith("preflight-context_snapshot-")) return "context_snapshot";
-  return undefined;
-}
-
-function preflightModeDisplayLabel(mode: RunPreflightMode, language: Language): string {
-  const zh = language === "zh-CN";
-  if (mode === "research_resolution") return zh ? "\u8c03\u7814" : "research";
-  if (mode === "requirement_resolution") return zh ? "\u8ba1\u5212\u51c6\u5907" : "plan preparation";
-  if (mode === "revise_plan") return zh ? "\u8ba1\u5212\u4fee\u8ba2" : "plan revision";
-  if (mode === "preflight_judgment") return zh ? "\u8ba1\u5212\u6821\u9a8c" : "plan review";
-  if (mode === "context_snapshot") return zh ? "\u8bb0\u5fc6\u5feb\u7167" : "context snapshot";
-  return zh ? "\u51c6\u5907" : "preflight";
-}
-
-function nodeRunTaskName(nodeRun: BlueprintNodeRun | undefined): string | undefined {
-  if (!nodeRun) return undefined;
-  const record = readOutputRecord(nodeRun.input);
-  return readNonEmptyString(record?.task);
-}
-
-function isReleaseReportNodeRun(nodeRun: BlueprintNodeRun | undefined): boolean {
-  return nodeRunTaskName(nodeRun) === "self_iteration_release_report";
-}
-
-function isDispatchManagerNodeRun(nodeRun: BlueprintNodeRun): boolean {
-  return nodeRun.nodeType === "manager" && !isReleaseReportNodeRun(nodeRun) && !preflightModeFromNodeRunId(nodeRun.id);
-}
-
-function createTimelineTraceIssue(
-  activeRun: BlueprintRunView,
-  timelineItem: RunTimelineTraceItem,
-  index: number,
-  t: Messages,
-  language: Language
-): TraceIssue {
-  const body = buildTimelineIssueBody(activeRun, timelineItem, language);
-  const issueStatus = timelineIssueStatus(activeRun, timelineItem);
-  const actorKind = traceActorKindForTimelineItem(timelineItem);
-  const displayRoundNumber = roundNumberForTimelineItem(activeRun, timelineItem);
-  const roundLabel = traceRoundLabel(actorKind, displayRoundNumber, language);
-  return {
-    key: `timeline:${timelineItem.id}`,
-    index,
-    label: timelineIssueTitle(activeRun, timelineItem, language),
-    kind: "timeline",
-    actorKind,
-    depth: 0,
-    timelineItem,
-    issueStatus,
-    statusLabel: timelineIssueStatusLabel(activeRun, timelineItem, issueStatus, language),
-    roundLabel,
-    roundTone: displayRoundNumber ? roundTone(displayRoundNumber) : undefined,
-    roleTag: roleTagForActorKind(actorKind, language),
-    workTags: workTagsForTimelineItem(timelineItem, language),
-    timestamp: timelineItem.createdAt,
-    outputPreview: summarizeOutput(body, t),
-    outputBody: body,
-    events: []
-  };
-}
-
-type TraceChronologyItem =
-  | { kind: "round_research"; round: RunIterationRound; order: number; createdAt: string }
-  | { kind: "node"; nodeRun: BlueprintNodeRun; order: number; createdAt: string }
-  | { kind: "timeline"; timelineItem: RunTimelineTraceItem; order: number; createdAt: string }
-  | { kind: "report"; humanReport: RunAgentHumanReport; order: number; createdAt: string };
-
-function compareTraceChronologyItems(left: TraceChronologyItem, right: TraceChronologyItem): number {
-  return toSafeTimestamp(left.createdAt) - toSafeTimestamp(right.createdAt) || left.order - right.order;
-}
-
-function traceTimestampForNodeRun(nodeRun: BlueprintNodeRun): string {
-  return nodeRun.queuedAt || nodeRun.startedAt || nodeRun.endedAt || "";
-}
-
-function traceActorKindForNodeRun(nodeRun: BlueprintNodeRun | undefined): TraceIssue["actorKind"] {
-  if (!nodeRun) return "agent";
-  if (nodeRun.nodeType === "manager") return "manager";
+function traceActorKindForBlueprintNode(node: BlueprintNode | undefined): TraceIssue["actorKind"] {
+  if (!node) return "agent";
+  if (node.type === "manager" || node.type === "manager_slot") return "manager";
   return "agent";
-}
-
-function traceActorKindForTimelineItem(timelineItem: RunTimelineTraceItem): TraceIssue["actorKind"] {
-  return traceActorKindFromLabel(timelineItem.actorLabel);
-}
-
-function traceActorKindFromLabel(label: string): TraceIssue["actorKind"] {
-  if (label.toLowerCase() === "user") return "user";
-  if (/manager|调度|经理/i.test(label)) return "manager";
-  if (/agent|worker|执行|分析|制作|验收/i.test(label)) return "agent";
-  return "system";
-}
-
-function roundForNodeRun(context: TraceIssueBuildContext, nodeRun: BlueprintNodeRun): RunIterationRound | undefined {
-  if (!nodeRun.iterationRoundId) return undefined;
-  return context.roundById.get(nodeRun.iterationRoundId);
-}
-
-function roundForReport(context: TraceIssueBuildContext, humanReport: RunAgentHumanReport): RunIterationRound | undefined {
-  if (humanReport.roundId) {
-    const direct = context.roundById.get(humanReport.roundId);
-    if (direct) return direct;
-  }
-  return undefined;
-}
-
-function roundForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): RunIterationRound | undefined {
-  if (timelineItem.kind === "artifact_published") {
-    const artifact = findTimelineArtifact(activeRun, timelineItem);
-    if (artifact?.roundId) {
-      return activeRun.iterationRounds?.find((round) => round.id === artifact.roundId);
-    }
-  }
-  if (timelineItem.kind === "requirement_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
-    if (request?.roundId) return activeRun.iterationRounds?.find((round) => round.id === request.roundId);
-  }
-  if (timelineItem.kind === "release_report_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
-    if (request?.roundId) return activeRun.iterationRounds?.find((round) => round.id === request.roundId);
-  }
-  if (timelineItem.kind === "node_output" && timelineItem.payloadRef) {
-    const report = activeRun.agentHumanReports?.find((candidate) => candidate.id === timelineItem.payloadRef);
-    if (report?.roundId) return activeRun.iterationRounds?.find((round) => round.id === report.roundId);
-  }
-  return undefined;
-}
-
-function managerRoundNumberForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined): number | undefined {
-  return readPositiveRoundNumber(humanReport.managerRoundNumber) ?? managerRoundNumberForNodeRun(nodeRun);
-}
-
-function managerRoundNumberForNodeRun(nodeRun: BlueprintNodeRun | undefined): number | undefined {
-  if (!nodeRun) return undefined;
-  return readManagerRoundNumberFromManagerContext(nodeRun.input) ?? readManagerRoundNumberFromOutput(nodeRun.output);
-}
-
-function roundNumberForTimelineItem(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): number | undefined {
-  if (timelineItem.kind === "node_output" && timelineItem.payloadRef) {
-    const report = activeRun.agentHumanReports?.find((candidate) => candidate.id === timelineItem.payloadRef);
-    if (report) {
-      const nodeRun = activeRun.nodeRuns.find((candidate) => candidate.id === report.nodeRunId);
-      const managerRoundNumber = managerRoundNumberForReport(report, nodeRun);
-      if (managerRoundNumber !== undefined) return managerRoundNumber;
-    }
-  }
-  return roundForTimelineItem(activeRun, timelineItem)?.roundNumber;
-}
-
-function traceRoundLabel(actorKind: TraceIssue["actorKind"], roundNumber: number | undefined, language: Language): string | undefined {
-  if (roundNumber !== undefined) return formatRoundRibbonLabel(roundNumber, language);
-  if (actorKind === "manager") return language === "zh-CN" ? "\u8f6e\u6b21\u7f3a\u5931" : "Round missing";
-  return undefined;
-}
-
-function formatRoundRibbonLabel(roundNumber: number, language: Language): string {
-  if (language === "zh-CN") return `第${toChineseRoundNumber(roundNumber)}轮`;
-  return `Round ${roundNumber}`;
-}
-
-function toChineseRoundNumber(value: number): string {
-  const digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
-  if (value >= 0 && value <= 10) return digits[value] ?? String(value);
-  if (value > 10 && value < 20) return `十${digits[value - 10]}`;
-  if (value >= 20 && value < 100) {
-    const tens = Math.floor(value / 10);
-    const ones = value % 10;
-    return `${digits[tens]}十${ones ? digits[ones] : ""}`;
-  }
-  return String(value);
-}
-
-function roundTone(roundNumber: number): number {
-  return ((roundNumber - 1) % 5) + 1;
 }
 
 function roleTagForActorKind(kind: TraceIssue["actorKind"], language: Language): string {
@@ -4477,37 +4877,6 @@ function roleTagForActorKind(kind: TraceIssue["actorKind"], language: Language):
   if (kind === "agent") return "Agent";
   if (kind === "user") return zh ? "\u7528\u6237" : "User";
   return zh ? "\u7cfb\u7edf" : "System";
-}
-
-function workTagsForNodeRun(nodeRun: BlueprintNodeRun, label: string, language: Language): string[] {
-  const mode = preflightModeFromNodeRunId(nodeRun.id);
-  if (mode) return [preflightWorkTag(mode, language)];
-  if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
-  if (nodeRun.nodeType === "manager") return [dispatchWorkTag(language)];
-  return [workTagFromLabel(label, language, nodeRun.nodeType)];
-}
-
-function workTagsForReport(humanReport: RunAgentHumanReport, nodeRun: BlueprintNodeRun | undefined, language: Language): string[] {
-  const mode = preflightModeFromNodeRunId(humanReport.nodeRunId);
-  if (mode) return [preflightWorkTag(mode, language)];
-  if (isReleaseReportNodeRun(nodeRun)) return [reportPublishWorkTag(language)];
-  if (/manager-decision-\d+$/i.test(humanReport.nodeRunId) || /dispatch|调度/i.test(humanReport.nodeLabel)) {
-    return [dispatchWorkTag(language)];
-  }
-  if (nodeRun) return workTagsForNodeRun(nodeRun, humanReport.nodeLabel, language);
-  return [workTagFromLabel(humanReport.nodeLabel, language)];
-}
-
-function workTagsForTimelineItem(timelineItem: RunTimelineTraceItem, language: Language): string[] {
-  const zh = language === "zh-CN";
-  if (timelineItem.kind === "artifact_published") return [zh ? "产物" : "Artifact"];
-  if (timelineItem.kind === "requirement_published") return [zh ? "计划确认" : "Plan approval"];
-  if (timelineItem.kind === "release_report_published") return [zh ? "报告确认" : "Report approval"];
-  if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output") {
-    return [workTagFromLabel(timelineItem.actorLabel, language)];
-  }
-  if (timelineItem.kind.includes("failed")) return [zh ? "异常" : "Issue"];
-  return [zh ? "运行" : "Run"];
 }
 
 function preflightWorkTag(mode: RunPreflightMode, language: Language): string {
@@ -4556,252 +4925,6 @@ function workTagFromLabel(label: string, language: Language, nodeType?: Blueprin
     .trim() || (zh ? "执行" : "Work");
 }
 
-function timelineIssueStatus(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): TraceIssueStatus {
-  if (
-    timelineItem.kind === "round_failed" ||
-    timelineItem.kind === "round_cancelled" ||
-    timelineItem.kind === "run_failed" ||
-    timelineItem.kind === "run_cancelled" ||
-    /\b(failed|cancelled|error)\b/i.test(timelineItem.title)
-  ) {
-    return "failed";
-  }
-  if (timelineItem.kind === "node_started") {
-    const hasOutput = Boolean(
-      timelineItem.payloadRef &&
-        ((activeRun.agentHumanReports ?? []).some((report) => report.nodeRunId === timelineItem.payloadRef) ||
-          (activeRun.runTimeline ?? []).some((item) => item.kind === "node_output" && item.payloadRef === timelineItem.payloadRef))
-    );
-    if (hasOutput || isTerminalBlueprintRunStatus(activeRun.run.status)) return "completed";
-    return "in_progress";
-  }
-  if (timelineItem.kind === "requirement_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
-    return request?.status === "pending" ? "in_progress" : "completed";
-  }
-  if (timelineItem.kind === "release_report_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
-    return request?.status === "pending" ? "in_progress" : "completed";
-  }
-  return "completed";
-}
-
-function timelineIssueStatusLabel(
-  activeRun: BlueprintRunView,
-  timelineItem: RunTimelineTraceItem,
-  status: TraceIssueStatus,
-  language: Language
-): string {
-  const zh = language === "zh-CN";
-  if (timelineItem.kind === "requirement_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
-    if (request?.status === "pending") return zh ? "待审批" : "Needs approval";
-    return zh ? "已确认" : "Confirmed";
-  }
-  if (timelineItem.kind === "release_report_published") {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
-    if (request?.status === "pending") return zh ? "待审批" : "Needs approval";
-    return zh ? "已确认" : "Confirmed";
-  }
-  return traceIssueStatusLabel(status, language);
-}
-
-function timelineIssueTitle(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
-  if (timelineItem.kind === "node_started" || timelineItem.kind === "node_output" || timelineItem.kind === "artifact_published") {
-    return formatTimelineActorLabel(timelineItem.actorLabel || timelineItem.title, language);
-  }
-  const zh = language === "zh-CN";
-  if (!zh) return timelineItem.title;
-  const round = roundForTimelineItem(activeRun, timelineItem);
-  if (timelineItem.kind === "round_started" && round) return `第 ${round.roundNumber} 轮启动`;
-  if (timelineItem.kind === "requirement_published" && round) {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
-    return `第 ${round.roundNumber} 轮执行计划${request && request.revision > 1 ? ` v${request.revision}` : ""}`;
-  }
-  if (timelineItem.kind === "release_report_published" && round) {
-    const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
-    const report = activeRun.releaseReports?.find((candidate) =>
-      candidate.id === timelineItem.payloadRef ||
-      (request && candidate.approvalRequestId === request.id)
-    );
-    return `第 ${round.roundNumber} 轮发布报告${report ? ` v${report.version}` : ""}`;
-  }
-  const preflight = timelineItem.title.match(/^(.+):\s+(.+)\s+(started|failed)$/i);
-  if (preflight?.[1] && preflight[2] && preflight[3]) {
-    const mode = preflightModeFromDisplayText(preflight[2]);
-    const action = preflight[3].toLowerCase() === "failed" ? "失败" : "开始";
-    return `${preflight[1]} · ${mode ? preflightModeDisplayLabel(mode, language) : preflight[2]}${action}`;
-  }
-  return timelineItem.title;
-}
-
-function findTimelineApprovalRequest(
-  activeRun: BlueprintRunView,
-  timelineItem: RunTimelineTraceItem,
-  kind: "iteration_requirement_plan" | "manager_release_report"
-): NonNullable<BlueprintRunView["approvalRequests"]>[number] | undefined {
-  return (activeRun.approvalRequests ?? []).find((approval) =>
-    approval.kind === kind &&
-    (!timelineItem.payloadRef || !approval.payloadRef || approval.payloadRef === timelineItem.payloadRef) &&
-    approval.title === timelineItem.title
-  );
-}
-
-function formatTimelineActorLabel(label: string, language: Language): string {
-  return localizeReportNodeLabel(label, language)
-    .replace(/:\s*(research|requirement planning|plan revision|plan review|context snapshot)\s+(started|completed|failed)$/i, "")
-    .trim();
-}
-
-function buildTimelineIssueBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
-  if (timelineItem.kind === "requirement_published") {
-    return buildRequirementApprovalTimelineBody(activeRun, timelineItem, language);
-  }
-  if (timelineItem.kind === "release_report_published") {
-    return buildReleaseApprovalTimelineBody(activeRun, timelineItem, language);
-  }
-  const zh = language === "zh-CN";
-  const kind = timelineKindDescription(timelineItem.kind, language);
-  const artifactLines = timelineItem.kind === "artifact_published"
-    ? buildTimelineArtifactLocationLines(activeRun, timelineItem, language)
-    : undefined;
-  return [
-    kind,
-    ...(artifactLines ?? [localizeTimelineBody(timelineItem.body, language)]),
-    zh ? `执行者：${timelineItem.actorLabel}` : `Actor: ${timelineItem.actorLabel}`
-  ].filter((line): line is string => Boolean(line?.trim())).join("\n\n");
-}
-
-function buildRequirementApprovalTimelineBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
-  const zh = language === "zh-CN";
-  const request = findTimelineApprovalRequest(activeRun, timelineItem, "iteration_requirement_plan");
-  const pending = request?.status === "pending";
-  return [
-    `## ${zh ? "\u6458\u8981" : "Summary"}`,
-    "",
-    pending
-      ? (zh
-          ? "\u524d\u671f\u51c6\u5907\u5de5\u4f5c\u5df2\u7ecf\u5b8c\u6210\uff0cManager \u5df2\u7ecf\u628a\u672c\u8f6e\u6267\u884c\u8ba1\u5212\u53d1\u7ed9\u4f60\u786e\u8ba4\u3002\u786e\u8ba4\u540e\u4f1a\u5f00\u59cb\u540e\u7eed Agent \u5de5\u4f5c\u3002"
-          : "Preparation is complete and the manager has sent this round's execution plan for your approval. Once approved, the downstream agent work can start.")
-      : (zh
-          ? "\u672c\u8f6e\u6267\u884c\u8ba1\u5212\u5df2\u786e\u8ba4\uff0c\u7cfb\u7edf\u53ef\u4ee5\u7ee7\u7eed\u540e\u7eed Agent \u5de5\u4f5c\u3002"
-          : "This round's execution plan has been confirmed and the downstream agent work can continue."),
-    "",
-    `## ${zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location"}`,
-    "",
-    zh ? "\u65e0" : "None",
-    "",
-    `## ${zh ? "\u5f85\u786e\u8ba4\u4e8b\u9879" : "Approval needed"}`,
-    "",
-    pending
-      ? (zh ? "\u8bf7\u5728\u5ba1\u6279/\u6536\u4ef6\u7bb1\u4e2d\u786e\u8ba4\u672c\u8f6e\u6267\u884c\u8ba1\u5212\uff0c\u6216\u56de\u590d\u4fee\u6539\u610f\u89c1\u3002" : "Review the execution plan in approvals/inbox, then approve it or reply with changes.")
-      : (zh ? "\u65e0\uff0c\u8be5\u8ba1\u5212\u5df2\u5904\u7406\u3002" : "None; this plan has already been handled.")
-  ].join("\n");
-}
-
-function buildReleaseApprovalTimelineBody(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem, language: Language): string {
-  const zh = language === "zh-CN";
-  const request = findTimelineApprovalRequest(activeRun, timelineItem, "manager_release_report");
-  const report = activeRun.releaseReports?.find((candidate) =>
-    candidate.id === timelineItem.payloadRef ||
-    (request && candidate.approvalRequestId === request.id)
-  );
-  const body = report?.summary ?? request?.body ?? timelineItem.body;
-  if (body?.trim()) return localizeHumanReportBody(body, language);
-  const pending = request?.status === "pending";
-  return [
-    `## ${zh ? "\u6458\u8981" : "Summary"}`,
-    "",
-    pending
-      ? (zh ? "Manager \u5df2\u53d1\u5e03\u672c\u8f6e\u62a5\u544a\uff0c\u6b63\u7b49\u5f85\u4f60\u786e\u8ba4\u662f\u7ee7\u7eed\u4e0b\u4e00\u8f6e\u8fd8\u662f\u5b8c\u6210\u8fd0\u884c\u3002" : "The manager has published this round's report and is waiting for you to confirm whether to continue or complete the run.")
-      : (zh ? "\u672c\u8f6e\u62a5\u544a\u5df2\u5904\u7406\u3002" : "This round report has been handled."),
-    "",
-    `## ${zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location"}`,
-    "",
-    zh ? "\u65e0" : "None"
-  ].join("\n");
-}
-
-function buildTimelineArtifactLocationLines(
-  activeRun: BlueprintRunView,
-  timelineItem: RunTimelineTraceItem,
-  language: Language
-): string[] | undefined {
-  const artifact = findTimelineArtifact(activeRun, timelineItem);
-  if (!artifact) return undefined;
-
-  const zh = language === "zh-CN";
-  const lines: string[] = [];
-  if (artifact.storagePath) {
-    lines.push(`${zh ? "\u672c\u5730\u6587\u4ef6" : "Local file"}: ${formatDeliveryLocationForDisplay(artifact.storagePath, language)}`);
-  }
-  if (artifact.downloadUrl) {
-    lines.push(`${zh ? "\u6d4f\u89c8\u5668\u94fe\u63a5" : "Browser link"}: ${artifact.downloadUrl}`);
-  }
-  if (!lines.length) {
-    lines.push(formatArtifactLocation(artifact));
-  }
-  return lines;
-}
-
-function findTimelineArtifact(activeRun: BlueprintRunView, timelineItem: RunTimelineTraceItem): RunArtifact | undefined {
-  return (activeRun.artifacts ?? []).find((candidate) =>
-    candidate.id === timelineItem.payloadRef ||
-    (candidate.nodeRunId === timelineItem.actorNodeId &&
-      (!timelineItem.body || candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body || candidate.title === timelineItem.title))
-  ) ?? (activeRun.artifacts ?? []).find((candidate) =>
-    Boolean(timelineItem.body) && (candidate.downloadUrl === timelineItem.body || candidate.relativePath === timelineItem.body)
-  );
-}
-
-function preflightModeFromDisplayText(value: string): RunPreflightMode | undefined {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "research") return "research_resolution";
-  if (normalized === "requirement planning") return "requirement_resolution";
-  if (normalized === "plan revision") return "revise_plan";
-  if (normalized === "plan review") return "preflight_judgment";
-  if (normalized === "context snapshot") return "context_snapshot";
-  return undefined;
-}
-
-function localizeTimelineBody(body: string | undefined, language: Language): string | undefined {
-  if (language !== "zh-CN" || !body) return body;
-  return body.replace(/^Round\s+(\d+)\s+preflight is running (.+)\.$/i, (_match, roundNumber: string, modeText: string) => {
-    const mode = preflightModeFromDisplayText(modeText);
-    if (mode === "research_resolution") return `第 ${roundNumber} 轮正在调研。`;
-    if (mode === "requirement_resolution") return `第 ${roundNumber} 轮正在整理执行计划。`;
-    if (mode === "revise_plan") return `第 ${roundNumber} 轮正在根据反馈修订计划。`;
-    if (mode === "preflight_judgment") return `第 ${roundNumber} 轮正在校验计划是否需要补充调研。`;
-    if (mode === "context_snapshot") return `第 ${roundNumber} 轮正在沉淀上下文记忆。`;
-    return `第 ${roundNumber} 轮正在准备。`;
-  });
-}
-
-function timelineKindDescription(kind: RunTimelineTraceItem["kind"], language: Language): string {
-  const zh = language === "zh-CN";
-  if (kind === "round_started") return zh ? "自迭代轮次已经启动。" : "The self-iteration round has started.";
-  if (kind === "requirement_published") return zh ? "Manager 已经把本轮执行计划送到审批流程。" : "The manager has published the round execution plan for approval.";
-  if (kind === "decision_created") return zh ? "审批动作已经记录。" : "The approval decision has been recorded.";
-  if (kind === "node_started") return zh ? "该步骤正在运行。" : "This step is running.";
-  if (kind === "node_output") return zh ? "该步骤已经产生输出。" : "This step produced output.";
-  if (kind === "artifact_published") return zh ? "产物已经发布。" : "An artifact was published.";
-  if (kind === "release_report_published") return zh ? "Manager 已经发布本轮报告。" : "The manager has published the round report.";
-  if (kind === "round_completed") return zh ? "本轮已经完成。" : "The round has completed.";
-  if (kind === "round_failed") return zh ? "本轮失败。" : "The round failed.";
-  if (kind === "round_cancelled") return zh ? "本轮已取消。" : "The round was cancelled.";
-  if (kind === "run_completed") return zh ? "运行已经完成。" : "The run has completed.";
-  if (kind === "run_failed") return zh ? "运行失败。" : "The run failed.";
-  if (kind === "run_cancelled") return zh ? "运行已取消。" : "The run was cancelled.";
-  return zh ? "运行事件。" : "Run event.";
-}
-
-function toIssueStatus(status?: BlueprintNodeRunStatus): TraceIssueStatus {
-  if (status === "queued" || status === "running" || status === "waiting_approval") return "in_progress";
-  if (status === "succeeded" || status === "skipped") return "completed";
-  if (status === "failed" || status === "cancelled") return "failed";
-  return "pending";
-}
-
 function traceIssueStatusLabel(status: TraceIssueStatus, language: Language): string {
   const zh = language === "zh-CN";
   if (status === "completed") return zh ? "成功" : "Success";
@@ -4830,10 +4953,6 @@ function traceRunFrameState(status?: BlueprintRunStatus): "static" | "running" |
   return "static";
 }
 
-function statusLabelForNodeRun(status: BlueprintNodeRunStatus | undefined, t: Messages): string {
-  return status ? t.status[status] : t.trace.pending;
-}
-
 function summarizeOutput(output: unknown, t: Messages): string {
   const normalized = formatOutput(output ?? "");
   if (!normalized.trim()) return t.trace.noOutput;
@@ -4851,175 +4970,6 @@ function firstTraceSentence(line: string): string {
   const trimmed = line.trim();
   const match = trimmed.match(/^(.+?[\u3002\uff01\uff1f!?]|.+?\.(?=\s|$))/);
   return (match?.[1] ?? trimmed).trim();
-}
-
-function buildReadableNodeOutputBody(output: unknown, error: string | undefined, t: Messages): string | undefined {
-  if (error?.trim()) return error.trim();
-  if (output === undefined || output === null) return undefined;
-
-  const record = readOutputRecord(output);
-  const explicitReport = readNonEmptyString(record?.humanReportMd);
-  if (explicitReport) return explicitReport;
-
-  const directText =
-    readNonEmptyString(record?.summary) ??
-    readNonEmptyString(record?.body) ??
-    readNonEmptyString(record?.markdown) ??
-    readNonEmptyString(record?.reason) ??
-    readNonEmptyString(record?.message);
-  if (directText) return directText;
-
-  const resultText = readReadableResult(record?.result);
-  if (resultText) return resultText;
-
-  if (typeof output === "string") {
-    const trimmed = output.trim();
-    if (!trimmed) return undefined;
-    return trimmed;
-  }
-
-  const status = readNonEmptyString(record?.status);
-  if (status) return `Status: ${status}`;
-  return t.trace.noOutput;
-}
-
-function buildContextSnapshotReadableBody(
-  output: unknown,
-  fallbackBody: string | undefined,
-  language: Language
-): string | undefined {
-  const record = readOutputRecord(output);
-  if (!record) return fallbackBody;
-
-  const zh = language === "zh-CN";
-  const section = (title: string, value: string | string[] | undefined): string[] => {
-    const body = Array.isArray(value)
-      ? formatSnapshotList(value, language)
-      : conciseSectionBody(value, language);
-    return [`## ${title}`, "", body, ""];
-  };
-  const summary = readNonEmptyString(record.summary) ?? fallbackBody;
-  const risks = [
-    ...readStringList(record.activeRisks),
-    ...readStringList(record.assumptions).map((item) => `${zh ? "\u5047\u8bbe" : "Assumption"}: ${item}`)
-  ];
-
-  return [
-    ...section(zh ? "\u6458\u8981" : "Summary", summary),
-    ...section(zh ? "\u4ea4\u4ed8\u4f4d\u7f6e" : "Delivery location", noneText(language)),
-    ...section(zh ? "\u4ea7\u7269" : "Artifacts", noneText(language)),
-    ...section(zh ? "\u590d\u76d8\u6c89\u6dc0" : "Review memory", readStringList(record.completedItems)),
-    ...section(zh ? "\u5173\u952e\u51b3\u5b9a" : "Key decisions", readStringList(record.keyDecisions)),
-    ...section(zh ? "\u5df2\u9a8c\u8bc1\u4e8b\u5b9e" : "Validated facts", readStringList(record.validatedFacts)),
-    ...section(zh ? "\u98ce\u9669\u4e0e\u7ea6\u675f" : "Risks and constraints", risks),
-    ...section(zh ? "\u672a\u51b3\u95ee\u9898" : "Open questions", readStringList(record.openQuestions)),
-    ...section(zh ? "\u4e0b\u4e00\u6b65" : "Next step", readNonEmptyString(record.recommendedNextStep)),
-    ...section(zh ? "\u4e0d\u91c7\u7528\u9009\u9879" : "Rejected options", readStringList(record.rejectedOptions))
-  ].join("\n").trim();
-}
-
-function formatSnapshotList(items: string[], language: Language): string {
-  const cleanItems = items.map((item) => item.trim()).filter(Boolean);
-  if (!cleanItems.length) return noneText(language);
-  return cleanItems.map((item) => `- ${item}`).join("\n");
-}
-
-function readStringList(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (typeof item === "string") return item.trim();
-      if (!isPlainObject(item)) return "";
-      return readNonEmptyString(item.summary) ??
-        readNonEmptyString(item.title) ??
-        readNonEmptyString(item.label) ??
-        readNonEmptyString(item.description) ??
-        "";
-    })
-    .filter(Boolean);
-}
-
-function buildRunningNodeProgressBody(nodeRun: BlueprintNodeRun, language: Language): string | undefined {
-  if (nodeRun.status !== "queued" && nodeRun.status !== "running" && nodeRun.status !== "waiting_approval") return undefined;
-  const zh = language === "zh-CN";
-  if (isReleaseReportNodeRun(nodeRun)) {
-    return zh
-      ? "Manager \u6b63\u5728\u53d1\u5e03\u672c\u8f6e\u62a5\u544a\u3002"
-      : "The manager is publishing the round report.";
-  }
-  if (nodeRun.nodeType === "manager") {
-    return zh
-      ? "Manager \u6b63\u5728\u8c03\u5ea6\u4e0b\u6e38 Agent\u3002\u5982\u679c\u5f53\u524d\u6709 Agent \u5728\u8fd0\u884c\uff0c\u5b83\u4f1a\u7b49\u5f85\u8be5 Agent \u8fd4\u56de\u540e\u518d\u51b3\u5b9a\u4e0b\u4e00\u6b65\u3002"
-      : "The manager is dispatching downstream agents. If an agent is currently running, it will wait for that result before choosing the next step.";
-  }
-  if (nodeRun.status === "waiting_approval") {
-    return zh ? "\u8be5\u6b65\u9aa4\u6b63\u5728\u7b49\u5f85\u5ba1\u6279\u3002" : "This step is waiting for approval.";
-  }
-  return zh ? "\u8be5\u6b65\u9aa4\u6b63\u5728\u8fd0\u884c\u3002" : "This step is running.";
-}
-
-function readReadableResult(value: unknown): string | undefined {
-  const direct = readNonEmptyString(value);
-  if (direct) return direct;
-  const record = readOutputRecord(value);
-  return readNonEmptyString(record?.summary) ??
-    readNonEmptyString(record?.body) ??
-    readNonEmptyString(record?.markdown) ??
-    readNonEmptyString(record?.reason) ??
-    readNonEmptyString(record?.message);
-}
-
-function readManagerOutputReason(output: unknown): string | undefined {
-  const record = readOutputRecord(output);
-  const directReason = readNonEmptyString(record?.reason) ?? readNonEmptyString(record?.message);
-  if (directReason) return directReason;
-  const resultRecord = readOutputRecord(record?.result);
-  return readNonEmptyString(resultRecord?.reason) ?? readNonEmptyString(resultRecord?.message);
-}
-
-function readManagerRoundNumberFromManagerContext(value: unknown): number | undefined {
-  const record = readOutputRecord(value);
-  const manager = isPlainObject(record?.manager) ? record.manager : undefined;
-  return readPositiveRoundNumber(manager?.roundNumber);
-}
-
-function readManagerRoundNumberFromOutput(output: unknown): number | undefined {
-  const record = readOutputRecord(output);
-  if (!record) return undefined;
-  const result = isPlainObject(record.result) ? record.result : undefined;
-  return readPositiveRoundNumber(record.managerRoundNumber) ??
-    readPositiveRoundNumber(record.roundNumber) ??
-    readPositiveRoundNumber(result?.managerRoundNumber) ??
-    readPositiveRoundNumber(result?.roundNumber);
-}
-
-function readPositiveRoundNumber(value: unknown): number | undefined {
-  const numeric = typeof value === "number"
-    ? value
-    : typeof value === "string"
-      ? Number.parseInt(value, 10)
-      : undefined;
-  if (numeric === undefined || !Number.isFinite(numeric)) return undefined;
-  const rounded = Math.round(numeric);
-  return rounded >= 1 ? rounded : undefined;
-}
-
-function readOutputRecord(output: unknown): Record<string, unknown> | undefined {
-  if (isPlainObject(output)) return output;
-  if (typeof output !== "string") return undefined;
-
-  const trimmed = output.trim();
-  if (!trimmed.startsWith("{")) return undefined;
-  try {
-    const parsed = JSON.parse(trimmed);
-    return isPlainObject(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function toTracePreviewLine(line: string): string {

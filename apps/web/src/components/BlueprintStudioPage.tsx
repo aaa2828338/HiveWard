@@ -243,7 +243,6 @@ export function BlueprintStudioPage({
   onSelectNode,
   onUpdateBlueprint,
   onUpdateArchitectureLayout,
-  onApproveRun,
   t
 }: {
   blueprint?: BlueprintDefinition;
@@ -273,7 +272,6 @@ export function BlueprintStudioPage({
   onSelectNode: (nodeId?: string) => void;
   onUpdateBlueprint: (updater: (current: BlueprintDefinition) => BlueprintDefinition) => void;
   onUpdateArchitectureLayout: (positions: Record<string, CanvasPosition>) => void;
-  onApproveRun: () => void;
   t: Messages;
 }) {
   const [inspectedNodeId, setInspectedNodeId] = useState<string | undefined>();

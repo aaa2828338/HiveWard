@@ -3,8 +3,16 @@ import { readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type {
+  ApprovalDiscussionBinding,
+  NodeExecutionSession,
+  NodeSessionTranscriptEvent,
+  RunCommand,
+  RunCommandStep
+} from "@hiveward/shared";
 import type { HivewardStore } from "../hivewardStore";
 import { FileHivewardStore } from "../fileHivewardStore";
+import { SqliteDriver } from "./sqliteDriver";
 import {
   contractNow,
   createContractApproval,
@@ -84,11 +92,140 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await store.upsertIterationSession(session);
       await store.upsertIterationRound(round);
 
+      const command: RunCommand = {
+        id: "run-command-contract",
+        commandKey: `run:${run.id}:round:${round.id}:execute`,
+        blueprintId: run.blueprintId,
+        runId: run.id,
+        roundId: round.id,
+        kind: "self_iteration_execute_round",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        metadata: { source: "contract" },
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createRunCommandIfAbsent(command)).resolves.toMatchObject({ created: true });
+      await expect(store.createRunCommandIfAbsent({ ...command, id: "run-command-duplicate" })).resolves.toMatchObject({
+        created: false,
+        command: expect.objectContaining({ id: command.id })
+      });
+
+      const commandStep: RunCommandStep = {
+        id: "run-command-step-contract",
+        commandId: command.id,
+        stepKey: `${command.commandKey}:node:${nodeRun.id}`,
+        runId: run.id,
+        roundId: round.id,
+        revision: 1,
+        mode: "node_execution",
+        nodeId: nodeRun.nodeId,
+        nodeRunId: nodeRun.id,
+        status: "succeeded",
+        runtimeRef: {
+          source: "codex",
+          sourceId: "task-contract",
+          sourceUpdatedAt: contractNow,
+          taskId: "task-contract"
+        },
+        metadata: { source: "contract" },
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createRunCommandStepIfAbsent(commandStep)).resolves.toMatchObject({ created: true });
+      await expect(store.createRunCommandStepIfAbsent({ ...commandStep, id: "run-command-step-duplicate" })).resolves.toMatchObject({
+        created: false,
+        step: expect.objectContaining({ id: commandStep.id })
+      });
+      await expect(store.updateRunCommandStep({ id: commandStep.id, status: "waiting_approval" })).resolves.toMatchObject({
+        id: commandStep.id,
+        status: "waiting_approval"
+      });
+
+      const executionSession: NodeExecutionSession = {
+        id: "node-execution-session-contract",
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        nodeId: nodeRun.nodeId,
+        agentSeatId: "contract-agent-seat",
+        harnessId: "codex",
+        nativeSessionId: "native-session-contract",
+        runtimeRef: {
+          source: "codex",
+          sourceId: "native-session-contract",
+          sourceUpdatedAt: contractNow,
+          sessionKey: "native-session-contract"
+        },
+        policy: "preserve_across_rounds",
+        status: "active",
+        createdAt: contractNow,
+        updatedAt: contractNow,
+        lastUsedAt: contractNow
+      };
+      await expect(store.createNodeExecutionSession(executionSession)).resolves.toMatchObject({ id: executionSession.id });
+
+      const transcriptEvent: NodeSessionTranscriptEvent = {
+        id: "node-session-transcript-contract-1",
+        sessionId: executionSession.id,
+        sequence: 1,
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        role: "user",
+        kind: "user_message",
+        content: "Run the contract task.",
+        metadata: { source: "contract" },
+        createdAt: contractNow
+      };
+      await expect(store.appendNodeSessionTranscriptEvent(transcriptEvent)).resolves.toMatchObject({ id: transcriptEvent.id });
+      await expect(store.appendNodeSessionTranscriptEvent({ ...transcriptEvent, id: "node-session-transcript-duplicate" }))
+        .rejects.toThrow(/Transcript sequence 1 already exists/);
+      await expect(store.appendNodeSessionTranscriptEvent({
+        id: "node-session-transcript-contract-2",
+        sessionId: executionSession.id,
+        runId: run.id,
+        nodeRunId: nodeRun.id,
+        role: "runtime",
+        kind: "runtime_done",
+        content: "Runtime completed.",
+        createdAt: contractNow
+      })).resolves.toMatchObject({ id: "node-session-transcript-contract-2", sequence: 2 });
+
       const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+      await store.appendApprovalReply({
+        id: "approval-reply-candidate-contract",
+        threadId: approval.id,
+        approvalRequestId: approval.id,
+        actor: "agent",
+        purpose: "candidate",
+        body: "Candidate approval response.",
+        createdAt: contractNow
+      });
+      const discussionBinding: ApprovalDiscussionBinding = {
+        approvalRequestId: approval.id,
+        threadId: approval.id,
+        mode: "executor",
+        route: "agent_approval",
+        executorActor: "agent",
+        executorKind: "agent_approval",
+        executorNodeId: nodeRun.nodeId,
+        executorNodeRunId: nodeRun.id,
+        executorSessionId: executionSession.id,
+        runtimeId: "codex",
+        canStreamReply: true,
+        canCreateCandidate: true,
+        resolverVersion: 1,
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.createApprovalDiscussionBinding(discussionBinding)).resolves.toMatchObject({ approvalRequestId: approval.id });
+      await expect(store.createApprovalDiscussionBinding({ ...discussionBinding, reason: "duplicate" }))
+        .rejects.toThrow(/Approval discussion binding already exists/);
       await store.appendApprovalDecision(createContractDecision(approval.id));
       await store.upsertApprovalRequest({
         ...approval,
         status: "replied",
+        selectedReplyId: "approval-reply-candidate-contract",
         capabilities: resolveClosedCapabilities(),
         updatedAt: contractNow
       });
@@ -104,14 +241,37 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       expect(view).toMatchObject({
         run: { id: run.id, blueprintName: "Contract Blueprint" },
         nodeRuns: [expect.objectContaining({ id: nodeRun.id, status: "succeeded", output })],
-        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied" })],
-        approvalThreads: [expect.objectContaining({ id: approval.id, status: "closed", currentRevision: 1 })],
-        approvalReplies: [expect.objectContaining({
-          id: "reply-approval-decision-contract",
-          threadId: approval.id,
+        runCommands: [expect.objectContaining({ id: command.id, commandKey: command.commandKey })],
+        runCommandSteps: [expect.objectContaining({ id: commandStep.id, stepKey: commandStep.stepKey })],
+        nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id, nativeSessionId: "native-session-contract" })],
+        nodeSessionTranscriptEvents: expect.arrayContaining([
+          expect.objectContaining({ id: transcriptEvent.id, sequence: 1 }),
+          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
+        ]),
+        approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id, mode: "executor" })],
+        approvalRequestDiscussions: [expect.objectContaining({
           approvalRequestId: approval.id,
-          body: "Please tighten the report."
+          discussion: expect.objectContaining({
+            mode: "none",
+            reason: "approval_not_pending"
+          })
         })],
+        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied", selectedReplyId: "approval-reply-candidate-contract" })],
+        approvalThreads: [expect.objectContaining({ id: approval.id, status: "closed", currentRevision: 1 })],
+        approvalReplies: expect.arrayContaining([
+          expect.objectContaining({
+            id: "reply-approval-decision-contract",
+            threadId: approval.id,
+            approvalRequestId: approval.id,
+            purpose: "message",
+            body: "Please tighten the report."
+          }),
+          expect.objectContaining({
+            id: "approval-reply-candidate-contract",
+            purpose: "candidate",
+            body: "Candidate approval response."
+          })
+        ]),
         artifacts: [expect.objectContaining({ id: artifact.id, slot: "deliverable" })],
         agentHumanReports: [expect.objectContaining({ nodeRunId: nodeRun.id, bodyMd: expect.stringContaining("Contract Report") })],
         agentHandoffs: [expect.objectContaining({ nodeRunId: nodeRun.id, payload: { next: "manager", facts: ["contract complete"] } })],
@@ -119,6 +279,16 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         runTimeline: [expect.objectContaining({ id: "timeline-contract", sequence: 1 })]
       });
       expect(view?.events.map((event) => event.id)).toEqual(["event-contract-1", "event-contract-2"]);
+      await expect(store.getRunArchive(run.id)).resolves.toMatchObject({
+        runCommands: [expect.objectContaining({ id: command.id })],
+        runCommandSteps: [expect.objectContaining({ id: commandStep.id })],
+        nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id })],
+        nodeSessionTranscriptEvents: expect.arrayContaining([
+          expect.objectContaining({ id: transcriptEvent.id }),
+          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
+        ]),
+        approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id })]
+      });
 
       await expect(store.listRunSummaries()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: run.id })]));
       await expect(store.listPendingApprovals()).resolves.toEqual([]);
@@ -126,17 +296,26 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listApprovalThreads({ runId: run.id })).resolves.toEqual([
         expect.objectContaining({ id: approval.id, status: "closed" })
       ]);
-      await expect(store.listApprovalReplies({ approvalRequestId: approval.id })).resolves.toEqual([
+      await expect(store.listApprovalReplies({ approvalRequestId: approval.id })).resolves.toEqual(expect.arrayContaining([
         expect.objectContaining({
           id: "reply-approval-decision-contract",
+          purpose: "message",
           threadId: approval.id,
           metadata: expect.objectContaining({
             source: "approval_decision",
             requestKind: approval.kind,
             resultingStatus: "replied"
           })
+        }),
+        expect.objectContaining({
+          id: "approval-reply-candidate-contract",
+          purpose: "candidate"
         })
-      ]);
+      ]));
+      await expect(store.getApprovalDiscussionBinding(approval.id)).resolves.toMatchObject({
+        mode: "executor",
+        executorSessionId: executionSession.id
+      });
 
       const inbox = await store.createBlueprintProposal({
         title: "Import proposal",
@@ -170,6 +349,66 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
     }
   });
 
+  it("projects request-backed pending approvals from approval facts instead of legacy node output", async () => {
+    const { store, close } = await createHarness();
+    try {
+      const companyState = await store.createCompany({ name: "Projection Company" });
+      const companyId = companyState.selectedCompanyId;
+      if (!companyId) throw new Error("Expected selected company.");
+
+      const blueprint = await store.saveBlueprint(createContractBlueprint(companyId));
+      const run = await store.createBlueprintRun(blueprint, "projection-user");
+      const waitingNodeRun = {
+        ...createContractNodeRun(run, undefined, "waiting_approval"),
+        input: { upstream: [] },
+        output: {
+          approvalType: "agent",
+          reviewOutput: "legacy node output must not project",
+          replies: [{
+            id: "legacy-node-reply",
+            role: "assistant",
+            purpose: "candidate",
+            body: "legacy node candidate must not project",
+            createdAt: contractNow
+          }]
+        }
+      };
+      await store.upsertNodeRun(waitingNodeRun);
+      const approval = await store.upsertApprovalRequest({
+        ...createContractApproval(run.id, waitingNodeRun.id),
+        body: "request body is the projection source",
+        selectedReplyId: null
+      });
+      await store.appendApprovalReply({
+        id: "approval-fact-candidate",
+        threadId: approval.threadId ?? approval.id,
+        approvalRequestId: approval.id,
+        actor: "agent",
+        purpose: "candidate",
+        body: "approval fact candidate",
+        createdAt: contractNow
+      });
+
+      await expect(store.listPendingApprovals()).resolves.toEqual([
+        expect.objectContaining({
+          approvalRequestId: approval.id,
+          reviewOutput: "request body is the projection source",
+          selectedReplyId: null,
+          canReturnForRevision: true,
+          replies: [
+            expect.objectContaining({
+              id: "approval-fact-candidate",
+              purpose: "candidate",
+              body: "approval fact candidate"
+            })
+          ]
+        })
+      ]);
+    } finally {
+      close?.();
+    }
+  });
+
   it("applies approval and inbox decisions once with conflict on repeats", async () => {
     const { store, close } = await createHarness();
     try {
@@ -188,7 +427,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expectedStatus: "pending",
         nextRequest: approvedRequest,
         decision,
-        timelineItem: createDecisionTimeline("timeline-approval-once", approval.runId, decision)
+        timelineItem: createDecisionTimeline("timeline-approval-once", run.id, decision)
       })).resolves.toMatchObject({ status: "applied" });
       await expect(store.applyApprovalDecision({
         approvalRequestId: approval.id,
@@ -248,6 +487,88 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       ]);
     } finally {
       close?.();
+    }
+  });
+});
+
+describe("SqliteHivewardStore execution schema constraints", () => {
+  it("rejects invalid execution enum values and dangling session references", async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), "hiveward-sqlite-execution-constraints-"));
+    const sqlitePath = join(dataDir, "hiveward.sqlite");
+    const store = new SqliteHivewardStore(sqlitePath);
+    await store.init();
+    let runId = "";
+    let nodeRunId = "";
+    let approvalRequestId = "";
+    try {
+      const blueprint = await store.saveBlueprint(createContractBlueprint());
+      const run = await store.createBlueprintRun(blueprint, "constraint-user");
+      runId = run.id;
+      const nodeRun = createContractNodeRun(run, { result: { ok: true } });
+      nodeRunId = nodeRun.id;
+      await store.upsertNodeRun(nodeRun);
+      const command: RunCommand = {
+        id: "run-command-constraint",
+        commandKey: `constraint:${run.id}:execute`,
+        blueprintId: run.blueprintId,
+        runId: run.id,
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await store.createRunCommandIfAbsent(command);
+      const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
+      approvalRequestId = approval.id;
+    } finally {
+      store.close();
+    }
+
+    const driver = new SqliteDriver(sqlitePath);
+    try {
+      expect(() => driver.db.prepare(
+        `INSERT INTO run_command_steps (
+          id, command_id, step_key, run_id, revision, mode, node_id, node_run_id, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        "run-command-step-invalid-mode",
+        "run-command-constraint",
+        "constraint:invalid-mode",
+        runId,
+        1,
+        "old_preflight_guess",
+        "contract-agent",
+        nodeRunId,
+        "queued",
+        contractNow,
+        contractNow
+      )).toThrow(/CHECK constraint failed/);
+
+      expect(() => driver.db.prepare(
+        `INSERT INTO approval_discussion_bindings (
+          approval_request_id, mode, route, executor_actor, executor_kind, executor_node_run_id,
+          executor_session_id, runtime_id, can_stream_reply, can_create_candidate,
+          resolver_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        approvalRequestId,
+        "executor",
+        "agent_approval",
+        "agent",
+        "agent_approval",
+        nodeRunId,
+        "missing-executor-session",
+        "codex",
+        1,
+        1,
+        1,
+        contractNow,
+        contractNow
+      )).toThrow(/FOREIGN KEY constraint failed/);
+    } finally {
+      driver.close();
     }
   });
 });

@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeAdapter, RuntimeChatSessionResult, RuntimeChatSessionTitleResult } from "@hiveward/adapter";
 import {
   type AgentTaskResult,
+  type ApprovalDiscussionBinding,
+  type ApprovalRequest,
   blueprintRunArchiveSchema,
   createActiveManagerNewsHtmlChaosBlueprint,
   createActiveManagerRemotionVideoChaosBlueprint,
@@ -24,7 +26,15 @@ import {
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
 import { SqliteHivewardStore } from "../store/sqlite/sqliteHivewardStore";
-import { BlueprintWorker } from "./blueprintWorker";
+import { ApprovalService } from "../services/lifecycleApprovalService";
+import { resolveApprovalDiscussion } from "../services/approvalDiscussionResolver";
+import {
+  BlueprintWorker,
+  buildRunCommandKey,
+  buildRunCommandStepKey,
+  stableNodeExecutionNodeRunId,
+  stablePreflightNodeRunId
+} from "./blueprintWorker";
 
 class ScriptedAdapter implements RuntimeAdapter {
   readonly calls: StartAgentTaskInput[] = [];
@@ -207,6 +217,128 @@ class BlockingAdapter implements RuntimeAdapter {
 }
 
 describe("BlueprintWorker", () => {
+  it("resolves missing approval discussion bindings as unavailable without node-run fallback", () => {
+    const now = new Date().toISOString();
+    const request: ApprovalRequest = {
+      id: "approval-legacy-missing-binding",
+      runId: "run-legacy",
+      nodeRunId: "node-run-agent_approval-looks-bound",
+      kind: "agent_proposal",
+      status: "pending",
+      title: "Legacy approval",
+      body: "Review legacy output.",
+      threadId: "thread-legacy-missing-binding",
+      revision: 1,
+      capabilities: {
+        approve: true,
+        reject: true,
+        reply: true,
+        complete: false,
+        terminate: true,
+        returnForRevision: true
+      },
+      requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
+      requestedAt: now,
+      updatedAt: now
+    };
+
+    expect(resolveApprovalDiscussion({
+      request,
+      nodeRuns: [{
+        id: "node-run-agent_approval-looks-bound",
+        blueprintRunId: "run-legacy",
+        blueprintId: "blueprint-legacy",
+        nodeId: "delivery",
+        nodeLabel: "Delivery",
+        nodeType: "agent",
+        status: "waiting_approval",
+        queuedAt: now
+      }]
+    }).capability).toMatchObject({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "discussion_binding_missing"
+    });
+  });
+
+  it("resolves broken executor approval discussion bindings as unavailable", () => {
+    const now = new Date().toISOString();
+    const request: ApprovalRequest = {
+      id: "approval-broken-executor-binding",
+      runId: "run-broken",
+      kind: "agent_proposal",
+      status: "pending",
+      title: "Broken approval",
+      body: "Review broken binding.",
+      threadId: "thread-broken-executor-binding",
+      revision: 1,
+      capabilities: {
+        approve: true,
+        reject: true,
+        reply: true,
+        complete: false,
+        terminate: true,
+        returnForRevision: true
+      },
+      requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
+      requestedAt: now,
+      updatedAt: now
+    };
+    const binding: ApprovalDiscussionBinding = {
+      approvalRequestId: request.id,
+      threadId: request.threadId,
+      mode: "executor",
+      route: "agent_approval",
+      executorActor: "agent",
+      executorKind: "agent_approval",
+      executorNodeId: "delivery",
+      executorNodeRunId: "node-run-delivery",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      resolverVersion: 1,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    expect(resolveApprovalDiscussion({ request, binding }).capability).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_binding_incomplete"
+    });
+    expect(resolveApprovalDiscussion({
+      request,
+      binding: { ...binding, executorSessionId: "session-unavailable" },
+      nodeRuns: [{
+        id: "node-run-delivery",
+        blueprintRunId: "run-broken",
+        blueprintId: "blueprint-broken",
+        nodeId: "delivery",
+        nodeLabel: "Delivery",
+        nodeType: "agent",
+        status: "waiting_approval",
+        queuedAt: now
+      }],
+      sessions: [{
+        id: "session-unavailable",
+        runId: "run-broken",
+        nodeRunId: "node-run-delivery",
+        nodeId: "delivery",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "unavailable",
+        createdAt: now,
+        updatedAt: now
+      }]
+    }).capability).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_session_unavailable"
+    });
+  });
+
   it("persists a newly-created blank blueprint for the selected company", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-store-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
@@ -311,6 +443,43 @@ describe("BlueprintWorker", () => {
     expect(index.runIndex?.find((item) => item.id === run.id)?.status).toBe("failed");
   });
 
+  it("drives regular runs through a durable regular command and node execution steps", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createRealThreeAgentBlueprint(new Date().toISOString(), "company-hiveward-studio");
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-command-brief"),
+      createStartedAgentTask("task-command-plan"),
+      createStartedAgentTask("task-command-verify")
+    ], [
+      createCompletedAgentTask("task-command-brief", "succeeded", "brief ok"),
+      createCompletedAgentTask("task-command-plan", "succeeded", "plan ok"),
+      createCompletedAgentTask("task-command-verify", "succeeded", "verify ok")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const command = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!command) throw new Error("Expected regular run command.");
+    const steps = await store.listRunCommandSteps({ commandId: command.id });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(command).toMatchObject({
+      commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
+      kind: "regular_run",
+      status: "succeeded",
+      currentStep: "node_execution"
+    });
+    expect(steps.map((step) => step.nodeId)).toEqual(["brief", "plan", "verify"]);
+    expect(steps.map((step) => step.mode)).toEqual(["node_execution", "node_execution", "node_execution"]);
+    expect(steps.map((step) => step.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
+    expect(steps.map((step) => step.nodeRunId)).toEqual(steps.map((step) => stableNodeExecutionNodeRunId(step.stepKey)));
+    expect(view?.nodeRuns.map((nodeRun) => nodeRun.id)).toEqual(steps.map((step) => step.nodeRunId));
+  });
+
   it("writes node input and runtime ref to the run archive before the agent task finishes", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
@@ -360,7 +529,7 @@ describe("BlueprintWorker", () => {
     expect(view?.run.status).toBe("succeeded");
   });
 
-  it("does not mark a node succeeded when declared file artifact preparation fails", async () => {
+  it("keeps agent output succeeded when a declared artifact path cannot be copied", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-artifact-fail-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -386,13 +555,20 @@ describe("BlueprintWorker", () => {
     const view = await waitForRunTerminal(store, run.id);
     const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "builder");
 
-    expect(view?.run.status).toBe("failed");
-    expect(nodeRun?.status).not.toBe("succeeded");
-    expect(view?.artifacts ?? []).toHaveLength(0);
-    expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(true);
+    expect(view?.run.status).toBe("succeeded");
+    expect(nodeRun?.status).toBe("succeeded");
+    expect(view?.agentHumanReports?.[0]?.bodyMd).toContain("The file path is invalid.");
+    expect(view?.artifacts ?? []).toEqual([
+      expect.objectContaining({
+        kind: "json",
+        title: "Missing artifact",
+        downloadUrl: expect.stringContaining("/artifacts/")
+      })
+    ]);
+    expect(view?.events.some((event) => event.message.includes("does not exist"))).toBe(false);
   });
 
-  it("keeps resumed SDK agent nodes running when task lookup is temporarily unavailable", async () => {
+  it("keeps resumed command-step SDK agent nodes running when task lookup is temporarily unavailable", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const storePath = path.join(tempDir, "hiveward-store.json");
     const store = new FileHivewardStore(storePath);
@@ -425,6 +601,8 @@ describe("BlueprintWorker", () => {
       queuedAt: startedAt,
       startedAt,
       input: { upstream: [] },
+      output: "partial output must survive resume",
+      error: "preexisting runtime note",
       runtimeRef: {
         source: "codex",
         sourceId: "codex-task-1",
@@ -435,6 +613,35 @@ describe("BlueprintWorker", () => {
       }
     };
     await store.upsertNodeRun(nodeRun);
+    const { command } = await store.createRunCommandIfAbsent({
+      id: "command-sdk-resume",
+      commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      kind: "regular_run",
+      status: "running",
+      currentRevision: 0,
+      currentStep: "node_execution",
+      startedAt,
+      createdAt: startedAt,
+      updatedAt: startedAt
+    });
+    const stepKey = buildRunCommandStepKey(command, "node_execution", "brief");
+    await store.createRunCommandStepIfAbsent({
+      id: "step-sdk-resume",
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      revision: 0,
+      mode: "node_execution",
+      nodeId: "brief",
+      nodeRunId: nodeRun.id,
+      status: "running",
+      startedAt,
+      runtimeRef: nodeRun.runtimeRef,
+      createdAt: startedAt,
+      updatedAt: startedAt
+    });
 
     const missingTaskAdapter = new ScriptedAdapter([], [
       new Error("SDK task not found: codex-task-1")
@@ -447,7 +654,13 @@ describe("BlueprintWorker", () => {
     );
     expect(missingTaskAdapter.waitCalls).toHaveLength(1);
     expect(stillRunningView.run.status).toBe("running");
-    expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)?.status).toBe("running");
+    expect(stillRunningView.nodeRuns.find((candidate) => candidate.id === nodeRun.id)).toMatchObject({
+      status: "running",
+      startedAt,
+      output: "partial output must survive resume",
+      error: "preexisting runtime note",
+      runtimeRef: expect.objectContaining({ taskId: "codex-task-1", sessionKey: "codex-thread-1" })
+    });
     expect(stillRunningView.events.some((event) => event.type === "blueprint.run.failed")).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
@@ -694,18 +907,16 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("100-150");
     expect(adapter.calls[0]?.prompt).toContain("do not describe internal program phases");
     expect(adapter.calls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
-    expect(adapter.calls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
-    expect(adapter.calls[0]?.prompt).toContain("complete single-file HTML");
-    expect(adapter.calls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
-    expect(adapter.calls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(adapter.calls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
-    expect(adapter.calls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
+    expect(adapter.calls[0]?.prompt).toContain("Top-level artifacts[] is a publication hint and link/address index");
+    expect(adapter.calls[0]?.prompt).toContain("One step may declare many artifacts");
+    expect(adapter.calls[0]?.prompt).toContain("For generated deliverables, create or update files and return path");
+    expect(adapter.calls[0]?.prompt).toContain("Do not paste artifact source");
     expect(adapter.calls[0]?.outputSchema).toMatchObject({
       properties: {
         artifacts: {
           items: {
             properties: {
-              content: { description: expect.stringContaining("Inline artifact content") },
+              content: { description: expect.stringContaining("Compatibility") },
               path: { description: expect.stringContaining("generated file") }
             }
           }
@@ -745,31 +956,57 @@ describe("BlueprintWorker", () => {
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const waitingCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!waitingCommand) throw new Error("Expected regular command for waiting approval.");
+    const waitingStep = (await store.listRunCommandSteps({ commandId: waitingCommand.id }))
+      .find((step) => step.nodeRunId === waitingNode.id);
 
     expect(waitingNode.output).toMatchObject({
       approvalType: "agent",
       reviewOutput: "draft answer",
       replies: []
     });
+    expect(waitingCommand).toMatchObject({
+      kind: "regular_run",
+      status: "waiting_approval",
+      currentStep: "node_execution"
+    });
+    expect(waitingStep).toMatchObject({
+      mode: "node_execution",
+      status: "waiting_approval",
+      nodeRunId: waitingNode.id
+    });
     expect(adapter.sendCalls).toHaveLength(0);
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Use the final wording.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Use the final wording."
+    });
     const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
     const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const repliedOutput = repliedNode.output as {
       reviewOutput: string;
       replies: Array<{ role: string; body: string }>;
     };
+    const approvalReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
 
     expect(repliedOutput.reviewOutput).toBe("draft answer");
-    expect(repliedOutput.replies.map((reply) => reply.role)).toEqual(["user"]);
-    expect(repliedOutput.replies.map((reply) => reply.body)).toEqual(["Use the final wording."]);
-    expect(adapter.calls).toHaveLength(1);
+    expect(repliedOutput.replies).toEqual([]);
+    expect(approvalReplies.map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
+      ["user", "message", "Use the final wording."],
+      ["agent", "message", "final answer"]
+    ]);
+    expect(adapter.calls).toHaveLength(2);
     expect(adapter.sendCalls).toHaveLength(0);
 
-    await worker.approveRun(blueprint, repliedView.run, repliedNode.id, "Approved.");
+    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "approve", {
+      comment: "Approved."
+    });
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+    const finalStep = (await store.listRunCommandSteps({ commandId: waitingCommand.id }))
+      .find((step) => step.nodeRunId === repliedNode.id);
 
     expect(finalView?.run.status).toBe("succeeded");
     expect(finalNode).toMatchObject({
@@ -783,11 +1020,19 @@ describe("BlueprintWorker", () => {
               {
                 role: "user",
                 body: "Use the final wording."
+              },
+              {
+                role: "assistant",
+                body: "final answer"
               }
             ]
           }
         }
       });
+    expect(finalStep).toMatchObject({
+      status: "succeeded",
+      nodeRunId: repliedNode.id
+    });
     expect(adapter.sendCalls).toHaveLength(1);
     expect(adapter.sendCalls[0]).toMatchObject({
       channelId: "slack",
@@ -845,6 +1090,274 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls).toHaveLength(0);
   });
 
+  it("reruns an Agent approval only through explicit return_for_revision", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-agent-change-1"),
+      createStartedAgentTask("task-agent-change-2")
+    ], [
+      createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
+      createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const binding = await store.getApprovalDiscussionBinding(approvalRequest.id);
+    expect(binding).toMatchObject({
+      approvalRequestId: approvalRequest.id,
+      threadId: approvalRequest.threadId,
+      mode: "executor",
+      route: "agent_approval",
+      canCreateCandidate: true,
+      resolverVersion: 1
+    });
+    const pendingApproval = (await store.listPendingApprovals()).find((approval) => approval.approvalRequestId === approvalRequest.id);
+    expect(pendingApproval?.discussion).toEqual(resolveApprovalDiscussion({
+      request: approvalRequest,
+      binding,
+      run: waitingView.run,
+      nodeRuns: waitingView.nodeRuns,
+      sessions: await store.listNodeExecutionSessions({ runId: run.id })
+    }).capability);
+
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "return_for_revision", {
+      comment: "Regenerate with sources."
+    });
+
+    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const revisedRequest = revisedView.approvalRequests
+      ?.filter((request) => request.kind === "agent_proposal" && request.status === "pending")
+      .at(-1);
+    const revisedNode = revisedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+
+    expect(adapter.calls).toHaveLength(2);
+    expect(adapter.calls[1]?.input).toMatchObject({
+      approvalRevision: expect.objectContaining({
+        requestedChanges: "Regenerate with sources."
+      })
+    });
+    expect(originalRequest).toMatchObject({
+      status: "superseded",
+      supersededByRequestId: revisedRequest?.id
+    });
+    expect(revisedRequest).toMatchObject({
+      status: "pending",
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: 2
+    });
+    expect(revisedNode?.status).toBe("waiting_approval");
+    expect(revisedNode?.output).toMatchObject({
+      approvalType: "agent",
+      reviewOutput: "revised answer"
+    });
+    expect(revisedView.approvalDecisions?.map((decision) => decision.action)).toEqual(["return_for_revision"]);
+    await expect(store.getApprovalDiscussionBinding(revisedRequest?.id ?? "")).resolves.toMatchObject({
+      approvalRequestId: revisedRequest?.id,
+      threadId: approvalRequest.threadId,
+      mode: "executor",
+      route: "agent_approval"
+    });
+  });
+
+  it("keeps original approval actionable when return_for_revision rerun fails or returns empty output", async () => {
+    const cases: Array<{ label: string; result: AgentTaskResult }> = [
+      { label: "failed", result: createCompletedAgentTask("task-agent-change-2", "failed", undefined, "model failed") },
+      { label: "empty", result: createCompletedAgentTask("task-agent-change-2", "succeeded", undefined) }
+    ];
+
+    for (const testCase of cases) {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), `hiveward-worker-request-changes-${testCase.label}-`));
+      const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+      await store.init();
+
+      const delivery = createAgentNode("delivery", "Delivery");
+      delivery.config = {
+        ...delivery.config,
+        approval: {
+          enabled: true
+        }
+      };
+      const blueprint = createBlueprint([delivery], []);
+      const adapter = new ScriptedAdapter([
+        createStartedAgentTask("task-agent-change-1"),
+        createStartedAgentTask("task-agent-change-2")
+      ], [
+        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
+        testCase.result
+      ]);
+      const worker = new BlueprintWorker(store, adapter);
+
+      const run = await worker.startRun(blueprint, "test-user");
+      const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+      const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+      const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+      if (!approvalRequest || !waitingNode) throw new Error("Expected agent approval request.");
+
+      await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "return_for_revision", {
+        comment: "Regenerate with sources."
+      })).rejects.toThrow();
+
+      const restoredView = await store.getRunView(run.id);
+      const originalRequest = restoredView?.approvalRequests?.find((request) => request.id === approvalRequest.id);
+      const revisedRequests = restoredView?.approvalRequests
+        ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id) ?? [];
+      const restoredNode = restoredView?.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id);
+
+      expect(restoredView?.run.status).toBe("waiting_approval");
+      expect(originalRequest).toMatchObject({
+        status: "pending",
+        capabilities: expect.objectContaining({ approve: true, reply: true, returnForRevision: true })
+      });
+      expect(originalRequest?.capabilities).not.toHaveProperty("requestChanges");
+      expect(originalRequest?.capabilities).not.toHaveProperty("revise");
+      expect(revisedRequests).toHaveLength(0);
+      expect(restoredNode).toMatchObject({
+        status: "waiting_approval",
+        output: expect.objectContaining({ reviewOutput: "draft answer" })
+      });
+      expect(restoredView?.approvalDecisions?.filter((decision) => decision.action === "return_for_revision")).toHaveLength(1);
+    }
+  });
+
+  it("persists approval revision context across worker restart and creates revised Agent approval in the same thread after restored rerun", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-restored-revision-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const firstWorker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([
+        createStartedAgentTask("task-agent-change-1")
+      ], [
+        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer")
+      ]),
+      { nodeRunLeaseMs: 10 }
+    );
+
+    const run = await firstWorker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest || !waitingNode || !isAgentApprovalWaitingOutputForTest(waitingNode.output)) {
+      throw new Error("Expected agent approval request.");
+    }
+
+    await new ApprovalService(store).returnForRevision(
+      approvalRequest.id,
+      "Regenerate with sources.",
+      { mode: "keep_current_request" }
+    );
+    const revisionContext = {
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: approvalRequest.revision + 1,
+      requestedChanges: "Regenerate with sources."
+    };
+    const now = new Date().toISOString();
+    const runtimeRef = {
+      source: "openclaw" as const,
+      sourceId: "task-agent-change-2",
+      sourceUpdatedAt: now,
+      taskId: "task-agent-change-2",
+      runId: "task-agent-change-2-run",
+      sessionKey: "agent:main:main"
+    };
+    await store.upsertNodeRun({
+      ...waitingNode,
+      status: "running",
+      input: {
+        originalInput: waitingNode.input,
+        approvalRevisionContext: revisionContext,
+        approvalRevision: {
+          previousOutput: waitingNode.output.reviewOutput,
+          previousReplies: waitingNode.output.replies,
+          requestedChanges: revisionContext.requestedChanges
+        }
+      },
+      output: undefined,
+      runtimeRef,
+      startedAt: now,
+      endedAt: undefined,
+      error: undefined
+    });
+    const waitingCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    const waitingStep = waitingCommand
+      ? (await store.listRunCommandSteps({ commandId: waitingCommand.id })).find((step) => step.nodeRunId === waitingNode.id)
+      : undefined;
+    if (!waitingCommand || !waitingStep) throw new Error("Expected command step for restored revision run.");
+    await store.updateRunCommand({
+      id: waitingCommand.id,
+      status: "running",
+      currentStep: "node_execution",
+      endedAt: undefined,
+      error: undefined
+    });
+    await store.updateRunCommandStep({
+      id: waitingStep.id,
+      status: "running",
+      nodeRunId: waitingNode.id,
+      runtimeRef,
+      startedAt: now,
+      endedAt: undefined,
+      error: undefined
+    });
+    await store.updateBlueprintRun({ ...waitingView.run, status: "running" });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const restoredWorker = new BlueprintWorker(
+      store,
+      new ScriptedAdapter([], [
+        createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
+      ])
+    );
+    await restoredWorker.resumeActiveRuns();
+
+    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const revisedRequest = revisedView.approvalRequests
+      ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id)
+      .at(-1);
+
+    expect(originalRequest).toMatchObject({
+      status: "superseded",
+      supersededByRequestId: revisedRequest?.id
+    });
+    expect(revisedRequest).toMatchObject({
+      status: "pending",
+      threadId: approvalRequest.threadId,
+      replacesRequestId: approvalRequest.id,
+      revision: approvalRequest.revision + 1
+    });
+    expect(revisedView.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id)).toMatchObject({
+      status: "waiting_approval",
+      output: expect.objectContaining({ reviewOutput: "revised answer" })
+    });
+  });
+
   it("keeps approvalRequestId Agent approval replies append-only until approval", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -860,10 +1373,12 @@ describe("BlueprintWorker", () => {
     const blueprint = createBlueprint([delivery], []);
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-approval-request-1"),
-      createStartedAgentTask("task-approval-request-2")
+      createStartedAgentTask("task-approval-request-2"),
+      createStartedAgentTask("task-approval-request-3")
     ], [
       createCompletedAgentTask("task-approval-request-1", "succeeded", "draft answer"),
-      createCompletedAgentTask("task-approval-request-2", "succeeded", "assistant revised answer")
+      createCompletedAgentTask("task-approval-request-2", "succeeded", "assistant discussion answer"),
+      createCompletedAgentTask("task-approval-request-3", "succeeded", "assistant candidate answer")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -883,13 +1398,39 @@ describe("BlueprintWorker", () => {
       reviewOutput: "draft answer",
       status: "pending"
     });
-    expect(pendingAfterReply?.replies?.map((reply) => [reply.role, reply.body])).toEqual([
-      ["user", "Give me a shippable version."]
+    expect(pendingAfterReply?.replies?.map((reply) => [reply.role, reply.purpose, reply.body])).toEqual([
+      ["user", "message", "Give me a shippable version."],
+      ["assistant", "message", "assistant discussion answer"]
     ]);
 
     const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
     if (!repliedNode) throw new Error("Expected replied node.");
-    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls).toHaveLength(2);
+
+    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "reply", {
+      discussionMode: "candidate",
+      message: "Generate the final candidate."
+    });
+    const candidateReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
+    const candidateReply = candidateReplies.find((reply) => reply.purpose === "candidate");
+    expect(candidateReply).toMatchObject({
+      actor: "agent",
+      body: "assistant candidate answer",
+      purpose: "candidate"
+    });
+    expect(candidateReplies.filter((reply) => reply.purpose === "message").map((reply) => reply.body)).toEqual([
+      "Give me a shippable version.",
+      "assistant discussion answer"
+    ]);
+
+    if (!candidateReply) throw new Error("Expected candidate reply.");
+    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, candidateReply.id);
+    expect(await store.getApprovalRequest(approvalRequest.id)).toMatchObject({
+      selectedReplyId: candidateReply.id
+    });
+    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, null);
+    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
+    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, candidateReply.id);
 
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun) throw new Error("Expected current run.");
@@ -899,13 +1440,64 @@ describe("BlueprintWorker", () => {
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
     expect(finalView?.run.status).toBe("succeeded");
     expect(finalNode?.output).toMatchObject({
-      approvedOutput: "draft answer",
+      approvedOutput: "assistant candidate answer",
       approval: {
-        status: "approved"
+        status: "approved",
+        selectedReplyId: candidateReply.id
       }
     });
     expect(finalView?.approvalRequests?.find((request) => request.id === approvalRequest.id)?.status).toBe("approved");
     expect(finalView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["reply", "approve"]);
+  });
+
+  it("fails approval when selectedReplyId is not a candidate on the current request", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-approval-request-1")
+    ], [
+      createCompletedAgentTask("task-approval-request-1", "succeeded", "draft answer")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const foreignRequest = await store.upsertApprovalRequest({
+      ...approvalRequest,
+      id: "approval-foreign-candidate",
+      threadId: "thread-foreign-candidate",
+      selectedReplyId: undefined
+    });
+    await store.appendApprovalReply({
+      id: "reply-foreign-candidate",
+      threadId: foreignRequest.threadId ?? foreignRequest.id,
+      approvalRequestId: foreignRequest.id,
+      actor: "agent",
+      purpose: "candidate",
+      body: "foreign candidate answer",
+      createdAt: new Date().toISOString()
+    });
+    await store.upsertApprovalRequest({
+      ...approvalRequest,
+      selectedReplyId: "reply-foreign-candidate"
+    });
+
+    await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "approve"))
+      .rejects.toThrow("Selected approval reply does not belong to this request.");
+    expect((await store.getApprovalRequest(approvalRequest.id))?.status).toBe("pending");
+    expect((await store.listNodeRuns(run.id)).find((nodeRun) => nodeRun.nodeId === "delivery")?.status).toBe("waiting_approval");
   });
 
   it("keeps Agent approval comments from changing the selected output", async () => {
@@ -935,44 +1527,50 @@ describe("BlueprintWorker", () => {
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Give me a concrete plan.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Give me a concrete plan."
+    });
     const firstReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const firstReplyNode = firstReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const firstReplyOutput = firstReplyNode.output as {
-      replies: Array<{ id: string; role: string; body: string; selected?: boolean }>;
+      replies: Array<{ id: string; role: string; body: string }>;
     };
-    expect(firstReplyOutput.replies.map((reply) => [reply.role, reply.body])).toEqual([
-      ["user", "Give me a concrete plan."]
+    expect(firstReplyOutput.replies).toEqual([]);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
+      ["user", "Give me a concrete plan."],
+      ["agent", "first usable plan"]
     ]);
 
-    await worker.selectApprovalReply(blueprint, firstReplyView.run, firstReplyNode.id, "reviewOutput");
+    await worker.selectApprovalReply(blueprint, firstReplyView.run, approvalRequest.id, null);
     const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    const selectedOutput = selectedNode.output as {
-      selectedReplyId: string;
-      replies: Array<{ id: string; selected?: boolean }>;
-    };
-    expect(selectedOutput.selectedReplyId).toBe("reviewOutput");
+    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
 
-    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Try one more variant.");
+    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
+      message: "Try one more variant."
+    });
     const secondReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const secondReplyNode = secondReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const secondReplyOutput = secondReplyNode.output as {
       reviewOutput: string;
-      selectedReplyId: string;
+      selectedReplyId?: string;
       replies: Array<{ role: string; body: string }>;
     };
 
     expect(secondReplyOutput.reviewOutput).toBe("draft answer");
-    expect(secondReplyOutput.selectedReplyId).toBe("reviewOutput");
-    expect(secondReplyOutput.replies.map((reply) => [reply.role, reply.body])).toEqual([
+    expect(secondReplyOutput.selectedReplyId).toBeUndefined();
+    expect(secondReplyOutput.replies).toEqual([]);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
       ["user", "Give me a concrete plan."],
-      ["user", "Try one more variant."]
+      ["agent", "first usable plan"],
+      ["user", "Try one more variant."],
+      ["agent", "second plan"]
     ]);
-    expect(adapter.calls).toHaveLength(1);
+    expect(adapter.calls).toHaveLength(3);
 
-    await worker.approveRun(blueprint, secondReplyView.run, secondReplyNode.id);
+    await worker.applyApprovalRequest(blueprint, secondReplyView.run, approvalRequest.id, "approve");
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
@@ -980,8 +1578,7 @@ describe("BlueprintWorker", () => {
     expect(finalNode?.output).toMatchObject({
       approvedOutput: "draft answer",
       approval: {
-        status: "approved",
-        selectedReplyId: "reviewOutput"
+        status: "approved"
       }
     });
   });
@@ -1010,23 +1607,24 @@ describe("BlueprintWorker", () => {
 
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
 
-    await worker.selectApprovalReply(blueprint, waitingView.run, waitingNode.id, "reviewOutput");
+    await worker.selectApprovalReply(blueprint, waitingView.run, approvalRequest.id, null);
     const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const selectedNode = selectedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
 
-    await worker.replyToApproval(blueprint, selectedView.run, selectedNode.id, "Show another option.");
+    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
+      message: "Show another option."
+    });
     const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
     const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId: string; selectedOutput: string };
+    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId?: string };
 
     expect(repliedOutput.reviewOutput).toBe("original plan");
-    expect(repliedOutput.selectedReplyId).toBe("reviewOutput");
-    expect(repliedOutput.selectedOutput).toBe("original plan");
-    expect(adapter.calls).toHaveLength(1);
+    expect(repliedOutput.selectedReplyId).toBeUndefined();
+    expect(adapter.calls).toHaveLength(2);
 
-    await worker.approveRun(blueprint, repliedView.run, repliedNode.id);
+    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "approve");
     const finalView = await waitForRunTerminal(store, run.id);
     const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
@@ -1034,13 +1632,12 @@ describe("BlueprintWorker", () => {
     expect(finalNode?.output).toMatchObject({
       approvedOutput: "original plan",
       approval: {
-        status: "approved",
-        selectedReplyId: "reviewOutput"
+        status: "approved"
       }
     });
   });
 
-  it("does not rerun or fail the run when an Agent approval comment is added", async () => {
+  it("keeps the run waiting when an Agent approval discussion reply is added", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -1058,22 +1655,31 @@ describe("BlueprintWorker", () => {
       createStartedAgentTask("task-2")
     ], [
       createCompletedAgentTask("task-1", "succeeded", "draft answer"),
-      createCompletedAgentTask("task-2", "failed", undefined, "revision failed")
+      createCompletedAgentTask("task-2", "succeeded", "discussion acknowledgement")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
 
-    await worker.replyToApproval(blueprint, waitingView.run, waitingNode.id, "Try again.");
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Try again."
+    });
     const replyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const waitingAfterReply = replyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
     expect(replyView.run.status).toBe("waiting_approval");
     expect(waitingAfterReply?.status).toBe("waiting_approval");
     expect(waitingAfterReply?.error).toBeUndefined();
-    expect(adapter.calls).toHaveLength(1);
+    expect(waitingAfterReply?.id).toBe(waitingNode.id);
+    expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
+      ["user", "Try again."],
+      ["agent", "discussion acknowledgement"]
+    ]);
+    expect(adapter.calls).toHaveLength(2);
   });
 
   it("runs downstream nodes connected to a manager slot forward output", async () => {
@@ -2586,12 +3192,13 @@ describe("BlueprintWorker", () => {
     const round1SnapshotCall = adapter.calls.find((call) =>
       isRecord(call.input) &&
       call.input.roundNumber === 1 &&
-      call.input.humanFeedback === "Carry keyboard controls into the next round." &&
+      typeof call.input.humanFeedback === "string" &&
+      call.input.humanFeedback.includes("Carry keyboard controls into the next round.") &&
       isRecord(call.input.runContext) &&
       call.input.runContext.mode === "context_snapshot"
     );
     expect(round1SnapshotCall?.input).toMatchObject({
-      humanFeedback: "Carry keyboard controls into the next round.",
+      humanFeedback: expect.stringContaining("Carry keyboard controls into the next round."),
       runContext: expect.objectContaining({ mode: "context_snapshot" })
     });
 
@@ -2712,6 +3319,350 @@ describe("BlueprintWorker", () => {
       agentName: "research",
       input: expect.objectContaining({ runId: run.id })
     });
+  });
+
+  it("records initial self-iteration preparation as one durable command with stable revision-zero steps", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-command-research"),
+      createStartedAgentTask("task-command-plan")
+    ], [
+      createCompletedAgentTask("task-command-research", "succeeded", "command research"),
+      createCompletedAgentTask("task-command-plan", "succeeded", "command plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const command = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!command) throw new Error("Expected prepare command.");
+    const steps = await store.listRunCommandSteps({ commandId: command.id });
+    const researchStep = steps.find((step) => step.mode === "research_resolution");
+    const requirementStep = steps.find((step) => step.mode === "requirement_resolution");
+
+    expect(await store.listRunCommands({ runId: run.id })).toHaveLength(1);
+    expect(command).toMatchObject({
+      commandKey: buildRunCommandKey(run.id, view.iterationRounds?.[0]?.id, "self_iteration_prepare_round"),
+      kind: "self_iteration_prepare_round",
+      status: "waiting_approval",
+      currentRevision: 0
+    });
+    expect(steps).toHaveLength(2);
+    expect(steps.map((step) => step.revision)).toEqual([0, 0]);
+    expect(researchStep).toMatchObject({
+      stepKey: buildRunCommandStepKey(command, "research_resolution", "top-manager"),
+      nodeRunId: stablePreflightNodeRunId(buildRunCommandStepKey(command, "research_resolution", "top-manager")),
+      status: "succeeded"
+    });
+    expect(requirementStep).toMatchObject({
+      stepKey: buildRunCommandStepKey(command, "requirement_resolution", "top-manager"),
+      nodeRunId: stablePreflightNodeRunId(buildRunCommandStepKey(command, "requirement_resolution", "top-manager")),
+      status: "succeeded"
+    });
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id.startsWith("preflight-"))).toHaveLength(2);
+  });
+
+  it("refreshes waiting approval commands on repeated resume without duplicating preflight facts", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-idempotent-research"),
+      createStartedAgentTask("task-idempotent-plan")
+    ], [
+      createCompletedAgentTask("task-idempotent-research", "succeeded", "idempotent research"),
+      createCompletedAgentTask("task-idempotent-plan", "succeeded", "idempotent plan")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+    const run = await worker.startRun(blueprint, "test-user");
+    await waitForRunStatus(store, run.id, "waiting_approval");
+
+    const recoveryAdapter = new ScriptedAdapter([], []);
+    const recoveryWorker = new BlueprintWorker(store, recoveryAdapter);
+    await recoveryWorker.resumeActiveRuns();
+    await recoveryWorker.resumeActiveRuns();
+    await recoveryWorker.resumeActiveRuns();
+
+    const view = await store.getRunView(run.id);
+    const commands = await store.listRunCommands({ runId: run.id });
+    const steps = await store.listRunCommandSteps({ commandId: commands[0]?.id });
+
+    expect(recoveryAdapter.calls).toHaveLength(0);
+    expect(recoveryAdapter.waitCalls).toHaveLength(0);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({ status: "waiting_approval" });
+    expect(steps).toHaveLength(2);
+    expect(view?.nodeRuns.filter((nodeRun) => nodeRun.id.startsWith("preflight-"))).toHaveLength(2);
+    expect(view?.approvalRequests?.filter((request) => request.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes a running prepare command from the stored preflight step instead of starting it again", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1, researchAgent: true });
+    const blockingAdapter = new BlockingAdapter(createStartedAgentTask("task-preflight-research-resume"));
+    const firstWorker = new BlueprintWorker(store, blockingAdapter, { nodeRunLeaseMs: 100 });
+    const run = await firstWorker.startRun(blueprint, "test-user");
+    const runningResearch = await waitForNodeRun(store, run.id, "research", (nodeRun) =>
+      nodeRun.status === "running" && nodeRun.runtimeRef?.taskId === "task-preflight-research-resume"
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    const recoveryAdapter = new ScriptedAdapter([
+      createStartedAgentTask("task-preflight-plan-resume")
+    ], [
+      createCompletedAgentTask("task-preflight-research-resume", "succeeded", "resumed research"),
+      createCompletedAgentTask("task-preflight-plan-resume", "succeeded", "resumed plan")
+    ]);
+    const recoveryWorker = new BlueprintWorker(store, recoveryAdapter);
+    await recoveryWorker.resumeActiveRuns();
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const commands = await store.listRunCommands({ runId: run.id });
+    const steps = await store.listRunCommandSteps({ commandId: commands[0]?.id });
+
+    expect(recoveryAdapter.waitCalls[0]).toMatchObject({
+      taskId: "task-preflight-research-resume",
+      nodeRunId: runningResearch.id
+    });
+    expect(recoveryAdapter.calls).toHaveLength(1);
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id === runningResearch?.id)).toHaveLength(1);
+    expect(steps.filter((step) => step.mode === "research_resolution")).toHaveLength(1);
+    expect(steps.filter((step) => step.mode === "requirement_resolution")).toHaveLength(1);
+  }, 15_000);
+
+  it("does not bootstrap pending requirement approvals without a durable prepare command", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "legacy-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "legacy-round",
+      createdAt: now
+    });
+    const round = await store.upsertIterationRound({
+      id: "legacy-round",
+      sessionId: "legacy-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "requirement_pending",
+      artifactIds: [],
+      startedAt: now
+    });
+    const request = await new ApprovalService(store).createRequest({
+      runId: run.id,
+      roundId: round.id,
+      kind: "iteration_requirement_plan",
+      title: "Legacy plan",
+      body: "Legacy pending approval",
+      sourceRef: { type: "blueprint_run", id: run.id },
+      requestedBy: { type: "node", label: "Top Manager", nodeId: "top-manager" }
+    });
+    await store.upsertIterationRound({ ...round, requirementRequestId: request.id });
+
+    const adapter = new ScriptedAdapter([], []);
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    const view = await store.getRunView(run.id);
+    const commands = await store.listRunCommands({ runId: run.id });
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(commands).toHaveLength(0);
+    expect(view?.run.status).toBe("running");
+    expect(view?.approvalRequests?.filter((approval) => approval.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes prepare commands from command status instead of round execution state", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "command-owner-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "command-owner-round",
+      createdAt: now
+    });
+    await store.upsertIterationRound({
+      id: "command-owner-round",
+      sessionId: "command-owner-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "executing",
+      artifactIds: [],
+      startedAt: now
+    });
+    await store.createRunCommandIfAbsent({
+      id: "command-owner-prepare",
+      commandKey: buildRunCommandKey(run.id, "command-owner-round", "self_iteration_prepare_round"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: "command-owner-round",
+      kind: "self_iteration_prepare_round",
+      status: "queued",
+      currentRevision: 0,
+      currentStep: "research_resolution",
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const adapter = new BlockingAdapter(createStartedAgentTask("task-command-owner-plan"));
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    await waitForCondition(() => adapter.calls.length === 1, "prepare command task to start");
+
+    const runningCommands = await store.listRunCommands({ runId: run.id });
+    expect(runningCommands.map((command) => command.kind)).toEqual(["self_iteration_prepare_round"]);
+    expect(runningCommands[0]).toMatchObject({
+      status: "running",
+      currentStep: "research_resolution"
+    });
+
+    adapter.complete(createCompletedAgentTask("task-command-owner-plan", "succeeded", "command-owned plan"));
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    expect(view.approvalRequests?.filter((approval) => approval.kind === "iteration_requirement_plan")).toHaveLength(1);
+  });
+
+  it("resumes running release report commands by waiting for the stored step runtime", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 1 });
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    const now = new Date().toISOString();
+    await store.upsertIterationSession({
+      id: "release-resume-session",
+      runId: run.id,
+      topManagerNodeId: "top-manager",
+      blueprintSnapshotId: blueprint.id,
+      status: "running",
+      maxRounds: 1,
+      currentRoundId: "release-resume-round",
+      createdAt: now
+    });
+    await store.upsertIterationRound({
+      id: "release-resume-round",
+      sessionId: "release-resume-session",
+      runId: run.id,
+      roundNumber: 1,
+      status: "executing",
+      artifactIds: [],
+      startedAt: now
+    });
+    const { command } = await store.createRunCommandIfAbsent({
+      id: "release-resume-command",
+      commandKey: buildRunCommandKey(run.id, "release-resume-round", "self_iteration_release_report"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: "release-resume-round",
+      kind: "self_iteration_release_report",
+      status: "running",
+      currentRevision: 0,
+      currentStep: "release_report",
+      startedAt: now,
+      createdAt: now,
+      updatedAt: now
+    });
+    const stepKey = buildRunCommandStepKey(command, "release_report", "top-manager");
+    const nodeRunId = stableNodeExecutionNodeRunId(stepKey);
+    const runtimeRef = {
+      source: "openclaw" as const,
+      sourceId: "task-release-resume",
+      sourceUpdatedAt: now,
+      taskId: "task-release-resume",
+      runId: "task-release-resume-run",
+      sessionKey: "agent:main:main"
+    };
+    await store.upsertNodeRun({
+      id: nodeRunId,
+      blueprintRunId: run.id,
+      blueprintId: blueprint.id,
+      nodeId: "top-manager",
+      nodeLabel: "Top Manager",
+      nodeType: "manager",
+      iterationRoundId: "release-resume-round",
+      status: "running",
+      queuedAt: now,
+      startedAt: now,
+      input: { task: "self_iteration_release_report" },
+      runtimeRef
+    });
+    await store.createRunCommandStepIfAbsent({
+      id: "release-resume-step",
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: "release-resume-round",
+      revision: 0,
+      mode: "release_report",
+      nodeId: "top-manager",
+      nodeRunId,
+      status: "running",
+      startedAt: now,
+      runtimeRef,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    const adapter = new ScriptedAdapter([], [
+      createCompletedAgentTask("task-release-resume", "succeeded", releaseReportOutput("resumed release"))
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+    await worker.resumeActiveRuns();
+    const view = await waitForRunStatus(store, run.id, "waiting_approval");
+    const releaseCommand = (await store.listRunCommands({ runId: run.id }))[0];
+    const releaseStep = (await store.listRunCommandSteps({ commandId: command.id }))[0];
+
+    expect(adapter.calls).toHaveLength(0);
+    expect(adapter.waitCalls[0]).toMatchObject({
+      taskId: "task-release-resume",
+      nodeRunId
+    });
+    expect(releaseCommand).toMatchObject({
+      kind: "self_iteration_release_report",
+      status: "waiting_approval"
+    });
+    expect(releaseStep).toMatchObject({
+      mode: "release_report",
+      status: "succeeded",
+      nodeRunId
+    });
+    expect(view.nodeRuns.filter((nodeRun) => nodeRun.id === nodeRunId)).toHaveLength(1);
+    expect(view.nodeRuns.find((nodeRun) => nodeRun.id === nodeRunId)).toMatchObject({
+      status: "succeeded",
+      runtimeRef: expect.objectContaining({ taskId: "task-release-resume" })
+    });
+    expect(view.approvalRequests?.filter((approval) => approval.kind === "manager_release_report")).toHaveLength(1);
   });
 
   it("uses configured research and round-plan agents before publishing the plan approval", async () => {
@@ -2935,16 +3886,25 @@ describe("BlueprintWorker", () => {
       status: "pending",
       capabilities: expect.objectContaining({ approve: false, reply: true, reject: true })
     });
-    expect(request?.body).toContain("Preflight Blocked");
+    expect(request?.body).toContain("Issue Report");
+    expect(request?.body).toContain("What you can do");
     expect(request?.body).toContain("missing research credential");
+    const pendingBlockedApproval = (await store.listPendingApprovals())
+      .find((approval) => approval.approvalRequestId === request?.id);
+    expect(pendingBlockedApproval?.discussion).toEqual({
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: "executor_binding_incomplete"
+    });
 
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun || !request) throw new Error("Expected blocked preflight approval.");
     await expect(worker.applyApprovalRequest(blueprint, currentRun, request.id, "approve"))
       .rejects.toThrow("Approval request does not allow approve.");
-    await worker.applyApprovalRequest(blueprint, currentRun, request.id, "reply", {
+    await expect(worker.applyApprovalRequest(blueprint, currentRun, request.id, "reply", {
       message: "The credential is still unavailable."
-    });
+    })).rejects.toThrow("Approval discussion is unavailable: executor_binding_incomplete.");
     const replyView = await store.getRunView(run.id);
     const stillBlocked = replyView?.approvalRequests
       ?.find((approval) => approval.id === request.id);
@@ -2954,9 +3914,7 @@ describe("BlueprintWorker", () => {
       revision: 1,
       capabilities: expect.objectContaining({ approve: false, reply: true })
     });
-    expect(replyView?.approvalDecisions?.filter((decision) => decision.action === "reply")).toEqual([
-      expect.objectContaining({ approvalRequestId: request.id, resultingStatus: "pending" })
-    ]);
+    expect(replyView?.approvalDecisions?.filter((decision) => decision.action === "reply")).toEqual([]);
   });
 
   it("uses manager semantic judgment to request another research pass", async () => {
@@ -3105,12 +4063,10 @@ describe("BlueprintWorker", () => {
     expect(managerDecisionCalls[0]?.prompt).toContain("## 摘要");
     expect(managerDecisionCalls[0]?.prompt).toContain("100-150");
     expect(managerDecisionCalls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
-    expect(managerDecisionCalls[0]?.prompt).toContain("Only top-level artifacts[] creates openable artifact records");
-    expect(managerDecisionCalls[0]?.prompt).toContain("complete single-file HTML");
-    expect(managerDecisionCalls[0]?.prompt).toContain("declare that file path in top-level artifacts[].path");
-    expect(managerDecisionCalls[0]?.prompt).toContain("Writing an HTML file under input.agentWorkspace.artifactsPath is not enough");
-    expect(managerDecisionCalls[0]?.prompt).toContain("No Agent or Manager may redeclare upstream");
-    expect(managerDecisionCalls[0]?.prompt).toContain("For review/QA/acceptance/validation steps");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Top-level artifacts[] is a publication hint and link/address index");
+    expect(managerDecisionCalls[0]?.prompt).toContain("One step may declare many artifacts");
+    expect(managerDecisionCalls[0]?.prompt).toContain("For generated deliverables, create or update files and return path");
+    expect(managerDecisionCalls[0]?.prompt).toContain("Do not paste artifact source");
     expect(managerDecisionCalls[0]?.prompt).toContain("## \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(managerDecisionCalls[0]?.prompt).toContain("Round lifecycle contract:");
     expect(managerDecisionCalls[0]?.prompt).toContain("input.manager.roundNumber is platform lifecycle state");
@@ -3223,13 +4179,28 @@ describe("BlueprintWorker", () => {
     const requirement1 = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
     if (!requirement1) throw new Error("Expected initial requirement approval.");
 
-    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "reply", {
+    await worker.applyApprovalRequest(blueprint, run, requirement1.id, "return_for_revision", {
       message: "Tighten the execution plan."
     });
     const replyView = await store.getRunView(run.id);
     const requirement2 = replyView?.approvalRequests
       ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
       .at(-1);
+    const commandAfterRevision = (await store.listRunCommands({ runId: run.id }))[0];
+    if (!commandAfterRevision) throw new Error("Expected prepare command.");
+    const revisionSteps = await store.listRunCommandSteps({ commandId: commandAfterRevision.id });
+    expect(commandAfterRevision).toMatchObject({
+      currentRevision: 1,
+      currentStep: "revise_plan"
+    });
+    expect(revisionSteps).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        revision: 1,
+        mode: "revise_plan",
+        stepKey: buildRunCommandStepKey(commandAfterRevision, "revise_plan", "requirements")
+      })
+    ]));
+    expect(replyView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["return_for_revision"]);
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun || !requirement2) throw new Error("Expected pending requirement approval.");
     await worker.applyApprovalRequest(blueprint, currentRun, requirement2.id, "approve");
@@ -3242,14 +4213,14 @@ describe("BlueprintWorker", () => {
 
     expect(round).toMatchObject({
       approvedRequirementRequestId: requirement2.id,
-      approvedRequirementRevision: 1
+      approvedRequirementRevision: 2
     });
     expect(managerRunInput).toMatchObject({
       runContext: expect.objectContaining({
         currentPlan: expect.objectContaining({
           requestId: requirement2.id,
-          revision: 1,
-          body: expect.stringContaining("initial dispatch plan")
+          revision: 2,
+          body: expect.stringContaining("approved revised dispatch plan")
         })
       })
     });
@@ -3406,10 +4377,113 @@ describe("BlueprintWorker", () => {
       status: "running",
       maxRounds: 1
     });
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "manager", "builder", "manager", "manager"]);
     expect(replyView?.run.status).toBe("waiting_approval");
     expect(replyView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["approve", "reply"]);
+    expect((await store.listApprovalReplies({ approvalRequestId: report1.id })).map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
+      ["user", "message", "Add clearer artifact notes."],
+      ["manager", "message", "round 2 research after report feedback"]
+    ]);
   });
+
+  it("carries release report approval replies into next round context when later approved", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createSelfIterationBlueprint({ maxRounds: 2 });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-report-feedback-research-1"),
+      createStartedAgentTask("task-report-feedback-plan-1"),
+      createStartedAgentTask("task-report-feedback-build-1"),
+      createStartedAgentTask("task-report-feedback-release-1"),
+      createStartedAgentTask("task-report-feedback-reply-1"),
+      createStartedAgentTask("task-report-feedback-snapshot-1"),
+      createStartedAgentTask("task-report-feedback-research-2"),
+      createStartedAgentTask("task-report-feedback-plan-2")
+    ], [
+      createCompletedAgentTask("task-report-feedback-research-1", "succeeded", "round 1 research"),
+      createCompletedAgentTask("task-report-feedback-plan-1", "succeeded", "round 1 plan"),
+      createCompletedAgentTask("task-report-feedback-build-1", "succeeded", htmlArtifactOutput("feedback round")),
+      createCompletedAgentTask("task-report-feedback-release-1", "succeeded", releaseReportOutput("feedback round")),
+      createCompletedAgentTask("task-report-feedback-reply-1", "succeeded", "report discussion answer"),
+      createCompletedAgentTask("task-report-feedback-snapshot-1", "succeeded", JSON.stringify({
+        completedItems: ["Round 1 feedback artifact completed."],
+        keyDecisions: ["Carry feedback into round 2."],
+        validatedFacts: ["feedback artifact exists"],
+        openQuestions: [],
+        activeRisks: [],
+        assumptions: [],
+        recommendedNextStep: "plan",
+        summary: "feedback snapshot"
+      })),
+      createCompletedAgentTask("task-report-feedback-research-2", "succeeded", "round 2 research with feedback"),
+      createCompletedAgentTask("task-report-feedback-plan-2", "succeeded", "round 2 plan with feedback fixes")
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const started = await waitForRunStatus(store, run.id, "waiting_approval");
+    const requirement = started?.approvalRequests?.find((request) => request.kind === "iteration_requirement_plan");
+    const currentRun1 = await store.getBlueprintRun(run.id);
+    if (!currentRun1 || !requirement) throw new Error("Expected requirement approval.");
+    await worker.applyApprovalRequest(blueprint, currentRun1, requirement.id, "approve");
+
+    const reportView = await waitForRunView(store, run.id, (view) =>
+      view.run.status === "waiting_approval" &&
+      (view.approvalRequests ?? []).some((request) => request.kind === "manager_release_report" && request.status === "pending")
+    );
+    const report = reportView.approvalRequests?.find((request) =>
+      request.kind === "manager_release_report" && request.status === "pending"
+    );
+    const currentRun2 = await store.getBlueprintRun(run.id);
+    if (!currentRun2 || !report) throw new Error("Expected release report.");
+
+    await worker.applyApprovalRequest(blueprint, currentRun2, report.id, "reply", {
+      message: "Mouse clicks do not break blocks."
+    });
+    expect((await store.listApprovalReplies({ approvalRequestId: report.id })).map((reply) => reply.body)).toEqual([
+      "Mouse clicks do not break blocks.",
+      "report discussion answer"
+    ]);
+
+    const currentRun3 = await store.getBlueprintRun(run.id);
+    if (!currentRun3) throw new Error("Expected current run after reply.");
+    await worker.applyApprovalRequest(blueprint, currentRun3, report.id, "approve", {
+      comment: "Continue and fix character drift."
+    });
+
+    const nextRoundView = await waitForRunView(store, run.id, (view) =>
+      (view.iterationRounds ?? []).some((round) => round.roundNumber === 2 && round.status === "requirement_pending")
+    );
+    const round2 = nextRoundView.iterationRounds?.find((round) => round.roundNumber === 2);
+    const requirement2 = nextRoundView.approvalRequests?.find((request) => request.id === round2?.requirementRequestId);
+    const round2ResearchCall = adapter.calls.find((call) =>
+      isRecord(call.input) &&
+      call.input.roundNumber === 2 &&
+      typeof call.input.humanFeedback === "string" &&
+      call.input.humanFeedback.includes("Mouse clicks do not break blocks.") &&
+      call.input.humanFeedback.includes("Continue and fix character drift.")
+    );
+
+    expect(requirement2?.body).toContain("Mouse clicks do not break blocks.");
+    expect(requirement2?.body).toContain("Continue and fix character drift.");
+    expect(round2ResearchCall?.input).toMatchObject({
+      humanFeedback: expect.stringContaining("Mouse clicks do not break blocks."),
+      runContext: expect.objectContaining({
+        mode: "research_resolution",
+        lastRound: expect.objectContaining({
+          humanFeedback: expect.stringContaining("Continue and fix character drift."),
+          report: expect.objectContaining({
+            approvalRequestId: report.id,
+            artifactRefs: expect.arrayContaining([
+              expect.objectContaining({ title: expect.stringContaining("feedback round") })
+            ])
+          })
+        })
+      })
+    });
+  }, 30_000);
 
   it("keeps requirement approval replies as comments without rerunning the requirement agent", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
@@ -3445,7 +4519,7 @@ describe("BlueprintWorker", () => {
       ?.filter((request) => request.kind === "iteration_requirement_plan" && request.status === "pending")
       .at(-1);
 
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements", "requirements"]);
     expect(oldRequirement).toMatchObject({
       status: "pending"
     });
@@ -3469,10 +4543,12 @@ describe("BlueprintWorker", () => {
     const blueprint = createSelfIterationBlueprint({ maxRounds: 1, requirementAgent: true });
     const adapter = new ScriptedAdapter([
       createStartedAgentTask("task-close-research-1"),
-      createStartedAgentTask("task-close-requirements-1")
+      createStartedAgentTask("task-close-requirements-1"),
+      createStartedAgentTask("task-close-requirements-reply-1")
     ], [
       createCompletedAgentTask("task-close-research-1", "succeeded", "initial research summary"),
-      createCompletedAgentTask("task-close-requirements-1", "succeeded", "initial requirement plan")
+      createCompletedAgentTask("task-close-requirements-1", "succeeded", "initial requirement plan"),
+      createCompletedAgentTask("task-close-requirements-reply-1", "succeeded", "requirement discussion answer")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -3497,7 +4573,7 @@ describe("BlueprintWorker", () => {
       comment: "Add keyboard controls before execution.",
       resultingStatus: "pending"
     });
-    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements"]);
+    expect(adapter.calls.map((call) => call.agentName)).toEqual(["manager", "requirements", "requirements"]);
 
     const currentRun = await store.getBlueprintRun(run.id);
     if (!currentRun) throw new Error("Expected current run.");
@@ -3613,8 +4689,30 @@ describe("BlueprintWorker", () => {
       const runArchiveDir = path.join(tempDir, "runs");
       const htmlArtifacts = completed?.artifacts?.filter((artifact) => artifact.kind === "html") ?? [];
       const releaseReport = completed?.releaseReports?.[0];
+      const commands = await store.listRunCommands({ runId: run.id });
+      const commandsByKind = new Map(commands.map((command) => [command.kind, command]));
+      const executeCommand = commandsByKind.get("self_iteration_execute_round");
+      const releaseCommand = commandsByKind.get("self_iteration_release_report");
+      const executeSteps = executeCommand ? await store.listRunCommandSteps({ commandId: executeCommand.id }) : [];
+      const releaseSteps = releaseCommand ? await store.listRunCommandSteps({ commandId: releaseCommand.id }) : [];
 
       expect(completed?.run.status).toBe("succeeded");
+      expect(commands.map((command) => [command.kind, command.status])).toEqual([
+        ["self_iteration_prepare_round", "succeeded"],
+        ["self_iteration_execute_round", "succeeded"],
+        ["self_iteration_release_report", "succeeded"]
+      ]);
+      expect(executeSteps.map((step) => [step.mode, step.status, step.nodeId])).toEqual([
+        ["node_execution", "succeeded", "top-manager"],
+        ["node_execution", "succeeded", "slot-1"],
+        ["node_execution", "succeeded", "builder"]
+      ]);
+      expect(releaseSteps.map((step) => [step.mode, step.status, step.nodeId])).toEqual([
+        ["release_report", "succeeded", "top-manager"]
+      ]);
+      expect([...executeSteps, ...releaseSteps].map((step) => step.nodeRunId)).toEqual(
+        [...executeSteps, ...releaseSteps].map((step) => stableNodeExecutionNodeRunId(step.stepKey))
+      );
       expect(htmlArtifacts).toHaveLength(1);
       expect(htmlArtifacts[0]).toMatchObject({
         downloadUrl: expect.stringContaining("/artifacts/"),
@@ -3836,6 +4934,390 @@ describe("BlueprintWorker", () => {
       upstream: [expect.objectContaining({ nodeId: "brief", nodeLabel: "Brief", status: "succeeded", humanReportMd: "brief ready again" })]
     });
   });
+
+  it("binds agent node runs to native execution sessions and transcript events", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-session"),
+        sessionKey: "runtime-session",
+        nativeSessionId: "native-start"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-session", "succeeded", "brief ready"),
+        sessionKey: "runtime-session",
+        nativeSessionId: "native-done"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
+    if (!nodeRun) throw new Error("Expected brief node run.");
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id });
+    const events = await store.listNodeSessionTranscriptEvents({ sessionId: sessions[0]?.id });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      runId: run.id,
+      nodeRunId: nodeRun.id,
+      nodeId: "brief",
+      harnessId: "openclaw",
+      nativeSessionId: "native-done",
+      policy: "refresh_per_run",
+      status: "completed",
+      runtimeRef: expect.objectContaining({
+        taskId: "task-session",
+        sessionKey: "runtime-session"
+      })
+    });
+    expect(events.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+    expect(events[0]?.metadata).toMatchObject({ resumeMode: "started" });
+    expect(events[1]?.content).toBe("brief ready");
+    expect(events[2]?.metadata).toMatchObject({
+      status: "succeeded",
+      nativeSessionId: "native-done"
+    });
+  });
+
+  it("creates a new preserved session row that resumes the previous native session", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-preserve-1"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-preserve-1"
+      },
+      {
+        ...createStartedAgentTask("task-preserve-2"),
+        sessionKey: "runtime-session-2",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        resumable: false
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-preserve-1", "succeeded", "brief ready"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-preserve-1"
+      },
+      {
+        ...createCompletedAgentTask("task-preserve-2", "succeeded", "brief ready again"),
+        sessionKey: "runtime-session-2",
+        nativeSessionId: "native-preserve-1",
+        providerSessionId: "native-preserve-1",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: true,
+        resumeMode: "resumed",
+        providerStartedNewSession: false,
+        resumable: true
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls[0]?.nativeSessionId).toBeUndefined();
+    expect(adapter.calls[1]?.nativeSessionId).toBe("native-preserve-1");
+    expect(sessions).toHaveLength(2);
+    expect(sessions[0]).toMatchObject({
+      policy: "preserve_across_rounds",
+      status: "completed",
+      nativeSessionId: "native-preserve-1"
+    });
+    expect(sessions[1]).toMatchObject({
+      policy: "preserve_across_rounds",
+      status: "completed",
+      nativeSessionId: "native-preserve-1",
+      resumedFromSessionId: sessions[0]?.id
+    });
+  });
+
+  it("treats provider-started native sessions as fallback boundaries instead of proven resume", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-provider-new-1"),
+        sessionKey: "runtime-provider-new-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createStartedAgentTask("task-provider-new-resume"),
+        sessionKey: "runtime-provider-new-resume",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: false,
+        resumable: false
+      },
+      {
+        ...createStartedAgentTask("task-provider-new-fallback"),
+        sessionKey: "runtime-provider-new-fallback",
+        nativeSessionId: "native-fallback-after-provider-new"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-provider-new-1", "succeeded", "first pass"),
+        sessionKey: "runtime-provider-new-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createCompletedAgentTask("task-provider-new-resume", "succeeded", "discarded provider new session"),
+        sessionKey: "runtime-provider-new-resume",
+        providerSessionId: "native-provider-new",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createCompletedAgentTask("task-provider-new-fallback", "succeeded", "fallback after provider new session"),
+        sessionKey: "runtime-provider-new-fallback",
+        nativeSessionId: "native-fallback-after-provider-new"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    const unavailableEvents = unavailable
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
+      : [];
+    const fallbackEvents = fallback
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
+      : [];
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-original",
+      undefined
+    ]);
+    expect(sessions).toHaveLength(3);
+    expect(unavailable).toMatchObject({
+      statusReason: expect.stringContaining("provider_started_new_session"),
+      resumedFromSessionId: sessions[0]?.id
+    });
+    expect(unavailable?.nativeSessionId).toBeUndefined();
+    expect(fallback).toMatchObject({
+      nativeSessionId: "native-fallback-after-provider-new",
+      fallbackOfSessionId: unavailable?.id
+    });
+    expect(unavailableEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "runtime",
+        kind: "runtime_done",
+        metadata: expect.objectContaining({
+          providerStartedNewSession: true,
+          providerSessionId: "native-provider-new",
+          resumeProven: false
+        })
+      }),
+      expect.objectContaining({
+        role: "system",
+        kind: "system_note",
+        metadata: expect.objectContaining({
+          reason: expect.stringContaining("provider_started_new_session")
+        })
+      })
+    ]));
+    expect(fallbackEvents.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+    expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief" && nodeRun.output === "fallback after provider new session")).toBeTruthy();
+  });
+
+  it("marks unsupported native resume unavailable and starts an explicit fallback session", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const preservingBrief = {
+      ...createAgentNode("brief", "Brief"),
+      config: {
+        ...createAgentNode("brief", "Brief").config,
+        crossRoundContextMode: "node_history" as const
+      }
+    };
+    const blueprint = createBlueprint(
+      [
+        preservingBrief,
+        {
+          id: "loop",
+          type: "loop",
+          position: { x: 420, y: 180 },
+          config: {
+            label: "Loop",
+            maxIterations: 2
+          }
+        }
+      ],
+      [
+        { id: "brief-loop", source: "brief", target: "loop", condition: "success" },
+        { id: "loop-brief", source: "loop", target: "brief", condition: "success" }
+      ]
+    );
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-fallback-1"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        taskId: "task-fallback-resume",
+        runId: "task-fallback-resume-run",
+        sessionKey: "runtime-session-resume",
+        source: "openclaw",
+        resumeMode: "started",
+        resumeRequested: true,
+        resumeAttempted: false,
+        resumeProven: false,
+        resumable: false,
+        status: "failed",
+        error: "native_resume_unsupported: test runtime cannot prove native resume.",
+        updatedAt: new Date().toISOString()
+      },
+      {
+        ...createStartedAgentTask("task-fallback-new"),
+        sessionKey: "runtime-session-fallback",
+        nativeSessionId: "native-fallback"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-fallback-1", "succeeded", "first pass"),
+        sessionKey: "runtime-session-1",
+        nativeSessionId: "native-original"
+      },
+      {
+        ...createCompletedAgentTask("task-fallback-new", "succeeded", "fallback pass"),
+        sessionKey: "runtime-session-fallback",
+        nativeSessionId: "native-fallback"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    const unavailableEvents = unavailable
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
+      : [];
+    const fallbackEvents = fallback
+      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
+      : [];
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-original",
+      undefined
+    ]);
+    expect(sessions).toHaveLength(3);
+    expect(unavailable).toMatchObject({
+      statusReason: expect.stringContaining("native_resume_unsupported")
+    });
+    expect(unavailable?.nativeSessionId).toBeUndefined();
+    expect(unavailable?.resumedFromSessionId).toBe(sessions[0]?.id);
+    expect(fallback).toMatchObject({
+      nativeSessionId: "native-fallback",
+      fallbackOfSessionId: unavailable?.id
+    });
+    expect(unavailableEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "system",
+        kind: "system_note",
+        content: "Native session could not be resumed; a fallback session was started.",
+        metadata: expect.objectContaining({
+          reason: expect.stringContaining("native_resume_unsupported")
+        })
+      })
+    ]));
+    expect(fallbackEvents.map((event) => event.kind)).toEqual([
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+  });
 });
 
 function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["source"] = "openclaw"): StartedAgentTaskResult {
@@ -3843,7 +5325,14 @@ function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    nativeSessionId: "agent:main:main",
     source,
+    resumeMode: "started",
+    resumeRequested: false,
+    resumeAttempted: false,
+    resumeProven: false,
+    providerStartedNewSession: false,
+    resumable: true,
     status: "running",
     updatedAt: new Date().toISOString()
   };
@@ -3910,7 +5399,14 @@ function createCompletedAgentTask(
     taskId,
     runId: `${taskId}-run`,
     sessionKey: "agent:main:main",
+    nativeSessionId: "agent:main:main",
     source,
+    resumeMode: "started",
+    resumeRequested: false,
+    resumeAttempted: false,
+    resumeProven: false,
+    providerStartedNewSession: false,
+    resumable: true,
     status,
     output,
     error,
@@ -3920,6 +5416,14 @@ function createCompletedAgentTask(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isAgentApprovalWaitingOutputForTest(value: unknown): value is {
+  approvalType: "agent";
+  reviewOutput: unknown;
+  replies: Array<{ id: string; body: string }>;
+} {
+  return isRecord(value) && value.approvalType === "agent" && Array.isArray(value.replies);
 }
 
 async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {

@@ -9,6 +9,8 @@ import type {
   AgentOutputEnvelope,
   AgentRuntimeId,
   ArchitectureBlueprintView,
+  ApprovalDiscussionBinding,
+  ApprovalRequestDiscussionProjection,
   ApprovalDecision,
   ApprovalReply,
   ApprovalRequest,
@@ -38,10 +40,18 @@ import type {
   IterationSession,
   ManagerContextSnapshot,
   ManagerMail,
+  NodeExecutionSession,
+  NodeExecutionSessionStatus,
+  NodeSessionTranscriptEvent,
   PendingApprovalItem,
   PortableBlueprintPackage,
   ReleaseReport,
   RoleDriverBinding,
+  RunCommand,
+  RunCommandKind,
+  RunCommandStatus,
+  RunCommandStep,
+  RunCommandStepStatus,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
   WorkspaceDashboard
@@ -94,6 +104,7 @@ import {
   agentWorkspaceRefsForBlueprint,
   agentWorkspaceRootFolder
 } from "../../services/agentWorkspaceService";
+import { projectPendingApprovalDiscussion } from "../approvalDiscussionProjection";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../..");
 const selectedCompanySettingKey = "selected_company_id";
@@ -129,6 +140,7 @@ export class SqliteHivewardStore implements HivewardStore {
     if (this.seedDefaultsOnInit && this.countRows("companies") === 0) {
       await this.seedDefaults();
     }
+    this.backfillApprovalDiscussionBindings();
   }
 
   close(): void {
@@ -243,10 +255,15 @@ export class SqliteHivewardStore implements HivewardStore {
         this.driver.transaction(() => {
           for (const session of view.iterationSessions ?? []) this.upsertIterationSessionSync(session);
           for (const round of view.iterationRounds ?? []) this.upsertIterationRoundSync(round);
+          for (const command of view.runCommands ?? []) this.upsertRunCommand(command);
+          for (const step of view.runCommandSteps ?? []) this.upsertRunCommandStep(step);
+          for (const executionSession of view.nodeExecutionSessions ?? []) this.upsertNodeExecutionSession(executionSession);
+          for (const event of view.nodeSessionTranscriptEvents ?? []) this.upsertNodeSessionTranscriptEvent(event);
           for (const request of view.approvalRequests ?? []) {
             this.upsertApprovalRequestSync(request);
             counts.approvals += 1;
           }
+          for (const binding of view.approvalDiscussionBindings ?? []) this.upsertApprovalDiscussionBinding(binding);
           for (const decision of view.approvalDecisions ?? []) this.appendApprovalDecisionSync(decision);
           for (const thread of view.approvalThreads ?? []) this.upsertApprovalThreadSync(thread);
           for (const reply of view.approvalReplies ?? []) this.appendApprovalReplySync(reply);
@@ -796,7 +813,7 @@ export class SqliteHivewardStore implements HivewardStore {
            WHERE id = ? AND status = 'pending'`
         ).run(
           nextStatus,
-          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false }),
+          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false }),
           now,
           input.approvalRequestId
         );
@@ -805,7 +822,7 @@ export class SqliteHivewardStore implements HivewardStore {
           this.upsertApprovalThreadSync(approvalThreadFromRequest({
             ...request,
             status: nextStatus,
-            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false },
             updatedAt: now
           }));
         }
@@ -979,6 +996,209 @@ export class SqliteHivewardStore implements HivewardStore {
     return summaries.map((run) => this.requireRunArchive(run.id));
   }
 
+  async createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }> {
+    return this.driver.transaction(() => {
+      const existing = this.getRunCommandByKeySync(command.commandKey);
+      if (existing) return { command: existing, created: false };
+      this.upsertRunCommand(command);
+      return { command, created: true };
+    });
+  }
+
+  async getRunCommand(id: string): Promise<RunCommand | undefined> {
+    const row = this.driver.db.prepare("SELECT * FROM run_commands WHERE id = ?").get(id) as Row | undefined;
+    return row ? runCommandFromRow(row) : undefined;
+  }
+
+  async getRunCommandByKey(commandKey: string): Promise<RunCommand | undefined> {
+    return this.getRunCommandByKeySync(commandKey);
+  }
+
+  async listRunCommands(filter: {
+    runId?: string;
+    roundId?: string;
+    kind?: RunCommandKind;
+    statuses?: RunCommandStatus[];
+  } = {}): Promise<RunCommand[]> {
+    return this.readRunCommands(filter);
+  }
+
+  async updateRunCommand(input: { id: string } & Partial<RunCommand>): Promise<RunCommand> {
+    return this.driver.transaction(() => {
+      const current = this.getRunCommandByIdSync(input.id);
+      if (!current) throw new Error(`Run command not found: ${input.id}`);
+      const updated: RunCommand = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      this.upsertRunCommand(updated);
+      return updated;
+    });
+  }
+
+  async createRunCommandStepIfAbsent(step: RunCommandStep): Promise<{ step: RunCommandStep; created: boolean }> {
+    return this.driver.transaction(() => {
+      const existing = this.getRunCommandStepByKeySync(step.stepKey);
+      if (existing) return { step: existing, created: false };
+      this.upsertRunCommandStep(step);
+      return { step, created: true };
+    });
+  }
+
+  async getRunCommandStep(id: string): Promise<RunCommandStep | undefined> {
+    const row = this.driver.db.prepare("SELECT * FROM run_command_steps WHERE id = ?").get(id) as Row | undefined;
+    return row ? runCommandStepFromRow(row) : undefined;
+  }
+
+  async getRunCommandStepByKey(stepKey: string): Promise<RunCommandStep | undefined> {
+    return this.getRunCommandStepByKeySync(stepKey);
+  }
+
+  async listRunCommandSteps(filter: {
+    commandId?: string;
+    runId?: string;
+    nodeRunId?: string;
+    statuses?: RunCommandStepStatus[];
+  } = {}): Promise<RunCommandStep[]> {
+    return this.readRunCommandSteps(filter);
+  }
+
+  async updateRunCommandStep(input: { id: string } & Partial<RunCommandStep>): Promise<RunCommandStep> {
+    return this.driver.transaction(() => {
+      const current = this.getRunCommandStepByIdSync(input.id);
+      if (!current) throw new Error(`Run command step not found: ${input.id}`);
+      const updated: RunCommandStep = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      this.upsertRunCommandStep(updated);
+      return updated;
+    });
+  }
+
+  async createNodeExecutionSession(session: NodeExecutionSession): Promise<NodeExecutionSession> {
+    this.upsertNodeExecutionSession(session);
+    return session;
+  }
+
+  async listNodeExecutionSessions(filter: {
+    runId?: string;
+    nodeRunId?: string;
+    nodeId?: string;
+    statuses?: NodeExecutionSessionStatus[];
+  } = {}): Promise<NodeExecutionSession[]> {
+    return this.readNodeExecutionSessions(filter);
+  }
+
+  async getNodeExecutionSession(id: string): Promise<NodeExecutionSession | undefined> {
+    const row = this.driver.db.prepare("SELECT * FROM node_execution_sessions WHERE id = ?").get(id) as Row | undefined;
+    return row ? nodeExecutionSessionFromRow(row) : undefined;
+  }
+
+  async updateNodeExecutionSession(input: { id: string } & Partial<NodeExecutionSession>): Promise<NodeExecutionSession> {
+    return this.driver.transaction(() => {
+      const current = this.getNodeExecutionSessionByIdSync(input.id);
+      if (!current) throw new Error(`Node execution session not found: ${input.id}`);
+      const updated: NodeExecutionSession = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      this.upsertNodeExecutionSession(updated);
+      return updated;
+    });
+  }
+
+  async appendNodeSessionTranscriptEvent(
+    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
+  ): Promise<NodeSessionTranscriptEvent> {
+    const explicitSequence = event.sequence !== undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        return this.driver.transaction(() => {
+          const transcriptEvent: NodeSessionTranscriptEvent = {
+            ...event,
+            sequence: event.sequence ?? this.nextNodeSessionTranscriptSequence(event.sessionId)
+          };
+          const duplicate = this.driver.db.prepare(
+            "SELECT id FROM node_session_transcript_events WHERE session_id = ? AND sequence = ? AND id <> ?"
+          ).get(transcriptEvent.sessionId, transcriptEvent.sequence, transcriptEvent.id) as Row | undefined;
+          if (duplicate) {
+            throw new Error(`Transcript sequence ${transcriptEvent.sequence} already exists for session ${transcriptEvent.sessionId}.`);
+          }
+          this.upsertNodeSessionTranscriptEvent(transcriptEvent);
+          return transcriptEvent;
+        });
+      } catch (error) {
+        if (explicitSequence || !isSqliteUniqueConstraintError(error)) {
+          throw error;
+        }
+      }
+    }
+    throw new Error(`Transcript sequence allocation failed for session ${event.sessionId}.`);
+  }
+
+  async listNodeSessionTranscriptEvents(filter: {
+    sessionId?: string;
+    runId?: string;
+    nodeRunId?: string;
+  } = {}): Promise<NodeSessionTranscriptEvent[]> {
+    return this.readNodeSessionTranscriptEvents(filter);
+  }
+
+  async createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding> {
+    return this.driver.transaction(() => {
+      const existing = this.getApprovalDiscussionBindingSync(binding.approvalRequestId);
+      if (existing) throw new Error(`Approval discussion binding already exists: ${binding.approvalRequestId}`);
+      this.upsertApprovalDiscussionBinding(binding);
+      return binding;
+    });
+  }
+
+  async getApprovalDiscussionBinding(approvalRequestId: string): Promise<ApprovalDiscussionBinding | undefined> {
+    return this.getApprovalDiscussionBindingSync(approvalRequestId);
+  }
+
+  async listApprovalDiscussionBindings(filter: {
+    approvalRequestIds?: string[];
+    runId?: string;
+  } = {}): Promise<ApprovalDiscussionBinding[]> {
+    return this.readApprovalDiscussionBindings(filter);
+  }
+
+  async updateApprovalDiscussionBinding(
+    input: { approvalRequestId: string } & Partial<ApprovalDiscussionBinding>
+  ): Promise<ApprovalDiscussionBinding> {
+    return this.driver.transaction(() => {
+      const current = this.getApprovalDiscussionBindingSync(input.approvalRequestId);
+      if (!current) throw new Error(`Approval discussion binding not found: ${input.approvalRequestId}`);
+      const updated: ApprovalDiscussionBinding = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      this.upsertApprovalDiscussionBinding(updated);
+      return updated;
+    });
+  }
+
+  async markApprovalDiscussionBindingUnavailable(input: {
+    approvalRequestId: string;
+    reason: string;
+    updatedAt?: string;
+  }): Promise<ApprovalDiscussionBinding> {
+    return this.updateApprovalDiscussionBinding({
+      approvalRequestId: input.approvalRequestId,
+      mode: "none",
+      canStreamReply: false,
+      canCreateCandidate: false,
+      reason: input.reason,
+      updatedAt: input.updatedAt
+    });
+  }
+
   async listPendingApprovals(): Promise<import("@hiveward/shared").PendingApprovalItem[]> {
     const companyId = this.getSelectedCompanyId();
     if (!companyId) return [];
@@ -994,7 +1214,9 @@ export class SqliteHivewardStore implements HivewardStore {
        ORDER BY ar.requested_at DESC`
     ).all(companyId) as Row[];
     const rowsWithRequests = rows.map((row) => ({ row, request: approvalRequestFromRow(row) }));
-    const approvalRepliesByRequestId = new Map<string, PendingApprovalItem["replies"]>();
+    const approvalRepliesByRequestId = new Map<string, ApprovalReply[]>();
+    const approvalBindingsByRequestId = new Map<string, ApprovalDiscussionBinding>();
+    const sessionsByRunId = new Map<string, NodeExecutionSession[]>();
     if (rowsWithRequests.length > 0) {
       const requestIds = rowsWithRequests.map(({ request }) => request.id);
       const placeholders = requestIds.map(() => "?").join(", ");
@@ -1002,26 +1224,32 @@ export class SqliteHivewardStore implements HivewardStore {
         `SELECT * FROM approval_replies WHERE approval_request_id IN (${placeholders}) ORDER BY created_at`
       ).all(...requestIds) as Row[]).map(approvalReplyFromRow);
       for (const request of rowsWithRequests.map((entry) => entry.request)) {
-        const requestReplies = pendingApprovalRepliesFromApprovalReplies(
-          replies.filter((reply) => reply.approvalRequestId === request.id)
-        );
-        if (requestReplies) approvalRepliesByRequestId.set(request.id, requestReplies);
+        approvalRepliesByRequestId.set(request.id, replies.filter((reply) => reply.approvalRequestId === request.id));
+      }
+      for (const binding of this.readApprovalDiscussionBindings({ approvalRequestIds: requestIds })) {
+        approvalBindingsByRequestId.set(binding.approvalRequestId, binding);
+      }
+      for (const runId of new Set(rowsWithRequests.flatMap(({ request }) => request.runId ? [request.runId] : []))) {
+        sessionsByRunId.set(runId, this.readNodeExecutionSessions({ runId }));
       }
     }
     return rowsWithRequests.map(({ row, request }) => {
-      const parsedOutput = parseOptionalJson(row.node_output_json);
-      const output = isRecord(parsedOutput) && parsedOutput.approvalType === "agent"
-        ? parsedOutput
-        : undefined;
-      const selectedReplyId = readString(output?.selectedReplyId);
-      const approvalReplies = approvalRepliesByRequestId.get(request.id);
+      const requestRunId = request.runId ?? requireString(row.run_id);
+      const selectedReplyId = request.selectedReplyId;
+      const approvalReplies = pendingApprovalRepliesFromApprovalReplies(approvalRepliesByRequestId.get(request.id) ?? []);
+      const canReturnForRevision = request.capabilities.returnForRevision === true;
       return {
         approvalRequestId: request.id,
         approvalThreadId: approvalThreadIdForRequest(request),
         kind: request.kind,
-        blueprintId: readString(row.blueprint_id) ?? request.runId,
-        blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? request.runId,
-        blueprintRunId: request.runId,
+        discussion: projectPendingApprovalDiscussion({
+          request,
+          binding: approvalBindingsByRequestId.get(request.id),
+          sessions: sessionsByRunId.get(requestRunId) ?? []
+        }),
+        blueprintId: readString(row.blueprint_id) ?? requestRunId,
+        blueprintName: readString(row.blueprint_name) ?? readString(row.blueprint_id) ?? requestRunId,
+        blueprintRunId: requestRunId,
         nodeRunId: request.nodeRunId ?? request.id,
         nodeId: request.requestedBy.nodeId ?? readString(row.joined_node_id) ?? request.id,
         nodeLabel: request.requestedBy.label || readString(row.joined_node_label) || request.id,
@@ -1029,14 +1257,15 @@ export class SqliteHivewardStore implements HivewardStore {
         startedAt: readString(row.started_at) ?? request.requestedAt,
         requestedAt: request.requestedAt,
         status: row.node_status === "running" ? "replying" : "pending",
-        reviewOutput: output && "reviewOutput" in output ? output.reviewOutput : request.body,
+        reviewOutput: request.body,
         ...(approvalReplies ? { replies: approvalReplies } : {}),
-        ...(selectedReplyId ? { selectedReplyId } : {}),
+        ...(selectedReplyId !== undefined ? { selectedReplyId } : {}),
         canApprove: request.capabilities.approve,
         canReject: request.capabilities.reject,
         canReply: request.capabilities.reply,
         canComplete: request.capabilities.complete,
-        canTerminate: request.capabilities.terminate
+        canTerminate: request.capabilities.terminate,
+        canReturnForRevision
       };
     });
   }
@@ -1125,13 +1354,31 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.upsertApprovalRequestSync(request);
   }
 
+  async createApprovalRequestWithDiscussionBinding(input: {
+    request: ApprovalRequest;
+    discussionBinding?: ApprovalDiscussionBinding;
+  }): Promise<ApprovalRequest> {
+    return this.driver.transaction(() => {
+      this.upsertApprovalRequestSync(input.request);
+      if (input.discussionBinding) {
+        if (input.discussionBinding.approvalRequestId !== input.request.id) {
+          throw new Error("Approval discussion binding must target the created approval request.");
+        }
+        const existing = this.getApprovalDiscussionBindingSync(input.request.id);
+        if (existing) throw new Error(`Approval discussion binding already exists: ${input.request.id}`);
+        this.upsertApprovalDiscussionBinding(input.discussionBinding);
+      }
+      return input.request;
+    });
+  }
+
   private upsertApprovalRequestSync(request: ApprovalRequest): ApprovalRequest {
     this.driver.db.prepare(
       `INSERT INTO approval_requests (
         id, run_id, round_id, node_run_id, kind, status, title, body, payload_ref,
         source_type, source_id, thread_id, revision, replaces_request_id, superseded_by_request_id,
-        capabilities_json, requested_by_json, requested_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        selected_reply_id, capabilities_json, requested_by_json, requested_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         title = excluded.title,
@@ -1141,6 +1388,7 @@ export class SqliteHivewardStore implements HivewardStore {
         revision = excluded.revision,
         replaces_request_id = excluded.replaces_request_id,
         superseded_by_request_id = excluded.superseded_by_request_id,
+        selected_reply_id = excluded.selected_reply_id,
         capabilities_json = excluded.capabilities_json,
         requested_by_json = excluded.requested_by_json,
         updated_at = excluded.updated_at`
@@ -1160,6 +1408,7 @@ export class SqliteHivewardStore implements HivewardStore {
       request.revision,
       request.replacesRequestId,
       request.supersededByRequestId,
+      request.selectedReplyId,
       stringifyJson(request.capabilities),
       stringifyJson(request.requestedBy),
       request.requestedAt,
@@ -1175,14 +1424,16 @@ export class SqliteHivewardStore implements HivewardStore {
   }
 
   private appendApprovalReplySync(reply: ApprovalReply): void {
+    const purpose = reply.purpose ?? "message";
     this.driver.db.prepare(
-      `INSERT INTO approval_replies (id, approval_request_id, thread_id, message, actor, created_at, metadata_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approval_replies (id, approval_request_id, thread_id, message, actor, purpose, created_at, metadata_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          approval_request_id = excluded.approval_request_id,
          thread_id = excluded.thread_id,
          message = excluded.message,
          actor = excluded.actor,
+         purpose = excluded.purpose,
          created_at = excluded.created_at,
          metadata_json = excluded.metadata_json`
     ).run(
@@ -1191,6 +1442,7 @@ export class SqliteHivewardStore implements HivewardStore {
       reply.threadId,
       reply.body,
       reply.actor,
+      purpose,
       reply.createdAt,
       reply.metadata ? stringifyJson(reply.metadata) : null
     );
@@ -1267,12 +1519,14 @@ export class SqliteHivewardStore implements HivewardStore {
          SET status = ?,
              capabilities_json = ?,
              superseded_by_request_id = ?,
+             selected_reply_id = ?,
              updated_at = ?
          WHERE id = ? AND status = 'pending'`
       ).run(
         input.nextRequest.status,
         stringifyJson(input.nextRequest.capabilities),
         input.nextRequest.supersededByRequestId,
+        input.nextRequest.selectedReplyId,
         input.nextRequest.updatedAt,
         input.approvalRequestId
       );
@@ -1281,7 +1535,17 @@ export class SqliteHivewardStore implements HivewardStore {
       }
       this.upsertApprovalThreadSync(approvalThreadFromRequest(input.nextRequest));
       this.appendApprovalDecisionSync(input.decision);
-      if (input.nextApprovalRequest) this.upsertApprovalRequestSync(input.nextApprovalRequest);
+      if (input.nextApprovalRequest) {
+        this.upsertApprovalRequestSync(input.nextApprovalRequest);
+        if (input.nextApprovalDiscussionBinding) {
+          if (input.nextApprovalDiscussionBinding.approvalRequestId !== input.nextApprovalRequest.id) {
+            throw new Error("Approval discussion binding must target the next approval request.");
+          }
+          const existingBinding = this.getApprovalDiscussionBindingSync(input.nextApprovalRequest.id);
+          if (existingBinding) throw new Error(`Approval discussion binding already exists: ${input.nextApprovalRequest.id}`);
+          this.upsertApprovalDiscussionBinding(input.nextApprovalDiscussionBinding);
+        }
+      }
       if (input.releaseReport) this.upsertReleaseReportSync(input.releaseReport);
       if (input.timelineItem) this.appendRunTimelineItemSync(input.timelineItem);
       return {
@@ -2087,6 +2351,11 @@ export class SqliteHivewardStore implements HivewardStore {
       inboxItems,
       iterationSessions: (this.driver.db.prepare("SELECT * FROM iteration_sessions").all() as Row[]).map(iterationSessionFromRow),
       iterationRounds: (this.driver.db.prepare("SELECT * FROM iteration_rounds").all() as Row[]).map(iterationRoundFromRow),
+      runCommands: this.readRunCommands(),
+      runCommandSteps: this.readRunCommandSteps(),
+      nodeExecutionSessions: this.readNodeExecutionSessions(),
+      nodeSessionTranscriptEvents: this.readNodeSessionTranscriptEvents(),
+      approvalDiscussionBindings: this.readApprovalDiscussionBindings(),
       approvalThreads: (this.driver.db.prepare("SELECT * FROM approval_threads").all() as Row[]).map(approvalThreadFromRow),
       approvalReplies: (this.driver.db.prepare("SELECT * FROM approval_replies").all() as Row[]).map(approvalReplyFromRow),
       approvalRequests: (this.driver.db.prepare("SELECT * FROM approval_requests").all() as Row[]).map(approvalRequestFromRow),
@@ -2469,6 +2738,11 @@ export class SqliteHivewardStore implements HivewardStore {
       blueprintSnapshot,
       nodeRuns,
       events: this.readEvents(run.id),
+      runCommands: this.readRunCommands({ runId: run.id }),
+      runCommandSteps: this.readRunCommandSteps({ runId: run.id }),
+      nodeExecutionSessions: this.readNodeExecutionSessions({ runId: run.id }),
+      nodeSessionTranscriptEvents: this.readNodeSessionTranscriptEvents({ runId: run.id }),
+      approvalDiscussionBindings: this.readApprovalDiscussionBindings({ runId: run.id }),
       finalResult: resolveFinalRunResult(blueprintSnapshot, nodeRuns, run.status)
     });
   }
@@ -2553,12 +2827,18 @@ export class SqliteHivewardStore implements HivewardStore {
         event.createdAt
       );
     }
+    for (const command of sanitized.runCommands ?? []) this.upsertRunCommand(command);
+    for (const step of sanitized.runCommandSteps ?? []) this.upsertRunCommandStep(step);
+    for (const session of sanitized.nodeExecutionSessions ?? []) this.upsertNodeExecutionSession(session);
+    for (const event of sanitized.nodeSessionTranscriptEvents ?? []) this.upsertNodeSessionTranscriptEvent(event);
   }
 
   private runViewFromRunRow(row: Row): BlueprintRunView {
     const archive = this.requireRunArchive(requireString(row.id));
     const runId = archive.run.id;
     const approvalRequests = (this.driver.db.prepare("SELECT * FROM approval_requests WHERE run_id = ?").all(runId) as Row[]).map(approvalRequestFromRow);
+    const approvalDiscussionBindings = archive.approvalDiscussionBindings ?? [];
+    const nodeExecutionSessions = archive.nodeExecutionSessions ?? [];
     const approvalIds = new Set(approvalRequests.map((request) => request.id));
     const approvalThreads = (this.driver.db.prepare("SELECT * FROM approval_threads WHERE run_id = ? ORDER BY updated_at DESC").all(runId) as Row[])
       .map(approvalThreadFromRow);
@@ -2570,6 +2850,18 @@ export class SqliteHivewardStore implements HivewardStore {
       finalResult: archive.finalResult,
       iterationSessions: (this.driver.db.prepare("SELECT * FROM iteration_sessions WHERE run_id = ?").all(runId) as Row[]).map(iterationSessionFromRow),
       iterationRounds: (this.driver.db.prepare("SELECT * FROM iteration_rounds WHERE run_id = ?").all(runId) as Row[]).map(iterationRoundFromRow),
+      runCommands: archive.runCommands,
+      runCommandSteps: archive.runCommandSteps,
+      nodeExecutionSessions,
+      nodeSessionTranscriptEvents: archive.nodeSessionTranscriptEvents,
+      approvalDiscussionBindings,
+      approvalRequestDiscussions: this.projectApprovalRequestDiscussions({
+        requests: approvalRequests,
+        bindings: approvalDiscussionBindings,
+        run: archive.run,
+        nodeRuns: archive.nodeRuns,
+        sessions: nodeExecutionSessions
+      }),
       approvalRequests,
       approvalDecisions: (this.driver.db.prepare("SELECT * FROM approval_decisions ORDER BY created_at").all() as Row[])
         .map(approvalDecisionFromRow)
@@ -2586,6 +2878,25 @@ export class SqliteHivewardStore implements HivewardStore {
       runTimeline: (this.driver.db.prepare("SELECT * FROM run_timeline_items WHERE run_id = ? ORDER BY sequence").all(runId) as Row[]).map(runTimelineItemFromRow),
       managerMail: (this.driver.db.prepare("SELECT * FROM manager_mail WHERE related_run_id = ?").all(runId) as Row[]).map(managerMailFromRow)
     };
+  }
+
+  private projectApprovalRequestDiscussions(input: {
+    requests: ApprovalRequest[];
+    bindings: ApprovalDiscussionBinding[];
+    run: BlueprintRun;
+    nodeRuns: BlueprintNodeRun[];
+    sessions: NodeExecutionSession[];
+  }): ApprovalRequestDiscussionProjection[] {
+    return input.requests.map((request) => ({
+      approvalRequestId: request.id,
+      discussion: projectPendingApprovalDiscussion({
+        request,
+        binding: input.bindings.find((binding) => binding.approvalRequestId === request.id),
+        run: input.run,
+        nodeRuns: input.nodeRuns,
+        sessions: input.sessions
+      })
+    }));
   }
 
   private readNodeRuns(runId: string): BlueprintNodeRun[] {
@@ -2607,12 +2918,415 @@ export class SqliteHivewardStore implements HivewardStore {
       .map(eventFromRow);
   }
 
+  private getRunCommandByIdSync(id: string): RunCommand | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM run_commands WHERE id = ?").get(id) as Row | undefined;
+    return row ? runCommandFromRow(row) : undefined;
+  }
+
+  private getRunCommandByKeySync(commandKey: string): RunCommand | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM run_commands WHERE command_key = ?").get(commandKey) as Row | undefined;
+    return row ? runCommandFromRow(row) : undefined;
+  }
+
+  private readRunCommands(filter: {
+    runId?: string;
+    roundId?: string;
+    kind?: RunCommandKind;
+    statuses?: RunCommandStatus[];
+  } = {}): RunCommand[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runId) {
+      clauses.push("run_id = ?");
+      values.push(filter.runId);
+    }
+    if (filter.roundId) {
+      clauses.push("round_id = ?");
+      values.push(filter.roundId);
+    }
+    if (filter.kind) {
+      clauses.push("kind = ?");
+      values.push(filter.kind);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      values.push(...filter.statuses);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM run_commands ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(runCommandFromRow);
+  }
+
+  private upsertRunCommand(command: RunCommand): void {
+    this.driver.db.prepare(
+      `INSERT INTO run_commands (
+        id, command_key, blueprint_id, run_id, round_id, kind, status, current_revision,
+        current_step, started_at, ended_at, error, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        command_key = excluded.command_key,
+        blueprint_id = excluded.blueprint_id,
+        run_id = excluded.run_id,
+        round_id = excluded.round_id,
+        kind = excluded.kind,
+        status = excluded.status,
+        current_revision = excluded.current_revision,
+        current_step = excluded.current_step,
+        started_at = excluded.started_at,
+        ended_at = excluded.ended_at,
+        error = excluded.error,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at`
+    ).run(
+      command.id,
+      command.commandKey,
+      command.blueprintId,
+      command.runId,
+      command.roundId,
+      command.kind,
+      command.status,
+      command.currentRevision,
+      command.currentStep,
+      command.startedAt,
+      command.endedAt,
+      command.error,
+      optionalJson(command.metadata),
+      command.createdAt,
+      command.updatedAt
+    );
+  }
+
+  private getRunCommandStepByIdSync(id: string): RunCommandStep | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM run_command_steps WHERE id = ?").get(id) as Row | undefined;
+    return row ? runCommandStepFromRow(row) : undefined;
+  }
+
+  private getRunCommandStepByKeySync(stepKey: string): RunCommandStep | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM run_command_steps WHERE step_key = ?").get(stepKey) as Row | undefined;
+    return row ? runCommandStepFromRow(row) : undefined;
+  }
+
+  private readRunCommandSteps(filter: {
+    commandId?: string;
+    runId?: string;
+    nodeRunId?: string;
+    statuses?: RunCommandStepStatus[];
+  } = {}): RunCommandStep[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.commandId) {
+      clauses.push("command_id = ?");
+      values.push(filter.commandId);
+    }
+    if (filter.runId) {
+      clauses.push("run_id = ?");
+      values.push(filter.runId);
+    }
+    if (filter.nodeRunId) {
+      clauses.push("node_run_id = ?");
+      values.push(filter.nodeRunId);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      values.push(...filter.statuses);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM run_command_steps ${where} ORDER BY created_at, id`).all(...values) as Row[])
+      .map(runCommandStepFromRow);
+  }
+
+  private upsertRunCommandStep(step: RunCommandStep): void {
+    this.driver.db.prepare(
+      `INSERT INTO run_command_steps (
+        id, command_id, step_key, run_id, round_id, revision, mode, node_id, node_run_id,
+        status, started_at, ended_at, error, runtime_ref_json, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        command_id = excluded.command_id,
+        step_key = excluded.step_key,
+        run_id = excluded.run_id,
+        round_id = excluded.round_id,
+        revision = excluded.revision,
+        mode = excluded.mode,
+        node_id = excluded.node_id,
+        node_run_id = excluded.node_run_id,
+        status = excluded.status,
+        started_at = excluded.started_at,
+        ended_at = excluded.ended_at,
+        error = excluded.error,
+        runtime_ref_json = excluded.runtime_ref_json,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at`
+    ).run(
+      step.id,
+      step.commandId,
+      step.stepKey,
+      step.runId,
+      step.roundId,
+      step.revision,
+      step.mode,
+      step.nodeId,
+      step.nodeRunId,
+      step.status,
+      step.startedAt,
+      step.endedAt,
+      step.error,
+      optionalJson(step.runtimeRef),
+      optionalJson(step.metadata),
+      step.createdAt,
+      step.updatedAt
+    );
+  }
+
+  private getNodeExecutionSessionByIdSync(id: string): NodeExecutionSession | undefined {
+    const row = this.driver.db.prepare("SELECT * FROM node_execution_sessions WHERE id = ?").get(id) as Row | undefined;
+    return row ? nodeExecutionSessionFromRow(row) : undefined;
+  }
+
+  private readNodeExecutionSessions(filter: {
+    runId?: string;
+    nodeRunId?: string;
+    nodeId?: string;
+    statuses?: NodeExecutionSessionStatus[];
+  } = {}): NodeExecutionSession[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.runId) {
+      clauses.push("run_id = ?");
+      values.push(filter.runId);
+    }
+    if (filter.nodeRunId) {
+      clauses.push("node_run_id = ?");
+      values.push(filter.nodeRunId);
+    }
+    if (filter.nodeId) {
+      clauses.push("node_id = ?");
+      values.push(filter.nodeId);
+    }
+    if (filter.statuses?.length) {
+      clauses.push(`status IN (${filter.statuses.map(() => "?").join(", ")})`);
+      values.push(...filter.statuses);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM node_execution_sessions ${where} ORDER BY created_at, updated_at, id`).all(...values) as Row[])
+      .map(nodeExecutionSessionFromRow);
+  }
+
+  private upsertNodeExecutionSession(session: NodeExecutionSession): void {
+    this.driver.db.prepare(
+      `INSERT INTO node_execution_sessions (
+        id, run_id, node_run_id, node_id, agent_seat_id, harness_id, native_session_id,
+        runtime_ref_json, policy, status, status_reason, fallback_of_session_id,
+        resumed_from_session_id, created_at, updated_at, last_used_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        run_id = excluded.run_id,
+        node_run_id = excluded.node_run_id,
+        node_id = excluded.node_id,
+        agent_seat_id = excluded.agent_seat_id,
+        harness_id = excluded.harness_id,
+        native_session_id = excluded.native_session_id,
+        runtime_ref_json = excluded.runtime_ref_json,
+        policy = excluded.policy,
+        status = excluded.status,
+        status_reason = excluded.status_reason,
+        fallback_of_session_id = excluded.fallback_of_session_id,
+        resumed_from_session_id = excluded.resumed_from_session_id,
+        updated_at = excluded.updated_at,
+        last_used_at = excluded.last_used_at`
+    ).run(
+      session.id,
+      session.runId,
+      session.nodeRunId,
+      session.nodeId,
+      session.agentSeatId,
+      session.harnessId,
+      session.nativeSessionId,
+      optionalJson(session.runtimeRef),
+      session.policy,
+      session.status,
+      session.statusReason,
+      session.fallbackOfSessionId,
+      session.resumedFromSessionId,
+      session.createdAt,
+      session.updatedAt,
+      session.lastUsedAt
+    );
+  }
+
+  private readNodeSessionTranscriptEvents(filter: {
+    sessionId?: string;
+    runId?: string;
+    nodeRunId?: string;
+  } = {}): NodeSessionTranscriptEvent[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.sessionId) {
+      clauses.push("session_id = ?");
+      values.push(filter.sessionId);
+    }
+    if (filter.runId) {
+      clauses.push("run_id = ?");
+      values.push(filter.runId);
+    }
+    if (filter.nodeRunId) {
+      clauses.push("node_run_id = ?");
+      values.push(filter.nodeRunId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM node_session_transcript_events ${where} ORDER BY session_id, sequence, created_at, id`).all(...values) as Row[])
+      .map(nodeSessionTranscriptEventFromRow);
+  }
+
+  private upsertNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): void {
+    this.driver.db.prepare(
+      `INSERT INTO node_session_transcript_events (
+        id, session_id, sequence, run_id, node_run_id, role, kind, content,
+        runtime_ref_json, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        session_id = excluded.session_id,
+        sequence = excluded.sequence,
+        run_id = excluded.run_id,
+        node_run_id = excluded.node_run_id,
+        role = excluded.role,
+        kind = excluded.kind,
+        content = excluded.content,
+        runtime_ref_json = excluded.runtime_ref_json,
+        metadata_json = excluded.metadata_json,
+        created_at = excluded.created_at`
+    ).run(
+      event.id,
+      event.sessionId,
+      event.sequence,
+      event.runId,
+      event.nodeRunId,
+      event.role,
+      event.kind,
+      event.content,
+      optionalJson(event.runtimeRef),
+      optionalJson(event.metadata),
+      event.createdAt
+    );
+  }
+
+  private getApprovalDiscussionBindingSync(approvalRequestId: string): ApprovalDiscussionBinding | undefined {
+    const row = this.driver.db.prepare(
+      "SELECT * FROM approval_discussion_bindings WHERE approval_request_id = ?"
+    ).get(approvalRequestId) as Row | undefined;
+    return row ? approvalDiscussionBindingFromRow(row) : undefined;
+  }
+
+  private readApprovalDiscussionBindings(filter: {
+    approvalRequestIds?: string[];
+    runId?: string;
+  } = {}): ApprovalDiscussionBinding[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    if (filter.approvalRequestIds?.length) {
+      clauses.push(`approval_request_id IN (${filter.approvalRequestIds.map(() => "?").join(", ")})`);
+      values.push(...filter.approvalRequestIds);
+    }
+    if (filter.runId) {
+      clauses.push("approval_request_id IN (SELECT id FROM approval_requests WHERE run_id = ?)");
+      values.push(filter.runId);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (this.driver.db.prepare(`SELECT * FROM approval_discussion_bindings ${where} ORDER BY created_at, approval_request_id`).all(...values) as Row[])
+      .map(approvalDiscussionBindingFromRow);
+  }
+
+  private upsertApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): void {
+    this.driver.db.prepare(
+      `INSERT INTO approval_discussion_bindings (
+        approval_request_id, thread_id, mode, route, executor_actor, executor_kind,
+        executor_node_id, executor_node_run_id, executor_session_id, runtime_id,
+        can_stream_reply, can_create_candidate, reason, resolver_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(approval_request_id) DO UPDATE SET
+        thread_id = excluded.thread_id,
+        mode = excluded.mode,
+        route = excluded.route,
+        executor_actor = excluded.executor_actor,
+        executor_kind = excluded.executor_kind,
+        executor_node_id = excluded.executor_node_id,
+        executor_node_run_id = excluded.executor_node_run_id,
+        executor_session_id = excluded.executor_session_id,
+        runtime_id = excluded.runtime_id,
+        can_stream_reply = excluded.can_stream_reply,
+        can_create_candidate = excluded.can_create_candidate,
+        reason = excluded.reason,
+        resolver_version = excluded.resolver_version,
+        updated_at = excluded.updated_at`
+    ).run(
+      binding.approvalRequestId,
+      binding.threadId,
+      binding.mode,
+      binding.route,
+      binding.executorActor,
+      binding.executorKind,
+      binding.executorNodeId,
+      binding.executorNodeRunId,
+      binding.executorSessionId,
+      binding.runtimeId,
+      binding.canStreamReply ? 1 : 0,
+      binding.canCreateCandidate ? 1 : 0,
+      binding.reason,
+      binding.resolverVersion,
+      binding.createdAt,
+      binding.updatedAt
+    );
+  }
+
+  private backfillApprovalDiscussionBindings(): void {
+    const rows = this.driver.db.prepare(
+      `SELECT approval_requests.id, approval_requests.thread_id, approval_requests.kind,
+        approval_requests.requested_at, approval_requests.updated_at
+       FROM approval_requests
+       LEFT JOIN approval_discussion_bindings ON approval_discussion_bindings.approval_request_id = approval_requests.id
+       WHERE approval_requests.status = 'pending'
+        AND approval_discussion_bindings.approval_request_id IS NULL`
+    ).all() as Row[];
+    if (!rows.length) return;
+
+    const insert = this.driver.db.prepare(
+      `INSERT INTO approval_discussion_bindings (
+        approval_request_id, thread_id, mode, route, can_stream_reply, can_create_candidate,
+        reason, resolver_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, ?)`
+    );
+    const now = new Date().toISOString();
+    this.driver.transaction(() => {
+      for (const row of rows) {
+        const kind = requireString(row.kind) as ApprovalRequest["kind"];
+        const timestamp = readString(row.updated_at) ?? readString(row.requested_at) ?? now;
+        const messageOnly = approvalKindBackfillsMessageOnly(kind);
+        insert.run(
+          requireString(row.id),
+          readString(row.thread_id),
+          messageOnly ? "message_only" : "none",
+          messageOnly ? "message_only" : "none",
+          messageOnly ? "message_only_approval_kind" : "historical_discussion_binding_unavailable",
+          timestamp,
+          timestamp
+        );
+      }
+    });
+  }
+
   private nextEventSequence(runId: string): number {
     return this.claimRunSequence(runId, "event");
   }
 
   private nextTimelineSequence(runId: string): number {
     return this.claimRunSequence(runId, "timeline");
+  }
+
+  private nextNodeSessionTranscriptSequence(sessionId: string): number {
+    const row = this.driver.db.prepare(
+      "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM node_session_transcript_events WHERE session_id = ?"
+    ).get(sessionId) as Row;
+    return readNumber(row.sequence, 1);
   }
 
   private claimRunSequence(runId: string, scope: "event" | "timeline"): number {
@@ -2918,6 +3632,106 @@ function eventFromRow(row: Row): BlueprintNodeEvent {
   };
 }
 
+function runCommandFromRow(row: Row): RunCommand {
+  return {
+    id: requireString(row.id),
+    commandKey: requireString(row.command_key),
+    blueprintId: requireString(row.blueprint_id),
+    runId: requireString(row.run_id),
+    roundId: readString(row.round_id),
+    kind: requireString(row.kind) as RunCommand["kind"],
+    status: requireString(row.status) as RunCommand["status"],
+    currentRevision: readNumber(row.current_revision, 0),
+    currentStep: readString(row.current_step) as RunCommand["currentStep"],
+    startedAt: readString(row.started_at),
+    endedAt: readString(row.ended_at),
+    error: readString(row.error),
+    metadata: parseOptionalJson(row.metadata_json) as RunCommand["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function runCommandStepFromRow(row: Row): RunCommandStep {
+  return {
+    id: requireString(row.id),
+    commandId: requireString(row.command_id),
+    stepKey: requireString(row.step_key),
+    runId: requireString(row.run_id),
+    roundId: readString(row.round_id),
+    revision: readNumber(row.revision, 0),
+    mode: requireString(row.mode) as RunCommandStep["mode"],
+    nodeId: requireString(row.node_id),
+    nodeRunId: readString(row.node_run_id),
+    status: requireString(row.status) as RunCommandStep["status"],
+    startedAt: readString(row.started_at),
+    endedAt: readString(row.ended_at),
+    error: readString(row.error),
+    runtimeRef: parseOptionalJson(row.runtime_ref_json) as RunCommandStep["runtimeRef"],
+    metadata: parseOptionalJson(row.metadata_json) as RunCommandStep["metadata"],
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
+function nodeExecutionSessionFromRow(row: Row): NodeExecutionSession {
+  return {
+    id: requireString(row.id),
+    runId: requireString(row.run_id),
+    nodeRunId: requireString(row.node_run_id),
+    nodeId: requireString(row.node_id),
+    agentSeatId: readString(row.agent_seat_id),
+    harnessId: requireString(row.harness_id) as NodeExecutionSession["harnessId"],
+    nativeSessionId: readString(row.native_session_id),
+    runtimeRef: parseOptionalJson(row.runtime_ref_json) as NodeExecutionSession["runtimeRef"],
+    policy: requireString(row.policy) as NodeExecutionSession["policy"],
+    status: requireString(row.status) as NodeExecutionSession["status"],
+    statusReason: readString(row.status_reason),
+    fallbackOfSessionId: readString(row.fallback_of_session_id),
+    resumedFromSessionId: readString(row.resumed_from_session_id),
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at),
+    lastUsedAt: readString(row.last_used_at)
+  };
+}
+
+function nodeSessionTranscriptEventFromRow(row: Row): NodeSessionTranscriptEvent {
+  return {
+    id: requireString(row.id),
+    sessionId: requireString(row.session_id),
+    sequence: readNumber(row.sequence, 0),
+    runId: requireString(row.run_id),
+    nodeRunId: requireString(row.node_run_id),
+    role: requireString(row.role) as NodeSessionTranscriptEvent["role"],
+    kind: requireString(row.kind) as NodeSessionTranscriptEvent["kind"],
+    content: readString(row.content),
+    runtimeRef: parseOptionalJson(row.runtime_ref_json) as NodeSessionTranscriptEvent["runtimeRef"],
+    metadata: parseOptionalJson(row.metadata_json) as NodeSessionTranscriptEvent["metadata"],
+    createdAt: requireString(row.created_at)
+  };
+}
+
+function approvalDiscussionBindingFromRow(row: Row): ApprovalDiscussionBinding {
+  return {
+    approvalRequestId: requireString(row.approval_request_id),
+    threadId: readString(row.thread_id),
+    mode: requireString(row.mode) as ApprovalDiscussionBinding["mode"],
+    route: requireString(row.route) as ApprovalDiscussionBinding["route"],
+    executorActor: readString(row.executor_actor) as ApprovalDiscussionBinding["executorActor"],
+    executorKind: readString(row.executor_kind) as ApprovalDiscussionBinding["executorKind"],
+    executorNodeId: readString(row.executor_node_id),
+    executorNodeRunId: readString(row.executor_node_run_id),
+    executorSessionId: readString(row.executor_session_id),
+    runtimeId: readAgentRuntimeId(row.runtime_id),
+    canStreamReply: Boolean(row.can_stream_reply),
+    canCreateCandidate: Boolean(row.can_create_candidate),
+    reason: readString(row.reason),
+    resolverVersion: readNumber(row.resolver_version, 1),
+    createdAt: requireString(row.created_at),
+    updatedAt: requireString(row.updated_at)
+  };
+}
+
 function approvalRequestFromRow(row: Row): ApprovalRequest {
   const sourceType = readString(row.source_type) as NonNullable<ApprovalRequest["sourceRef"]>["type"] | undefined;
   const sourceId = readString(row.source_id);
@@ -2936,6 +3750,7 @@ function approvalRequestFromRow(row: Row): ApprovalRequest {
     revision: readNumber(row.revision, 1),
     replacesRequestId: readString(row.replaces_request_id),
     supersededByRequestId: readString(row.superseded_by_request_id),
+    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     capabilities: readJson(row.capabilities_json),
     requestedBy: readJson(row.requested_by_json),
     requestedAt: requireString(row.requested_at),
@@ -2950,7 +3765,7 @@ function approvalDecisionFromRow(row: Row): ApprovalDecision {
     action: requireString(row.action) as ApprovalDecision["action"],
     actor: requireString(row.actor) as ApprovalDecision["actor"],
     comment: readString(row.comment),
-    selectedReplyId: readString(row.selected_reply_id),
+    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     resultingStatus: requireString(row.resulting_status) as ApprovalDecision["resultingStatus"],
     createdAt: requireString(row.created_at)
   };
@@ -2984,23 +3799,21 @@ function approvalReplyFromRow(row: Row): ApprovalReply {
     threadId: requireString(row.thread_id),
     approvalRequestId: readString(row.approval_request_id),
     actor: requireString(row.actor) as ApprovalReply["actor"],
+    purpose: (readString(row.purpose) as ApprovalReply["purpose"]) ?? "message",
     body: requireString(row.message),
     createdAt: requireString(row.created_at),
     ...(isRecord(metadata) ? { metadata } : {})
   };
 }
 
-function pendingApprovalRepliesFromApprovalReplies(
-  replies: ApprovalReply[],
-  selectedReplyId?: string
-): PendingApprovalItem["replies"] {
+function pendingApprovalRepliesFromApprovalReplies(replies: ApprovalReply[]): PendingApprovalItem["replies"] {
   if (!replies.length) return undefined;
   return replies.map((reply) => ({
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
     body: reply.body,
-    createdAt: reply.createdAt,
-    ...(selectedReplyId === reply.id ? { selected: true } : {})
+    createdAt: reply.createdAt
   }));
 }
 
@@ -3012,6 +3825,7 @@ function approvalReplyFromDecision(decision: ApprovalDecision, request: Approval
     threadId: approvalThreadIdForRequest(request),
     approvalRequestId: request.id,
     actor: decision.actor,
+    purpose: "message",
     body,
     createdAt: decision.createdAt,
     metadata: {
@@ -3496,6 +4310,11 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
+function readNullableSelectedReplyId(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return readString(value);
+}
+
 function readOptionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -3532,6 +4351,13 @@ function normalizeInboxItemType(value: unknown): InboxItemType {
   return value === "leader_delegation" || value === "blueprint_proposal" || value === "run_request" || value === "report" || value === "company_config"
     ? value
     : "report";
+}
+
+function approvalKindBackfillsMessageOnly(kind: ApprovalRequest["kind"]): boolean {
+  return kind === "blueprint_proposal" ||
+    kind === "leader_delegation" ||
+    kind === "run_request" ||
+    kind === "company_config";
 }
 
 function normalizeHarnessId(value: unknown, fallback: HarnessId = "openclaw"): HarnessId {
@@ -3574,6 +4400,13 @@ function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
   return value === "openclaw" || value === "codex" || value === "claude" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
     ? value
     : undefined;
+}
+
+function isSqliteUniqueConstraintError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  const code = readString(error.code);
+  const message = readString(error.message) ?? "";
+  return code === "SQLITE_CONSTRAINT_UNIQUE" || message.includes("UNIQUE constraint failed");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

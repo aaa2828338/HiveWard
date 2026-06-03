@@ -1,6 +1,6 @@
 {
   "name": "hiveward",
-  "version": "0.5.16",
+  "version": "0.6.21",
   "description": "让101个Agent合作为你打工：调度 OpenClaw、Claude Code、Codex、Google CLI、Cursor CLI、OpenCode、Hermes 的 Agent Company 工作台。",
   "private": true,
   "license": "Apache-2.0",
@@ -21,6 +21,9 @@
     "check": "npm run check:env && npm run check:boundaries && npm run typecheck --workspaces --if-present",
     "check:env": "node scripts/check-env.mjs",
     "check:boundaries": "node scripts/check-boundaries.mjs",
+    "doctor:sqlite-lock": "node scripts/doctor-sqlite-lock.mjs",
+    "migrate:sqlite": "node scripts/migrate-json-store-to-sqlite.mjs",
+    "verify:sqlite": "node scripts/verify-sqlite-store.mjs",
     "test": "vitest run"
   },
   "devDependencies": {

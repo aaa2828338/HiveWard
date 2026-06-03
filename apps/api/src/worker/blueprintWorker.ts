@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import type { RuntimeAdapter } from "@hiveward/adapter";
 import {
+  approvalThreadIdForRequest,
   isAgentBlueprintNode,
   resolveAgentRuntimeSource,
   isManagerSlotInnerInHandle,
@@ -14,6 +16,7 @@ import {
   type AgentRuntimeId,
   type AgentTaskResult,
   type ConditionNodeConfig,
+  type InboxDiscussionMode,
   type LoopNodeConfig,
   type IterationRound,
   type IterationSession,
@@ -21,9 +24,24 @@ import {
   type ManagerSlotNodeConfig,
   type RuntimeObjectRef,
   type StartAgentTaskInput,
+  type StartedAgentTaskResult,
   type Artifact,
+  type ApprovalDiscussionBinding,
+  type ApprovalDiscussionRoute,
+  type ApprovalReply,
   type ApprovalRequest,
   type ReleaseReport,
+  type NodeExecutionSession,
+  type NodeExecutionSessionPolicy,
+  type NodeExecutionSessionStatus,
+  type NodeSessionTranscriptEvent,
+  type NodeSessionTranscriptEventKind,
+  type NodeSessionTranscriptEventRole,
+  type RunCommand,
+  type RunCommandKind,
+  type RunCommandStatus,
+  type RunCommandStep,
+  type RunCommandStepMode,
   type SummaryNodeConfig,
   type BlueprintDefinition,
   type BlueprintEdge,
@@ -33,7 +51,13 @@ import {
   type BlueprintRun
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
-import { ApprovalService, type ApprovalActionResult, type LifecycleApprovalOutcome } from "../services/lifecycleApprovalService";
+import {
+  ApprovalService,
+  type ApprovalActionResult,
+  type ApprovalDiscussionBindingDraft,
+  type ApprovalRevisionDraft,
+  type LifecycleApprovalOutcome
+} from "../services/lifecycleApprovalService";
 import { ArtifactService } from "../services/artifactService";
 import { IterationService } from "../services/iterationLifecycleService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -43,6 +67,7 @@ import { agentWorkspaceRefForNode, type AgentWorkspaceRef } from "../services/ag
 import { ManagerContextService, type ManagerInjectedContext, type ManagerSnapshotDraft } from "../services/managerContextService";
 import { RoundPreflightService, type RoundPreflightExecutionResult, type RoundPreflightMode } from "../services/roundPreflightService";
 import { SelfIterationOrchestrator } from "../services/selfIterationOrchestrator";
+import { resolveApprovalDiscussion, type ApprovalDiscussionResolution } from "../services/approvalDiscussionResolver";
 
 const executableTypes = new Set([
   "agent",
@@ -59,7 +84,12 @@ const selfIterationPreparationSlotCount = 2;
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
 const managerReceiptPromptBudget = 6000;
-const reviewOutputSelectionId = "reviewOutput";
+const activeRunCommandStatuses: RunCommandStatus[] = ["queued", "running", "waiting_approval"];
+const activeRunCommandStepStatuses: RunCommandStep["status"][] = ["queued", "running", "waiting_approval"];
+const regularRunCommandKind: RunCommandKind = "regular_run";
+const prepareRoundCommandKind: RunCommandKind = "self_iteration_prepare_round";
+const executeRoundCommandKind: RunCommandKind = "self_iteration_execute_round";
+const releaseReportCommandKind: RunCommandKind = "self_iteration_release_report";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Route work inside the platform-provided Manager round by reading upstream input, previousResults, and delegationRoster.",
@@ -99,22 +129,22 @@ const flexibleJsonObjectSchema: Record<string, unknown> = {
 };
 const agentArtifactPayloadSchema: Record<string, unknown> = {
   type: "array",
+  description: "Optional address index for deliverables produced by this step. One agent may return many artifact items; prefer file paths or URLs so HiveWard can present them as links without expanding artifact bodies in reports.",
   items: {
     type: "object",
-    description: "Top-level published artifact declaration. Use only for a new artifact produced by this exact step. Review, QA, acceptance, validation, summary, or routing steps must not publish upstream artifacts here. Use exactly one source field: path for generated files, content/body for small inline artifacts, or url for links.",
-    required: ["kind", "title"],
+    description: "Top-level artifact address declaration. Prefer kind, title, path, or url when available; content/body are compatibility fallbacks for small inline payloads only, not the normal deliverable channel.",
     properties: {
       id: { type: "string" },
       slot: { type: "string" },
       title: { type: "string" },
-      kind: { type: "string", enum: ["html", "markdown", "json", "file", "link"], description: "Artifact type. For generated HTML files, use kind html with path pointing to the file." },
+      kind: { type: "string", description: "Artifact type hint, such as html, markdown, json, file, or link." },
       format: { type: "string" },
       previewPolicy: { type: "string", enum: ["none", "source", "sandboxed_iframe"] },
       trusted: { type: "boolean" },
-      content: { type: "string", description: "Inline artifact content. Use only when there is no path or url. If you wrote a file, do not include content." },
-      body: { type: "string", description: "Alias for content. Inline artifact content only. If you wrote a file, do not include body." },
-      path: { type: "string", description: "Path to an actual generated file produced by this exact step and intended to publish, including generated HTML files. Do not use paths from upstream, previousResults, reviewed objects, or another agent's workspace. If path is present, do not include content or body for the same artifact." },
-      url: { type: "string", description: "Only for kind link. Do not use url for html, markdown, json, or file artifacts." }
+      content: { type: "string", description: "Compatibility fallback for small inline payloads only. Do not put full deliverables here; write a file and return path or url instead." },
+      body: { type: "string", description: "Alias for content, with the same compatibility-only guidance." },
+      path: { type: "string", description: "Path to a generated file when available." },
+      url: { type: "string", description: "External or local URL when available." }
     }
   }
 };
@@ -173,28 +203,16 @@ const agentOutputContractLines = [
   "- All visible headings, labels, and prose inside humanReportMd must use that language. For Chinese reports, do not use English headings such as Decision, Summary, Validation, or Delivery location.",
   "- humanReportMd must be literal human-readable Markdown, not a JSON-encoded string, not an escaped string, and not a dump of the output envelope. Do not include visible escape sequences such as \\n, \\t, or JSON braces unless the task itself is to show JSON.",
   "- humanReportMd must start with a visible summary section. For Chinese reports, use \"## \u6458\u8981\"; for English reports, use \"## Summary\". Write the summary yourself in plain human language, target 100-150 Chinese characters or similarly brief English, and do not describe internal program phases, raw workflow status, or generic process labels.",
-  "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
+  "- humanReportMd must include a visible delivery-location section immediately after the summary. For Chinese reports, use \"## \u4ea4\u4ed8\u4f4d\u7f6e\"; for English reports, use \"## Delivery location\". If this step created a deliverable, write a real file path, browser URL, or exact artifacts[] reference that a reviewer can use to open it. Do not paste the deliverable body in this section. If there is no deliverable, write only \"\u65e0\" for Chinese or \"None\" for English.",
   "- Include result for the task-specific result or artifact-producing content. If the task asked for strict JSON, put that strict JSON inside result while keeping humanReportMd readable.",
   "- When the task schema allows it, include concise hard fields in result such as status, summary, artifacts, and handoff. Do not embed large file bodies there.",
   "- If another agent, manager, or downstream node may continue from your work, include handoffJson with structured facts, decisions, artifact references, assumptions, risks, and suggested next steps.",
-  "- If you created a concrete deliverable file or preview, declare it in top-level artifacts[]. Do not hide deliverables inside humanReportMd, result, result.artifacts, or handoffJson.",
-  "- Only top-level artifacts[] creates openable artifact records. The platform will not infer artifacts from humanReportMd, result, titles, timeline text, or delivery prose.",
-  "- A top-level artifacts[] item is a claim that this exact step produced a new publishable artifact. Do not put reviewed, consumed, inspected, or upstream files there.",
-  "- result.artifacts and handoffJson.artifacts are only handoff metadata. They do not publish UI artifacts and they are not substitutes for top-level artifacts[].",
-  "- Each top-level artifacts[] item must include kind, title, and exactly one source field. Use path for generated files, including HTML files written under input.agentWorkspace.artifactsPath. Use content/body only when you are not writing a file and are returning the artifact body inline. Use url only for kind link. The delivery-location section must point to the same concrete artifact, not just repeat a title.",
-  "- For file-backed deliverables, especially kind \"html\", declare only artifacts[].path. Put prose descriptions, summaries, labels, QA notes, or review comments in humanReportMd or handoffJson, not in artifacts[].content/body.",
-  "- For kind \"html\", publish the actual complete single-file HTML document containing <html>...</html>. Prefer writing the file and declaring its path in top-level artifacts[].path. If you use content/body instead, it must contain the complete HTML because there is no file path for that artifact.",
-  "- If you reference artifacts[0], artifacts[1], etc. in humanReportMd, those same entries must exist in artifacts[] in the same output envelope.",
-  "- Writing an HTML file under input.agentWorkspace.artifactsPath is not enough to publish an HTML preview. To publish it, declare that file path in top-level artifacts[].path with kind \"html\".",
-  "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath. Mention durable paths in delivery-location and use the same path in top-level artifacts[].path when the file is the deliverable.",
-  "- No Agent or Manager may redeclare upstream, reviewed, consumed, or referenced artifacts in top-level artifacts[] unless this exact step produced a new complete artifact.",
-  "- If this step only inspects, validates, reviews, summarizes, compares, cites, or relies on another node's file, URL, preview, or artifact, top-level artifacts[] must be omitted or empty.",
-  "- For review/QA/acceptance/validation steps, a tested HTML file, preview URL, screenshot, or upstream artifact is a referenced object, not this step's deliverable. In that case the delivery-location section must be exactly \"\u65e0\" for Chinese or \"None\" for English.",
-  "- If an earlier role prompt asks a reviewer or QA agent to list a preview URL or file path, treat that as a request for a separate \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\" section and handoffJson.referencedArtifact(s), not as permission to fill top-level artifacts[] or delivery location.",
-  "- Do not copy upstream artifact paths, download URLs, or storage paths into top-level artifacts[].path/url. Only the node that created the file may publish it there.",
-  "- Before returning, audit every top-level artifacts[] item. If its path, url, content, or body came from input, upstream, previousResults, a review target, or another node/agent workspace, remove that item from artifacts[] and record it only as handoffJson.referencedArtifacts or a humanReportMd \"\u5f15\u7528\u5bf9\u8c61\"/\"Referenced artifact\".",
-  "- Do not use handoffJson.artifacts for reviewed or upstream objects. Use handoffJson.referencedArtifacts for those references so downstream nodes know they are not newly produced deliverables.",
-  "- Correct QA/review pattern: artifacts: []; delivery-location: \"\u65e0\"/\"None\"; referenced objects may be listed separately as references only.",
+  "- If you created or referenced concrete deliverables, summarize them naturally in humanReportMd and declare their addresses in top-level artifacts[]. The report should point to artifacts, not contain their full bodies.",
+  "- One step may declare many artifacts, including mixed HTML, Markdown, JSON, files, links, notes, and manifests. Use the shape that best represents your output.",
+  "- Top-level artifacts[] is a publication hint and link/address index, not a quality gate. HiveWard will preserve declared artifacts when possible; Manager and downstream agents judge whether the content is useful.",
+  "- For generated deliverables, create or update files and return path. For external or browser-openable references, return url. content/body are compatibility fallbacks for small inline snippets only; do not use them for full documents, HTML, source code, reports, or other long artifacts.",
+  "- If input.agentWorkspace is present, put durable working files under input.agentWorkspace.artifactsPath and temporary files under input.agentWorkspace.tmpPath when that fits the task.",
+  "- Do not paste artifact source, artifact HTML, long Markdown deliverables, source code deliverables, or other artifact bodies directly into humanReportMd or chat text. Put the content behind a file path or URL and give the human the link/address.",
   "- Keep handoffJson separate from humanReportMd. Do not require downstream agents to parse the Markdown report.",
   "- Raw logs and debugging details belong in result or runtime logs, not as the primary human report."
 ];
@@ -274,17 +292,15 @@ interface ManagerDecision {
 interface AgentApprovalReply {
   id: string;
   role: "assistant" | "user";
+  purpose?: "message" | "candidate";
   body: string;
   createdAt: string;
-  selected?: boolean;
 }
 
 interface AgentApprovalWaitingOutput {
   approvalType: "agent";
   reviewOutput: unknown;
   replies: AgentApprovalReply[];
-  selectedReplyId?: string;
-  selectedOutput?: unknown;
 }
 
 interface AgentApprovalChatInput {
@@ -303,6 +319,25 @@ interface ApprovedAgentOutputEnvelope {
     selectedReplyId?: string;
   };
 }
+
+interface PendingApprovalRevisionContext {
+  threadId?: string;
+  replacesRequestId?: string;
+  revision?: number;
+  requestedChanges?: string;
+}
+
+interface RequirementRevisionDraft extends ApprovalRevisionDraft {
+  metadata: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
+}
+
+type ApprovalRequestAction =
+  | "approve"
+  | "reject"
+  | "reply"
+  | "complete"
+  | "terminate"
+  | "return_for_revision";
 
 interface ManagerSlotContext {
   manager: {
@@ -367,7 +402,18 @@ interface StandardNodeInput {
   upstream: UpstreamOutput;
 }
 
+interface ResolvedNodeExecutionSession {
+  session: NodeExecutionSession;
+  nodeRun: BlueprintNodeRun;
+  resumeNativeSessionId?: string;
+}
+
 type SelfIterationPublishResult = "none" | "continue" | "handled";
+
+interface SelfIterationReleaseReportResult {
+  summary: string;
+  discussionBinding: ApprovalDiscussionBindingDraft;
+}
 
 interface AutoAdvanceResult {
   run: BlueprintRun;
@@ -384,7 +430,7 @@ interface BlueprintWorkerOptions {
 
 export class BlueprintWorker {
   private readonly activeRuns = new Map<string, Promise<void>>();
-  private readonly pendingRunSchedules = new Map<string, { blueprint: BlueprintDefinition; run: BlueprintRun }>();
+  private readonly pendingRunSchedules = new Map<string, { blueprint: BlueprintDefinition; run: BlueprintRun; command: RunCommand }>();
   private readonly cancelledRunIds = new Set<string>();
   private readonly approvalService: ApprovalService;
   private readonly iterationService: IterationService;
@@ -398,6 +444,7 @@ export class BlueprintWorker {
   private readonly workerId: string;
   private readonly nodeRunLeaseMs: number;
   private readonly nodeRunClaims = new Map<string, { owner: string; workerEpoch: number }>();
+  private readonly pendingApprovalRevisionContexts = new Map<string, PendingApprovalRevisionContext>();
 
   constructor(
     private readonly store: HivewardStore,
@@ -420,17 +467,18 @@ export class BlueprintWorker {
   async resumeActiveRuns(): Promise<void> {
     const archives = await this.store.listRunArchives();
     for (const archive of archives) {
-      if (archive.run.status === "queued") {
-        const runningRun = { ...archive.run, status: "running" as const };
-        await this.store.updateBlueprintRun(runningRun);
-        this.scheduleRun(archive.blueprintSnapshot, runningRun);
+      if (this.isTerminalRunStatus(archive.run.status)) {
         continue;
       }
-      if (archive.run.status === "running") {
-        if (await this.resumeSelfIterationPreparationIfNeeded(archive.blueprintSnapshot, archive.run)) {
-          continue;
+
+      const activeCommands = await this.store.listRunCommands({
+        runId: archive.run.id,
+        statuses: activeRunCommandStatuses
+      });
+      if (activeCommands.length > 0) {
+        for (const command of activeCommands) {
+          await this.resumeRunCommand(archive.blueprintSnapshot, archive.run, command);
         }
-        this.scheduleRun(archive.blueprintSnapshot, archive.run);
       }
     }
   }
@@ -450,10 +498,12 @@ export class BlueprintWorker {
         run: runningRun,
         topManagerNode: topManager
       });
-      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager);
+      const command = await this.ensureSelfIterationPrepareCommand(blueprint, runningRun, round);
+      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager, command);
       return runningRun;
     }
-    this.scheduleRun(blueprint, runningRun);
+    const command = await this.ensureRegularRunCommand(blueprint, runningRun);
+    this.scheduleRun(blueprint, runningRun, command);
     return runningRun;
   }
 
@@ -461,8 +511,8 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     approvalRequestId: string,
-    action: "approve" | "reject" | "reply" | "complete" | "terminate",
-    input: { comment?: string; message?: string; selectedReplyId?: string } = {}
+    action: ApprovalRequestAction,
+    input: { comment?: string; message?: string; selectedReplyId?: string | null; discussionMode?: InboxDiscussionMode } = {}
   ): Promise<BlueprintRun> {
     const request = await this.store.getApprovalRequest(approvalRequestId);
     if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
@@ -476,9 +526,11 @@ export class BlueprintWorker {
     }
 
     if (action === "reply") {
-      await this.approvalService.recordPendingReply(approvalRequestId, input.message ?? "");
-      if (request.kind === "agent_proposal" && request.nodeRunId) {
-        await this.recordAgentApprovalComment(currentRun, request.nodeRunId, input.message ?? "");
+      const discussionMode = input.discussionMode ?? "reply";
+      if (discussionMode === "candidate") {
+        await this.createApprovalCandidateReply(blueprint, currentRun, request, input.message ?? "");
+      } else {
+        await this.recordApprovalDiscussionReply(blueprint, currentRun, request, input.message ?? "");
       }
       await this.managerMailProjector.refresh(run.id);
       const waiting = { ...currentRun, status: "waiting_approval" as const };
@@ -486,23 +538,83 @@ export class BlueprintWorker {
       return waiting;
     }
 
-    let result;
+    let requirementRevisionMetadata: RequirementRevisionDraft["metadata"] | undefined;
+    let requirementRevisionCommand: RunCommand | undefined;
+    let result: ApprovalActionResult;
     if (action === "approve") {
-      result = await this.approvalService.approve(approvalRequestId, input.comment, input.selectedReplyId);
+      if (input.selectedReplyId !== undefined) {
+        throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
+      }
+      result = await this.approvalService.approve(approvalRequestId, input.comment);
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
     } else if (action === "complete") {
       result = await this.approvalService.complete(approvalRequestId, input.comment);
+    } else if (isReturnForRevisionAction(action)) {
+      const message = input.message ?? input.comment ?? "";
+      if (request.kind === "agent_proposal" && request.nodeRunId) {
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "keep_current_request" }
+        );
+        await this.rerunAgentApprovalForRequestedChanges(blueprint, currentRun, request, result.approvalRequest, message);
+        await this.managerMailProjector.refresh(run.id);
+        const latestRun = await this.store.getBlueprintRun(run.id);
+        const waiting = { ...(latestRun ?? currentRun), status: "waiting_approval" as const };
+        await this.store.updateBlueprintRun(waiting);
+        return waiting;
+      }
+      if (request.kind === "iteration_requirement_plan") {
+        requirementRevisionCommand = await this.markPrepareCommandRevisionRequested(currentRun.id, request, message);
+        const draft = await this.buildRequirementDecisionRevision(blueprint, currentRun, request, message, requirementRevisionCommand);
+        requirementRevisionMetadata = draft.metadata;
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "supersede_request", revisionOverride: draft }
+        );
+      } else {
+        result = await this.approvalService.returnForRevision(
+          approvalRequestId,
+          message,
+          { mode: "supersede_request" }
+        );
+      }
     } else {
       result = await this.approvalService.terminate(approvalRequestId, input.comment);
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
+    if (request.kind === "manager_release_report" && request.roundId && (action === "approve" || action === "complete")) {
+      await this.markRunCommandsForRoundSucceeded(currentRun.id, request.roundId, releaseReportCommandKind);
+    }
+    if (requirementRevisionMetadata && result.nextApprovalRequest?.roundId) {
+      const round = (await this.store.listIterationRounds({ runId: result.nextApprovalRequest.runId }))
+        .find((candidate) => candidate.id === result.nextApprovalRequest?.roundId);
+      if (round) {
+        await this.store.upsertIterationRound({
+          ...round,
+          ...requirementRevisionMetadata
+        });
+      }
+    }
     await this.persistManagerSnapshotAfterReleaseDecision(blueprint, currentRun, result);
     await this.managerMailProjector.refresh(run.id);
 
     if (request.kind === "agent_proposal" && request.nodeRunId) {
-      if (action === "approve") return this.approveRun(blueprint, currentRun, request.nodeRunId, input.comment, input.selectedReplyId);
+      if (action === "approve") {
+        return this.approveRun(
+          blueprint,
+          currentRun,
+          request.nodeRunId,
+          input.comment,
+          approvalRequestHasSelectedReplyId(result.approvalRequest)
+            ? result.approvalRequest.selectedReplyId
+            : undefined,
+          request.id
+        );
+      }
     }
 
     if (!lifecycle.completeRun && !lifecycle.resumeExecution) {
@@ -522,9 +634,15 @@ export class BlueprintWorker {
       return completed;
     }
     if (lifecycle.resumeExecution) {
+      if (request.kind === "iteration_requirement_plan" && request.roundId) {
+        await this.markPrepareCommandsForRoundSucceeded(currentRun.id, request.roundId);
+      }
       const running = { ...currentRun, status: "running" as const };
       await this.store.updateBlueprintRun(running);
-      this.scheduleRun(blueprint, running);
+      const command = request.kind === "iteration_requirement_plan" && request.roundId
+        ? await this.ensureSelfIterationExecuteCommand(blueprint, running, request.roundId)
+        : await this.ensureExecutionRunCommand(blueprint, running);
+      this.scheduleRun(blueprint, running, command);
       return running;
     }
 
@@ -533,49 +651,24 @@ export class BlueprintWorker {
     return waiting;
   }
 
-  private async resumeSelfIterationPreparationIfNeeded(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<boolean> {
-    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-    if (!topManager) return false;
-
-    const rounds = await this.store.listIterationRounds({ runId: run.id });
-    const pendingRound = rounds
-      .filter((round) => round.status === "requirement_pending")
-      .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
-    if (!pendingRound) {
-      if (rounds.length > 0) return false;
-      const started = await this.iterationService.startSession({
-        blueprint,
-        run,
-        topManagerNode: topManager
-      });
-      this.scheduleSelfIterationPreparation(blueprint, run, started.session, started.round, topManager);
-      return true;
-    }
-
-    if (pendingRound.requirementRequestId) {
-      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
-      await this.managerMailProjector.refresh(run.id);
-      return true;
-    }
-
-    const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === pendingRound.sessionId);
-    if (!session) return false;
-    this.scheduleSelfIterationPreparation(blueprint, run, session, pendingRound, topManager);
-    return true;
-  }
-
   private scheduleSelfIterationPreparation(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     session: IterationSession,
     round: IterationRound,
-    topManager: BlueprintNode
+    topManager: BlueprintNode,
+    command: RunCommand,
+    context: {
+      humanFeedback?: string;
+      previousRequirement?: string;
+      revision?: number;
+    } = {}
   ): void {
     if (this.activeRuns.has(run.id)) {
       return;
     }
 
-    const execution = this.prepareInitialSelfIterationRound(blueprint, run, session, round, topManager)
+    const execution = this.prepareSelfIterationRound(blueprint, run, session, round, topManager, command, context)
       .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
       .finally(async () => {
         this.activeRuns.delete(run.id);
@@ -588,16 +681,304 @@ export class BlueprintWorker {
     this.activeRuns.set(run.id, execution);
   }
 
-  private async prepareInitialSelfIterationRound(
+  private async resumeRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    command: RunCommand
+  ): Promise<boolean> {
+    if (command.status === "waiting_approval") {
+      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+      await this.managerMailProjector.refresh(run.id);
+      return true;
+    }
+
+    if (command.status !== "queued" && command.status !== "running") {
+      return false;
+    }
+
+    if (command.kind === regularRunCommandKind || command.kind === executeRoundCommandKind) {
+      const runningRun = { ...run, status: "running" as const };
+      await this.store.updateBlueprintRun(runningRun);
+      this.scheduleRun(blueprint, runningRun, command);
+      return true;
+    }
+
+    if (command.kind === releaseReportCommandKind) {
+      const runningRun = { ...run, status: "running" as const };
+      await this.store.updateBlueprintRun(runningRun);
+      const nodeRuns = await this.scopeNodeRunsForActiveIterationRound(run.id, await this.store.listNodeRuns(run.id));
+      await this.publishSelfIterationRoundIfNeeded(blueprint, runningRun, nodeRuns, undefined, command);
+      return true;
+    }
+
+    if (command.kind !== prepareRoundCommandKind) {
+      return false;
+    }
+
+    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
+    if (!topManager || !command.roundId) return false;
+    const round = (await this.store.listIterationRounds({ runId: run.id }))
+      .find((candidate) => candidate.id === command.roundId);
+    if (!round) return false;
+    const session = (await this.store.listIterationSessions(run.id))
+      .find((candidate) => candidate.id === round.sessionId);
+    if (!session) return false;
+
+    const completedDecisionStep = await this.findCompletedPrepareDecisionStep(command);
+    if (completedDecisionStep) {
+      await this.markRunCommandWaitingForApproval(command, completedDecisionStep.mode);
+      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
+      await this.managerMailProjector.refresh(run.id);
+      return true;
+    }
+
+    const runningRun = { ...run, status: "running" as const };
+    await this.store.updateBlueprintRun(runningRun);
+    this.scheduleSelfIterationPreparation(
+      blueprint,
+      runningRun,
+      session,
+      round,
+      topManager,
+      command,
+      readPrepareCommandContext(command)
+    );
+    return true;
+  }
+
+  private async ensureSelfIterationPrepareCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    round: IterationRound,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    const now = new Date().toISOString();
+    const commandKey = buildRunCommandKey(run.id, round.id, prepareRoundCommandKind);
+    const { command, created } = await this.store.createRunCommandIfAbsent({
+      id: deterministicFactId("run-command", commandKey),
+      commandKey,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      roundId: round.id,
+      kind: prepareRoundCommandKind,
+      status: options.status ?? "queued",
+      currentRevision: 0,
+      currentStep: "research_resolution",
+      metadata: options.metadata,
+      createdAt: now,
+      updatedAt: now
+    });
+    if (created || !options.status) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: options.status,
+      metadata: {
+        ...(command.metadata ?? {}),
+        ...(options.metadata ?? {})
+      }
+    });
+  }
+
+  private async ensureRegularRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, undefined, regularRunCommandKind, "node_execution", options);
+  }
+
+  private async ensureSelfIterationExecuteCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, roundId, executeRoundCommandKind, "node_execution", options);
+  }
+
+  private async ensureSelfIterationReleaseReportCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    return this.ensureRunCommand(blueprint, run, roundId, releaseReportCommandKind, "release_report", options);
+  }
+
+  private async ensureExecutionRunCommand(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<RunCommand> {
+    const executingRoundId = await this.currentExecutingRoundId(run.id);
+    return executingRoundId
+      ? this.ensureSelfIterationExecuteCommand(blueprint, run, executingRoundId)
+      : this.ensureRegularRunCommand(blueprint, run);
+  }
+
+  private async ensureRunCommand(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    roundId: string | undefined,
+    kind: RunCommandKind,
+    currentStep: RunCommandStepMode,
+    options: {
+      status?: RunCommandStatus;
+      metadata?: Record<string, unknown>;
+    } = {}
+  ): Promise<RunCommand> {
+    const now = new Date().toISOString();
+    const commandKey = buildRunCommandKey(run.id, roundId, kind);
+    const { command, created } = await this.store.createRunCommandIfAbsent({
+      id: deterministicFactId("run-command", commandKey),
+      commandKey,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      ...(roundId ? { roundId } : {}),
+      kind,
+      status: options.status ?? "queued",
+      currentRevision: 0,
+      currentStep,
+      metadata: options.metadata,
+      createdAt: now,
+      updatedAt: now
+    });
+    if (created || (!options.status && !options.metadata)) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      ...(options.status ? { status: options.status } : {}),
+      metadata: {
+        ...(command.metadata ?? {}),
+        ...(options.metadata ?? {})
+      }
+    });
+  }
+
+
+  private async markRunCommandRunning(command: RunCommand, currentStep: RunCommandStepMode): Promise<RunCommand> {
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "running",
+      currentStep,
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined
+    });
+  }
+
+  private async markRunCommandWaitingForApproval(command: RunCommand, currentStep: RunCommandStepMode): Promise<RunCommand> {
+    if (command.status === "waiting_approval" && command.currentStep === currentStep) return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "waiting_approval",
+      currentStep,
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined
+    });
+  }
+
+  private async markRunCommandSucceeded(command: RunCommand): Promise<RunCommand> {
+    if (command.status === "succeeded") return command;
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "succeeded",
+      endedAt: new Date().toISOString(),
+      error: undefined
+    });
+  }
+
+  private async markRunCommandFailed(command: RunCommand, error: string): Promise<RunCommand> {
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "failed",
+      endedAt: new Date().toISOString(),
+      error
+    });
+  }
+
+  private async markPrepareCommandsForRoundSucceeded(runId: string, roundId: string): Promise<void> {
+    await this.markRunCommandsForRoundSucceeded(runId, roundId, prepareRoundCommandKind);
+  }
+
+  private async markRunCommandsForRoundSucceeded(runId: string, roundId: string, kind: RunCommandKind): Promise<void> {
+    const commands = await this.store.listRunCommands({
+      runId,
+      roundId,
+      kind,
+      statuses: activeRunCommandStatuses
+    });
+    await Promise.all(commands.map((command) => this.markRunCommandSucceeded(command)));
+  }
+
+  private async markPrepareCommandRevisionRequested(
+    runId: string,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<RunCommand | undefined> {
+    if (!request.roundId) return undefined;
+    const feedback = message.trim();
+    if (!feedback) throw new Error("Approval revision message is required.");
+
+    const commands = (await this.store.listRunCommands({
+      runId,
+      roundId: request.roundId,
+      kind: prepareRoundCommandKind
+    })).sort((left, right) =>
+      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
+    );
+    const command = commands.find((candidate) => activeRunCommandStatuses.includes(candidate.status)) ?? commands[0];
+    if (!command) return undefined;
+
+    const revision = Math.max(command.currentRevision + 1, request.revision);
+    return this.store.updateRunCommand({
+      id: command.id,
+      status: "running",
+      currentRevision: revision,
+      currentStep: "revise_plan",
+      startedAt: command.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      metadata: {
+        ...(command.metadata ?? {}),
+        humanFeedback: feedback,
+        previousRequirement: request.body,
+        revisionRequestedBy: request.id
+      }
+    });
+  }
+
+  private async prepareSelfIterationRound(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     session: IterationSession,
     round: IterationRound,
-    topManager: BlueprintNode
+    topManager: BlueprintNode,
+    command: RunCommand,
+    context: {
+      humanFeedback?: string;
+      previousRequirement?: string;
+      revision?: number;
+    } = {}
   ): Promise<void> {
     if (await this.isRunCancelled(run.id)) return;
 
-    await this.prepareRoundPlan(blueprint, run, session, round, topManager);
+    let runningCommand = await this.markRunCommandRunning(command, context.revision && context.revision > 0 ? "revise_plan" : "research_resolution");
+    try {
+      await this.prepareRoundPlan(blueprint, run, session, round, topManager, context, runningCommand);
+      runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, context.revision && context.revision > 0 ? "revise_plan" : "requirement_resolution");
+    } catch (error) {
+      await this.markRunCommandFailed(runningCommand, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     if (await this.isRunCancelled(run.id)) return;
 
     const latestRun = await this.store.getBlueprintRun(run.id);
@@ -605,9 +986,14 @@ export class BlueprintWorker {
     if (this.isTerminalRunStatus(currentRun.status)) return;
 
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, currentRun, { scheduleOnResume: false });
-    if (autoAdvanced?.completeRun) return;
+    if (autoAdvanced?.completeRun) {
+      await this.markRunCommandSucceeded(runningCommand);
+      return;
+    }
     if (autoAdvanced?.resumeExecution) {
-      await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run);
+      await this.markRunCommandSucceeded(runningCommand);
+      const executeCommand = await this.ensureSelfIterationExecuteCommand(blueprint, autoAdvanced.run, round.id);
+      await this.runUntilBlockedOrDone(blueprint, autoAdvanced.run, executeCommand);
       return;
     }
     if (await this.isRunCancelled(run.id)) return;
@@ -630,7 +1016,12 @@ export class BlueprintWorker {
     if (!session) throw new Error(`Iteration session not found: ${intent.sessionId}`);
     const round = (await this.store.listIterationRounds({ runId: run.id })).find((candidate) => candidate.id === intent.roundId);
     if (!round) throw new Error(`Iteration round not found: ${intent.roundId}`);
-    await this.prepareRoundPlan(blueprint, run, session, round, topManager, {
+    const command = await this.ensureSelfIterationPrepareCommand(blueprint, run, round, {
+      metadata: {
+        humanFeedback: intent.humanFeedback
+      }
+    });
+    await this.prepareSelfIterationRound(blueprint, run, session, round, topManager, command, {
       humanFeedback: intent.humanFeedback
     });
   }
@@ -659,6 +1050,7 @@ export class BlueprintWorker {
     if (!session) return;
 
     const releaseReport = await this.releaseReportForApprovalRequest(run.id, result.approvalRequest);
+    const humanFeedback = await this.approvalService.buildApprovalHumanFeedback(result.approvalRequest, result.decision);
     const managerSummary = releaseReport
       ? await this.buildManagerSnapshotDraft(
         blueprint,
@@ -667,7 +1059,7 @@ export class BlueprintWorker {
         round,
         topManager,
         releaseReport,
-        result.decision.comment
+        humanFeedback
       )
       : undefined;
     const latestRound = (await this.store.listIterationRounds({ runId: run.id }))
@@ -678,7 +1070,7 @@ export class BlueprintWorker {
       session,
       round: latestRound,
       releaseReport,
-      humanFeedback: result.decision.comment,
+      humanFeedback,
       managerSummary
     });
     await this.store.upsertIterationRound({ ...latestRound, contextSnapshotId: snapshot.id });
@@ -710,7 +1102,8 @@ export class BlueprintWorker {
       humanFeedback?: string;
       previousRequirement?: string;
       revision?: number;
-    } = {}
+    } = {},
+    command?: RunCommand
   ): Promise<ApprovalRequest> {
     const preflight = await this.roundPreflightService.prepareRoundPlan({
       blueprint,
@@ -721,14 +1114,16 @@ export class BlueprintWorker {
       humanFeedback: context.humanFeedback,
       previousRequirement: context.previousRequirement,
       revision: context.revision,
-      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
+      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager, command)
     });
+    const discussionBinding = await this.buildRequirementApprovalDiscussionBindingDraft(run, topManager, command);
     const request = await this.iterationService.requestRoundPlan({
       session,
       round,
       managerNode: topManager,
       body: preflight.body,
       revision: context.revision,
+      discussionBinding,
       metadata: {
         researchStatus: preflight.researchStatus,
         researchSummary: preflight.researchSummary,
@@ -744,7 +1139,8 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     round: IterationRound,
-    topManager: BlueprintNode
+    topManager: BlueprintNode,
+    command?: RunCommand
   ) {
     return {
       runAgentNode: (input: {
@@ -752,12 +1148,12 @@ export class BlueprintWorker {
         mode: RoundPreflightMode;
         runContext: ManagerInjectedContext;
         taskInput: Record<string, unknown>;
-      }) => this.runPreflightAgentTask(blueprint, run, round, input.node, input.mode, input.runContext, input.taskInput),
+      }) => this.runPreflightAgentTask(blueprint, run, round, input.node, input.mode, input.runContext, input.taskInput, command),
       runManagerFallback: (input: {
         mode: RoundPreflightMode;
         runContext: ManagerInjectedContext;
         taskInput: Record<string, unknown>;
-      }) => this.runPreflightManagerFallback(blueprint, run, round, topManager, input.mode, input.runContext, input.taskInput)
+      }) => this.runPreflightManagerFallback(blueprint, run, round, topManager, input.mode, input.runContext, input.taskInput, command)
     };
   }
 
@@ -768,51 +1164,65 @@ export class BlueprintWorker {
     node: BlueprintNode & { type: "agent"; config: AgentNodeConfig },
     mode: RoundPreflightMode,
     runContext: ManagerInjectedContext,
-    taskInput: Record<string, unknown>
+    taskInput: Record<string, unknown>,
+    command?: RunCommand
   ): Promise<RoundPreflightExecutionResult> {
     const config = node.config;
     const runtimeId = node.runtimeId ?? "openclaw";
-    const nodeRunId = `preflight-${mode}-${round.id}-${node.id}-${nanoid(6)}`;
+    const step = await this.ensurePreflightCommandStep(command, run, round, mode, node.id, taskInput);
+    const nodeRunId = step.nodeRunId ?? stablePreflightNodeRunId(
+      buildStandalonePreflightStepKey(run.id, round.id, mode, node.id, readPreflightAttempt(taskInput))
+    );
+    const existingResult = await this.resolveExistingPreflightResult(run, round, node, nodeRunId, step);
+    if (existingResult) return existingResult;
     const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, node, nodeRunId);
+    await this.markRunCommandStepRunning(step, preflightNode.nodeRun.runtimeRef);
     await this.appendPreflightTaskStarted(run, round, node, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
-      ({ result } = await this.runAgentTask({
-        blueprintRunId: run.id,
-        nodeRunId,
-        source: resolveAgentRuntimeSource(runtimeId),
-        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-        profileId: runtimeId === "hermes" ? config.profileId : undefined,
-        agentName: config.agentName,
-        prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
-        modelId: config.modelId,
-        permissionProfile: config.permissionProfile,
-        runtimeAccessPolicy: config.runtimeAccessPolicy,
-        workingDirectory: config.workingDirectory,
-        timeoutMs: config.timeoutMs,
-        outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
-        input: {
-          ...taskInput,
-          runContext
-        },
-        skillIds: config.skillIds,
-        tools: config.tools
-      }, async (runtimeRef) => {
-        await this.store.startNodeRun({
+      if (preflightNode.nodeRun.runtimeRef?.sessionKey) {
+        result = await this.waitForExistingPreflightTask(preflightNode.nodeRun);
+      } else {
+        ({ result } = await this.runAgentTask({
+          blueprintRunId: run.id,
           nodeRunId,
-          owner: preflightNode.claim.owner,
-          workerEpoch: preflightNode.claim.workerEpoch,
-          runtimeRef
-        });
-      }));
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+          profileId: runtimeId === "hermes" ? config.profileId : undefined,
+          agentName: config.agentName,
+          prompt: this.resolveAgentPrompt(config, { requiresHandoff: true }),
+          modelId: config.modelId,
+          permissionProfile: config.permissionProfile,
+          runtimeAccessPolicy: config.runtimeAccessPolicy,
+          workingDirectory: config.workingDirectory,
+          timeoutMs: config.timeoutMs,
+          outputSchema: config.outputSchema ? buildAgentOutputEnvelopeSchema(config.outputSchema) : preflightOutputSchema,
+          input: {
+            ...taskInput,
+            runContext
+          },
+          skillIds: config.skillIds,
+          tools: config.tools
+        }, async (runtimeRef) => {
+          await this.markRunCommandStepRunning(step, runtimeRef);
+          await this.store.startNodeRun({
+            nodeRunId,
+            owner: preflightNode.claim.owner,
+            workerEpoch: preflightNode.claim.workerEpoch,
+            runtimeRef
+          });
+        }));
+      }
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
+      await this.markRunCommandStepFailed(step, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.markRunCommandStepFailed(step, error);
       await this.appendPreflightTaskFailed(run, round, node, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
@@ -820,6 +1230,9 @@ export class BlueprintWorker {
       : [];
     if (result.status === "succeeded" && mode !== "research_resolution") {
       await this.publishPreflightOutput(blueprint, run, round, node, preflightNode, mode, result);
+    }
+    if (result.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, result);
     }
     return { result, artifactIds };
   }
@@ -831,51 +1244,65 @@ export class BlueprintWorker {
     topManager: BlueprintNode,
     mode: RoundPreflightMode,
     runContext: ManagerInjectedContext,
-    taskInput: Record<string, unknown>
+    taskInput: Record<string, unknown>,
+    command?: RunCommand
   ): Promise<RoundPreflightExecutionResult> {
     const config = topManager.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(topManager);
-    const nodeRunId = `preflight-${mode}-${round.id}-${topManager.id}-${nanoid(6)}`;
+    const step = await this.ensurePreflightCommandStep(command, run, round, mode, topManager.id, taskInput);
+    const nodeRunId = step.nodeRunId ?? stablePreflightNodeRunId(
+      buildStandalonePreflightStepKey(run.id, round.id, mode, topManager.id, readPreflightAttempt(taskInput))
+    );
+    const existingResult = await this.resolveExistingPreflightResult(run, round, topManager, nodeRunId, step);
+    if (existingResult) return existingResult;
     const preflightNode = await this.startPreflightNodeRun(blueprint, run, round, topManager, nodeRunId);
+    await this.markRunCommandStepRunning(step, preflightNode.nodeRun.runtimeRef);
     await this.appendPreflightTaskStarted(run, round, topManager, mode, nodeRunId);
     let result: AgentTaskResult;
     try {
-      ({ result } = await this.runAgentTask({
-        blueprintRunId: run.id,
-        nodeRunId,
-        source: resolveAgentRuntimeSource(runtimeId),
-        agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
-        profileId: runtimeId === "hermes" ? config.profileId : undefined,
-        agentName: config.agentName?.trim() || defaultManagerAgentName,
-        prompt: this.resolveManagerPreflightPrompt(config, mode),
-        modelId: config.modelId,
-        permissionProfile: config.permissionProfile,
-        runtimeAccessPolicy: config.runtimeAccessPolicy,
-        workingDirectory: config.workingDirectory,
-        timeoutMs: config.timeoutMs,
-        outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
-        input: {
-          ...taskInput,
-          runContext
-        },
-        skillIds: config.skillIds,
-        tools: config.tools ?? []
-      }, async (runtimeRef) => {
-        await this.store.startNodeRun({
+      if (preflightNode.nodeRun.runtimeRef?.sessionKey) {
+        result = await this.waitForExistingPreflightTask(preflightNode.nodeRun);
+      } else {
+        ({ result } = await this.runAgentTask({
+          blueprintRunId: run.id,
           nodeRunId,
-          owner: preflightNode.claim.owner,
-          workerEpoch: preflightNode.claim.workerEpoch,
-          runtimeRef
-        });
-      }));
+          source: resolveAgentRuntimeSource(runtimeId),
+          agentId: runtimeId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+          profileId: runtimeId === "hermes" ? config.profileId : undefined,
+          agentName: config.agentName?.trim() || defaultManagerAgentName,
+          prompt: this.resolveManagerPreflightPrompt(config, mode),
+          modelId: config.modelId,
+          permissionProfile: config.permissionProfile,
+          runtimeAccessPolicy: config.runtimeAccessPolicy,
+          workingDirectory: config.workingDirectory,
+          timeoutMs: config.timeoutMs,
+          outputSchema: mode === "context_snapshot" ? undefined : preflightOutputSchema,
+          input: {
+            ...taskInput,
+            runContext
+          },
+          skillIds: config.skillIds,
+          tools: config.tools ?? []
+        }, async (runtimeRef) => {
+          await this.markRunCommandStepRunning(step, runtimeRef);
+          await this.store.startNodeRun({
+            nodeRunId,
+            owner: preflightNode.claim.owner,
+            workerEpoch: preflightNode.claim.workerEpoch,
+            runtimeRef
+          });
+        }));
+      }
     } catch (error) {
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error instanceof Error ? error.message : String(error));
+      await this.markRunCommandStepFailed(step, error instanceof Error ? error.message : String(error));
       await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error instanceof Error ? error.message : String(error));
       throw error;
     }
     if (result.status !== "succeeded") {
       const error = result.error ?? `Agent task ended with status ${result.status}.`;
       await this.failPreflightNodeRun(preflightNode.nodeRun, preflightNode.claim, error);
+      await this.markRunCommandStepFailed(step, error);
       await this.appendPreflightTaskFailed(run, round, topManager, mode, nodeRunId, error);
     }
     const artifactIds = mode === "research_resolution"
@@ -884,7 +1311,196 @@ export class BlueprintWorker {
     if (result.status === "succeeded" && mode !== "research_resolution") {
       await this.publishPreflightOutput(blueprint, run, round, topManager, preflightNode, mode, result);
     }
+    if (result.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, result);
+    }
     return { result, artifactIds };
+  }
+
+  private async ensurePreflightCommandStep(
+    command: RunCommand | undefined,
+    run: BlueprintRun,
+    round: IterationRound,
+    mode: RoundPreflightMode,
+    nodeId: string,
+    taskInput: Record<string, unknown>
+  ): Promise<RunCommandStep> {
+    const attempt = readPreflightAttempt(taskInput);
+    const stepKey = command
+      ? buildRunCommandStepKey(command, mode, nodeId, attempt)
+      : buildStandalonePreflightStepKey(run.id, round.id, mode, nodeId, attempt);
+    const now = new Date().toISOString();
+    const nodeRunId = stablePreflightNodeRunId(stepKey);
+    if (!command) {
+      return {
+        id: deterministicFactId("standalone-preflight-step", stepKey),
+        commandId: "standalone",
+        stepKey,
+        runId: run.id,
+        roundId: round.id,
+        revision: 0,
+        mode,
+        nodeId,
+        nodeRunId,
+        status: "queued",
+        createdAt: now,
+        updatedAt: now
+      };
+    }
+
+    const { step } = await this.store.createRunCommandStepIfAbsent({
+      id: deterministicFactId("run-command-step", stepKey),
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: round.id,
+      revision: command.currentRevision,
+      mode,
+      nodeId,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now
+    });
+    if (step.nodeRunId) return step;
+    return { ...step, nodeRunId };
+  }
+
+  private async resolveExistingPreflightResult(
+    run: BlueprintRun,
+    round: IterationRound,
+    node: BlueprintNode,
+    nodeRunId: string,
+    step: RunCommandStep
+  ): Promise<RoundPreflightExecutionResult | undefined> {
+    const nodeRun = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
+    if (!nodeRun) return undefined;
+    if (nodeRun.status === "succeeded") {
+      await this.markRunCommandStepSucceeded(step, agentTaskResultFromNodeRun(nodeRun));
+      return {
+        result: agentTaskResultFromNodeRun(nodeRun),
+        artifactIds: await this.cachedPreflightArtifactIds(run.id, round.id, nodeRun.id)
+      };
+    }
+    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
+      const result = agentTaskResultFromNodeRun(nodeRun);
+      await this.markRunCommandStepFailed(step, result.error ?? `${node.config.label} ${nodeRun.status}.`);
+      return {
+        result,
+        artifactIds: await this.cachedPreflightArtifactIds(run.id, round.id, nodeRun.id)
+      };
+    }
+    return undefined;
+  }
+
+  private async waitForExistingPreflightTask(nodeRun: BlueprintNodeRun): Promise<AgentTaskResult> {
+    const runtimeRef = nodeRun.runtimeRef;
+    if (!runtimeRef?.sessionKey) {
+      throw new Error(`Preflight node run ${nodeRun.id} has no runtime session to resume.`);
+    }
+    return this.adapter.waitForAgentTask({
+      nodeRunId: nodeRun.id,
+      taskId: runtimeRef.taskId ?? runtimeRef.sourceId,
+      runId: runtimeRef.runId ?? runtimeRef.sourceId,
+      sessionKey: runtimeRef.sessionKey,
+      source: runtimeRef.source
+    });
+  }
+
+  private async waitForExistingNodeTask(nodeRun: BlueprintNodeRun): Promise<AgentTaskResult> {
+    const runtimeRef = nodeRun.runtimeRef;
+    if (!runtimeRef?.sessionKey) {
+      throw new Error(`Node run ${nodeRun.id} has no runtime session to resume.`);
+    }
+    return this.adapter.waitForAgentTask({
+      nodeRunId: nodeRun.id,
+      taskId: runtimeRef.taskId ?? runtimeRef.sourceId,
+      runId: runtimeRef.runId ?? runtimeRef.sourceId,
+      sessionKey: runtimeRef.sessionKey,
+      source: runtimeRef.source
+    });
+  }
+
+  private async cachedPreflightArtifactIds(runId: string, roundId: string, nodeRunId: string): Promise<string[]> {
+    return (await this.store.listArtifacts(runId))
+      .filter((artifact) =>
+        artifact.roundId === roundId &&
+        artifact.nodeRunId === nodeRunId &&
+        (artifact.status ?? "current") === "current"
+      )
+      .map((artifact) => artifact.id);
+  }
+
+  private async markRunCommandStepRunning(step: RunCommandStep, runtimeRef?: RuntimeObjectRef): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "running",
+      startedAt: step.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      ...(runtimeRef ? { runtimeRef } : {})
+    });
+  }
+
+  private async markRunCommandStepWaitingForApproval(step: RunCommandStep, runtimeRef?: RuntimeObjectRef): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "waiting_approval",
+      startedAt: step.startedAt ?? new Date().toISOString(),
+      endedAt: undefined,
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      ...(runtimeRef ? { runtimeRef } : {})
+    });
+  }
+
+  private async markRunCommandStepSucceeded(step: RunCommandStep, result: AgentTaskResult): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "succeeded",
+      endedAt: result.updatedAt ?? new Date().toISOString(),
+      error: undefined,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {}),
+      runtimeRef: runtimeRefFromAgentTaskResult(result, step.runtimeRef)
+    });
+  }
+
+  private async markRunCommandStepFailed(step: RunCommandStep, error: string): Promise<RunCommandStep> {
+    if (step.commandId === "standalone") return step;
+    return this.store.updateRunCommandStep({
+      id: step.id,
+      status: "failed",
+      endedAt: new Date().toISOString(),
+      error,
+      ...(step.nodeRunId ? { nodeRunId: step.nodeRunId } : {})
+    });
+  }
+
+  private async syncRunCommandStepFromNodeRun(step: RunCommandStep): Promise<RunCommandStep> {
+    if (step.commandId === "standalone" || !step.nodeRunId) return step;
+    const nodeRun = (await this.store.listNodeRuns(step.runId)).find((candidate) => candidate.id === step.nodeRunId);
+    if (!nodeRun) return step;
+    if (nodeRun.status === "succeeded") return this.markRunCommandStepSucceeded(step, agentTaskResultFromNodeRun(nodeRun));
+    if (nodeRun.status === "failed" || nodeRun.status === "cancelled") {
+      return this.markRunCommandStepFailed(step, nodeRun.error ?? `${nodeRun.nodeLabel} ${nodeRun.status}.`);
+    }
+    if (nodeRun.status === "waiting_approval") {
+      return this.markRunCommandStepWaitingForApproval(step, nodeRun.runtimeRef);
+    }
+    if (nodeRun.status === "running") return this.markRunCommandStepRunning(step, nodeRun.runtimeRef);
+    return step;
+  }
+
+  private async syncRunCommandStepsForNodeRun(nodeRun: BlueprintNodeRun): Promise<void> {
+    const commands = await this.store.listRunCommands({ runId: nodeRun.blueprintRunId });
+    const stepLists = await Promise.all(
+      commands.map((command) => this.store.listRunCommandSteps({ commandId: command.id }))
+    );
+    const matchingSteps = stepLists.flat().filter((step) => step.nodeRunId === nodeRun.id);
+    await Promise.all(matchingSteps.map((step) => this.syncRunCommandStepFromNodeRun(step)));
   }
 
   private async startPreflightNodeRun(
@@ -895,7 +1511,8 @@ export class BlueprintWorker {
     nodeRunId: string
   ): Promise<{ nodeRun: BlueprintNodeRun; claim: { owner: string; workerEpoch: number } }> {
     const now = new Date().toISOString();
-    const nodeRun: BlueprintNodeRun = {
+    const existing = (await this.store.listNodeRuns(run.id)).find((candidate) => candidate.id === nodeRunId);
+    const nodeRun: BlueprintNodeRun = existing ?? {
       id: nodeRunId,
       blueprintRunId: run.id,
       blueprintId: blueprint.id,
@@ -906,7 +1523,9 @@ export class BlueprintWorker {
       status: "queued",
       queuedAt: now
     };
-    await this.store.createQueuedNodeRun(nodeRun);
+    if (!existing) {
+      await this.store.createQueuedNodeRun(nodeRun);
+    }
     const claim = await this.store.claimNodeRun({
       nodeRunId,
       owner: this.workerId,
@@ -1129,31 +1748,32 @@ export class BlueprintWorker {
       "This is the base release report step for the current self-iteration round. It is one Manager run.",
       "Write the report yourself from the provided structured facts. Do not mechanically concatenate each node report, do not dump every Agent output, and do not expose raw JSON/logs as the human report.",
       "This report is before human confirmation. Do not include post-confirmation review deposition, future memory, or human feedback that is not present in the input.",
-      "The report should help a human decide whether to approve continuing, complete the run, or reply with changes. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
+      "The report should help a human decide whether to approve continuing, complete the run, leave a comment, or use an explicit return_for_revision action. Include the useful outcome, delivered artifacts, verification status, important problems, and recommended next action.",
       "The release report itself belongs in humanReportMd. Do not declare top-level artifacts[] unless this Manager run actually creates a separate new file.",
       ...agentOutputContractLines,
       "- Return an AgentOutputEnvelope JSON object. humanReportMd is the release report. result may contain concise status, summary, recommendation, and risk fields. handoffJson may contain compact structured facts for later confirmation and review deposition."
     ].join("\n");
   }
 
-  private async buildRequirementReplyRevision(
+  private async buildRequirementDecisionRevision(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     request: ApprovalRequest,
-    message: string
-  ): Promise<ApprovalRequest | undefined> {
+    message: string,
+    command?: RunCommand
+  ): Promise<RequirementRevisionDraft> {
     const feedback = message.trim();
-    if (!feedback) return undefined;
+    if (!feedback) throw new Error("Approval revision message is required.");
 
     const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-    if (!topManager) return undefined;
+    if (!topManager) throw new Error("Self-iteration manager not found.");
 
     const round = request.roundId
       ? (await this.store.listIterationRounds({ runId: run.id })).find((candidate) => candidate.id === request.roundId)
       : undefined;
-    if (!round) return undefined;
+    if (!round) throw new Error("Iteration round not found for requirement revision.");
     const session = (await this.store.listIterationSessions(run.id)).find((candidate) => candidate.id === round.sessionId);
-    if (!session) return undefined;
+    if (!session) throw new Error("Iteration session not found for requirement revision.");
     const revision = request.revision + 1;
     const preflight = await this.roundPreflightService.prepareRoundPlan({
       blueprint,
@@ -1164,24 +1784,336 @@ export class BlueprintWorker {
       humanFeedback: feedback,
       previousRequirement: request.body,
       revision,
-      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager)
+      executors: this.buildRoundPreflightExecutors(blueprint, run, round, topManager, command)
     });
-    return this.iterationService.requestRoundPlan({
-      session,
-      round,
-      managerNode: topManager,
+    return {
       body: preflight.body,
-      revision,
-      threadId: request.threadId,
-      replacesRequestId: request.id,
-      closeReplacedRequest: false,
+      capabilities: preflight.researchStatus === "blocked"
+        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
+        : request.capabilities,
+      discussionBinding: await this.buildRequirementApprovalDiscussionBindingDraft(run, topManager, command),
       metadata: {
         researchStatus: preflight.researchStatus,
         researchSummary: preflight.researchSummary,
         researchArtifactIds: preflight.researchArtifactIds,
-        planSource: "revised_from_reply"
+        planSource: "revised_from_feedback"
+      }
+    };
+  }
+
+  private async recordApprovalDiscussionReply(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<void> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval reply message is required.");
+
+    const resolution = await this.resolveApprovalDiscussionForRequest(request);
+    if (resolution.capability.mode === "none") {
+      throw new Error(`Approval discussion is unavailable: ${resolution.reason ?? "discussion_disabled"}.`);
+    }
+
+    await this.approvalService.recordPendingReply(request.id, trimmed);
+    if (resolution.capability.mode !== "executor" || !resolution.executor) return;
+
+    const { result, runtimeRef } = await this.runApprovalDiscussionExecutor({
+      blueprint,
+      run,
+      request,
+      resolution,
+      message: trimmed,
+      discussionMode: "reply"
+    });
+    if (result.status !== "succeeded") {
+      throw new Error(result.error ?? "Approval discussion reply failed.");
+    }
+    await this.appendApprovalAssistantReply(request, resolution, "message", formatTranscriptContent(result.output), runtimeRef);
+  }
+
+  private async createApprovalCandidateReply(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    request: ApprovalRequest,
+    message: string
+  ): Promise<void> {
+    const trimmed = message.trim();
+    if (!trimmed) throw new Error("Approval candidate prompt is required.");
+
+    const resolution = await this.resolveApprovalDiscussionForRequest(request);
+    if (resolution.capability.mode === "none") {
+      throw new Error(`Approval discussion is unavailable: ${resolution.reason ?? "discussion_disabled"}.`);
+    }
+    if (resolution.capability.mode !== "executor" || !resolution.executor || !resolution.capability.canCreateCandidate) {
+      throw new Error("Approval discussion cannot create candidate replies.");
+    }
+
+    const { result, runtimeRef } = await this.runApprovalDiscussionExecutor({
+      blueprint,
+      run,
+      request,
+      resolution,
+      message: trimmed,
+      discussionMode: "candidate"
+    });
+    if (result.status !== "succeeded") {
+      throw new Error(result.error ?? "Approval candidate generation failed.");
+    }
+    await this.appendApprovalAssistantReply(request, resolution, "candidate", formatTranscriptContent(result.output), runtimeRef);
+  }
+
+  private async resolveApprovalDiscussionForRequest(request: ApprovalRequest): Promise<ApprovalDiscussionResolution> {
+    const binding = await this.store.getApprovalDiscussionBinding(request.id);
+    const run = request.runId ? await this.store.getBlueprintRun(request.runId) : undefined;
+    const [nodeRuns, sessions] = request.runId
+      ? await Promise.all([
+          this.store.listNodeRuns(request.runId),
+          this.store.listNodeExecutionSessions({ runId: request.runId })
+        ])
+      : [[], []];
+    return resolveApprovalDiscussion({
+      request,
+      binding,
+      run,
+      nodeRuns,
+      sessions
+    });
+  }
+
+  private async runApprovalDiscussionExecutor(input: {
+    blueprint: BlueprintDefinition;
+    run: BlueprintRun;
+    request: ApprovalRequest;
+    resolution: ApprovalDiscussionResolution;
+    message: string;
+    discussionMode: InboxDiscussionMode;
+  }): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
+    const executor = input.resolution.executor;
+    if (!executor) throw new Error("Approval discussion executor is not bound.");
+
+    const [session, nodeRun, replies] = await Promise.all([
+      this.store.getNodeExecutionSession(executor.sessionId),
+      this.findNodeRunById(input.run.id, executor.nodeRunId),
+      this.store.listApprovalReplies({ threadId: approvalThreadIdForRequest(input.request) })
+    ]);
+    if (!session) throw new Error("Approval discussion executor session is missing.");
+    if (!session.nativeSessionId) throw new Error("Approval discussion executor session cannot be resumed.");
+    if (!nodeRun) throw new Error("Approval discussion executor node run is missing.");
+
+    await this.appendExecutionTranscriptEvent(session, "user", "user_message", input.message, {
+      approvalRequestId: input.request.id,
+      approvalDiscussionMode: input.discussionMode,
+      route: input.resolution.route
+    });
+
+    const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message, input.discussionMode);
+    const startInput = this.buildApprovalDiscussionStartInput(input.blueprint, nodeRun, session, input.resolution, taskInput);
+    return this.executeAgentTaskAttempt({
+      ...startInput,
+      nativeSessionId: session.nativeSessionId,
+      executionSessionPolicy: session.policy
+    }, {
+      session,
+      nodeRun,
+      resumeNativeSessionId: session.nativeSessionId
+    });
+  }
+
+  private buildApprovalDiscussionTaskInput(
+    request: ApprovalRequest,
+    replies: ApprovalReply[],
+    message: string,
+    discussionMode: InboxDiscussionMode
+  ): Record<string, unknown> {
+    return {
+      approvalDiscussion: {
+        requestId: request.id,
+        threadId: approvalThreadIdForRequest(request),
+        kind: request.kind,
+        title: request.title,
+        body: request.body,
+        mode: discussionMode,
+        latestUserMessage: message,
+        selectedReplyId: request.selectedReplyId,
+        instruction: discussionMode === "candidate"
+          ? "Create a reviewable candidate replacement output for this pending approval. Do not approve, reject, revise, or advance lifecycle state."
+          : "Reply conversationally to the human about this pending approval. Do not approve, reject, revise, or advance lifecycle state."
+      },
+      approvalReplies: replies.map((reply) => ({
+        id: reply.id,
+        actor: reply.actor,
+        purpose: reply.purpose ?? "message",
+        body: reply.body,
+        createdAt: reply.createdAt
+      }))
+    };
+  }
+
+  private buildApprovalDiscussionStartInput(
+    blueprint: BlueprintDefinition,
+    nodeRun: BlueprintNodeRun,
+    session: NodeExecutionSession,
+    resolution: ApprovalDiscussionResolution,
+    taskInput: Record<string, unknown>
+  ): StartAgentTaskInput {
+    const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+    if (!node) throw new Error("Approval discussion executor node is missing.");
+
+    if (isAgentBlueprintNode(node)) {
+      const config = node.config as AgentNodeConfig;
+      return {
+        blueprintRunId: nodeRun.blueprintRunId,
+        nodeRunId: nodeRun.id,
+        source: session.harnessId,
+        agentId: session.harnessId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: session.harnessId === "hermes" ? config.profileId : undefined,
+        agentName: config.agentName,
+        prompt: this.resolveAgentPrompt(config, { requiresHandoff: this.hasDownstreamConsumers(blueprint, node) }),
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
+        input: taskInput,
+        skillIds: config.skillIds,
+        tools: config.tools
+      };
+    }
+
+    if (node.type === "manager") {
+      const config = node.config as ManagerNodeConfig;
+      const prompt = resolution.route === "release_report_manager"
+        ? this.resolveManagerReleaseReportPrompt(config)
+        : this.resolveManagerPreflightPrompt(config, "revise_plan");
+      return {
+        blueprintRunId: nodeRun.blueprintRunId,
+        nodeRunId: nodeRun.id,
+        source: session.harnessId,
+        agentId: session.harnessId === "openclaw" ? config.openclawAgentId ?? "main" : undefined,
+        profileId: session.harnessId === "hermes" ? config.profileId : undefined,
+        agentName: config.agentName?.trim() || defaultManagerAgentName,
+        prompt,
+        modelId: config.modelId,
+        permissionProfile: config.permissionProfile,
+        runtimeAccessPolicy: config.runtimeAccessPolicy,
+        workingDirectory: config.workingDirectory,
+        timeoutMs: config.timeoutMs,
+        outputSchema: humanReportEnvelopeSchemaBase,
+        input: taskInput,
+        skillIds: config.skillIds,
+        tools: config.tools ?? []
+      };
+    }
+
+    throw new Error("Approval discussion executor node type is not supported.");
+  }
+
+  private async appendApprovalAssistantReply(
+    request: ApprovalRequest,
+    resolution: ApprovalDiscussionResolution,
+    purpose: "message" | "candidate",
+    body: string,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<ApprovalReply> {
+    return this.store.appendApprovalReply({
+      id: `approval-reply-${nanoid(10)}`,
+      threadId: approvalThreadIdForRequest(request),
+      approvalRequestId: request.id,
+      actor: resolution.binding?.executorActor ?? "agent",
+      purpose,
+      body,
+      createdAt: new Date().toISOString(),
+      metadata: {
+        source: "approval_discussion",
+        route: resolution.route,
+        runtimeRef
       }
     });
+  }
+
+  private async buildAgentApprovalDiscussionBindingDraft(
+    nodeRun: BlueprintNodeRun
+  ): Promise<ApprovalDiscussionBindingDraft> {
+    const session = this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({
+      runId: nodeRun.blueprintRunId,
+      nodeRunId: nodeRun.id
+    }));
+    return this.buildExecutorApprovalDiscussionBindingDraft({
+      route: "agent_approval",
+      executorActor: "agent",
+      executorNodeId: nodeRun.nodeId,
+      executorNodeRunId: nodeRun.id,
+      session,
+      missingReason: "agent_approval_session_missing",
+      canStreamReply: true,
+      canCreateCandidate: true
+    });
+  }
+
+  private async buildRequirementApprovalDiscussionBindingDraft(
+    run: BlueprintRun,
+    topManager: BlueprintNode,
+    command?: RunCommand
+  ): Promise<ApprovalDiscussionBindingDraft> {
+    const requirementStep = command
+      ? (await this.store.listRunCommandSteps({ commandId: command.id }))
+          .filter((step) => step.mode === "requirement_resolution" || step.mode === "revise_plan")
+          .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0]
+      : undefined;
+    const nodeRunId = requirementStep?.nodeRunId;
+    const session = nodeRunId
+      ? this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({ runId: run.id, nodeRunId }))
+      : undefined;
+    const executorNodeId = requirementStep?.nodeId ?? session?.nodeId ?? topManager.id;
+    const route: ApprovalDiscussionRoute = executorNodeId === topManager.id ? "requirement_manager" : "requirement_agent";
+    return this.buildExecutorApprovalDiscussionBindingDraft({
+      route,
+      executorActor: route === "requirement_manager" ? "manager" : "agent",
+      executorNodeId,
+      executorNodeRunId: nodeRunId,
+      session,
+      missingReason: "requirement_executor_session_missing",
+      canStreamReply: true,
+      canCreateCandidate: false
+    });
+  }
+
+  private buildExecutorApprovalDiscussionBindingDraft(input: {
+    route: ApprovalDiscussionRoute;
+    executorActor: NonNullable<ApprovalDiscussionBinding["executorActor"]>;
+    executorNodeId?: string;
+    executorNodeRunId?: string;
+    session?: NodeExecutionSession;
+    missingReason: string;
+    canStreamReply: boolean;
+    canCreateCandidate: boolean;
+  }): ApprovalDiscussionBindingDraft {
+    const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session && input.session.status !== "unavailable");
+    return {
+      mode: "executor",
+      route: input.route,
+      executorActor: input.executorActor,
+      executorKind: input.route,
+      executorNodeId: input.executorNodeId,
+      executorNodeRunId: input.executorNodeRunId,
+      executorSessionId: input.session?.id,
+      runtimeId: input.session?.harnessId as AgentRuntimeId | undefined,
+      canStreamReply: hasExecutor && input.canStreamReply,
+      canCreateCandidate: hasExecutor && input.canCreateCandidate,
+      reason: hasExecutor ? undefined : input.missingReason,
+      resolverVersion: 1
+    };
+  }
+
+  private latestNodeExecutionSession(sessions: NodeExecutionSession[]): NodeExecutionSession | undefined {
+    return sessions
+      .filter((session) => session.status !== "unavailable")
+      .sort((left, right) =>
+        new Date(right.lastUsedAt ?? right.updatedAt).getTime() -
+        new Date(left.lastUsedAt ?? left.updatedAt).getTime()
+      )[0];
   }
 
   async approveRun(
@@ -1189,7 +2121,8 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRunId?: string,
     comment?: string,
-    selectedReplyId?: string
+    selectedReplyId?: string | null,
+    approvalRequestId?: string
   ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
@@ -1203,51 +2136,36 @@ export class BlueprintWorker {
       throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
     }
 
-    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId);
+    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId, approvalRequestId);
     await this.completeNode(waiting, approvedOutput, waiting.runtimeRef);
+    await this.syncRunCommandStepsForNodeRun(waiting);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(blueprint, running);
+    const command = await this.ensureExecutionRunCommand(blueprint, running);
+    this.scheduleRun(blueprint, running, command);
     return running;
   }
 
   async selectApprovalReply(
     _blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    nodeRunId: string,
-    selectedReplyId: string
+    approvalRequestId: string,
+    selectedReplyId: string | null
   ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
       throw new Error("Run is already finished.");
     }
 
-    const nodeRuns = await this.store.listNodeRuns(run.id);
-    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
-    if (!waiting) {
-      throw new Error("Requested approval is no longer waiting.");
+    const request = await this.store.getApprovalRequest(approvalRequestId);
+    if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
+    if (request.runId !== run.id) {
+      throw new Error("Approval request does not belong to this run.");
     }
-    if (!isAgentApprovalWaitingOutput(waiting.output)) {
-      throw new Error("Only Agent approval requests can select a solution.");
-    }
-
-    const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId);
-    if (!normalizedSelectedReplyId) {
-      throw new Error("Approval selection id is required.");
-    }
-    const selectedOutput = applyAgentApprovalSelection(waiting.output, normalizedSelectedReplyId);
-
-    const updatedWaiting = {
-      ...waiting,
-      output: selectedOutput
-    };
-    await this.store.upsertNodeRun(updatedWaiting);
-    await this.migrationService.migratePendingNodeApproval({
-      runId: run.id,
-      nodeRun: updatedWaiting,
-      requestedByLabel: waiting.nodeLabel
-    });
+    await this.approvalService.selectApprovalCandidate(approvalRequestId, selectedReplyId);
     await this.managerMailProjector.refresh(run.id);
-    return { ...run, status: "waiting_approval" as const };
+    const waiting = { ...run, status: "waiting_approval" as const };
+    await this.store.updateBlueprintRun(waiting);
+    return waiting;
   }
 
   async rejectRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
@@ -1264,72 +2182,112 @@ export class BlueprintWorker {
     }
 
     await this.failNode(waiting, comment?.trim() || "Rejected by human reviewer.");
+    await this.syncRunCommandStepsForNodeRun(waiting);
     const running = { ...run, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(blueprint, running);
+    const command = await this.ensureExecutionRunCommand(blueprint, running);
+    this.scheduleRun(blueprint, running, command);
     return running;
   }
 
-  async replyToApproval(
+  private async rerunAgentApprovalForRequestedChanges(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    nodeRunId: string,
-    message: string
-  ): Promise<BlueprintRun> {
-    void blueprint;
-    if (this.isTerminalRunStatus(run.status)) {
-      throw new Error("Run is already finished.");
-    }
-
-    const request = (await this.store.listApprovalRequests({ runId: run.id, status: "pending" }))
-      .find((candidate) => candidate.nodeRunId === nodeRunId);
-    if (request) {
-      await this.approvalService.recordPendingReply(request.id, message);
-    }
-    await this.recordAgentApprovalComment(run, nodeRunId, message);
-    await this.managerMailProjector.refresh(run.id);
-    const nextRun = { ...run, status: "waiting_approval" as const };
-    await this.store.updateBlueprintRun(nextRun);
-    return nextRun;
-  }
-
-  private async recordAgentApprovalComment(
-    run: BlueprintRun,
-    nodeRunId: string,
+    request: ApprovalRequest,
+    pendingRequest: ApprovalRequest,
     message: string
   ): Promise<void> {
+    void pendingRequest;
+    const feedback = message.trim();
+    if (!feedback) throw new Error("Approval return_for_revision message is required.");
+    if (!request.nodeRunId) throw new Error("Agent approval request is missing nodeRunId.");
+
     const nodeRuns = await this.store.listNodeRuns(run.id);
-    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === nodeRunId);
-    if (!waiting) {
-      throw new Error("Requested approval is no longer waiting.");
-    }
-    if (!message.trim()) {
-      throw new Error("Approval reply message is required.");
-    }
+    const waiting = nodeRuns.find((nodeRun) => nodeRun.status === "waiting_approval" && nodeRun.id === request.nodeRunId);
+    if (!waiting) throw new Error("Requested approval is no longer waiting.");
     if (!isAgentApprovalWaitingOutput(waiting.output)) {
-      throw new Error("Only Agent approval requests can receive replies.");
+      throw new Error("Only Agent approval requests can be regenerated.");
+    }
+    const node = blueprint.nodes.find((candidate) => candidate.id === waiting.nodeId);
+    if (!node || !isAgentBlueprintNode(node)) {
+      throw new Error("Agent approval node was not found.");
     }
 
-    const now = new Date().toISOString();
-    const userReply: AgentApprovalReply = {
-      id: `approval-reply-${nanoid(10)}`,
-      role: "user",
-      body: message.trim(),
-      createdAt: now
+    const revisionContext: PendingApprovalRevisionContext = {
+      threadId: request.threadId,
+      replacesRequestId: request.id,
+      revision: request.revision + 1,
+      requestedChanges: feedback
     };
-    const repliedNodeRun: BlueprintNodeRun = {
+    this.pendingApprovalRevisionContexts.set(waiting.id, revisionContext);
+    const revisionInput = buildAgentApprovalRevisionInput(
+      waiting.input,
+      waiting.output.reviewOutput,
+      waiting.output.replies,
+      feedback,
+      revisionContext
+    );
+    const rerunNodeRun = await this.store.createQueuedNodeRun({
       ...waiting,
-      output: {
-        ...waiting.output,
-        replies: markSelectedApprovalReplies([...waiting.output.replies, userReply], waiting.output.selectedReplyId)
-      }
-    };
-    await this.store.upsertNodeRun(repliedNodeRun);
-    await this.migrationService.migratePendingNodeApproval({
-      runId: run.id,
-      nodeRun: repliedNodeRun,
-      requestedByLabel: waiting.nodeLabel
+      input: revisionInput,
+      output: undefined,
+      runtimeRef: undefined,
+      usage: undefined
     });
+    let rerunResult: AgentTaskResult;
+    try {
+      rerunResult = await this.executeAgentNodeWithInput(
+        blueprint,
+        run,
+        node,
+        rerunNodeRun,
+        revisionInput
+      );
+    } catch (error) {
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    } finally {
+      this.pendingApprovalRevisionContexts.delete(waiting.id);
+    }
+
+    if (rerunResult.status !== "succeeded") {
+      const error = new Error(rerunResult.error ?? "Agent revision failed before creating a new approval request.");
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    }
+
+    const nextRequest = (await this.store.listApprovalRequests({ runId: run.id, status: "pending" }))
+      .find((candidate) => candidate.replacesRequestId === request.id && candidate.nodeRunId === request.nodeRunId);
+    if (!nextRequest) {
+      const error = new Error("Agent revision completed without creating a new pending approval request.");
+      await this.restoreOriginalAgentApprovalAfterRevisionFailure(run, waiting, error);
+      throw error;
+    }
+    await this.supersedeOriginalApprovalIfPending(request.id, nextRequest.id);
+  }
+
+  private async supersedeOriginalApprovalIfPending(replacesRequestId: string, nextRequestId: string): Promise<void> {
+    const current = await this.store.getApprovalRequest(replacesRequestId);
+    if (!current) return;
+    if (current.status === "pending") {
+      await this.approvalService.markSupersededByRevision(replacesRequestId, nextRequestId);
+      return;
+    }
+    if (current.status === "superseded" && current.supersededByRequestId !== nextRequestId) {
+      throw new Error(`Approval request ${replacesRequestId} was superseded by ${current.supersededByRequestId}, not ${nextRequestId}.`);
+    }
+  }
+
+  private async restoreOriginalAgentApprovalAfterRevisionFailure(
+    run: BlueprintRun,
+    waiting: BlueprintNodeRun,
+    error: unknown
+  ): Promise<void> {
+    await this.store.upsertNodeRun(waiting);
+    await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" });
+    const message = error instanceof Error ? error.message : String(error);
+    await this.event(run.id, "node.run.waiting_approval", `${waiting.nodeLabel} revision failed; original approval remains pending: ${message}`, waiting.id);
+    await this.managerMailProjector.refresh(run.id);
   }
 
   async cancelRun(run: BlueprintRun): Promise<BlueprintRun> {
@@ -1361,13 +2319,13 @@ export class BlueprintWorker {
     return cancelled;
   }
 
-  private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun): void {
+  private scheduleRun(blueprint: BlueprintDefinition, run: BlueprintRun, command: RunCommand): void {
     if (this.activeRuns.has(run.id)) {
-      this.pendingRunSchedules.set(run.id, { blueprint, run });
+      this.pendingRunSchedules.set(run.id, { blueprint, run, command });
       return;
     }
 
-    const execution = this.runUntilBlockedOrDone(blueprint, run)
+    const execution = this.runUntilBlockedOrDone(blueprint, run, command)
       .catch((error) => this.handleBackgroundRunError(blueprint, run, error))
       .finally(async () => {
         this.activeRuns.delete(run.id);
@@ -1395,7 +2353,7 @@ export class BlueprintWorker {
 
     const running = { ...nextRun, status: "running" as const };
     await this.store.updateBlueprintRun(running);
-    this.scheduleRun(pending.blueprint, running);
+    this.scheduleRun(pending.blueprint, running, pending.command);
     return true;
   }
 
@@ -1412,8 +2370,9 @@ export class BlueprintWorker {
     await this.store.updateBlueprintRun(failed);
   }
 
-  private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<void> {
+  private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun, command: RunCommand): Promise<void> {
     const startedAt = new Date(run.startedAt).getTime();
+    let runningCommand = await this.markRunCommandRunning(command, command.currentStep ?? "node_execution");
 
     while (true) {
       if (await this.isRunCancelled(run.id)) {
@@ -1433,6 +2392,7 @@ export class BlueprintWorker {
         await this.cancelOpenNodeRuns(run.id, `Run stopped after ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
         const latestRun = await this.store.getBlueprintRun(run.id);
         const failed = await this.applyRunTotals(latestRun ?? run, startedAt, "failed");
+        await this.markRunCommandFailed(runningCommand, `Node ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} failed at node ${failedNodeRun.nodeLabel}.`);
         await this.store.updateBlueprintRun(failed);
         return;
@@ -1442,6 +2402,12 @@ export class BlueprintWorker {
         continue;
       }
       if (nodeRuns.some((nodeRun) => nodeRun.status === "waiting_approval")) {
+        const waitingStep = await this.findCommandStepForWaitingNode(runningCommand, nodeRuns);
+        if (waitingStep) {
+          const waitingNodeRun = nodeRuns.find((nodeRun) => nodeRun.id === waitingStep.nodeRunId);
+          await this.markRunCommandStepWaitingForApproval(waitingStep, waitingNodeRun?.runtimeRef);
+        }
+        runningCommand = await this.markRunCommandWaitingForApproval(runningCommand, "node_execution");
         await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" });
         return;
       }
@@ -1459,7 +2425,7 @@ export class BlueprintWorker {
             !this.hasCurrentTerminalNodeRun(blueprint, node, nodeRuns)
         );
         if (pending.length === 0) {
-          const selfIterationPublishResult = await this.publishSelfIterationRoundIfNeeded(blueprint, run, nodeRuns);
+          const selfIterationPublishResult = await this.publishSelfIterationRoundIfNeeded(blueprint, run, nodeRuns, runningCommand);
           if (selfIterationPublishResult === "continue") {
             continue;
           }
@@ -1467,25 +2433,29 @@ export class BlueprintWorker {
             return;
           }
           const completed = await this.applyRunTotals(run, startedAt, "succeeded");
+          await this.markRunCommandSucceeded(runningCommand);
           await this.event(run.id, "blueprint.run.completed", `Blueprint ${blueprint.name} completed.`);
           await this.store.updateBlueprintRun(completed);
           return;
         }
 
         const failed = await this.applyRunTotals(run, startedAt, "failed");
+        await this.markRunCommandFailed(runningCommand, `Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} could not continue. Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
         await this.store.updateBlueprintRun(failed);
         return;
       }
 
-      await Promise.all(readyNodes.map((node) => this.executeNode(blueprint, run, node)));
+      await Promise.all(readyNodes.map((node) => this.executeNodeFromCommandStep(blueprint, run, node, runningCommand)));
     }
   }
 
   private async publishSelfIterationRoundIfNeeded(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
-    nodeRuns: BlueprintNodeRun[]
+    nodeRuns: BlueprintNodeRun[],
+    executeCommand?: RunCommand,
+    releaseCommandInput?: RunCommand
   ): Promise<SelfIterationPublishResult> {
     const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
     if (!topManager) return "none";
@@ -1518,7 +2488,12 @@ export class BlueprintWorker {
       const nodeRun = nodeRunsById.get(report.nodeRunId);
       return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
     });
-    const summary = await this.writeSelfIterationReleaseReport({
+    if (executeCommand?.kind === executeRoundCommandKind) {
+      await this.markRunCommandSucceeded(executeCommand);
+    }
+    const releaseCommand = releaseCommandInput ?? await this.ensureSelfIterationReleaseReportCommand(blueprint, run, executingRound.id);
+    const runningReleaseCommand = await this.markRunCommandRunning(releaseCommand, "release_report");
+    const releaseReportDraft = await this.writeSelfIterationReleaseReport({
       blueprint,
       run,
       round: executingRound,
@@ -1535,21 +2510,26 @@ export class BlueprintWorker {
       },
       artifacts,
       agentReports: releaseAgentReports,
-      agentHandoffs
+      agentHandoffs,
+      command: runningReleaseCommand
     });
-    await this.iterationService.publishExecutionResult({
+    const published = await this.iterationService.publishExecutionResult({
       run,
       managerNode: topManager,
-      summary,
-      artifacts
+      summary: releaseReportDraft.summary,
+      artifacts,
+      discussionBinding: releaseReportDraft.discussionBinding
     });
     const autoAdvanced = await this.autoAdvanceSelfIterationApprovals(blueprint, run, { scheduleOnResume: false });
     if (autoAdvanced?.completeRun) {
+      await this.markRunCommandSucceeded(runningReleaseCommand);
       return "handled";
     }
     if (autoAdvanced?.resumeExecution) {
+      await this.markRunCommandSucceeded(runningReleaseCommand);
       return "continue";
     }
+    await this.markRunCommandWaitingForApproval(runningReleaseCommand, "release_report");
     const waiting = { ...run, status: "waiting_approval" as const };
     await this.store.updateBlueprintRun(waiting);
     await this.managerMailProjector.refresh(run.id);
@@ -1567,7 +2547,8 @@ export class BlueprintWorker {
     artifacts: Array<{ id: string; title?: string; kind: string; downloadUrl?: string; relativePath?: string; storagePath?: string }>;
     agentReports: AgentHumanReport[];
     agentHandoffs: AgentHandoff[];
-  }): Promise<string> {
+    command?: RunCommand;
+  }): Promise<SelfIterationReleaseReportResult> {
     const config = input.managerNode.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
     const taskInput = {
@@ -1598,7 +2579,39 @@ export class BlueprintWorker {
         payload: handoff.payload
       }))
     };
-    let nodeRun = await this.createRunningNodeRun(input.blueprint, input.run, input.managerNode, taskInput);
+    let step: RunCommandStep | undefined;
+    let nodeRun: BlueprintNodeRun;
+    let shouldExecute = true;
+    if (input.command) {
+      const started = await this.createRunningNodeRunFromCommandStep(
+        input.blueprint,
+        input.run,
+        input.managerNode,
+        input.command,
+        taskInput,
+        "release_report"
+      );
+      step = started.step;
+      nodeRun = started.nodeRun;
+      shouldExecute = started.shouldExecute;
+    } else {
+      nodeRun = await this.createRunningNodeRun(input.blueprint, input.run, input.managerNode, taskInput);
+    }
+
+    if (!shouldExecute) {
+      if (nodeRun.status === "succeeded") {
+        return this.buildSelfIterationReleaseReportResult(input.run.id, input.managerNode, nodeRun);
+      }
+      if (nodeRun.status !== "running") {
+        const error = `Manager release report node run ${nodeRun.id} is ${nodeRun.status}; cannot resume without restarting.`;
+        if (step) await this.syncRunCommandStepFromNodeRun(step);
+        throw new Error(error);
+      }
+      const result = await this.waitForExistingNodeTask(nodeRun);
+      const runtimeRef = runtimeRefFromAgentTaskResult(result, nodeRun.runtimeRef);
+      return this.finishSelfIterationReleaseReportTask(input.run.id, input.managerNode, nodeRun, step, result, runtimeRef);
+    }
+
     const { result, runtimeRef } = await this.runAgentTask({
       blueprintRunId: input.run.id,
       nodeRunId: nodeRun.id,
@@ -1619,18 +2632,67 @@ export class BlueprintWorker {
     }, async (startedRef) => {
       nodeRun = await this.recordNodeRuntimeRef(nodeRun, startedRef);
     });
+    return this.finishSelfIterationReleaseReportTask(input.run.id, input.managerNode, nodeRun, step, result, runtimeRef);
+  }
+
+  private async finishSelfIterationReleaseReportTask(
+    runId: string,
+    managerNode: BlueprintNode,
+    nodeRun: BlueprintNodeRun,
+    step: RunCommandStep | undefined,
+    result: AgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<SelfIterationReleaseReportResult> {
     if (result.status !== "succeeded") {
+      if (step) await this.markRunCommandStepFailed({ ...step, nodeRunId: nodeRun.id }, result.error ?? `Manager release report run ${result.status}.`);
       await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.error ?? `Manager release report run ${result.status}.`);
       throw new Error(result.error ?? `Manager release report run ${result.status}.`);
     }
     const humanReport = this.agentReportService.extractHumanReport(result.output);
     if (!humanReport?.bodyMd) {
       const error = "Manager release report run did not return humanReportMd.";
+      if (step) await this.markRunCommandStepFailed({ ...step, nodeRunId: nodeRun.id }, error);
       await this.failNode({ ...nodeRun, runtimeRef, usage: result.usage }, error);
       throw new Error(error);
     }
     await this.completeNode({ ...nodeRun, runtimeRef, usage: result.usage }, result.output, runtimeRef);
-    return humanReport.bodyMd;
+    if (step) await this.markRunCommandStepSucceeded({ ...step, nodeRunId: nodeRun.id }, result);
+    return this.buildSelfIterationReleaseReportResult(runId, managerNode, {
+      ...nodeRun,
+      status: "succeeded",
+      output: result.output,
+      runtimeRef,
+      usage: result.usage,
+      endedAt: result.updatedAt
+    });
+  }
+
+  private async buildSelfIterationReleaseReportResult(
+    runId: string,
+    managerNode: BlueprintNode,
+    nodeRun: BlueprintNodeRun
+  ): Promise<SelfIterationReleaseReportResult> {
+    const humanReport = this.agentReportService.extractHumanReport(nodeRun.output);
+    if (!humanReport?.bodyMd) {
+      throw new Error("Manager release report run did not return humanReportMd.");
+    }
+    const session = this.latestNodeExecutionSession(await this.store.listNodeExecutionSessions({
+      runId,
+      nodeRunId: nodeRun.id
+    }));
+    return {
+      summary: humanReport.bodyMd,
+      discussionBinding: this.buildExecutorApprovalDiscussionBindingDraft({
+        route: "release_report_manager",
+        executorActor: "manager",
+        executorNodeId: managerNode.id,
+        executorNodeRunId: nodeRun.id,
+        session,
+        missingReason: "release_report_executor_session_missing",
+        canStreamReply: true,
+        canCreateCandidate: false
+      })
+    };
   }
 
   private async buildManagerSnapshotDraft(
@@ -1739,10 +2801,16 @@ export class BlueprintWorker {
       }
 
       if (lifecycle.resumeExecution) {
+        if (request.kind === "iteration_requirement_plan" && request.roundId) {
+          await this.markPrepareCommandsForRoundSucceeded(currentRun.id, request.roundId);
+        }
         const running = { ...currentRun, status: "running" as const };
         await this.store.updateBlueprintRun(running);
         if (options.scheduleOnResume !== false) {
-          this.scheduleRun(blueprint, running);
+          const command = request.kind === "iteration_requirement_plan" && request.roundId
+            ? await this.ensureSelfIterationExecuteCommand(blueprint, running, request.roundId)
+            : await this.ensureExecutionRunCommand(blueprint, running);
+          this.scheduleRun(blueprint, running, command);
         }
         return { run: running, changed, resumeExecution: true, completeRun: false };
       }
@@ -1924,7 +2992,8 @@ export class BlueprintWorker {
     );
     if (hasRunningChild) return false;
 
-    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, context, scopeStartIndex);
+    const command = await this.ensureExecutionRunCommand(blueprint, run);
+    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, command, context, scopeStartIndex);
     return true;
   }
 
@@ -2070,7 +3139,8 @@ export class BlueprintWorker {
           ...(managerDecision ? { managerDecision } : {}),
           previousResults: this.managerPreviousResultsFromTrace(trace)
         };
-        await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, context);
+        const command = await this.ensureExecutionRunCommand(blueprint, run);
+        await this.executeManagerAssignment(blueprint, run, node, nodeRunWithInput, assignment, command, context);
         return true;
       }
 
@@ -2133,15 +3203,28 @@ export class BlueprintWorker {
     managerNode: BlueprintNode,
     managerRun: BlueprintNodeRun,
     assignment: { target: BlueprintNode; returnEdgePresent: boolean },
+    command: RunCommand,
     context: ManagerSlotContext
   ): Promise<AgentTaskResult> {
     if (isAgentBlueprintNode(assignment.target)) {
-      const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
-      return this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, context);
+      const { nodeRun, step, shouldExecute } = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, context);
+      if (!shouldExecute) {
+        await this.syncRunCommandStepFromNodeRun(step);
+        return this.nodeRunToAgentTaskResult(nodeRun);
+      }
+      const result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, nodeRun, context);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
     if (assignment.target.type === "manager_slot") {
-      const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, context);
-      return this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, context);
+      const { nodeRun, step, shouldExecute } = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, context);
+      if (!shouldExecute) {
+        await this.syncRunCommandStepFromNodeRun(step);
+        return this.nodeRunToAgentTaskResult(nodeRun);
+      }
+      const result = await this.executeManagerSlotNode(blueprint, run, assignment.target, nodeRun, command, context);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
     if (assignment.target.type === "manager") {
       const managerUpstreamInput: UpstreamOutput = [
@@ -2153,8 +3236,20 @@ export class BlueprintWorker {
           context
         }
       ];
-      const nestedManagerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
-      return this.executeManagerNode(blueprint, run, assignment.target, nestedManagerRun, managerUpstreamInput);
+      const { nodeRun, step, shouldExecute } = await this.createRunningNodeRunFromCommandStep(
+        blueprint,
+        run,
+        assignment.target,
+        command,
+        { upstream: managerUpstreamInput }
+      );
+      if (!shouldExecute) {
+        await this.syncRunCommandStepFromNodeRun(step);
+        return this.nodeRunToAgentTaskResult(nodeRun);
+      }
+      const result = await this.executeManagerNode(blueprint, run, assignment.target, nodeRun, command, managerUpstreamInput);
+      await this.syncRunCommandStepFromNodeRun(step);
+      return result;
     }
 
     const error = `Manager slot ${context.manager.slot} targets unsupported node type ${assignment.target.type}.`;
@@ -2583,7 +3678,9 @@ export class BlueprintWorker {
       taskId: runtimeRef?.taskId ?? sourceId,
       runId: runtimeRef?.runId ?? sourceId,
       sessionKey: runtimeRef?.sessionKey ?? "",
+      nativeSessionId: runtimeRef?.sessionKey,
       source: runtimeRef?.source ?? "openclaw",
+      resumeMode: "started",
       status,
       output: nodeRun.output === undefined ? undefined : stringifyManagerSlotOutput(nodeRun.output),
       error: nodeRun.error,
@@ -2625,11 +3722,87 @@ export class BlueprintWorker {
     });
   }
 
-  private async executeNode(blueprint: BlueprintDefinition, run: BlueprintRun, node: BlueprintNode): Promise<void> {
+  private async findCommandStepForWaitingNode(
+    command: RunCommand,
+    nodeRuns: BlueprintNodeRun[]
+  ): Promise<RunCommandStep | undefined> {
+    const waitingNodeRunIds = new Set(nodeRuns.filter((nodeRun) => nodeRun.status === "waiting_approval").map((nodeRun) => nodeRun.id));
+    if (waitingNodeRunIds.size === 0) return undefined;
+    return (await this.store.listRunCommandSteps({ commandId: command.id }))
+      .filter((step) => step.nodeRunId && waitingNodeRunIds.has(step.nodeRunId))
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+  }
+
+  private async findCompletedPrepareDecisionStep(command: RunCommand): Promise<RunCommandStep | undefined> {
+    if (command.kind !== prepareRoundCommandKind) return undefined;
+    return (await this.store.listRunCommandSteps({ commandId: command.id }))
+      .filter((step) =>
+        (step.mode === "requirement_resolution" || step.mode === "revise_plan") &&
+        step.status === "succeeded"
+      )
+      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
+  }
+
+  private async ensureNodeExecutionCommandStep(
+    command: RunCommand,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    mode: RunCommandStepMode = "node_execution"
+  ): Promise<RunCommandStep> {
+    const existingSteps = (await this.store.listRunCommandSteps({ commandId: command.id }))
+      .filter((step) => step.mode === mode && step.nodeId === node.id)
+      .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+    const activeStep = existingSteps.find((step) => activeRunCommandStepStatuses.includes(step.status));
+    if (activeStep) {
+      return activeStep;
+    }
+
+    const attempt = existingSteps.length + 1;
+    const stepKey = buildRunCommandStepKey(command, mode, node.id, attempt);
+    const now = new Date().toISOString();
+    const { step } = await this.store.createRunCommandStepIfAbsent({
+      id: deterministicFactId("run-command-step", stepKey),
+      commandId: command.id,
+      stepKey,
+      runId: run.id,
+      roundId: command.roundId,
+      revision: command.currentRevision,
+      mode,
+      nodeId: node.id,
+      status: "queued",
+      createdAt: now,
+      updatedAt: now
+    });
+    return step;
+  }
+
+  private async executeNodeFromCommandStep(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand
+  ): Promise<void> {
+    const step = await this.ensureNodeExecutionCommandStep(command, run, node);
+    await this.executeNode(blueprint, run, node, command, step);
+  }
+
+  private async executeNode(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand,
+    step: RunCommandStep
+  ): Promise<void> {
     const input = await this.collectStandardNodeInput(blueprint, run.id, node);
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
+    const started = await this.createRunningNodeRunFromExistingStep(blueprint, run, node, step, input);
+    const nodeRun = started.nodeRun;
+    const runningStep = started.step;
+    if (!started.shouldExecute) {
+      return;
+    }
     if (this.cancelledRunIds.has(run.id)) {
       await this.cancelNodeRun(nodeRun, "Run stopped by user.");
+      await this.markRunCommandStepFailed({ ...runningStep, nodeRunId: nodeRun.id }, "Run stopped by user.");
       return;
     }
 
@@ -2637,7 +3810,7 @@ export class BlueprintWorker {
       if (isAgentBlueprintNode(node)) {
         await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
       } else if (node.type === "manager") {
-        await this.executeManagerNode(blueprint, run, node, nodeRun, input.upstream);
+        await this.executeManagerNode(blueprint, run, node, nodeRun, command, input.upstream);
       } else if (node.type === "manager_slot") {
         await this.failNode(nodeRun, "Manager slot nodes can only run when called by their manager.");
       } else if (node.type === "loop") {
@@ -2651,18 +3824,20 @@ export class BlueprintWorker {
       const message = error instanceof Error ? error.message : "Unknown node failure";
       await this.failNode(nodeRun, message);
     }
+    await this.syncRunCommandStepFromNodeRun({ ...runningStep, nodeRunId: nodeRun.id });
   }
 
   private async createRunningNodeRun(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
-    input?: unknown
+    input?: unknown,
+    nodeRunId?: string
   ): Promise<BlueprintNodeRun> {
     const now = new Date().toISOString();
     const iterationRoundId = await this.currentExecutingRoundId(run.id);
     const nodeRun: BlueprintNodeRun = {
-      id: `node-run-${nanoid(10)}`,
+      id: nodeRunId ?? `node-run-${nanoid(10)}`,
       blueprintRunId: run.id,
       blueprintId: blueprint.id,
       nodeId: node.id,
@@ -2693,6 +3868,80 @@ export class BlueprintWorker {
     });
     await this.event(run.id, "node.run.started", `${node.config.label} started.`, nodeRun.id);
     return { ...claim.nodeRun, input, startedAt: claim.nodeRun.startedAt ?? now };
+  }
+
+  private async createRunningNodeRunFromCommandStep(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    command: RunCommand,
+    input?: unknown,
+    mode: RunCommandStepMode = "node_execution"
+  ): Promise<{ nodeRun: BlueprintNodeRun; step: RunCommandStep; shouldExecute: boolean }> {
+    const step = await this.ensureNodeExecutionCommandStep(command, run, node, mode);
+    return this.createRunningNodeRunFromExistingStep(blueprint, run, node, step, input);
+  }
+
+  private async createRunningNodeRunFromExistingStep(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    node: BlueprintNode,
+    step: RunCommandStep,
+    input?: unknown
+  ): Promise<{ nodeRun: BlueprintNodeRun; step: RunCommandStep; shouldExecute: boolean }> {
+    if (step.nodeRunId) {
+      const existing = await this.findNodeRunById(run.id, step.nodeRunId);
+      if (existing) {
+        const nodeRun = existing.status === "queued"
+          ? await this.startExistingQueuedNodeRun(existing, input)
+          : existing;
+        const syncedStep = await this.syncRunCommandStepFromNodeRun({ ...step, nodeRunId: nodeRun.id });
+        return { nodeRun, step: syncedStep, shouldExecute: existing.status === "queued" };
+      }
+    }
+
+    const nodeRun = await this.createRunningNodeRun(
+      blueprint,
+      run,
+      node,
+      input,
+      step.nodeRunId ?? stableNodeExecutionNodeRunId(step.stepKey)
+    );
+    const runningStep = await this.markRunCommandStepRunning({ ...step, nodeRunId: nodeRun.id }, nodeRun.runtimeRef);
+    return { nodeRun, step: runningStep, shouldExecute: true };
+  }
+
+  private async startExistingQueuedNodeRun(
+    nodeRun: BlueprintNodeRun,
+    input?: unknown
+  ): Promise<BlueprintNodeRun> {
+    const now = new Date().toISOString();
+    const claim = await this.store.claimNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: this.workerId,
+      leaseMs: this.nodeRunLeaseMs
+    });
+    if (!claim.claimed || !claim.nodeRun || claim.workerEpoch === undefined) {
+      throw new Error(`Node run ${nodeRun.id} could not be claimed by ${this.workerId}.`);
+    }
+    this.nodeRunClaims.set(nodeRun.id, { owner: this.workerId, workerEpoch: claim.workerEpoch });
+    const startedAt = nodeRun.startedAt ?? now;
+    const nodeInput = nodeRun.input === undefined ? input : nodeRun.input;
+    await this.store.startNodeRun({
+      nodeRunId: nodeRun.id,
+      owner: this.workerId,
+      workerEpoch: claim.workerEpoch,
+      startedAt,
+      ...(nodeInput === undefined ? {} : { input: nodeInput }),
+      ...(nodeRun.runtimeRef ? { runtimeRef: nodeRun.runtimeRef } : {})
+    });
+    await this.event(nodeRun.blueprintRunId, "node.run.started", `${nodeRun.nodeLabel} started.`, nodeRun.id);
+    return (await this.findNodeRunById(nodeRun.blueprintRunId, nodeRun.id)) ?? {
+      ...nodeRun,
+      status: "running",
+      startedAt,
+      ...(nodeInput === undefined ? {} : { input: nodeInput })
+    };
   }
 
   private async executeAgentNode(
@@ -2737,6 +3986,7 @@ export class BlueprintWorker {
       runtimeAccessPolicy: config.runtimeAccessPolicy,
       workingDirectory: config.workingDirectory,
       timeoutMs: config.timeoutMs,
+      executionSessionPolicy: this.resolveExecutionSessionPolicy(node.config),
       outputSchema: buildAgentOutputEnvelopeSchema(config.outputSchema),
       input: crossRoundInput.input,
       skillIds: config.skillIds,
@@ -2765,6 +4015,10 @@ export class BlueprintWorker {
 
   private agentWorkspaceForNode(blueprint: BlueprintDefinition, node: BlueprintNode & { type: "agent" }): AgentWorkspaceRef {
     return agentWorkspaceRefForNode(this.store.getBlueprintWorkspacePath(blueprint.id), node);
+  }
+
+  private resolveExecutionSessionPolicy(config: Pick<AgentNodeConfig, "crossRoundContextMode">): NodeExecutionSessionPolicy {
+    return resolveCrossRoundContextMode(config) === "off" ? "refresh_per_run" : "preserve_across_rounds";
   }
 
   private async withNodeCrossRoundContext(input: {
@@ -2840,6 +4094,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     node: BlueprintNode,
     nodeRun: BlueprintNodeRun,
+    command: RunCommand,
     upstream?: UpstreamOutput
   ): Promise<AgentTaskResult> {
     const config = node.config as ManagerNodeConfig;
@@ -2949,15 +4204,22 @@ export class BlueprintWorker {
 
       let result: AgentTaskResult;
       let participantNodeRun: BlueprintNodeRun | undefined;
+      let participantStep: RunCommandStep | undefined;
 
       if (isAgentBlueprintNode(assignment.target)) {
-        const participantRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
-        participantNodeRun = participantRun;
-        result = await this.executeAgentNodeWithInput(blueprint, run, assignment.target, participantRun, managerContext);
+        const started = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, managerContext);
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = started.shouldExecute
+          ? await this.executeAgentNodeWithInput(blueprint, run, assignment.target, started.nodeRun, managerContext)
+          : this.nodeRunToAgentTaskResult(started.nodeRun);
       } else if (assignment.target.type === "manager_slot") {
-        const slotRun = await this.createRunningNodeRun(blueprint, run, assignment.target, managerContext);
-        participantNodeRun = slotRun;
-        result = await this.executeManagerSlotNode(blueprint, run, assignment.target, slotRun, managerContext);
+        const started = await this.createRunningNodeRunFromCommandStep(blueprint, run, assignment.target, command, managerContext);
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = started.shouldExecute
+          ? await this.executeManagerSlotNode(blueprint, run, assignment.target, started.nodeRun, command, managerContext)
+          : this.nodeRunToAgentTaskResult(started.nodeRun);
       } else if (assignment.target.type === "manager") {
         const managerUpstreamInput: UpstreamOutput = [
           {
@@ -2968,13 +4230,26 @@ export class BlueprintWorker {
             context: managerContext
           }
         ];
-        const managerRun = await this.createRunningNodeRun(blueprint, run, assignment.target, { upstream: managerUpstreamInput });
-        participantNodeRun = managerRun;
-        result = await this.executeManagerNode(blueprint, run, assignment.target, managerRun, managerUpstreamInput);
+        const started = await this.createRunningNodeRunFromCommandStep(
+          blueprint,
+          run,
+          assignment.target,
+          command,
+          { upstream: managerUpstreamInput }
+        );
+        participantNodeRun = started.nodeRun;
+        participantStep = started.step;
+        result = started.shouldExecute
+          ? await this.executeManagerNode(blueprint, run, assignment.target, started.nodeRun, command, managerUpstreamInput)
+          : this.nodeRunToAgentTaskResult(started.nodeRun);
       } else {
         const error = `Manager slot ${slot} targets unsupported node type ${assignment.target.type}.`;
         await this.failNode(nodeRunWithInput, error);
         return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
+      }
+
+      if (participantStep) {
+        await this.syncRunCommandStepFromNodeRun(participantStep);
       }
 
       const latestParticipantRun = participantNodeRun
@@ -3038,6 +4313,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     slotNode: BlueprintNode,
     slotRun: BlueprintNodeRun,
+    command: RunCommand,
     context: ManagerSlotContext,
     existingScopeStartIndex?: number
   ): Promise<AgentTaskResult> {
@@ -3094,6 +4370,7 @@ export class BlueprintWorker {
               blueprint,
               run,
               node,
+              command,
               await this.collectScopedUpstreamOutputs(blueprint, slotNode, slotRunWithInput, node, nodeRuns, scopeStartIndex, boundaryOutput),
               context
             )
@@ -3122,6 +4399,7 @@ export class BlueprintWorker {
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     node: BlueprintNode,
+    command: RunCommand,
     upstream: UpstreamOutput,
     managerContext?: ManagerSlotContext
   ): Promise<void> {
@@ -3133,7 +4411,11 @@ export class BlueprintWorker {
           ...(managerContext.managerDecision ? { managerDecision: managerContext.managerDecision } : {})
         }
       : { upstream };
-    const nodeRun = await this.createRunningNodeRun(blueprint, run, node, input);
+    const { nodeRun, step, shouldExecute } = await this.createRunningNodeRunFromCommandStep(blueprint, run, node, command, input);
+    if (!shouldExecute) {
+      await this.syncRunCommandStepFromNodeRun(step);
+      return;
+    }
     if (isAgentBlueprintNode(node)) {
       await this.executeAgentNodeWithInput(blueprint, run, node, nodeRun, input);
     } else if (node.type === "condition") {
@@ -3143,6 +4425,7 @@ export class BlueprintWorker {
     } else {
       await this.failNode(nodeRun, `Node type ${node.type} is not supported inside a manager slot yet.`);
     }
+    await this.syncRunCommandStepFromNodeRun(step);
   }
 
   private isScopedReadyNode(
@@ -3322,7 +4605,9 @@ export class BlueprintWorker {
       taskId: nodeRunId,
       runId: nodeRunId,
       sessionKey: `manager-slot:${nodeRunId}`,
+      nativeSessionId: `manager-slot:${nodeRunId}`,
       source: "openclaw",
+      resumeMode: "started",
       status,
       output,
       error,
@@ -3442,9 +4727,7 @@ export class BlueprintWorker {
   private async waitForAgentApproval(
     nodeRun: BlueprintNodeRun,
     reviewOutput: unknown,
-    replies: AgentApprovalReply[] = [],
-    selectedReplyId?: string,
-    selectedOutput?: unknown
+    replies: AgentApprovalReply[] = []
   ): Promise<void> {
     const waiting: BlueprintNodeRun = {
       ...nodeRun,
@@ -3452,19 +4735,25 @@ export class BlueprintWorker {
       output: {
         approvalType: "agent",
         reviewOutput,
-        replies: markSelectedApprovalReplies(replies, selectedReplyId),
-        ...(selectedReplyId ? { selectedReplyId } : {}),
-        ...(selectedOutput !== undefined ? { selectedOutput } : {})
+        replies
       } satisfies AgentApprovalWaitingOutput
     };
     await this.store.upsertNodeRun(waiting);
     this.nodeRunClaims.delete(nodeRun.id);
     await this.event(nodeRun.blueprintRunId, "node.run.waiting_approval", `${nodeRun.nodeLabel} is waiting for approval.`, nodeRun.id);
-    await this.migrationService.migratePendingNodeApproval({
+    const revisionContext = readApprovalRevisionContext(nodeRun.input) ?? this.pendingApprovalRevisionContexts.get(nodeRun.id);
+    const migratedRequest = await this.migrationService.migratePendingNodeApproval({
       runId: nodeRun.blueprintRunId,
       nodeRun: waiting,
-      requestedByLabel: nodeRun.nodeLabel
+      requestedByLabel: nodeRun.nodeLabel,
+      threadId: revisionContext?.threadId,
+      replacesRequestId: revisionContext?.replacesRequestId,
+      revision: revisionContext?.revision,
+      discussionBinding: await this.buildAgentApprovalDiscussionBindingDraft(waiting)
     });
+    if (revisionContext?.replacesRequestId && migratedRequest?.id) {
+      await this.supersedeOriginalApprovalIfPending(revisionContext.replacesRequestId, migratedRequest.id);
+    }
     await this.managerMailProjector.refresh(nodeRun.blueprintRunId);
   }
 
@@ -3473,14 +4762,49 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRun: BlueprintNodeRun,
     comment?: string,
-    selectedReplyId?: string
+    selectedReplyId?: string | null,
+    approvalRequestId?: string
   ): Promise<unknown> {
     if (!isAgentApprovalWaitingOutput(nodeRun.output)) {
       return { approved: true, comment: comment?.trim() || undefined };
     }
 
-    const approvalOutput = applyAgentApprovalSelection(nodeRun.output, selectedReplyId);
-    const approvedOutput = resolveAgentApprovalSelectedOutput(approvalOutput);
+    const approvalRequest = approvalRequestId ? await this.store.getApprovalRequest(approvalRequestId) : undefined;
+    if (approvalRequestId && !approvalRequest) {
+      throw new Error(`Approval request not found: ${approvalRequestId}`);
+    }
+    if (approvalRequest && (approvalRequest.runId !== run.id || approvalRequest.nodeRunId !== nodeRun.id)) {
+      throw new Error("Approval request does not belong to this node run.");
+    }
+    const approvalReplies = approvalRequest
+      ? await this.store.listApprovalReplies({ approvalRequestId: approvalRequest.id })
+      : [];
+    const normalizedSelectedReplyId = typeof selectedReplyId === "string" && selectedReplyId.trim()
+      ? selectedReplyId.trim()
+      : undefined;
+    const selectedCandidate = normalizedSelectedReplyId
+      ? this.findSelectedApprovalCandidate(approvalRequest, approvalReplies, normalizedSelectedReplyId)
+      : undefined;
+    if (normalizedSelectedReplyId && !selectedCandidate) {
+      throw new Error("Selected approval reply does not belong to this request.");
+    }
+    if (selectedCandidate) {
+      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
+      if (node && isAgentBlueprintNode(node)) {
+        const config = node.config as AgentNodeConfig;
+        if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
+          await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, selectedCandidate.body);
+        }
+      }
+      return buildApprovedAgentOutput(
+        selectedCandidate.body,
+        approvalRepliesToAgentApprovalReplies(approvalReplies),
+        comment,
+        selectedCandidate.reply.id
+      );
+    }
+
+    const approvedOutput = nodeRun.output.reviewOutput;
     const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
     if (node && isAgentBlueprintNode(node)) {
       const config = node.config as AgentNodeConfig;
@@ -3488,7 +4812,22 @@ export class BlueprintWorker {
         await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, approvedOutput);
       }
     }
-    return buildApprovedAgentOutput(approvedOutput, approvalOutput.replies, comment, approvalOutput.selectedReplyId);
+    return buildApprovedAgentOutput(approvedOutput, approvalRepliesToAgentApprovalReplies(approvalReplies), comment);
+  }
+
+  private findSelectedApprovalCandidate(
+    request: ApprovalRequest | undefined,
+    replies: ApprovalReply[],
+    selectedReplyId: string
+  ): { request: ApprovalRequest; reply: ApprovalReply; body: string } | undefined {
+    if (!request) return undefined;
+    const reply = replies.find((candidate) =>
+      candidate.id === selectedReplyId &&
+      candidate.approvalRequestId === request.id &&
+      candidate.threadId === approvalThreadIdForRequest(request) &&
+      candidate.purpose === "candidate"
+    );
+    return reply ? { request, reply, body: reply.body } : undefined;
   }
 
   private async executeAgentConfiguredSend(
@@ -4443,6 +5782,27 @@ export class BlueprintWorker {
     input: StartAgentTaskInput,
     onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
   ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
+    let sessionContext = await this.resolveNodeExecutionSession(input);
+    let attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
+    let attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
+
+    if (sessionContext && this.shouldFallbackNativeResume(attemptInput, attempt.result)) {
+      sessionContext = await this.createFallbackNodeExecutionSession(
+        sessionContext,
+        this.nativeResumeBoundaryReason(attempt.result)
+      );
+      attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
+      attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
+    }
+
+    return attempt;
+  }
+
+  private async executeAgentTaskAttempt(
+    input: StartAgentTaskInput,
+    sessionContext: ResolvedNodeExecutionSession | undefined,
+    onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
+  ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
     const started = await this.adapter.startAgentTask(input);
     const source = started.source;
     const runtimeRef: RuntimeObjectRef = {
@@ -4454,15 +5814,27 @@ export class BlueprintWorker {
       sessionKey: started.sessionKey,
       usageRef: undefined
     };
+    if (sessionContext) {
+      sessionContext.session = await this.markNodeExecutionSessionStarted(sessionContext.session, started, runtimeRef);
+      await this.appendExecutionTranscriptEvent(sessionContext.session, "runtime", "runtime_started", "Runtime task started.", {
+        source: input.source,
+        ...this.runtimeResumeMetadata(started, input),
+        executionSessionPolicy: sessionContext.session.policy
+      }, runtimeRef);
+    }
     await onStarted?.(runtimeRef);
 
     if (started.status === "failed" || started.status === "cancelled") {
+      const result: AgentTaskResult = {
+        ...started,
+        output: undefined,
+        usage: undefined
+      };
+      if (sessionContext) {
+        await this.markNodeExecutionSessionDone(sessionContext.session, result, runtimeRef);
+      }
       return {
-        result: {
-          ...started,
-          output: undefined,
-          usage: undefined
-        },
+        result,
         runtimeRef
       };
     }
@@ -4476,19 +5848,340 @@ export class BlueprintWorker {
       agentId: input.agentId,
       modelId: input.modelId
     });
+    const finalRuntimeRef: RuntimeObjectRef = {
+      ...runtimeRef,
+      sourceId: result.taskId,
+      sourceUpdatedAt: result.updatedAt,
+      taskId: result.taskId,
+      runId: result.runId,
+      sessionKey: result.sessionKey,
+      usageRef: result.usage?.id
+    };
+    if (sessionContext) {
+      await this.markNodeExecutionSessionDone(sessionContext.session, result, finalRuntimeRef);
+    }
 
     return {
       result,
-      runtimeRef: {
-        ...runtimeRef,
-        sourceId: result.taskId,
-        sourceUpdatedAt: result.updatedAt,
-        taskId: result.taskId,
-        runId: result.runId,
-        sessionKey: result.sessionKey,
-        usageRef: result.usage?.id
-      }
+      runtimeRef: finalRuntimeRef
     };
+  }
+
+  private async resolveNodeExecutionSession(input: StartAgentTaskInput): Promise<ResolvedNodeExecutionSession | undefined> {
+    const nodeRun = await this.findNodeRunById(input.blueprintRunId, input.nodeRunId);
+    if (!nodeRun) return undefined;
+
+    const policy = input.executionSessionPolicy ?? "refresh_per_run";
+    const usableStatuses: NodeExecutionSessionStatus[] = ["active", "fallback", "paused"];
+    const current = (await this.store.listNodeExecutionSessions({
+      runId: input.blueprintRunId,
+      nodeRunId: input.nodeRunId,
+      statuses: usableStatuses
+    })).at(-1);
+    if (current) {
+      return {
+        session: current,
+        nodeRun,
+        resumeNativeSessionId: current.status === "fallback" ? undefined : current.nativeSessionId
+      };
+    }
+
+    const agentSeatId = this.nodeExecutionAgentSeatId(input);
+    const previous = policy === "preserve_across_rounds"
+      ? this.findPreviousNodeExecutionSession(
+          await this.store.listNodeExecutionSessions({
+            runId: input.blueprintRunId,
+            nodeId: nodeRun.nodeId
+          }),
+          input,
+          agentSeatId
+        )
+      : undefined;
+    const now = new Date().toISOString();
+    const session: NodeExecutionSession = {
+      id: deterministicFactId("node-session", [
+        input.blueprintRunId,
+        input.nodeRunId,
+        input.source,
+        agentSeatId ?? "agent",
+        policy,
+        previous?.id ?? "new"
+      ].join(":")),
+      runId: input.blueprintRunId,
+      nodeRunId: input.nodeRunId,
+      nodeId: nodeRun.nodeId,
+      agentSeatId,
+      harnessId: input.source,
+      policy,
+      status: "active",
+      resumedFromSessionId: previous?.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    return {
+      session: await this.store.createNodeExecutionSession(session),
+      nodeRun,
+      resumeNativeSessionId: previous?.nativeSessionId
+    };
+  }
+
+  private findPreviousNodeExecutionSession(
+    sessions: NodeExecutionSession[],
+    input: StartAgentTaskInput,
+    agentSeatId: string | undefined
+  ): NodeExecutionSession | undefined {
+    return sessions
+      .filter((session) =>
+        session.nodeRunId !== input.nodeRunId &&
+        session.harnessId === input.source &&
+        session.policy === "preserve_across_rounds" &&
+        session.nativeSessionId &&
+        session.status !== "unavailable" &&
+        session.agentSeatId === agentSeatId
+      )
+      .sort((left, right) =>
+        new Date(right.lastUsedAt ?? right.updatedAt).getTime() - new Date(left.lastUsedAt ?? left.updatedAt).getTime()
+      )[0];
+  }
+
+  private withResolvedExecutionSessionInput(
+    input: StartAgentTaskInput,
+    sessionContext: ResolvedNodeExecutionSession | undefined
+  ): StartAgentTaskInput {
+    if (!sessionContext) return input;
+    return {
+      ...input,
+      nativeSessionId: sessionContext.resumeNativeSessionId,
+      executionSessionPolicy: sessionContext.session.policy
+    };
+  }
+
+  private shouldFallbackNativeResume(input: StartAgentTaskInput, result: AgentTaskResult): boolean {
+    if (!input.nativeSessionId) return false;
+    if (this.isUnprovenNativeResume(result)) return true;
+    if (result.status !== "failed") return false;
+    const error = result.error ?? "";
+    return error.includes("native_resume_unsupported") ||
+      error.includes("native_resume_unavailable") ||
+      error.includes("Native session could not be resumed") ||
+      error.includes("cannot prove native");
+  }
+
+  private isUnprovenNativeResume(
+    result: Pick<AgentTaskResult, "resumeRequested" | "resumeAttempted" | "resumeProven" | "providerStartedNewSession" | "resumable">
+  ): boolean {
+    if (!result.resumeRequested || result.resumeProven) return false;
+    return result.providerStartedNewSession === true ||
+      result.resumeAttempted === true ||
+      result.resumable === false;
+  }
+
+  private nativeResumeBoundaryReason(
+    result: Pick<AgentTaskResult, "error" | "providerStartedNewSession" | "providerSessionId">
+  ): string {
+    if (result.providerStartedNewSession) {
+      return result.providerSessionId
+        ? `provider_started_new_session: Provider started ${result.providerSessionId} instead of resuming the requested native session.`
+        : "provider_started_new_session: Provider started a new native session instead of resuming the requested native session.";
+    }
+    return result.error?.trim() || "Native session could not be resumed.";
+  }
+
+  private async createFallbackNodeExecutionSession(
+    context: ResolvedNodeExecutionSession,
+    reason: string | undefined
+  ): Promise<ResolvedNodeExecutionSession> {
+    const statusReason = reason?.trim() || "Native session could not be resumed.";
+    const now = new Date().toISOString();
+    const unavailable = await this.store.updateNodeExecutionSession({
+      id: context.session.id,
+      status: "unavailable",
+      statusReason,
+      updatedAt: now
+    });
+    await this.appendExecutionTranscriptEvent(
+      unavailable,
+      "system",
+      "system_note",
+      "Native session could not be resumed; a fallback session was started.",
+      { reason: statusReason }
+    );
+    const fallback: NodeExecutionSession = {
+      id: deterministicFactId("node-session", `${context.session.id}:fallback`),
+      runId: context.session.runId,
+      nodeRunId: context.session.nodeRunId,
+      nodeId: context.session.nodeId,
+      agentSeatId: context.session.agentSeatId,
+      harnessId: context.session.harnessId,
+      policy: context.session.policy,
+      status: "fallback",
+      fallbackOfSessionId: context.session.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    const fallbackSession = await this.store.createNodeExecutionSession(fallback);
+    await this.rebindApprovalDiscussionsToFallbackSession(unavailable, fallbackSession);
+    return {
+      session: fallbackSession,
+      nodeRun: context.nodeRun,
+      resumeNativeSessionId: undefined
+    };
+  }
+
+  private async rebindApprovalDiscussionsToFallbackSession(
+    unavailable: NodeExecutionSession,
+    fallback: NodeExecutionSession
+  ): Promise<void> {
+    const bindings = await this.store.listApprovalDiscussionBindings({ runId: fallback.runId });
+    const affected = bindings.filter((binding) => binding.executorSessionId === unavailable.id);
+    for (const binding of affected) {
+      const canUseFallback = Boolean(binding.executorNodeId && binding.executorNodeRunId);
+      await this.store.updateApprovalDiscussionBinding({
+        approvalRequestId: binding.approvalRequestId,
+        mode: "executor",
+        executorSessionId: fallback.id,
+        runtimeId: fallback.harnessId as AgentRuntimeId,
+        canStreamReply: canUseFallback && binding.canStreamReply,
+        canCreateCandidate: canUseFallback && binding.canCreateCandidate,
+        reason: canUseFallback ? undefined : "fallback_executor_binding_incomplete",
+        updatedAt: fallback.updatedAt
+      });
+    }
+  }
+
+  private runtimeResumeMetadata(
+    result: Pick<
+      StartedAgentTaskResult,
+      "nativeSessionId" |
+        "resumeMode" |
+        "resumeRequested" |
+        "resumeAttempted" |
+        "resumeProven" |
+        "providerSessionId" |
+        "providerStartedNewSession" |
+        "resumable"
+    >,
+    input?: Pick<StartAgentTaskInput, "nativeSessionId">
+  ): Record<string, unknown> {
+    const resumeProven = result.resumeProven ?? false;
+    return {
+      resumeRequested: result.resumeRequested ?? Boolean(input?.nativeSessionId),
+      resumeAttempted: result.resumeAttempted ?? false,
+      resumeProven,
+      resumeMode: resumeProven ? "resumed" : result.resumeMode === "fallback_started" ? "fallback_started" : "started",
+      nativeSessionId: this.runtimeProviderNativeSessionId(result),
+      providerSessionId: result.providerSessionId,
+      providerStartedNewSession: result.providerStartedNewSession ?? false,
+      resumable: result.resumable ?? Boolean(result.nativeSessionId)
+    };
+  }
+
+  private runtimeProviderNativeSessionId(
+    result: Pick<StartedAgentTaskResult, "nativeSessionId" | "providerSessionId" | "resumable" | "resumeRequested" | "resumeProven">
+  ): string | undefined {
+    if (result.resumeRequested && !result.resumeProven) return undefined;
+    if (result.providerSessionId) return result.providerSessionId;
+    if (result.resumable === false) return undefined;
+    return result.nativeSessionId;
+  }
+
+  private async markNodeExecutionSessionStarted(
+    session: NodeExecutionSession,
+    started: StartedAgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<NodeExecutionSession> {
+    const now = started.updatedAt ?? new Date().toISOString();
+    const nativeSessionId = this.runtimeProviderNativeSessionId(started) ?? session.nativeSessionId;
+    return this.store.updateNodeExecutionSession({
+      id: session.id,
+      nativeSessionId,
+      runtimeRef,
+      status: session.status === "fallback" ? "fallback" : "active",
+      statusReason: undefined,
+      lastUsedAt: now,
+      updatedAt: now
+    });
+  }
+
+  private async markNodeExecutionSessionDone(
+    session: NodeExecutionSession,
+    result: AgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<NodeExecutionSession> {
+    const nativeResumeBoundary = this.isUnprovenNativeResume(result);
+    if (result.output !== undefined && result.status === "succeeded" && !nativeResumeBoundary) {
+      await this.appendExecutionTranscriptEvent(
+        session,
+        "assistant",
+        "assistant_message",
+        formatTranscriptContent(result.output),
+        { status: result.status },
+        runtimeRef
+      );
+    }
+    await this.appendExecutionTranscriptEvent(
+      session,
+      "runtime",
+      "runtime_done",
+      result.status === "succeeded" ? "Runtime task completed." : `Runtime task ${result.status}.`,
+      {
+        status: result.status,
+        error: result.error,
+        ...this.runtimeResumeMetadata(result)
+      },
+      runtimeRef
+    );
+    const endedStatus: NodeExecutionSessionStatus = session.status === "fallback"
+      ? "fallback"
+      : nativeResumeBoundary
+        ? "unavailable"
+      : result.status === "succeeded"
+        ? "completed"
+        : result.status === "cancelled"
+          ? "paused"
+          : "failed";
+    const now = result.updatedAt ?? new Date().toISOString();
+    const nativeSessionId = this.runtimeProviderNativeSessionId(result) ?? session.nativeSessionId;
+    return this.store.updateNodeExecutionSession({
+      id: session.id,
+      nativeSessionId,
+      runtimeRef,
+      status: endedStatus,
+      statusReason: nativeResumeBoundary
+        ? this.nativeResumeBoundaryReason(result)
+        : result.status === "succeeded"
+          ? undefined
+          : result.error,
+      lastUsedAt: now,
+      updatedAt: now
+    });
+  }
+
+  private async appendExecutionTranscriptEvent(
+    session: NodeExecutionSession,
+    role: NodeSessionTranscriptEventRole,
+    kind: NodeSessionTranscriptEventKind,
+    content?: string,
+    metadata?: Record<string, unknown>,
+    runtimeRef?: RuntimeObjectRef
+  ): Promise<NodeSessionTranscriptEvent> {
+    return this.store.appendNodeSessionTranscriptEvent({
+      id: `node-transcript-${nanoid(10)}`,
+      sessionId: session.id,
+      runId: session.runId,
+      nodeRunId: session.nodeRunId,
+      role,
+      kind,
+      content,
+      runtimeRef,
+      metadata,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  private nodeExecutionAgentSeatId(input: StartAgentTaskInput): string | undefined {
+    const seat = input.profileId ?? input.agentId ?? input.agentName;
+    return seat ? `${input.source}:${seat}` : input.source;
   }
 
   private async event(
@@ -4510,6 +6203,137 @@ export class BlueprintWorker {
   }
 }
 
+export function buildRunCommandKey(runId: string, roundId: string | undefined, kind: RunCommandKind): string {
+  return [runId, roundId ?? "run", kind].join(":");
+}
+
+export function buildRunCommandStepKey(
+  command: RunCommand,
+  mode: RunCommandStepMode,
+  nodeId: string,
+  attempt = 1
+): string {
+  return [
+    command.commandKey,
+    `revision-${command.currentRevision}`,
+    mode,
+    nodeId,
+    `attempt-${Math.max(1, Math.round(attempt))}`
+  ].join(":");
+}
+
+export function stablePreflightNodeRunId(stepKey: string): string {
+  const hash = createHash("sha256").update(stepKey).digest("hex").slice(0, 12);
+  const parts = stepKey.split(":");
+  const attemptPart = parts.at(-1);
+  const nodeId = sanitizeIdPart(parts.at(-2) ?? "node");
+  const mode = sanitizeIdPart(parts.at(-3) ?? "preflight");
+  const roundId = sanitizeIdPart(parts.at(1) ?? "round");
+  const attempt = attemptPart?.startsWith("attempt-") && attemptPart !== "attempt-1"
+    ? `-${sanitizeIdPart(attemptPart)}`
+    : "";
+  return `preflight-${mode}-${roundId}-${nodeId}${attempt}-${hash}`;
+}
+
+export function stableNodeExecutionNodeRunId(stepKey: string): string {
+  const hash = createHash("sha256").update(stepKey).digest("hex").slice(0, 12);
+  const parts = stepKey.split(":");
+  const attemptPart = parts.at(-1);
+  const nodeId = sanitizeIdPart(parts.at(-2) ?? "node");
+  const attempt = attemptPart?.startsWith("attempt-") && attemptPart !== "attempt-1"
+    ? `-${sanitizeIdPart(attemptPart)}`
+    : "";
+  return `node-run-step-${nodeId}${attempt}-${hash}`;
+}
+
+function buildStandalonePreflightStepKey(
+  runId: string,
+  roundId: string,
+  mode: RunCommandStepMode,
+  nodeId: string,
+  attempt = 1
+): string {
+  return [
+    "standalone-preflight",
+    runId,
+    roundId,
+    "revision-0",
+    mode,
+    nodeId,
+    `attempt-${Math.max(1, Math.round(attempt))}`
+  ].join(":");
+}
+
+function deterministicFactId(prefix: string, key: string): string {
+  return `${prefix}-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`;
+}
+
+function sanitizeIdPart(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return sanitized.slice(0, 72) || "unknown";
+}
+
+function readPreflightAttempt(taskInput: Record<string, unknown>): number {
+  const attempt = taskInput.preparationAttempt;
+  return typeof attempt === "number" && Number.isFinite(attempt)
+    ? Math.max(1, Math.round(attempt))
+    : 1;
+}
+
+function readPrepareCommandContext(command: RunCommand): {
+  humanFeedback?: string;
+  previousRequirement?: string;
+  revision?: number;
+} {
+  const metadata = command.metadata;
+  if (!metadata) return {};
+  return {
+    humanFeedback: typeof metadata.humanFeedback === "string" ? metadata.humanFeedback : undefined,
+    previousRequirement: typeof metadata.previousRequirement === "string" ? metadata.previousRequirement : undefined,
+    revision: typeof metadata.revision === "number" ? metadata.revision : undefined
+  };
+}
+
+function agentTaskResultFromNodeRun(nodeRun: BlueprintNodeRun): AgentTaskResult {
+  const runtimeRef = nodeRun.runtimeRef;
+  return {
+    taskId: runtimeRef?.taskId ?? runtimeRef?.sourceId ?? nodeRun.id,
+    runId: runtimeRef?.runId ?? runtimeRef?.sourceId ?? nodeRun.id,
+    sessionKey: runtimeRef?.sessionKey ?? nodeRun.id,
+    nativeSessionId: runtimeRef?.sessionKey ?? nodeRun.id,
+    source: runtimeRef?.source ?? "openclaw",
+    resumeMode: "started",
+    status: nodeRun.status === "succeeded" || nodeRun.status === "failed" || nodeRun.status === "cancelled"
+      ? nodeRun.status
+      : "running",
+    output: nodeRun.output,
+    error: nodeRun.error,
+    usage: nodeRun.usage,
+    updatedAt: nodeRun.endedAt ?? nodeRun.startedAt ?? nodeRun.queuedAt ?? new Date().toISOString()
+  };
+}
+
+function runtimeRefFromAgentTaskResult(result: AgentTaskResult, fallback?: RuntimeObjectRef): RuntimeObjectRef {
+  return {
+    source: result.source,
+    sourceId: result.taskId,
+    sourceUpdatedAt: result.updatedAt,
+    taskId: result.taskId,
+    runId: result.runId,
+    sessionKey: result.sessionKey,
+    usageRef: result.usage?.id ?? fallback?.usageRef
+  };
+}
+
+function formatTranscriptContent(output: unknown): string {
+  if (typeof output === "string") return output;
+  try {
+    return JSON.stringify(output, null, 2);
+  } catch {
+    return String(output);
+  }
+}
+
 function normalizeInteger(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
   return Math.min(max, Math.max(min, Math.round(value)));
@@ -4520,8 +6344,14 @@ function isAgentApprovalWaitingOutput(value: unknown): value is AgentApprovalWai
   return value.approvalType === "agent" && "reviewOutput" in value && Array.isArray(value.replies);
 }
 
-function normalizeAgentApprovalSelectionId(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function approvalRequestHasSelectedReplyId(
+  request: ApprovalRequest
+): request is ApprovalRequest & { selectedReplyId: string | null } {
+  return Object.prototype.hasOwnProperty.call(request, "selectedReplyId");
+}
+
+function isReturnForRevisionAction(action: ApprovalRequestAction): boolean {
+  return action === "return_for_revision";
 }
 
 function formatNodeOutputSummary(output: unknown): string {
@@ -4550,73 +6380,14 @@ function isNodeRunAtOrAfter(nodeRun: BlueprintNodeRun, timestamp: number): boole
   return !Number.isFinite(nodeRunStartedAt) || nodeRunStartedAt >= timestamp;
 }
 
-function isReviewOutputSelectionId(value: string | undefined): boolean {
-  return value === reviewOutputSelectionId;
-}
-
-function isAgentApprovalSelectionAvailable(replies: AgentApprovalReply[], selectedReplyId: string | undefined): boolean {
-  if (!selectedReplyId || isReviewOutputSelectionId(selectedReplyId)) return true;
-  return replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant");
-}
-
-function assertAgentApprovalSelection(output: AgentApprovalWaitingOutput, selectedReplyId: string): void {
-  if (isReviewOutputSelectionId(selectedReplyId)) return;
-  if (output.replies.some((reply) => reply.id === selectedReplyId && reply.role === "assistant")) return;
-  throw new Error("Only assistant approval replies can be selected.");
-}
-
-function applyAgentApprovalSelection(
-  output: AgentApprovalWaitingOutput,
-  selectedReplyId: string | undefined
-): AgentApprovalWaitingOutput {
-  const normalizedSelectedReplyId = normalizeAgentApprovalSelectionId(selectedReplyId) ?? output.selectedReplyId;
-  if (!normalizedSelectedReplyId) {
-    return {
-      ...output,
-      replies: markSelectedApprovalReplies(output.replies, undefined)
-    };
-  }
-  assertAgentApprovalSelection(output, normalizedSelectedReplyId);
-  const selectedOutput = selectedReplyId
-    ? resolveAgentApprovalSelectionSnapshot(output, normalizedSelectedReplyId)
-    : output.selectedOutput;
-  return {
-    ...output,
-    selectedReplyId: normalizedSelectedReplyId,
-    ...(selectedOutput !== undefined ? { selectedOutput } : {}),
-    replies: markSelectedApprovalReplies(output.replies, normalizedSelectedReplyId)
-  };
-}
-
-function resolveAgentApprovalSelectedOutput(output: AgentApprovalWaitingOutput): unknown {
-  const selectedReplyId = normalizeAgentApprovalSelectionId(output.selectedReplyId);
-  if (!selectedReplyId) return output.reviewOutput;
-  if (isReviewOutputSelectionId(selectedReplyId)) {
-    return "selectedOutput" in output ? output.selectedOutput : output.reviewOutput;
-  }
-  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
-  if (!selectedReply) {
-    throw new Error("Selected approval reply is no longer available.");
-  }
-  return selectedReply.body;
-}
-
-function resolveAgentApprovalSelectionSnapshot(output: AgentApprovalWaitingOutput, selectedReplyId: string): unknown {
-  if (isReviewOutputSelectionId(selectedReplyId)) return output.reviewOutput;
-  const selectedReply = output.replies.find((reply) => reply.id === selectedReplyId && reply.role === "assistant");
-  return selectedReply?.body;
-}
-
-function markSelectedApprovalReplies(
-  replies: AgentApprovalReply[],
-  selectedReplyId: string | undefined
-): AgentApprovalReply[] {
-  return replies.map((reply) => {
-    const { selected: _selected, ...unselectedReply } = reply;
-    return selectedReplyId && reply.id === selectedReplyId
-      ? { ...unselectedReply, selected: true }
-      : unselectedReply;
-  });
+function approvalRepliesToAgentApprovalReplies(replies: ApprovalReply[]): AgentApprovalReply[] {
+  return replies.map((reply) => ({
+    id: reply.id,
+    role: reply.actor === "user" ? "user" : "assistant",
+    purpose: reply.purpose ?? "message",
+    body: reply.body,
+    createdAt: reply.createdAt
+  }));
 }
 
 function buildAgentApprovalReplyInput(
@@ -4655,6 +6426,51 @@ function buildAgentApprovalReplyInput(
       instruction
     }
   };
+}
+
+function buildAgentApprovalRevisionInput(
+  originalInput: unknown,
+  previousOutput: unknown,
+  previousReplies: AgentApprovalReply[],
+  requestedChanges: string,
+  revisionContext: PendingApprovalRevisionContext
+): Record<string, unknown> {
+  const instruction = [
+    "This node is being rerun because the human explicitly selected return_for_revision.",
+    "Treat requestedChanges as required revision feedback, not as a casual chat reply.",
+    "Produce a revised output for the original task while preserving useful parts of the previous output.",
+    "Do not claim the approval is complete or approved; the platform will create a new pending approval for the revised output."
+  ].join(" ");
+
+  return {
+    originalInput,
+    approvalReplies: previousReplies,
+    approvalRevisionContext: revisionContext,
+    approvalRevision: {
+      previousOutput,
+      previousReplies,
+      requestedChanges,
+      instruction
+    },
+    humanApproval: {
+      previousOutput,
+      previousReplies,
+      requestedChanges,
+      instruction
+    }
+  };
+}
+
+function readApprovalRevisionContext(input: unknown): PendingApprovalRevisionContext | undefined {
+  if (!isRecord(input)) return undefined;
+  const raw = input.approvalRevisionContext;
+  if (!isRecord(raw)) return undefined;
+  const context: PendingApprovalRevisionContext = {};
+  if (typeof raw.threadId === "string" && raw.threadId.trim()) context.threadId = raw.threadId;
+  if (typeof raw.replacesRequestId === "string" && raw.replacesRequestId.trim()) context.replacesRequestId = raw.replacesRequestId;
+  if (typeof raw.revision === "number" && Number.isInteger(raw.revision) && raw.revision > 0) context.revision = raw.revision;
+  if (typeof raw.requestedChanges === "string" && raw.requestedChanges.trim()) context.requestedChanges = raw.requestedChanges;
+  return context.threadId || context.replacesRequestId || context.revision ? context : undefined;
 }
 
 function buildApprovedAgentOutput(

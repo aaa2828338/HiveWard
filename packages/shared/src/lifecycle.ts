@@ -1,4 +1,4 @@
-import type { BlueprintNodeType } from "./blueprint";
+import type { AgentRuntimeId, BlueprintNodeType } from "./blueprint";
 
 export type ManagerLifecycleMode = "none" | "self_iteration";
 export type ManagerDispatchMode = "sequential" | "self_dispatch";
@@ -67,8 +67,7 @@ export interface ApprovalCapabilities {
   reply: boolean;
   complete: boolean;
   terminate: boolean;
-  requestChanges?: boolean;
-  revise?: boolean;
+  returnForRevision?: boolean;
 }
 
 export type ApprovalRequestKind =
@@ -111,20 +110,61 @@ export interface ApprovalThread {
 }
 
 export type ApprovalReplyActor = "user" | "agent" | "manager" | "system";
+export type ApprovalReplyPurpose = "message" | "candidate";
 
 export interface ApprovalReply {
   id: string;
   threadId: string;
   approvalRequestId?: string;
   actor: ApprovalReplyActor;
+  purpose?: ApprovalReplyPurpose;
   body: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
 }
 
+export type ApprovalDiscussionMode =
+  | "none"
+  | "message_only"
+  | "executor";
+
+export type ApprovalDiscussionRoute =
+  | "none"
+  | "message_only"
+  | "agent_approval"
+  | "requirement_agent"
+  | "requirement_manager"
+  | "release_report_manager"
+  | "function_manager"
+  | "function_summary";
+
+export type ApprovalDiscussionExecutorActor =
+  | "agent"
+  | "manager"
+  | "system";
+
+export interface ApprovalDiscussionBinding {
+  approvalRequestId: string;
+  threadId?: string;
+  mode: ApprovalDiscussionMode;
+  route: ApprovalDiscussionRoute;
+  executorActor?: ApprovalDiscussionExecutorActor;
+  executorKind?: ApprovalDiscussionRoute;
+  executorNodeId?: string;
+  executorNodeRunId?: string;
+  executorSessionId?: string;
+  runtimeId?: AgentRuntimeId;
+  canStreamReply: boolean;
+  canCreateCandidate: boolean;
+  reason?: string;
+  resolverVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ApprovalRequest {
   id: string;
-  runId: string;
+  runId?: string;
   roundId?: string;
   nodeRunId?: string;
   kind: ApprovalRequestKind;
@@ -140,6 +180,7 @@ export interface ApprovalRequest {
   revision: number;
   replacesRequestId?: string;
   supersededByRequestId?: string;
+  selectedReplyId?: string | null;
   capabilities: ApprovalCapabilities;
   requestedBy: {
     type: "node" | "role" | "system";
@@ -157,8 +198,7 @@ export type ApprovalDecisionAction =
   | "reply"
   | "complete"
   | "terminate"
-  | "request_changes"
-  | "revise"
+  | "return_for_revision"
   | "auto_approve"
   | "supersede";
 
@@ -168,7 +208,7 @@ export interface ApprovalDecision {
   action: ApprovalDecisionAction;
   actor: "user" | "system" | "manager";
   comment?: string;
-  selectedReplyId?: string;
+  selectedReplyId?: string | null;
   resultingStatus: ApprovalRequestStatus;
   createdAt: string;
 }
@@ -208,7 +248,7 @@ export interface IterationRound {
   researchStatus?: "not_required" | "user_provided" | "context_sufficient" | "agent_generated" | "manager_fallback" | "assumption_based" | "blocked";
   researchSummary?: string;
   researchArtifactIds?: string[];
-  planSource?: "user_provided" | "agent_generated" | "manager_fallback" | "revised_from_reply";
+  planSource?: "user_provided" | "agent_generated" | "manager_fallback" | "revised_from_feedback";
   contextSnapshotId?: string;
   startedAt: string;
   endedAt?: string;
@@ -371,7 +411,8 @@ export const emptyApprovalCapabilities = Object.freeze({
   reject: false,
   reply: false,
   complete: false,
-  terminate: false
+  terminate: false,
+  returnForRevision: false
 }) satisfies ApprovalCapabilities;
 
 export function resolveApprovalCapabilities(
@@ -383,16 +424,18 @@ export function resolveApprovalCapabilities(
 
   switch (kind) {
     case "iteration_requirement_plan":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true };
     case "agent_proposal":
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true };
+    case "manager_release_report":
+      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false, returnForRevision: true };
     case "blueprint_proposal":
     case "leader_delegation":
     case "company_config":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: false };
-    case "manager_release_report":
-      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false };
+      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: false };
     case "run_request":
     case "generic_message":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: true };
+      return { approve: true, reject: true, reply: true, complete: false, terminate: true, returnForRevision: false };
   }
 }
 
@@ -404,8 +447,9 @@ export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: Ap
   if (action === "reply") return capabilities.reply;
   if (action === "complete") return capabilities.complete;
   if (action === "terminate") return capabilities.terminate;
-  if (action === "request_changes") return capabilities.requestChanges === true;
-  if (action === "revise") return capabilities.revise === true;
+  if (action === "return_for_revision") {
+    return capabilities.returnForRevision === true;
+  }
   return false;
 }
 
@@ -417,8 +461,7 @@ export function approvalActionCanTriggerWorkflow(action: ApprovalDecisionAction)
   return action === "approve" ||
     action === "complete" ||
     action === "terminate" ||
-    action === "request_changes" ||
-    action === "revise" ||
+    action === "return_for_revision" ||
     action === "auto_approve";
 }
 

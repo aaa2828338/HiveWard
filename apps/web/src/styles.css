@@ -8362,10 +8362,165 @@ html[data-theme="light"] .inbox-row.processed:hover {
 
 .trace-output-column.run-output-column {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   overflow: hidden;
   padding: 12px;
+}
+
+.run-execution-projection {
+  min-height: 0;
+  max-height: min(380px, 42vh);
+  overflow: auto;
+  padding: 0 4px 12px 0;
+  border-bottom: 1px solid var(--line);
+  scrollbar-gutter: stable;
+}
+
+.run-execution-grid,
+.run-command-list,
+.run-session-list,
+.run-transcript-event-list {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.run-execution-grid {
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  align-items: start;
+}
+
+.run-execution-block,
+.run-command-card,
+.run-session-card,
+.run-transcript-event,
+.run-execution-missing-facts {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgb(15 23 42 / 0.34);
+}
+
+.run-execution-block {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.run-execution-block-header,
+.run-command-card-header,
+.run-session-card-header,
+.run-transcript-event-meta {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.run-execution-block-header span,
+.run-command-card-header span,
+.run-session-card-header span,
+.run-command-step-list span,
+.run-transcript-event-meta time {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.run-command-card,
+.run-session-card,
+.run-transcript-event {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+}
+
+.run-execution-meta {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.run-execution-meta div {
+  min-width: 0;
+}
+
+.run-execution-meta dt {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.35;
+}
+
+.run-execution-meta dd {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.run-command-step-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-command-step-list li {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.run-command-step-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.run-execution-system-note,
+.run-execution-error {
+  border-left: 3px solid var(--accent);
+  padding-left: 9px;
+}
+
+.run-execution-missing-facts {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.run-execution-missing-facts span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.run-transcript-event-runtime_started,
+.run-transcript-event-runtime_state,
+.run-transcript-event-runtime_done {
+  background: rgb(37 99 235 / 0.08);
+}
+
+.run-transcript-event-system_note {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+@media (max-width: 980px) {
+  .run-execution-grid,
+  .run-execution-meta {
+    grid-template-columns: 1fr;
+  }
 }
 
 .run-output-tabs {

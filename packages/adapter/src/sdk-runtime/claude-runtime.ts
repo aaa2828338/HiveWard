@@ -19,7 +19,7 @@ import { mapClaudeAvailableTools, mapClaudePermission, mapClaudeTools, normalize
 import { buildSdkChatPrompt, mapClaudeEffort, mapClaudeThinking } from "./chat-envelope";
 import { buildPromptEnvelope, formatStructuredOutput, validateOutputSchema } from "./prompt-envelope";
 import { isRecord, readString, runtimeLabelFromRecord } from "./runtime-state";
-import { createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
+import { buildRuntimeResumeProof, createTerminalTaskResult, AgentSdkTaskRegistry } from "./task-registry";
 import type { AgentSdkChatStreamInput, AgentSdkRuntime } from "./types";
 import { resolveSdkWorkingDirectory } from "./workspace";
 
@@ -156,14 +156,15 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     const now = new Date().toISOString();
     const taskId = `claude-task-${nanoid(10)}`;
     const runId = `claude-run-${nanoid(10)}`;
-    const sessionKey = `claude-session-${input.nodeRunId}`;
+    const sessionKey = input.nativeSessionId ?? `claude-session-${input.nodeRunId}`;
+    const resumeAttempted = Boolean(input.nativeSessionId);
 
     let workingDirectory: string;
     try {
       requireConfiguredModel(input.modelId);
       workingDirectory = resolveSdkWorkingDirectory(input.workingDirectory, this.options.workspaceRoot);
     } catch (error) {
-      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now);
+      return this.failedStart(taskId, runId, sessionKey, getErrorMessage(error), now, input.nativeSessionId);
     }
 
     const timeoutMs = normalizeTimeout(input.timeoutMs, this.options.defaultTimeoutMs);
@@ -203,6 +204,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       runId,
       sessionKey,
       source: "claude",
+      ...buildRuntimeResumeProof(input, undefined, { resumeAttempted, resumable: false }),
       status: "running",
       updatedAt: now
     };
@@ -234,7 +236,14 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
     let sessionKey = initialSessionKey;
+    let providerSessionId: string | undefined;
     let finalMessage: SDKResultMessage | undefined;
+    const resumeAttempted = Boolean(input.nativeSessionId);
+    const resumeProof = () =>
+      buildRuntimeResumeProof(input, providerSessionId, {
+        resumeAttempted,
+        resumable: Boolean(providerSessionId)
+      });
 
     try {
       if (abortController.signal.aborted) {
@@ -251,12 +260,13 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         tools: mapClaudeAvailableTools(permissionProfile, input.tools),
         allowedTools: mapClaudeTools(permissionProfile, input.tools),
         skills: input.skillIds?.length ? input.skillIds : undefined,
+        resume: input.nativeSessionId || undefined,
         outputFormat: input.outputSchema ? { type: "json_schema", schema: input.outputSchema } : undefined
       };
-
       for await (const message of this.queryFn({ prompt: buildPromptEnvelope(input), options: sdkOptions })) {
         if (hasSessionId(message)) {
-          sessionKey = message.session_id;
+          providerSessionId = message.session_id;
+          sessionKey = providerSessionId;
         }
         if (message.type === "result") {
           finalMessage = message;
@@ -271,6 +281,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
           taskId,
           runId,
           sessionKey,
+          ...resumeProof(),
           source: "claude",
           status: "failed",
           error: error.message
@@ -280,6 +291,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...resumeProof(),
         source: "claude",
         status: "failed",
         error: formatAgentSdkProviderError("Claude Code", error)
@@ -291,6 +303,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...resumeProof(),
         source: "claude",
         status: "failed",
         error: formatAgentSdkError("provider_error", "SDK did not return a result message.")
@@ -302,6 +315,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...resumeProof(),
         source: "claude",
         status: "failed",
         error: formatAgentSdkError("provider_error", finalMessage.errors.join("; ") || finalMessage.subtype),
@@ -318,6 +332,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         taskId,
         runId,
         sessionKey,
+        ...resumeProof(),
         source: "claude",
         status: "failed",
         error: formatAgentSdkError("invalid_output", "SDK output does not match outputSchema."),
@@ -329,6 +344,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
+      ...resumeProof(),
       source: "claude",
       status: "succeeded",
       output,
@@ -337,11 +353,21 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     };
   }
 
-  private failedStart(taskId: string, runId: string, sessionKey: string, error: string, updatedAt: string): StartedAgentTaskResult {
+  private failedStart(
+    taskId: string,
+    runId: string,
+    sessionKey: string,
+    error: string,
+    updatedAt: string,
+    nativeSessionId?: string,
+    resumeMode: StartedAgentTaskResult["resumeMode"] = "started"
+  ): StartedAgentTaskResult {
     return {
       taskId,
       runId,
       sessionKey,
+      ...buildRuntimeResumeProof({ nativeSessionId }, undefined, { resumeAttempted: false, resumable: false }),
+      resumeMode,
       source: "claude",
       status: "failed",
       error,
@@ -354,6 +380,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
       taskId,
       runId,
       sessionKey,
+      resumeMode: "started",
       source: "claude",
       status: "cancelled",
       error: timedOut ? formatAgentSdkError("timeout", "Run exceeded timeoutMs.") : formatAgentSdkError("cancelled", "Run was cancelled.")

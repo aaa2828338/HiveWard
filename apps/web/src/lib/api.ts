@@ -53,10 +53,9 @@ import type {
   SaveBlueprintRequest,
   SelectCompanyRequest,
   UpdateCompanyRequest,
-  ApproveBlueprintRunRequest,
-  RejectBlueprintRunRequest,
-  ReplyBlueprintRunApprovalRequest,
-  SelectBlueprintRunApprovalRequest,
+  ReplyApprovalRequestRequest,
+  SelectApprovalRequestReplyRequest,
+  InboxDiscussionMode,
   ReplyInboxItemRequest,
   ChatSessionHistoryResponse,
   ChatSessionMessagesResponse,
@@ -88,7 +87,25 @@ import type {
   BlueprintRunResponse
 } from "@hiveward/shared";
 
-const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
+const importMetaEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
+const apiBaseUrl = (importMetaEnv.VITE_API_BASE_URL ?? "").trim().replace(/\/+$/, "");
+
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message);
+    this.name = "ApiRequestError";
+  }
+}
+
+export function isClosedApprovalConflictError(error: unknown): boolean {
+  if (!(error instanceof ApiRequestError) || error.status !== 409) return false;
+  return error.code === "approval_conflict" ||
+    /approval request is (already closed|no longer pending)/i.test(error.message);
+}
 
 export interface ChatStreamHandlers {
   onEvent: (event: ChatStreamEvent) => void;
@@ -106,7 +123,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => undefined);
     const message = body?.error?.message ?? `Request failed: ${response.status}`;
-    throw new Error(message);
+    const code = typeof body?.error?.code === "string" ? body.error.code : undefined;
+    throw new ApiRequestError(message, response.status, code);
   }
 
   return response.json() as Promise<T>;
@@ -469,10 +487,10 @@ export const api = {
     return response.messages;
   },
 
-  async approveApprovalRequest(approvalRequestId: string, comment?: string, selectedReplyId?: string): Promise<ApprovalRequestResponse> {
+  async approveApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
     return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/approve`, {
       method: "POST",
-      body: JSON.stringify({ comment, selectedReplyId })
+      body: JSON.stringify({ comment })
     });
   },
 
@@ -483,8 +501,29 @@ export const api = {
     });
   },
 
-  async replyToApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
+  async replyToApprovalRequest(
+    approvalRequestId: string,
+    message: string,
+    discussionMode: InboxDiscussionMode = "reply"
+  ): Promise<ApprovalRequestResponse> {
     return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ message, discussionMode } satisfies ReplyApprovalRequestRequest)
+    });
+  },
+
+  async selectApprovalRequestReply(
+    approvalRequestId: string,
+    selectedReplyId: string | null
+  ): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/select-reply`, {
+      method: "POST",
+      body: JSON.stringify({ selectedReplyId } satisfies SelectApprovalRequestReplyRequest)
+    });
+  },
+
+  async returnForRevisionApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
+    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/return-for-revision`, {
       method: "POST",
       body: JSON.stringify({ message })
     });
@@ -600,47 +639,6 @@ export const api = {
   async getLatestBlueprintRun(blueprintId: string): Promise<StartBlueprintRunResponse["run"] | undefined> {
     const response = await request<LatestBlueprintRunResponse>(`/api/blueprints/${blueprintId}/runs/latest`);
     return response.run ?? undefined;
-  },
-
-  async approveBlueprintRun(
-    runId: string,
-    nodeRunId?: string,
-    comment?: string,
-    selectedReplyId?: string
-  ): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, comment, selectedReplyId } satisfies ApproveBlueprintRunRequest)
-    });
-    return response.run;
-  },
-
-  async rejectBlueprintRun(runId: string, nodeRunId?: string, comment?: string): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reject`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, comment } satisfies RejectBlueprintRunRequest)
-    });
-    return response.run;
-  },
-
-  async replyToBlueprintRunApproval(runId: string, nodeRunId: string, message: string): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, message } satisfies ReplyBlueprintRunApprovalRequest)
-    });
-    return response.run;
-  },
-
-  async selectBlueprintRunApprovalReply(
-    runId: string,
-    nodeRunId: string,
-    selectedReplyId: string
-  ): Promise<BlueprintRunResponse["run"]> {
-    const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}/select-approval-reply`, {
-      method: "POST",
-      body: JSON.stringify({ nodeRunId, selectedReplyId } satisfies SelectBlueprintRunApprovalRequest)
-    });
-    return response.run;
   },
 
   async cancelBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {

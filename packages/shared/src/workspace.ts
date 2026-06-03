@@ -52,6 +52,7 @@ export interface PendingApprovalItem {
   approvalRequestId?: string;
   approvalThreadId?: string;
   kind?: string;
+  discussion?: PendingApprovalDiscussionCapabilities;
   blueprintId: string;
   blueprintName: string;
   blueprintRunId: string;
@@ -64,7 +65,7 @@ export interface PendingApprovalItem {
   requestedAt: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
-  selectedReplyId?: string;
+  selectedReplyId?: string | null;
   status?: "pending" | "replying" | "approved" | "rejected" | "replied" | "completed" | "terminated" | "superseded";
   decidedAt?: string;
   decisionComment?: string;
@@ -73,15 +74,30 @@ export interface PendingApprovalItem {
   canReject?: boolean;
   canComplete?: boolean;
   canTerminate?: boolean;
+  canReturnForRevision?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
+}
+
+export interface PendingApprovalDiscussionCapabilities {
+  mode: "none" | "message_only" | "executor";
+  canStreamReply: boolean;
+  canCreateCandidate: boolean;
+  reason?: string;
+  executorKind?:
+    | "agent_approval"
+    | "requirement_agent"
+    | "requirement_manager"
+    | "release_report_manager"
+    | "function_manager"
+    | "function_summary";
 }
 
 export interface PendingApprovalReply {
   id: string;
   role: "assistant" | "user";
+  purpose?: "message" | "candidate";
   body: string;
   createdAt: string;
-  selected?: boolean;
 }
 
 export interface PendingApprovalUpstreamItem {

@@ -3,6 +3,7 @@ import type {
   AgentHumanReport,
   AgentRuntimeId,
   ArchitectureBlueprintView,
+  ApprovalDiscussionBinding,
   ApprovalDecision,
   ApprovalReply,
   ApprovalRequest,
@@ -29,9 +30,17 @@ import type {
   IterationSession,
   ManagerContextSnapshot,
   ManagerMail,
+  NodeExecutionSession,
+  NodeExecutionSessionStatus,
+  NodeSessionTranscriptEvent,
   PortableBlueprintPackage,
   ReleaseReport,
   RoleDriverBinding,
+  RunCommand,
+  RunCommandKind,
+  RunCommandStatus,
+  RunCommandStep,
+  RunCommandStepStatus,
   RunTimelineItem,
   UpdateHivewardChatSessionRequest,
   WorkspaceDashboard
@@ -105,6 +114,7 @@ export type ApplyApprovalDecisionInput = {
   nextRequest: ApprovalRequest;
   decision: ApprovalDecision;
   nextApprovalRequest?: ApprovalRequest;
+  nextApprovalDiscussionBinding?: ApprovalDiscussionBinding;
   releaseReport?: ReleaseReport;
   timelineItem?: Omit<RunTimelineItem, "sequence"> & { sequence?: number };
 };
@@ -214,6 +224,26 @@ export interface HivewardStore {
   listRunSummaries(): Promise<BlueprintRunSummary[]>;
   listRunViews(): Promise<BlueprintRunView[]>;
   listRunArchives(): Promise<BlueprintRunArchive[]>;
+  createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }>;
+  getRunCommand(id: string): Promise<RunCommand | undefined>;
+  getRunCommandByKey(commandKey: string): Promise<RunCommand | undefined>;
+  listRunCommands(filter?: {
+    runId?: string;
+    roundId?: string;
+    kind?: RunCommandKind;
+    statuses?: RunCommandStatus[];
+  }): Promise<RunCommand[]>;
+  updateRunCommand(input: { id: string } & Partial<RunCommand>): Promise<RunCommand>;
+  createRunCommandStepIfAbsent(step: RunCommandStep): Promise<{ step: RunCommandStep; created: boolean }>;
+  getRunCommandStep(id: string): Promise<RunCommandStep | undefined>;
+  getRunCommandStepByKey(stepKey: string): Promise<RunCommandStep | undefined>;
+  listRunCommandSteps(filter?: {
+    commandId?: string;
+    runId?: string;
+    nodeRunId?: string;
+    statuses?: RunCommandStepStatus[];
+  }): Promise<RunCommandStep[]>;
+  updateRunCommandStep(input: { id: string } & Partial<RunCommandStep>): Promise<RunCommandStep>;
 
   listPendingApprovals(): Promise<import("@hiveward/shared").PendingApprovalItem[]>;
   listApprovalThreads(filter?: { runId?: string; status?: ApprovalThread["status"] }): Promise<ApprovalThread[]>;
@@ -221,6 +251,10 @@ export interface HivewardStore {
   listApprovalRequests(filter?: { runId?: string; status?: ApprovalRequest["status"] }): Promise<ApprovalRequest[]>;
   getApprovalRequest(id: string): Promise<ApprovalRequest | undefined>;
   upsertApprovalRequest(request: ApprovalRequest): Promise<ApprovalRequest>;
+  createApprovalRequestWithDiscussionBinding(input: {
+    request: ApprovalRequest;
+    discussionBinding?: ApprovalDiscussionBinding;
+  }): Promise<ApprovalRequest>;
   appendApprovalReply(reply: ApprovalReply): Promise<ApprovalReply>;
   listApprovalReplies(filter?: { runId?: string; threadId?: string; approvalRequestId?: string }): Promise<ApprovalReply[]>;
   appendApprovalDecision(decision: ApprovalDecision): Promise<ApprovalDecision>;
@@ -231,6 +265,34 @@ export interface HivewardStore {
   upsertIterationSession(session: IterationSession): Promise<IterationSession>;
   listIterationRounds(filter?: { runId?: string; sessionId?: string; status?: IterationRound["status"] }): Promise<IterationRound[]>;
   upsertIterationRound(round: IterationRound): Promise<IterationRound>;
+  createNodeExecutionSession(session: NodeExecutionSession): Promise<NodeExecutionSession>;
+  listNodeExecutionSessions(filter?: {
+    runId?: string;
+    nodeRunId?: string;
+    nodeId?: string;
+    statuses?: NodeExecutionSessionStatus[];
+  }): Promise<NodeExecutionSession[]>;
+  getNodeExecutionSession(id: string): Promise<NodeExecutionSession | undefined>;
+  updateNodeExecutionSession(input: { id: string } & Partial<NodeExecutionSession>): Promise<NodeExecutionSession>;
+  appendNodeSessionTranscriptEvent(
+    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
+  ): Promise<NodeSessionTranscriptEvent>;
+  listNodeSessionTranscriptEvents(filter?: {
+    sessionId?: string;
+    runId?: string;
+    nodeRunId?: string;
+  }): Promise<NodeSessionTranscriptEvent[]>;
+  createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding>;
+  getApprovalDiscussionBinding(approvalRequestId: string): Promise<ApprovalDiscussionBinding | undefined>;
+  listApprovalDiscussionBindings(filter?: { approvalRequestIds?: string[]; runId?: string }): Promise<ApprovalDiscussionBinding[]>;
+  updateApprovalDiscussionBinding(
+    input: { approvalRequestId: string } & Partial<ApprovalDiscussionBinding>
+  ): Promise<ApprovalDiscussionBinding>;
+  markApprovalDiscussionBindingUnavailable(input: {
+    approvalRequestId: string;
+    reason: string;
+    updatedAt?: string;
+  }): Promise<ApprovalDiscussionBinding>;
 
   listArtifacts(runId?: string): Promise<Artifact[]>;
   upsertArtifact(artifact: Artifact): Promise<Artifact>;
