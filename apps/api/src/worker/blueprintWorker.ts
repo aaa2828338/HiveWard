@@ -1829,6 +1829,9 @@ export class BlueprintWorker {
     if (result.status !== "succeeded") {
       throw new Error(result.error ?? "Approval discussion reply failed.");
     }
+    if (this.isUnprovenNativeResume(result)) {
+      throw new Error("Approval discussion reply cannot be published from an unproven native resume.");
+    }
     await this.appendApprovalAssistantReply(request, resolution, "message", formatTranscriptContent(result.output), runtimeRef);
   }
 
@@ -1859,6 +1862,9 @@ export class BlueprintWorker {
     });
     if (result.status !== "succeeded") {
       throw new Error(result.error ?? "Approval candidate generation failed.");
+    }
+    if (this.isUnprovenNativeResume(result)) {
+      throw new Error("Approval discussion reply cannot be published from an unproven native resume.");
     }
     await this.appendApprovalAssistantReply(request, resolution, "candidate", formatTranscriptContent(result.output), runtimeRef);
   }
@@ -1909,15 +1915,23 @@ export class BlueprintWorker {
 
     const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message, input.discussionMode);
     const startInput = this.buildApprovalDiscussionStartInput(input.blueprint, nodeRun, session, input.resolution, taskInput);
-    return this.executeAgentTaskAttempt({
-      ...startInput,
-      nativeSessionId: session.nativeSessionId,
-      executionSessionPolicy: session.policy
-    }, {
+    const sessionContext: ResolvedNodeExecutionSession = {
       session,
       nodeRun,
       resumeNativeSessionId: session.nativeSessionId
-    });
+    };
+    return this.runAgentTaskWithResolvedSession(
+      startInput,
+      sessionContext,
+      undefined,
+      async (fallbackContext) => {
+        await this.appendExecutionTranscriptEvent(fallbackContext.session, "user", "user_message", input.message, {
+          approvalRequestId: input.request.id,
+          approvalDiscussionMode: input.discussionMode,
+          route: input.resolution.route
+        });
+      }
+    );
   }
 
   private buildApprovalDiscussionTaskInput(
@@ -5782,15 +5796,28 @@ export class BlueprintWorker {
     input: StartAgentTaskInput,
     onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
   ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
-    let sessionContext = await this.resolveNodeExecutionSession(input);
+    const sessionContext = await this.resolveNodeExecutionSession(input);
+    if (!sessionContext) {
+      return this.executeAgentTaskAttempt(input, undefined, onStarted);
+    }
+    return this.runAgentTaskWithResolvedSession(input, sessionContext, onStarted);
+  }
+
+  private async runAgentTaskWithResolvedSession(
+    input: StartAgentTaskInput,
+    sessionContext: ResolvedNodeExecutionSession,
+    onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>,
+    onFallbackSession?: (sessionContext: ResolvedNodeExecutionSession) => Promise<void>
+  ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
     let attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
     let attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
 
-    if (sessionContext && this.shouldFallbackNativeResume(attemptInput, attempt.result)) {
+    if (this.shouldFallbackNativeResume(attemptInput, attempt.result)) {
       sessionContext = await this.createFallbackNodeExecutionSession(
         sessionContext,
         this.nativeResumeBoundaryReason(attempt.result)
       );
+      await onFallbackSession?.(sessionContext);
       attemptInput = this.withResolvedExecutionSessionInput(input, sessionContext);
       attempt = await this.executeAgentTaskAttempt(attemptInput, sessionContext, onStarted);
     }
