@@ -109,7 +109,6 @@ describe("JSON to SQLite migration", () => {
           mode: "none",
           route: "none",
           canStreamReply: false,
-          canCreateCandidate: false,
           reason: "historical_discussion_binding_unavailable",
           resolverVersion: 1
         })
@@ -120,7 +119,6 @@ describe("JSON to SQLite migration", () => {
           discussion: {
             mode: "none",
             canStreamReply: false,
-            canCreateCandidate: false,
             reason: "historical_discussion_binding_unavailable"
           }
         })
@@ -423,7 +421,6 @@ async function seedMigrationExecutionFacts(
     executorSessionId: session.id,
     runtimeId: "codex",
     canStreamReply: true,
-    canCreateCandidate: true,
     resolverVersion: 1,
     createdAt: contractNow,
     updatedAt: contractNow

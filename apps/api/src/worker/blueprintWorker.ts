@@ -16,7 +16,6 @@ import {
   type AgentRuntimeId,
   type AgentTaskResult,
   type ConditionNodeConfig,
-  type InboxDiscussionMode,
   type LoopNodeConfig,
   type IterationRound,
   type IterationSession,
@@ -289,7 +288,7 @@ interface ManagerDecision {
 interface AgentApprovalReply {
   id: string;
   role: "assistant" | "user";
-  purpose?: "message" | "candidate";
+  purpose?: "message";
   body: string;
   createdAt: string;
 }
@@ -313,7 +312,6 @@ interface ApprovedAgentOutputEnvelope {
     status: "approved";
     comment?: string;
     replies: AgentApprovalReply[];
-    selectedReplyId?: string;
   };
 }
 
@@ -516,7 +514,7 @@ export class BlueprintWorker {
     run: BlueprintRun,
     approvalRequestId: string,
     action: ApprovalRequestAction,
-    input: { comment?: string; message?: string; selectedReplyId?: string | null; discussionMode?: InboxDiscussionMode } = {}
+    input: { comment?: string; message?: string } = {}
   ): Promise<BlueprintRun> {
     const request = await this.store.getApprovalRequest(approvalRequestId);
     if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
@@ -530,12 +528,7 @@ export class BlueprintWorker {
     }
 
     if (action === "reply") {
-      const discussionMode = input.discussionMode ?? "reply";
-      if (discussionMode === "candidate") {
-        await this.createApprovalCandidateReply(blueprint, currentRun, request, input.message ?? "");
-      } else {
-        await this.recordApprovalDiscussionReply(blueprint, currentRun, request, input.message ?? "");
-      }
+      await this.recordApprovalDiscussionReply(blueprint, currentRun, request, input.message ?? "");
       await this.managerMailProjector.refresh(run.id);
       const waiting = { ...currentRun, status: "waiting_approval" as const };
       await this.store.updateBlueprintRun(waiting);
@@ -546,9 +539,6 @@ export class BlueprintWorker {
     let requirementRevisionCommand: RunCommand | undefined;
     let result: ApprovalActionResult;
     if (action === "approve") {
-      if (input.selectedReplyId !== undefined) {
-        throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
-      }
       result = await this.approvalService.approve(approvalRequestId, input.comment);
     } else if (action === "reject") {
       result = await this.approvalService.reject(approvalRequestId, input.comment);
@@ -610,9 +600,6 @@ export class BlueprintWorker {
           currentRun,
           request.nodeRunId,
           input.comment,
-          approvalRequestHasSelectedReplyId(result.approvalRequest)
-            ? result.approvalRequest.selectedReplyId
-            : undefined,
           request.id
         );
       }
@@ -1734,8 +1721,7 @@ export class BlueprintWorker {
       run,
       request,
       resolution,
-      message: trimmed,
-      discussionMode: "reply"
+      message: trimmed
     });
     if (result.status !== "succeeded") {
       throw new Error(result.error ?? "Approval discussion reply failed.");
@@ -1744,40 +1730,6 @@ export class BlueprintWorker {
       throw new Error("Approval discussion reply cannot be published from an unproven native resume.");
     }
     await this.appendApprovalAssistantReply(request, resolution, "message", formatTranscriptContent(result.output), runtimeRef);
-  }
-
-  private async createApprovalCandidateReply(
-    blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    request: ApprovalRequest,
-    message: string
-  ): Promise<void> {
-    const trimmed = message.trim();
-    if (!trimmed) throw new Error("Approval candidate prompt is required.");
-
-    const resolution = await this.resolveApprovalDiscussionForRequest(request);
-    if (resolution.capability.mode === "none") {
-      throw new Error(`Approval discussion is unavailable: ${resolution.reason ?? "discussion_disabled"}.`);
-    }
-    if (resolution.capability.mode !== "executor" || !resolution.executor || !resolution.capability.canCreateCandidate) {
-      throw new Error("Approval discussion cannot create candidate replies.");
-    }
-
-    const { result, runtimeRef } = await this.runApprovalDiscussionExecutor({
-      blueprint,
-      run,
-      request,
-      resolution,
-      message: trimmed,
-      discussionMode: "candidate"
-    });
-    if (result.status !== "succeeded") {
-      throw new Error(result.error ?? "Approval candidate generation failed.");
-    }
-    if (this.isUnprovenNativeResume(result)) {
-      throw new Error("Approval discussion reply cannot be published from an unproven native resume.");
-    }
-    await this.appendApprovalAssistantReply(request, resolution, "candidate", formatTranscriptContent(result.output), runtimeRef);
   }
 
   private async resolveApprovalDiscussionForRequest(request: ApprovalRequest): Promise<ApprovalDiscussionResolution> {
@@ -1804,7 +1756,6 @@ export class BlueprintWorker {
     request: ApprovalRequest;
     resolution: ApprovalDiscussionResolution;
     message: string;
-    discussionMode: InboxDiscussionMode;
   }): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
     const executor = input.resolution.executor;
     if (!executor) throw new Error("Approval discussion executor is not bound.");
@@ -1820,11 +1771,11 @@ export class BlueprintWorker {
 
     await this.appendExecutionTranscriptEvent(session, "user", "user_message", input.message, {
       approvalRequestId: input.request.id,
-      approvalDiscussionMode: input.discussionMode,
+      approvalDiscussionMode: "reply",
       route: input.resolution.route
     });
 
-    const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message, input.discussionMode);
+    const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message);
     const startInput = this.buildApprovalDiscussionStartInput(input.blueprint, nodeRun, session, input.resolution, taskInput);
     const sessionContext: ResolvedNodeExecutionSession = {
       session,
@@ -1838,7 +1789,7 @@ export class BlueprintWorker {
       async (fallbackContext) => {
         await this.appendExecutionTranscriptEvent(fallbackContext.session, "user", "user_message", input.message, {
           approvalRequestId: input.request.id,
-          approvalDiscussionMode: input.discussionMode,
+          approvalDiscussionMode: "reply",
           route: input.resolution.route
         });
       }
@@ -1848,8 +1799,7 @@ export class BlueprintWorker {
   private buildApprovalDiscussionTaskInput(
     request: ApprovalRequest,
     replies: ApprovalReply[],
-    message: string,
-    discussionMode: InboxDiscussionMode
+    message: string
   ): Record<string, unknown> {
     return {
       approvalDiscussion: {
@@ -1858,12 +1808,9 @@ export class BlueprintWorker {
         kind: request.kind,
         title: request.title,
         body: request.body,
-        mode: discussionMode,
+        mode: "reply",
         latestUserMessage: message,
-        selectedReplyId: request.selectedReplyId,
-        instruction: discussionMode === "candidate"
-          ? "Create a reviewable candidate replacement output for this pending approval. Do not approve, reject, revise, or advance lifecycle state."
-          : "Reply conversationally to the human about this pending approval. Do not approve, reject, revise, or advance lifecycle state."
+        instruction: "Reply conversationally to the human about this pending approval. Do not approve, reject, revise, or advance lifecycle state."
       },
       approvalReplies: replies.map((reply) => ({
         id: reply.id,
@@ -1938,7 +1885,7 @@ export class BlueprintWorker {
   private async appendApprovalAssistantReply(
     request: ApprovalRequest,
     resolution: ApprovalDiscussionResolution,
-    purpose: "message" | "candidate",
+    purpose: "message",
     body: string,
     runtimeRef: RuntimeObjectRef
   ): Promise<ApprovalReply> {
@@ -1972,8 +1919,7 @@ export class BlueprintWorker {
       executorNodeRunId: nodeRun.id,
       session,
       missingReason: "agent_approval_session_missing",
-      canStreamReply: true,
-      canCreateCandidate: true
+      canStreamReply: true
     });
   }
 
@@ -2000,8 +1946,7 @@ export class BlueprintWorker {
       executorNodeRunId: nodeRunId,
       session,
       missingReason: "requirement_executor_session_missing",
-      canStreamReply: true,
-      canCreateCandidate: false
+      canStreamReply: true
     });
   }
 
@@ -2013,7 +1958,6 @@ export class BlueprintWorker {
     session?: NodeExecutionSession;
     missingReason: string;
     canStreamReply: boolean;
-    canCreateCandidate: boolean;
   }): ApprovalDiscussionBindingDraft {
     const hasExecutor = Boolean(input.executorNodeId && input.executorNodeRunId && input.session && input.session.status !== "unavailable");
     return {
@@ -2026,7 +1970,6 @@ export class BlueprintWorker {
       executorSessionId: input.session?.id,
       runtimeId: input.session?.harnessId as AgentRuntimeId | undefined,
       canStreamReply: hasExecutor && input.canStreamReply,
-      canCreateCandidate: hasExecutor && input.canCreateCandidate,
       reason: hasExecutor ? undefined : input.missingReason,
       resolverVersion: 1
     };
@@ -2046,7 +1989,6 @@ export class BlueprintWorker {
     run: BlueprintRun,
     nodeRunId?: string,
     comment?: string,
-    selectedReplyId?: string | null,
     approvalRequestId?: string
   ): Promise<BlueprintRun> {
     if (this.isTerminalRunStatus(run.status)) {
@@ -2061,7 +2003,7 @@ export class BlueprintWorker {
       throw new Error(nodeRunId ? "Requested approval is no longer waiting." : "No node is waiting for approval.");
     }
 
-    const approvedOutput = await this.resolveApprovedOutput(blueprint, run, waiting, comment, selectedReplyId, approvalRequestId);
+    const approvedOutput = await this.buildApprovedOutputFromWaitingApproval(blueprint, run, waiting, comment, approvalRequestId);
     await this.completeNode(waiting, approvedOutput, waiting.runtimeRef);
     await this.syncRunCommandStepsForNodeRun(waiting);
     const running = { ...run, status: "running" as const };
@@ -2069,28 +2011,6 @@ export class BlueprintWorker {
     const command = await this.ensureExecutionRunCommand(blueprint, running);
     this.scheduleRun(blueprint, running, command);
     return running;
-  }
-
-  async selectApprovalReply(
-    _blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    approvalRequestId: string,
-    selectedReplyId: string | null
-  ): Promise<BlueprintRun> {
-    if (this.isTerminalRunStatus(run.status)) {
-      throw new Error("Run is already finished.");
-    }
-
-    const request = await this.store.getApprovalRequest(approvalRequestId);
-    if (!request) throw new Error(`Approval request not found: ${approvalRequestId}`);
-    if (request.runId !== run.id) {
-      throw new Error("Approval request does not belong to this run.");
-    }
-    await this.approvalService.selectApprovalCandidate(approvalRequestId, selectedReplyId);
-    await this.managerMailProjector.refresh(run.id);
-    const waiting = { ...run, status: "waiting_approval" as const };
-    await this.store.updateBlueprintRun(waiting);
-    return waiting;
   }
 
   async rejectRun(blueprint: BlueprintDefinition, run: BlueprintRun, nodeRunId?: string, comment?: string): Promise<BlueprintRun> {
@@ -2614,8 +2534,7 @@ export class BlueprintWorker {
         executorNodeRunId: nodeRun.id,
         session,
         missingReason: "release_report_executor_session_missing",
-        canStreamReply: true,
-        canCreateCandidate: false
+        canStreamReply: true
       })
     };
   }
@@ -4659,12 +4578,11 @@ export class BlueprintWorker {
     await this.managerMailProjector.refresh(nodeRun.blueprintRunId);
   }
 
-  private async resolveApprovedOutput(
+  private async buildApprovedOutputFromWaitingApproval(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     nodeRun: BlueprintNodeRun,
     comment?: string,
-    selectedReplyId?: string | null,
     approvalRequestId?: string
   ): Promise<unknown> {
     if (!isAgentApprovalWaitingOutput(nodeRun.output)) {
@@ -4681,30 +4599,6 @@ export class BlueprintWorker {
     const approvalReplies = approvalRequest
       ? await this.store.listApprovalReplies({ approvalRequestId: approvalRequest.id })
       : [];
-    const normalizedSelectedReplyId = typeof selectedReplyId === "string" && selectedReplyId.trim()
-      ? selectedReplyId.trim()
-      : undefined;
-    const selectedCandidate = normalizedSelectedReplyId
-      ? this.findSelectedApprovalCandidate(approvalRequest, approvalReplies, normalizedSelectedReplyId)
-      : undefined;
-    if (normalizedSelectedReplyId && !selectedCandidate) {
-      throw new Error("Selected approval reply does not belong to this request.");
-    }
-    if (selectedCandidate) {
-      const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
-      if (node && isAgentBlueprintNode(node)) {
-        const config = node.config as AgentNodeConfig;
-        if ((node.runtimeId ?? "openclaw") === "openclaw" && config.send?.enabled) {
-          await this.executeAgentConfiguredSend(run, nodeRun, blueprint.name, config.send, selectedCandidate.body);
-        }
-      }
-      return buildApprovedAgentOutput(
-        selectedCandidate.body,
-        approvalRepliesToAgentApprovalReplies(approvalReplies),
-        comment,
-        selectedCandidate.reply.id
-      );
-    }
 
     const approvedOutput = nodeRun.output.reviewOutput;
     const node = blueprint.nodes.find((candidate) => candidate.id === nodeRun.nodeId);
@@ -4715,21 +4609,6 @@ export class BlueprintWorker {
       }
     }
     return buildApprovedAgentOutput(approvedOutput, approvalRepliesToAgentApprovalReplies(approvalReplies), comment);
-  }
-
-  private findSelectedApprovalCandidate(
-    request: ApprovalRequest | undefined,
-    replies: ApprovalReply[],
-    selectedReplyId: string
-  ): { request: ApprovalRequest; reply: ApprovalReply; body: string } | undefined {
-    if (!request) return undefined;
-    const reply = replies.find((candidate) =>
-      candidate.id === selectedReplyId &&
-      candidate.approvalRequestId === request.id &&
-      candidate.threadId === approvalThreadIdForRequest(request) &&
-      candidate.purpose === "candidate"
-    );
-    return reply ? { request, reply, body: reply.body } : undefined;
   }
 
   private async executeAgentConfiguredSend(
@@ -5997,7 +5876,6 @@ export class BlueprintWorker {
         executorSessionId: fallback.id,
         runtimeId: fallback.harnessId as AgentRuntimeId,
         canStreamReply: canUseFallback && binding.canStreamReply,
-        canCreateCandidate: canUseFallback && binding.canCreateCandidate,
         reason: canUseFallback ? undefined : "fallback_executor_binding_incomplete",
         updatedAt: fallback.updatedAt
       });
@@ -6277,12 +6155,6 @@ function isAgentApprovalWaitingOutput(value: unknown): value is AgentApprovalWai
   return value.approvalType === "agent" && "reviewOutput" in value && Array.isArray(value.replies);
 }
 
-function approvalRequestHasSelectedReplyId(
-  request: ApprovalRequest
-): request is ApprovalRequest & { selectedReplyId: string | null } {
-  return Object.prototype.hasOwnProperty.call(request, "selectedReplyId");
-}
-
 function isReturnForRevisionAction(action: ApprovalRequestAction): boolean {
   return action === "return_for_revision";
 }
@@ -6317,7 +6189,7 @@ function approvalRepliesToAgentApprovalReplies(replies: ApprovalReply[]): AgentA
   return replies.map((reply) => ({
     id: reply.id,
     role: reply.actor === "user" ? "user" : "assistant",
-    purpose: reply.purpose ?? "message",
+    purpose: "message",
     body: reply.body,
     createdAt: reply.createdAt
   }));
@@ -6409,19 +6281,17 @@ function readApprovalRevisionContext(input: unknown): PendingApprovalRevisionCon
 function buildApprovedAgentOutput(
   approvedOutput: unknown,
   replies: AgentApprovalReply[],
-  comment?: string,
-  selectedReplyId?: string
+  comment?: string
 ): unknown {
   const decisionComment = comment?.trim();
-  if (replies.length === 0 && !decisionComment && !selectedReplyId) return approvedOutput;
+  if (replies.length === 0 && !decisionComment) return approvedOutput;
 
   const envelope: ApprovedAgentOutputEnvelope = {
     approvedOutput,
     approval: {
       status: "approved",
       ...(decisionComment ? { comment: decisionComment } : {}),
-      replies,
-      ...(selectedReplyId ? { selectedReplyId } : {})
+      replies
     }
   };
   return envelope;

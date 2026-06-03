@@ -65,7 +65,6 @@ export interface PendingApprovalItem {
   requestedAt: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
-  selectedReplyId?: string | null;
   status?: "pending" | "replying" | "approved" | "rejected" | "replied" | "completed" | "terminated" | "superseded";
   decidedAt?: string;
   decisionComment?: string;
@@ -81,7 +80,6 @@ export interface PendingApprovalItem {
 export interface PendingApprovalDiscussionCapabilities {
   mode: "none" | "message_only" | "executor";
   canStreamReply: boolean;
-  canCreateCandidate: boolean;
   reason?: string;
   executorKind?:
     | "agent_approval"
@@ -95,7 +93,7 @@ export interface PendingApprovalDiscussionCapabilities {
 export interface PendingApprovalReply {
   id: string;
   role: "assistant" | "user";
-  purpose?: "message" | "candidate";
+  purpose?: "message";
   body: string;
   createdAt: string;
 }

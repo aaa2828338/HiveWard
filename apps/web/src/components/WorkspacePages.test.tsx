@@ -1,9 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ApprovalThread, BlueprintDefinition, BlueprintRunView, PendingApprovalItem } from "@hiveward/shared";
+import type { ApprovalThread, BlueprintDefinition, BlueprintRunView, HumanActionResponse, InboxProjection, PendingApprovalItem } from "@hiveward/shared";
 import { messages } from "../lib/i18n";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { ApprovalsPage, buildCurrentOutputDisplayBody, CompanyDirectoryPage, RunsPage, shouldAwaitApprovalHarnessReply } from "./WorkspacePages";
+import { ApprovalsPage, buildCurrentOutputDisplayBody, CompanyDirectoryPage, RunsPage } from "./WorkspacePages";
 
 describe("CompanyDirectoryPage", () => {
   it("renders the add-company action without the external Plus icon component", () => {
@@ -43,7 +43,6 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
     discussion: {
       mode: "message_only",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "message_only_approval_kind"
     },
     canApprove: true,
@@ -57,27 +56,32 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
 
 function renderApprovalsPage({
   approvals,
-  approvalThreads = []
+  approvalThreads = [],
+  inboxProjections = [],
+  inboxResponsesByRequestId = {},
+  actionPending = false
 }: {
   approvals: PendingApprovalItem[];
   approvalThreads?: ApprovalThread[];
+  inboxProjections?: InboxProjection[];
+  inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
+  actionPending?: boolean;
 }): string {
   return renderToStaticMarkup(
     <ApprovalsPage
       approvals={approvals}
       approvalThreads={approvalThreads}
-      inboxItems={[]}
+      inboxProjections={inboxProjections}
+      inboxResponsesByRequestId={inboxResponsesByRequestId}
       language="en"
       t={messages.en}
+      actionPending={actionPending}
       onApproveApprovalRequest={() => undefined}
       onComplete={() => undefined}
       onRejectApprovalRequest={() => undefined}
       onReplyApprovalRequest={() => undefined}
       onReturnForRevisionApprovalRequest={() => undefined}
-      onSelectApprovalReply={() => undefined}
-      onReplyInboxItem={() => undefined}
-      onApproveInboxItem={() => undefined}
-      onRejectInboxItem={() => undefined}
+      onSendHumanActionResponse={() => undefined}
     />
   );
 }
@@ -122,7 +126,7 @@ describe("ApprovalsPage", () => {
       <ApprovalsPage
         approvals={approvals}
         approvalThreads={approvalThreads}
-        inboxItems={[]}
+        inboxProjections={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
@@ -130,10 +134,7 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
-        onSelectApprovalReply={() => undefined}
-        onReplyInboxItem={() => undefined}
-        onApproveInboxItem={() => undefined}
-        onRejectInboxItem={() => undefined}
+        onSendHumanActionResponse={() => undefined}
       />
     );
 
@@ -143,14 +144,14 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("old body");
   });
 
-  it("renders comment and explicit return-for-revision actions as separate controls", () => {
+  it("renders message and explicit return-for-revision actions as separate controls", () => {
     const html = renderToStaticMarkup(
       <ApprovalsPage
         approvals={[createPendingApproval({
           canReturnForRevision: true
         } as Partial<PendingApprovalItem>)]}
         approvalThreads={[]}
-        inboxItems={[]}
+        inboxProjections={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
@@ -158,14 +159,11 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
-        onSelectApprovalReply={() => undefined}
-        onReplyInboxItem={() => undefined}
-        onApproveInboxItem={() => undefined}
-        onRejectInboxItem={() => undefined}
+        onSendHumanActionResponse={() => undefined}
       />
     );
 
-    expect(html).toContain("Comment");
+    expect(html).toContain("Send message");
     expect(html).toContain("Return for revision");
     expect(html).not.toContain("Request changes");
     expect(html).not.toMatch(/reply with changes/i);
@@ -176,7 +174,7 @@ describe("ApprovalsPage", () => {
       <ApprovalsPage
         approvals={[createPendingApproval()]}
         approvalThreads={[]}
-        inboxItems={[]}
+        inboxProjections={[]}
         language="en"
         t={messages.en}
         actionPending
@@ -185,14 +183,11 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
-        onSelectApprovalReply={() => undefined}
-        onReplyInboxItem={() => undefined}
-        onApproveInboxItem={() => undefined}
-        onRejectInboxItem={() => undefined}
+        onSendHumanActionResponse={() => undefined}
       />
     );
 
-    expect(extractButtonByAriaLabel(html, "Approve")).toContain("disabled");
+    expect(extractButtonByText(html, "Accept")).toContain("disabled");
   });
 
   it("processed approval shows read-only composer and no active approve action", () => {
@@ -207,7 +202,7 @@ describe("ApprovalsPage", () => {
           canReturnForRevision: false
         })]}
         approvalThreads={[]}
-        inboxItems={[]}
+        inboxProjections={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
@@ -215,62 +210,38 @@ describe("ApprovalsPage", () => {
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
         onReturnForRevisionApprovalRequest={() => undefined}
-        onSelectApprovalReply={() => undefined}
-        onReplyInboxItem={() => undefined}
-        onApproveInboxItem={() => undefined}
-        onRejectInboxItem={() => undefined}
+        onSendHumanActionResponse={() => undefined}
       />
     );
 
-    expect(extractButtonByAriaLabel(html, "Approve")).toContain("disabled");
-    expect(html).toContain("This inbox item has already been processed.");
+    expect(extractButtonByText(html, "Accept")).toContain("disabled");
     expect(html).toMatch(/<textarea[^>]*disabled/);
   });
 
-  it("does not wait for a harness reply for request-backed approval comments", () => {
-    const legacyApproval = createPendingApproval({ kind: "agent_proposal" });
-    delete legacyApproval.approvalRequestId;
-    expect(shouldAwaitApprovalHarnessReply(createPendingApproval({
-      approvalRequestId: "request-backed",
-      kind: "agent_proposal"
-    }))).toBe(false);
-    expect(shouldAwaitApprovalHarnessReply(legacyApproval)).toBe(true);
-  });
-
-  it("does not enable candidate generation from kind alone", () => {
+  it("renders approval discussion as message-only normal actions", () => {
     const html = renderApprovalsPage({
       approvals: [createPendingApproval({
         kind: "agent_proposal",
         discussion: {
           mode: "message_only",
-          canStreamReply: false,
-          canCreateCandidate: false
+          canStreamReply: false
         }
       })]
     });
 
-    expect(extractButtonByText(html, "Generate candidate")).toContain("disabled");
+    expect(html).toContain("Review");
+    expect(html).toContain("body");
+    expect(html).toContain("Send message");
+    expect(html).toContain("Accept");
+    expect(html).toContain("Decline");
+    expect(html).not.toContain("Generate candidate");
+    expect(html).not.toContain("Use this option");
+    expect(html).not.toContain("Candidate selected");
   });
 
-  it("enables candidate generation only from backend discussion projection", () => {
+  it("renders approval replies as historical messages without selection controls", () => {
     const html = renderApprovalsPage({
       approvals: [createPendingApproval({
-        discussion: {
-          mode: "executor",
-          canStreamReply: true,
-          canCreateCandidate: true,
-          executorKind: "agent_approval"
-        }
-      })]
-    });
-
-    expect(extractButtonByText(html, "Generate candidate")).not.toContain("disabled");
-  });
-
-  it("renders original content as the selected default and only candidate replies as selectable", () => {
-    const html = renderApprovalsPage({
-      approvals: [createPendingApproval({
-        selectedReplyId: null,
         replies: [
           {
             id: "reply-message",
@@ -278,67 +249,78 @@ describe("ApprovalsPage", () => {
             purpose: "message",
             body: "ordinary assistant reply",
             createdAt: "2026-05-21T01:03:00.000Z"
-          },
-          {
-            id: "reply-candidate",
-            role: "assistant",
-            purpose: "candidate",
-            body: "candidate answer",
-            createdAt: "2026-05-21T01:04:00.000Z"
           }
         ]
       })]
     });
 
-    expect(html).toContain("Original approval content");
-    expect(html).toContain("Original content selected");
-    expect(html).toContain("Message reply");
-    expect(html).toContain("Candidate reply");
+    expect(html).toContain("ordinary assistant reply");
+    expect(html).not.toContain("Use original");
+    expect(html).not.toContain("Use this option");
     expect(html).not.toContain("Candidate selected");
-    expect(html.match(/Use this option/g) ?? []).toHaveLength(1);
   });
 
-  it("renders an action to select original content after a candidate is selected", () => {
+  it("renders human action projections with response-only controls", () => {
+    const projection: InboxProjection = {
+      id: "projection-1",
+      humanActionRequestId: "human-action-1",
+      sourceContextType: "run_room",
+      sourceContextId: "run-room-1",
+      responseIntent: "reply_required",
+      status: "pending",
+      title: "Clarify delivery scope",
+      bodyMarkdown: "Please clarify scope.",
+      createdAt: "2026-05-21T01:02:00.000Z",
+      updatedAt: "2026-05-21T01:02:00.000Z"
+    };
+    const response: HumanActionResponse = {
+      id: "response-1",
+      requestId: projection.humanActionRequestId,
+      messageMarkdown: "We need the narrow launch scope.",
+      createdAt: "2026-05-21T01:03:00.000Z"
+    };
     const html = renderApprovalsPage({
-      approvals: [createPendingApproval({
-        selectedReplyId: "reply-candidate",
-        replies: [
-          {
-            id: "reply-candidate",
-            role: "assistant",
-            purpose: "candidate",
-            body: "candidate answer",
-            createdAt: "2026-05-21T01:04:00.000Z"
-          }
-        ]
-      })]
+      approvals: [],
+      inboxProjections: [projection],
+      inboxResponsesByRequestId: {
+        [projection.humanActionRequestId]: [response]
+      }
     });
 
-    expect(html).toContain("Use original");
-    expect(html).toContain("Candidate selected");
-    expect(html).not.toContain("Original content selected");
+    expect(html).toContain("Clarify delivery scope");
+    expect(html).toContain("Please clarify scope.");
+    expect(html).toContain("We need the narrow launch scope.");
+    expect(html).toContain("Send response");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
+    expect(html).not.toContain("Generate candidate");
+    expect(html).not.toContain("Use this option");
   });
 
-  it("disables discussion actions when backend projection is missing", () => {
+  it("disables approval and human response actions while a request action is pending", () => {
+    const projection: InboxProjection = {
+      id: "projection-pending",
+      humanActionRequestId: "human-action-pending",
+      sourceContextType: "run_room",
+      sourceContextId: "run-room-1",
+      responseIntent: "reply_required",
+      status: "pending",
+      title: "Pending response",
+      bodyMarkdown: "Need a response.",
+      createdAt: "2026-05-21T01:02:00.000Z",
+      updatedAt: "2026-05-21T01:02:00.000Z"
+    };
     const html = renderApprovalsPage({
-      approvals: [createPendingApproval({
-        discussion: undefined,
-        canReply: true
-      })]
+      approvals: [createPendingApproval()],
+      inboxProjections: [projection],
+      actionPending: true
     });
 
-    expect(extractButtonByText(html, "Comment")).toContain("disabled");
-    expect(extractButtonByText(html, "Generate candidate")).toContain("disabled");
-    expect(html).toContain("Discussion capability is unavailable for this legacy approval.");
+    expect(extractButtonByText(html, "Send message")).toContain("disabled");
+    expect(extractButtonByText(html, "Accept")).toContain("disabled");
+    expect(html).not.toContain("Generate candidate");
   });
 });
-
-function extractButtonByAriaLabel(html: string, label: string): string {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = html.match(new RegExp(`<button[^>]+aria-label="${escaped}"[^>]*>`));
-  if (!match) throw new Error(`Button with aria-label "${label}" was not rendered.`);
-  return match[0];
-}
 
 function extractButtonByText(html: string, label: string): string {
   const match = html.match(/<button\b[\s\S]*?<\/button>/g)?.find((button) => button.includes(label));

@@ -132,20 +132,6 @@ export type ApplyApprovalDecisionResult =
   | { status: "applied"; approvalRequest: ApprovalRequest; decision: ApprovalDecision; nextApprovalRequest?: ApprovalRequest }
   | { status: "conflict"; approvalRequest?: ApprovalRequest };
 
-export type ApplyInboxDecisionInput = {
-  inboxItemId: string;
-  approvalRequestId?: string;
-  action: "approve" | "reject" | "reply";
-  comment?: string;
-  defaults?: BlueprintImportDefaults;
-  approvalDecision?: ApprovalDecision;
-  approvalTimelineItem?: Omit<RunTimelineItem, "sequence"> & { sequence?: number };
-};
-
-export type ApplyInboxDecisionResult =
-  | { status: "applied"; item: InboxItem; importedBlueprints?: BlueprintDefinition[] }
-  | { status: "conflict"; item?: InboxItem };
-
 export interface HivewardStore {
   getDataDir(): string;
   init(): Promise<void>;
@@ -185,34 +171,6 @@ export interface HivewardStore {
     positions: Record<string, ArchitectureBlueprintView["nodes"][number]["position"]>
   ): Promise<{ roles: CompanyRoleDirectory; architecture: ArchitectureBlueprintView }>;
 
-  listInboxItems(): Promise<InboxItem[]>;
-  createLeaderDelegationRequest(input: {
-    leaderId: string;
-    blueprintId?: string;
-    title?: string;
-    summary?: string;
-    createdByRoleId?: string;
-  }): Promise<InboxItem>;
-  createBlueprintProposal(input: {
-    title: string;
-    summary: string;
-    blueprintId?: string;
-    blueprintPackage?: PortableBlueprintPackage;
-    preview?: Record<string, unknown>;
-    diffSummary?: string;
-    createdByRoleId?: string;
-    targetRoleId?: string;
-    runtimeId?: AgentRuntimeId;
-  }): Promise<InboxItem>;
-  approveInboxItem(
-    itemId: string,
-    defaults?: BlueprintImportDefaults,
-    comment?: string
-  ): Promise<{ item: InboxItem; importedBlueprints?: BlueprintDefinition[] }>;
-  rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem>;
-  replyToInboxItem(itemId: string, message: string): Promise<InboxItem>;
-  applyInboxDecision(input: ApplyInboxDecisionInput): Promise<ApplyInboxDecisionResult>;
-
   createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun>;
   updateBlueprintRun(run: BlueprintRun): Promise<void>;
   getBlueprintRun(id: string): Promise<BlueprintRun | undefined>;
@@ -245,6 +203,25 @@ export interface HivewardStore {
   createWorkerTask(task: WorkerTask): Promise<WorkerTask>;
   getWorkerTask(id: string): Promise<WorkerTask | undefined>;
   listWorkerTasks(filter?: { runRoomId?: string; managerCommandId?: string; statuses?: WorkerTask["status"][] }): Promise<WorkerTask[]>;
+  listInboxItems(): Promise<InboxItem[]>;
+  createLeaderDelegationRequest(input: {
+    leaderId: string;
+    blueprintId?: string;
+    title?: string;
+    summary?: string;
+    createdByRoleId?: string;
+  }): Promise<InboxItem>;
+  createBlueprintProposal(input: {
+    title: string;
+    summary: string;
+    blueprintId?: string;
+    blueprintPackage?: PortableBlueprintPackage;
+    preview?: Record<string, unknown>;
+    diffSummary?: string;
+    createdByRoleId?: string;
+    targetRoleId?: string;
+    runtimeId?: AgentRuntimeId;
+  }): Promise<InboxItem>;
   appendHumanActionRequest(request: HumanActionRequest): Promise<HumanActionRequest>;
   getHumanActionRequest(id: string): Promise<HumanActionRequest | undefined>;
   listHumanActionRequests(filter?: {

@@ -103,8 +103,6 @@ import {
 import type {
   ApplyApprovalDecisionInput,
   ApplyApprovalDecisionResult,
-  ApplyInboxDecisionInput,
-  ApplyInboxDecisionResult,
   BlueprintSkillSourceSnapshot,
   CancelNodeRunInput,
   ClaimNodeRunResult,
@@ -744,164 +742,6 @@ export class SqliteHivewardStore implements HivewardStore {
     });
   }
 
-  async approveInboxItem(
-    itemId: string,
-    defaults: BlueprintImportDefaults = {},
-    comment?: string
-  ): Promise<{ item: InboxItem; importedBlueprints?: BlueprintDefinition[] }> {
-    const result = this.driver.transaction(() => {
-      const item = this.requireInboxItem(itemId);
-      if (item.status === "approved") return { item };
-      const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
-      let importedBlueprints: BlueprintDefinition[] | undefined;
-      if (item.type === "blueprint_proposal") {
-        if (!blueprintPackage) throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
-        importedBlueprints = this.importBlueprintPackageTx(blueprintPackage, {
-          ...defaults,
-          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? defaults.runtimeId,
-          replaceBlueprintId: item.blueprintId ?? defaults.replaceBlueprintId
-        });
-      }
-      const now = new Date().toISOString();
-      const approved: InboxItem = {
-        ...item,
-        status: "approved",
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(comment)
-      };
-      this.upsertInboxItem(approved);
-      return { item: approved, importedBlueprints };
-    });
-    await Promise.all((result.importedBlueprints ?? []).map((blueprint) => this.writeBlueprintWorkspace(blueprint)));
-    return result;
-  }
-
-  async rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem> {
-    return this.driver.transaction(() => {
-      const item = this.requireInboxItem(itemId);
-      if (item.status === "approved") return item;
-      const now = new Date().toISOString();
-      const rejected: InboxItem = {
-        ...item,
-        status: "rejected",
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(comment)
-      };
-      this.upsertInboxItem(rejected);
-      return rejected;
-    });
-  }
-
-  async replyToInboxItem(itemId: string, message: string): Promise<InboxItem> {
-    return this.driver.transaction(() => {
-      const body = readOptionalString(message);
-      if (!body) throw new Error("Inbox reply message is required.");
-      const item = this.requireInboxItem(itemId);
-      if (item.status === "approved") return item;
-      const now = new Date().toISOString();
-      this.driver.db.prepare(
-        `INSERT INTO inbox_replies (id, inbox_item_id, message, created_at) VALUES (?, ?, ?, ?)`
-      ).run(`inbox-reply-${nanoid(10)}`, item.id, body, now);
-      const replied = { ...item, replies: this.readInboxReplies(item.id), updatedAt: now };
-      this.upsertInboxItem(replied);
-      return replied;
-    });
-  }
-
-  async applyInboxDecision(input: ApplyInboxDecisionInput): Promise<ApplyInboxDecisionResult> {
-    return this.driver.transaction(() => {
-      const item = this.requireInboxItem(input.inboxItemId);
-      if (item.status !== "pending") return { status: "conflict", item };
-      const request = input.approvalRequestId ? this.getApprovalRequestSync(input.approvalRequestId) : undefined;
-      if (input.approvalRequestId && (!request || request.status !== "pending")) {
-        return { status: "conflict", item };
-      }
-
-      let importedBlueprints: BlueprintDefinition[] | undefined;
-      if (input.action === "reply") {
-        const body = readOptionalString(input.comment);
-        if (!body) throw new Error("Inbox reply message is required.");
-        const now = new Date().toISOString();
-        const itemResult = this.driver.db.prepare(
-          "UPDATE inbox_items SET updated_at = ? WHERE id = ? AND status = 'pending'"
-        ).run(now, item.id);
-        if (itemResult.changes !== 1) return { status: "conflict", item };
-        if (input.approvalRequestId) {
-          const requestResult = this.driver.db.prepare(
-            "UPDATE approval_requests SET updated_at = ? WHERE id = ? AND status = 'pending'"
-          ).run(now, input.approvalRequestId);
-          if (requestResult.changes !== 1) return { status: "conflict", item };
-          if (request) this.upsertApprovalThreadSync(approvalThreadFromRequest({ ...request, updatedAt: now }));
-          if (input.approvalDecision) this.appendApprovalDecisionSync(input.approvalDecision);
-          if (input.approvalTimelineItem) this.appendRunTimelineItemSync(input.approvalTimelineItem);
-        }
-        this.driver.db.prepare(
-          `INSERT INTO inbox_replies (id, inbox_item_id, message, created_at) VALUES (?, ?, ?, ?)`
-        ).run(`inbox-reply-${nanoid(10)}`, item.id, body, now);
-        const replied = { ...item, replies: this.readInboxReplies(item.id), updatedAt: now };
-        return { status: "applied", item: replied };
-      }
-
-      const now = new Date().toISOString();
-      const nextStatus = input.action === "approve" ? "approved" : "rejected";
-      const decided: InboxItem = {
-        ...item,
-        status: nextStatus,
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(input.comment)
-      };
-      const itemResult = this.driver.db.prepare(
-        `UPDATE inbox_items
-         SET status = ?,
-             updated_at = ?,
-             decided_at = ?,
-             decision_comment = ?
-         WHERE id = ? AND status = 'pending'`
-      ).run(nextStatus, now, now, decided.decisionComment, item.id);
-      if (itemResult.changes !== 1) return { status: "conflict", item };
-      if (input.action === "approve" && item.type === "blueprint_proposal") {
-        const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
-        if (!blueprintPackage) throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
-        importedBlueprints = this.importBlueprintPackageTx(blueprintPackage, {
-          ...(input.defaults ?? {}),
-          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? input.defaults?.runtimeId,
-          replaceBlueprintId: item.blueprintId ?? input.defaults?.replaceBlueprintId
-        });
-      }
-
-      if (input.approvalRequestId) {
-        const result = this.driver.db.prepare(
-          `UPDATE approval_requests
-           SET status = ?,
-               capabilities_json = ?,
-               updated_at = ?
-           WHERE id = ? AND status = 'pending'`
-        ).run(
-          nextStatus,
-          stringifyJson({ approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false }),
-          now,
-          input.approvalRequestId
-        );
-        if (result.changes !== 1) return { status: "conflict", item };
-        if (request) {
-          this.upsertApprovalThreadSync(approvalThreadFromRequest({
-            ...request,
-            status: nextStatus,
-            capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false, returnForRevision: false },
-            updatedAt: now
-          }));
-        }
-        if (input.approvalDecision) this.appendApprovalDecisionSync(input.approvalDecision);
-        if (input.approvalTimelineItem) this.appendRunTimelineItemSync(input.approvalTimelineItem);
-      }
-
-      return { status: "applied", item: decided, importedBlueprints };
-    });
-  }
-
   async createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     return this.driver.transaction(() => {
       const runnableBlueprint = stripRemovedBlueprintNodes(blueprint);
@@ -1452,7 +1292,6 @@ export class SqliteHivewardStore implements HivewardStore {
       approvalRequestId: input.approvalRequestId,
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: input.reason,
       updatedAt: input.updatedAt
     });
@@ -1494,7 +1333,6 @@ export class SqliteHivewardStore implements HivewardStore {
     }
     return rowsWithRequests.map(({ row, request }) => {
       const requestRunId = request.runId ?? requireString(row.run_id);
-      const selectedReplyId = request.selectedReplyId;
       const approvalReplies = pendingApprovalRepliesFromApprovalReplies(approvalRepliesByRequestId.get(request.id) ?? []);
       const canReturnForRevision = request.capabilities.returnForRevision === true;
       return {
@@ -1518,7 +1356,6 @@ export class SqliteHivewardStore implements HivewardStore {
         status: row.node_status === "running" ? "replying" : "pending",
         reviewOutput: request.body,
         ...(approvalReplies ? { replies: approvalReplies } : {}),
-        ...(selectedReplyId !== undefined ? { selectedReplyId } : {}),
         canApprove: request.capabilities.approve,
         canReject: request.capabilities.reject,
         canReply: request.capabilities.reply,
@@ -1636,8 +1473,8 @@ export class SqliteHivewardStore implements HivewardStore {
       `INSERT INTO approval_requests (
         id, run_id, round_id, node_run_id, kind, status, title, body, payload_ref,
         source_type, source_id, thread_id, revision, replaces_request_id, superseded_by_request_id,
-        selected_reply_id, capabilities_json, requested_by_json, requested_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        capabilities_json, requested_by_json, requested_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         title = excluded.title,
@@ -1647,7 +1484,6 @@ export class SqliteHivewardStore implements HivewardStore {
         revision = excluded.revision,
         replaces_request_id = excluded.replaces_request_id,
         superseded_by_request_id = excluded.superseded_by_request_id,
-        selected_reply_id = excluded.selected_reply_id,
         capabilities_json = excluded.capabilities_json,
         requested_by_json = excluded.requested_by_json,
         updated_at = excluded.updated_at`
@@ -1667,7 +1503,6 @@ export class SqliteHivewardStore implements HivewardStore {
       request.revision,
       request.replacesRequestId,
       request.supersededByRequestId,
-      request.selectedReplyId,
       stringifyJson(request.capabilities),
       stringifyJson(request.requestedBy),
       request.requestedAt,
@@ -1745,11 +1580,10 @@ export class SqliteHivewardStore implements HivewardStore {
 
   private appendApprovalDecisionSync(decision: ApprovalDecision): void {
     this.driver.db.prepare(
-      `INSERT INTO approval_decisions (id, approval_request_id, action, actor, comment, selected_reply_id, resulting_status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approval_decisions (id, approval_request_id, action, actor, comment, resulting_status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          comment = excluded.comment,
-         selected_reply_id = excluded.selected_reply_id,
          resulting_status = excluded.resulting_status`
     ).run(
       decision.id,
@@ -1757,7 +1591,6 @@ export class SqliteHivewardStore implements HivewardStore {
       decision.action,
       decision.actor,
       decision.comment,
-      decision.selectedReplyId,
       decision.resultingStatus,
       decision.createdAt
     );
@@ -1778,14 +1611,12 @@ export class SqliteHivewardStore implements HivewardStore {
          SET status = ?,
              capabilities_json = ?,
              superseded_by_request_id = ?,
-             selected_reply_id = ?,
              updated_at = ?
          WHERE id = ? AND status = 'pending'`
       ).run(
         input.nextRequest.status,
         stringifyJson(input.nextRequest.capabilities),
         input.nextRequest.supersededByRequestId,
-        input.nextRequest.selectedReplyId,
         input.nextRequest.updatedAt,
         input.approvalRequestId
       );
@@ -3759,8 +3590,8 @@ export class SqliteHivewardStore implements HivewardStore {
       `INSERT INTO approval_discussion_bindings (
         approval_request_id, thread_id, mode, route, executor_actor, executor_kind,
         executor_node_id, executor_node_run_id, executor_session_id, runtime_id,
-        can_stream_reply, can_create_candidate, reason, resolver_version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        can_stream_reply, reason, resolver_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(approval_request_id) DO UPDATE SET
         thread_id = excluded.thread_id,
         mode = excluded.mode,
@@ -3772,7 +3603,6 @@ export class SqliteHivewardStore implements HivewardStore {
         executor_session_id = excluded.executor_session_id,
         runtime_id = excluded.runtime_id,
         can_stream_reply = excluded.can_stream_reply,
-        can_create_candidate = excluded.can_create_candidate,
         reason = excluded.reason,
         resolver_version = excluded.resolver_version,
         updated_at = excluded.updated_at`
@@ -3788,7 +3618,6 @@ export class SqliteHivewardStore implements HivewardStore {
       binding.executorSessionId,
       binding.runtimeId,
       binding.canStreamReply ? 1 : 0,
-      binding.canCreateCandidate ? 1 : 0,
       binding.reason,
       binding.resolverVersion,
       binding.createdAt,
@@ -3809,9 +3638,9 @@ export class SqliteHivewardStore implements HivewardStore {
 
     const insert = this.driver.db.prepare(
       `INSERT INTO approval_discussion_bindings (
-        approval_request_id, thread_id, mode, route, can_stream_reply, can_create_candidate,
+        approval_request_id, thread_id, mode, route, can_stream_reply,
         reason, resolver_version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 0, 0, ?, 1, ?, ?)`
+      ) VALUES (?, ?, ?, ?, 0, ?, 1, ?, ?)`
     );
     const now = new Date().toISOString();
     this.driver.transaction(() => {
@@ -4395,7 +4224,6 @@ function approvalDiscussionBindingFromRow(row: Row): ApprovalDiscussionBinding {
     executorSessionId: readString(row.executor_session_id),
     runtimeId: readAgentRuntimeId(row.runtime_id),
     canStreamReply: Boolean(row.can_stream_reply),
-    canCreateCandidate: Boolean(row.can_create_candidate),
     reason: readString(row.reason),
     resolverVersion: readNumber(row.resolver_version, 1),
     createdAt: requireString(row.created_at),
@@ -4421,7 +4249,6 @@ function approvalRequestFromRow(row: Row): ApprovalRequest {
     revision: readNumber(row.revision, 1),
     replacesRequestId: readString(row.replaces_request_id),
     supersededByRequestId: readString(row.superseded_by_request_id),
-    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     capabilities: readJson(row.capabilities_json),
     requestedBy: readJson(row.requested_by_json),
     requestedAt: requireString(row.requested_at),
@@ -4436,7 +4263,6 @@ function approvalDecisionFromRow(row: Row): ApprovalDecision {
     action: requireString(row.action) as ApprovalDecision["action"],
     actor: requireString(row.actor) as ApprovalDecision["actor"],
     comment: readString(row.comment),
-    selectedReplyId: readNullableSelectedReplyId(row.selected_reply_id),
     resultingStatus: requireString(row.resulting_status) as ApprovalDecision["resultingStatus"],
     createdAt: requireString(row.created_at)
   };
@@ -4979,11 +4805,6 @@ function requireString(value: unknown): string {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
-}
-
-function readNullableSelectedReplyId(value: unknown): string | null | undefined {
-  if (value === null) return null;
-  return readString(value);
 }
 
 function readOptionalString(value: unknown): string | undefined {

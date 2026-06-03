@@ -10,7 +10,6 @@ import { nanoid } from "nanoid";
 import type {
   AgentNodeConfig,
   AgentRuntimeId,
-  ApproveInboxItemRequest,
   BlueprintImportDefaults,
   CatalogSnapshot,
   ChatRoleScope,
@@ -19,10 +18,9 @@ import type {
   ConfigureOpenClawModelAuthRequest,
   CreateOpenClawChannelRequest,
   CreateBlueprintRequest,
-  CreateBlueprintProposalRequest,
   CreateOpenClawAgentRequest,
   CreateOpenClawModelRequest,
-  CreateLeaderDelegationRequest,
+  CreateHumanActionResponseRequest,
   HarnessId,
   HarnessModelOption,
   HarnessProfileOption,
@@ -67,11 +65,6 @@ import type {
   ExecuteExecutiveCommandResponse,
   ExecutiveCommand,
   ExecutiveCommandResult,
-  InboxDiscussionMode,
-  InboxItem,
-  RejectInboxItemRequest,
-  ReplyInboxItemRequest,
-  SelectApprovalRequestReplyRequest,
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
@@ -104,7 +97,8 @@ import { approvalThreadIdForRequest, claudeCodeModelPresets, createPortableBluep
 import { buildHivewardRoleSkillPrompt, parseExecutiveCommand } from "@hiveward/shared";
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
-import { InboxSubmissionService } from "../services/inboxSubmissionService";
+import { HumanActionRequestService } from "../services/humanActionRequestService";
+import { InboxProjectionService } from "../services/inboxProjectionService";
 import { AgentOutputService } from "../services/agentOutputService";
 import { RunRoomService } from "../services/runRoomService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
@@ -247,7 +241,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const router = Router();
   const approvalService = new ApprovalService(store);
   const managerMailProjector = new ManagerMailProjector(store);
-  const inboxSubmissionService = new InboxSubmissionService(store, approvalService, managerMailProjector);
+  const humanActionRequestService = new HumanActionRequestService(store);
+  const inboxProjectionService = new InboxProjectionService(store);
   const agentOutputService = new AgentOutputService(store);
   const runRoomService = new RunRoomService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
@@ -830,33 +825,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post("/api/approval-requests/:approvalRequestId/select-reply", async (req, res, next) => {
-    try {
-      const approvalRequestId = readRouteParam(req.params.approvalRequestId, "approvalRequestId");
-      const body = normalizeSelectApprovalRequestReplyRequest(req.body);
-      const approvalRequest = await store.getApprovalRequest(approvalRequestId);
-      if (!approvalRequest) {
-        throw new Error(`Approval request not found: ${approvalRequestId}`);
-      }
-      if (approvalRequest.runId) {
-        const run = await store.getBlueprintRun(approvalRequest.runId);
-        if (!run) throw new Error(`Blueprint run not found: ${approvalRequest.runId}`);
-        if (isTerminalRunStatus(run.status)) {
-          throw new ApiConflictError("run_already_finished", "Run is already finished.");
-        }
-        const blueprint = await getRunActionBlueprint(run);
-        if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
-        const updated = await worker.selectApprovalReply(blueprint, run, approvalRequestId, body.selectedReplyId);
-        res.json(await buildApprovalRequestResponse(approvalRequestId, updated.id));
-        return;
-      }
-      await approvalService.selectApprovalCandidate(approvalRequestId, body.selectedReplyId);
-      res.json(await buildApprovalRequestResponse(approvalRequestId));
-    } catch (error) {
-      next(error);
-    }
-  });
-
   router.post(["/api/approval-requests/:approvalRequestId/return-for-revision", "/api/approval-requests/:approvalRequestId/return_for_revision"], async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
@@ -906,103 +874,36 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.get("/api/inbox", async (_req, res, next) => {
+  router.get("/api/inbox-projections", async (_req, res, next) => {
     try {
-      res.json({ items: await store.listInboxItems() });
+      res.json({ projections: await inboxProjectionService.rebuild() });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/inbox/delegations", async (req, res, next) => {
+  router.get("/api/human-action-requests/:requestId/responses", async (req, res, next) => {
     try {
-      const body = normalizeCreateLeaderDelegationRequest(req.body);
-      const { item } = await inboxSubmissionService.submitLeaderDelegation(body);
-      res.status(201).json({ item });
+      const requestId = readRouteParam(req.params.requestId, "requestId");
+      res.json({ responses: await inboxProjectionService.listResponses(requestId) });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post("/api/inbox/blueprint-proposals", async (req, res, next) => {
+  router.post("/api/human-action-requests/:requestId/responses", async (req, res, next) => {
     try {
-      const body = normalizeCreateBlueprintProposalRequest(req.body);
-      const { item } = await inboxSubmissionService.submitBlueprintProposal(body);
-      res.status(201).json({ item });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/inbox/:itemId/approve", async (req, res, next) => {
-    try {
-      const body = normalizeApproveInboxItemRequest(req.body);
-      const config = await openClawConfigStore.getState();
-      const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
-      const decision = request ? buildApprovalDecision(request, "approve", "approved", body.comment) : undefined;
-      const result = await store.applyInboxDecision({
-        inboxItemId: itemId,
-        approvalRequestId: request?.id,
-        action: "approve",
-        comment: body.comment,
-        defaults: buildBlueprintImportDefaults(config),
-        approvalDecision: decision
+      const requestId = readRouteParam(req.params.requestId, "requestId");
+      const body = normalizeCreateHumanActionResponseRequest(req.body);
+      const response = await humanActionRequestService.appendResponse({
+        requestId,
+        messageMarkdown: body.messageMarkdown,
+        createdByRoleId: body.createdByRoleId
       });
-      if (result.status === "conflict") {
-        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
-        return;
-      }
-      await managerMailProjector.refresh();
-      res.json({ item: result.item, importedBlueprints: result.importedBlueprints });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/inbox/:itemId/reject", async (req, res, next) => {
-    try {
-      const body = normalizeRejectInboxItemRequest(req.body);
-      const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
-      const decision = request ? buildApprovalDecision(request, "reject", "rejected", body.comment) : undefined;
-      const result = await store.applyInboxDecision({
-        inboxItemId: itemId,
-        approvalRequestId: request?.id,
-        action: "reject",
-        comment: body.comment,
-        approvalDecision: decision
+      res.status(201).json({
+        response,
+        projections: await inboxProjectionService.rebuild()
       });
-      if (result.status === "conflict") {
-        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
-        return;
-      }
-      await managerMailProjector.refresh();
-      res.json({ item: result.item });
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/inbox/:itemId/reply", async (req, res, next) => {
-    try {
-      const body = normalizeReplyInboxItemRequest(req.body);
-      const itemId = readRouteParam(req.params.itemId, "itemId");
-      const request = await inboxSubmissionService.findPendingApprovalRequest(itemId);
-      const decision = request ? buildApprovalDecision(request, "reply", "pending", body.message) : undefined;
-      const result = await store.applyInboxDecision({
-        inboxItemId: itemId,
-        approvalRequestId: request?.id,
-        action: "reply",
-        comment: body.message,
-        approvalDecision: decision
-      });
-      if (result.status === "conflict") {
-        sendConflict(res, "inbox_decision_conflict", "Inbox item is no longer pending.");
-        return;
-      }
-      await managerMailProjector.refresh();
-      res.json({ item: result.item });
     } catch (error) {
       next(error);
     }
@@ -1149,7 +1050,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
         return;
       }
-      const result = await executeExecutiveCommand(store, session, command);
+      const result = await executeExecutiveCommand(store, humanActionRequestService, session, command);
       const response: ExecuteExecutiveCommandResponse = { command, result };
       res.status(result.status === "completed" ? 201 : 202).json(response);
     } catch (error) {
@@ -1344,12 +1245,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       throw new Error(`Approval request not found: ${approvalRequestId}`);
     }
     const body = isPlainRecord(rawBody) ? rawBody : {};
-    if (action === "approve" && "selectedReplyId" in body) {
-      throw new ApiBadRequestError(
-        "approval_selection_must_be_selected_first",
-        "Select an approval reply before approving; approve does not accept selectedReplyId."
-      );
-    }
     const run = approvalRequest.runId ? await store.getBlueprintRun(approvalRequest.runId) : undefined;
     if (run) {
       if (isTerminalRunStatus(run.status)) {
@@ -1364,9 +1259,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       if (!blueprint) throw new Error(`Blueprint not found: ${run.blueprintId}`);
       const updated = await worker.applyApprovalRequest(blueprint, run, approvalRequestId, action, {
         comment: readOptionalString(body.comment),
-        message: readOptionalString(body.message),
-        selectedReplyId: readOptionalString(body.selectedReplyId),
-        discussionMode: readInboxDiscussionMode(body.discussionMode)
+        message: readOptionalString(body.message)
       });
       return buildApprovalRequestResponse(approvalRequestId, updated.id);
     }
@@ -1468,29 +1361,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     return status === "succeeded" || status === "failed" || status === "cancelled";
   }
 
-  function buildApprovalDecision(
-    request: ApprovalRequest,
-    action: ApprovalDecision["action"],
-    resultingStatus: ApprovalDecision["resultingStatus"],
-    comment?: string,
-    selectedReplyId?: string
-  ): ApprovalDecision {
-    return {
-      id: `decision-${nanoid(10)}`,
-      approvalRequestId: request.id,
-      action,
-      actor: "user",
-      comment: comment?.trim() || undefined,
-      selectedReplyId,
-      resultingStatus,
-      createdAt: new Date().toISOString()
-    };
-  }
-
-  function sendConflict(res: Response, code: string, message: string): void {
-    res.status(409).json({ error: { code, message } });
-  }
-
   return router;
 }
 
@@ -1499,23 +1369,6 @@ function readApprovalThreadStatus(value: unknown): ApprovalThread["status"] | un
   if (!status) return undefined;
   if (status === "open" || status === "closed") return status;
   throw new Error("Approval thread status must be open or closed.");
-}
-
-function normalizeSelectApprovalRequestReplyRequest(value: unknown): SelectApprovalRequestReplyRequest {
-  if (!isPlainRecord(value)) {
-    throw new Error("Approval request selection must be a JSON object.");
-  }
-  const selectedReplyId = value.selectedReplyId === null ? null : readOptionalString(value.selectedReplyId);
-  if (selectedReplyId === undefined) {
-    throw new Error("Approval request selection selectedReplyId is required.");
-  }
-  return { selectedReplyId };
-}
-
-function readInboxDiscussionMode(value: unknown): InboxDiscussionMode | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value === "reply" || value === "candidate") return value;
-  throw new Error("Approval discussionMode must be reply or candidate.");
 }
 
 function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {
@@ -1628,6 +1481,7 @@ function normalizeExecutiveCommandRequest(value: unknown): ExecutiveCommand {
 
 async function executeExecutiveCommand(
   store: HivewardStore,
+  humanActionRequestService: HumanActionRequestService,
   session: HivewardChatSession,
   command: ExecutiveCommand
 ): Promise<ExecutiveCommandResult> {
@@ -1667,7 +1521,7 @@ async function executeExecutiveCommand(
       return {
         status: "completed",
         action: command.action,
-        humanActionRequest: await createExecutiveHumanActionRequest(store, session, command)
+        humanActionRequest: await createExecutiveHumanActionRequest(humanActionRequestService, session, command)
       };
     case "create_blueprint_draft":
     case "update_blueprint_draft":
@@ -1735,7 +1589,7 @@ async function createExecutiveBlueprintRun(
 }
 
 async function createExecutiveHumanActionRequest(
-  store: HivewardStore,
+  humanActionRequestService: HumanActionRequestService,
   session: HivewardChatSession,
   command: Extract<ExecutiveCommand, { action: "request_human_action" }>
 ): Promise<HumanActionRequest> {
@@ -1749,18 +1603,14 @@ async function createExecutiveHumanActionRequest(
       "Blueprint governance human action requests require sourceContextId or blueprintId."
     );
   }
-  const now = new Date().toISOString();
-  return store.appendHumanActionRequest({
-    id: `human-action-request-${nanoid(10)}`,
+  return humanActionRequestService.createRequest({
+    producer: command.sourceRole,
     sourceContextType: payload.sourceContextType,
     sourceContextId,
     responseIntent: payload.responseIntent,
-    status: "pending",
     title: payload.title,
     bodyMarkdown: payload.bodyMarkdown,
     createdByRoleId: payload.createdByRoleId ?? executiveRoleId(session, command),
-    createdAt: now,
-    updatedAt: now,
     metadata: {
       chatSessionId: session.id,
       executiveCommandAction: command.action,
@@ -1774,75 +1624,18 @@ function executiveRoleId(session: HivewardChatSession, command: Pick<ExecutiveCo
   return session.roleScope?.companyId ? "ceo" : "ceo";
 }
 
-function normalizeCreateLeaderDelegationRequest(value: unknown): CreateLeaderDelegationRequest {
+function normalizeCreateHumanActionResponseRequest(value: unknown): CreateHumanActionResponseRequest {
   if (!isPlainRecord(value)) {
-    throw new Error("Leader delegation request must be a JSON object.");
+    throw new Error("Human action response request must be a JSON object.");
   }
-  const leaderId = readOptionalString(value.leaderId);
-  if (!leaderId) throw new Error("Leader delegation request requires leaderId.");
+  const messageMarkdown = readOptionalString(value.messageMarkdown);
+  if (!messageMarkdown) {
+    throw new Error("Human action response requires messageMarkdown.");
+  }
   return {
-    leaderId,
-    blueprintId: readOptionalString(value.blueprintId),
-    title: readOptionalString(value.title),
-    summary: readOptionalString(value.summary),
+    messageMarkdown,
     createdByRoleId: readOptionalString(value.createdByRoleId)
   };
-}
-
-function normalizeCreateBlueprintProposalRequest(value: unknown): CreateBlueprintProposalRequest {
-  if (!isPlainRecord(value)) {
-    throw new Error("Blueprint proposal request must be a JSON object.");
-  }
-  const title = readOptionalString(value.title);
-  const summary = readOptionalString(value.summary);
-  if (!title) throw new Error("Blueprint proposal request requires title.");
-  if (!summary) throw new Error("Blueprint proposal request requires summary.");
-  if (!value.blueprintPackage) {
-    throw new Error("Blueprint proposal request requires blueprintPackage.");
-  }
-  const blueprintPackage = readPortableBlueprintPackage(value.blueprintPackage);
-  return {
-    title,
-    summary,
-    blueprintId: readOptionalString(value.blueprintId),
-    blueprintPackage,
-    preview: isPlainRecord(value.preview) ? value.preview : undefined,
-    diffSummary: readOptionalString(value.diffSummary),
-    createdByRoleId: readOptionalString(value.createdByRoleId),
-    targetRoleId: readOptionalString(value.targetRoleId),
-    runtimeId: readOptionalAgentRuntimeId(value.runtimeId)
-  };
-}
-
-function normalizeApproveInboxItemRequest(value: unknown): ApproveInboxItemRequest {
-  if (value === undefined || value === null) return {};
-  if (!isPlainRecord(value)) {
-    throw new Error("Inbox approval request must be a JSON object.");
-  }
-  return {
-    comment: readOptionalString(value.comment)
-  };
-}
-
-function normalizeRejectInboxItemRequest(value: unknown): RejectInboxItemRequest {
-  if (value === undefined || value === null) return {};
-  if (!isPlainRecord(value)) {
-    throw new Error("Inbox rejection request must be a JSON object.");
-  }
-  return {
-    comment: readOptionalString(value.comment)
-  };
-}
-
-function normalizeReplyInboxItemRequest(value: unknown): ReplyInboxItemRequest {
-  if (!isPlainRecord(value)) {
-    throw new Error("Inbox reply request must be a JSON object.");
-  }
-  const message = readOptionalString(value.message);
-  if (!message) {
-    throw new Error("Inbox reply message is required.");
-  }
-  return { message };
 }
 
 function normalizeSessionChatRequest(value: unknown): SendChatSessionMessageRequest {

@@ -28,6 +28,21 @@ describe("execution rebuild old-path exclusion gate", () => {
       "reply.selected",
       "canRequestChanges",
       "canRevise",
+      "selectedReplyId",
+      "selected_reply_id",
+      "selectApprovalReply",
+      "selectApprovalRequestReply",
+      "selectApprovalCandidate",
+      "resolveApprovedOutput",
+      "canCreateCandidate",
+      "ApprovalReplyPurpose",
+      "InboxDiscussionMode",
+      "approveInboxItem",
+      "rejectInboxItem",
+      "replyToInboxItem",
+      "applyInboxDecision",
+      "Generate candidate",
+      "Request changes",
       "legacyBootstrapCommands",
       "legacyBackfill",
       "legacyPreflightModeFromNodeRunId",
@@ -38,7 +53,8 @@ describe("execution rebuild old-path exclusion gate", () => {
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });
-    expect(productionSource).not.toMatch(/\brequest_changes\b/);
+    const lifecycleSource = readSource("packages/shared/src/lifecycle.ts");
+    expect(lifecycleSource).not.toMatch(/\brequest_changes\b/);
     expect(productionSource).not.toMatch(/request-changes/);
     expect(productionSource).not.toMatch(/\/api\/blueprint-runs\/:runId\/(?:approve|reject|reply|select-approval-reply)/);
     expect(productionSource).not.toMatch(/\/api\/approval-requests\/[^"`']*\/(?:request-changes|request_changes|revise)/);
@@ -49,7 +65,8 @@ describe("execution rebuild old-path exclusion gate", () => {
     const executionRowsIndex = source.indexOf("const executionRows = buildRunExecutionTraceRows");
     const executionReturnIndex = source.indexOf("if (executionRows.length > 0)", executionRowsIndex);
     const missingFactsIndex = source.indexOf("return [createMissingExecutionFactsTraceIssue", executionReturnIndex);
-    const projectionPanel = sliceBetween(source, "function RunExecutionProjectionPanel", "function RunTranscriptEventRow");
+    const buildTraceIssuesBody = sliceBetween(source, "function buildTraceIssues", "function createMissingExecutionFactsTraceIssue");
+    const executionRowsBody = sliceBetween(source, "function buildRunExecutionTraceRows", "function buildCommandOnlyTraceRow");
 
     expect(source).not.toContain("preflightModeFromNodeRunId");
     expect(source).not.toContain("legacyPreflightModeFromNodeRunId");
@@ -60,10 +77,10 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(executionRowsIndex).toBeGreaterThanOrEqual(0);
     expect(executionReturnIndex).toBeGreaterThan(executionRowsIndex);
     expect(missingFactsIndex).toBeGreaterThan(executionReturnIndex);
-    expect(projectionPanel).toContain("hasExecutionFacts");
-    expect(projectionPanel).toContain("run-execution-missing-facts");
-    expect(projectionPanel).not.toContain("timelineFallback");
-    expect(projectionPanel).not.toContain("runTimeline");
+    expect(buildTraceIssuesBody).toContain("buildRunExecutionTraceRows");
+    expect(buildTraceIssuesBody).toContain("createMissingExecutionFactsTraceIssue");
+    expect(executionRowsBody).not.toContain("timelineFallback");
+    expect(executionRowsBody).not.toContain("runTimeline");
   });
 
   it("keeps frontend discussion and approval capability decisions on backend projections", () => {
@@ -194,28 +211,34 @@ describe("execution rebuild old-path exclusion gate", () => {
     expectSourceToContainAll(routeTests, [
       "does not expose run-scoped approval action routes",
       "Run-scoped approval routes must not call the worker.",
-      "routes request-scoped approval selection through the worker owner",
-      "rejects request-scoped approval selection on terminal runs",
-      "expect(response.status, JSON.stringify(body)).toBe(409)",
+      "does not expose request-scoped approval selection as a normal route",
+      "Request-scoped approval selection routes must not call the worker.",
+      "does not expose request-scoped approval selection on terminal runs",
+      "returns 409 for repeated approval decisions and forbids old inbox decision routes",
+      "expect(secondApproval.status, JSON.stringify(secondApprovalBody)).toBe(409)",
+      "expect(oldApprove.status).toBe(404)",
+      "expect(oldReject.status).toBe(404)",
+      "expect(oldReply.status).toBe(404)",
       "routes only canonical return_for_revision approval request actions",
       "expect(dashedAlias.status).toBe(404)",
       "expect(underscoredAlias.status).toBe(404)",
       "expect(reviseAlias.status).toBe(404)"
     ]);
     expectSourceToContainAll(lifecycleTests, [
-      "rejects approval selection in approve and persists explicit original selection through select",
-      "await service.selectApprovalCandidate(request.id, null)",
-      "approve does not accept selectedReplyId"
+      "does not expose approval selection or persist selected reply facts",
+      "expect(\"selectApprovalCandidate\" in service).toBe(false)",
+      "expect(result.decision).not.toHaveProperty(\"selectedReplyId\")"
     ]);
     expectSourceToContainAll(workerTests, [
-      "fails approval when selectedReplyId is not a candidate on the current request",
-      "Selected approval reply does not belong to this request.",
-      "keeps approvalRequestId Agent approval replies append-only until approval",
+      "keeps approvalRequestId Agent approval replies append-only and approves the original output",
+      "expect(\"selectApprovalReply\" in worker).toBe(false)",
       "expect(firstReplyOutput.replies).toEqual([])",
-      "resumes prepare commands from command status instead of round execution state",
-      "does not bootstrap pending requirement approvals without a durable prepare command",
+      "expect(finalView?.approvalDecisions?.some((decision) => \"selectedReplyId\" in decision)).toBe(false)",
+      "drives regular runs through a durable regular command and node execution steps",
+      "keeps resumed command-step SDK agent nodes running when task lookup is temporarily unavailable",
       "expect(adapter.calls).toHaveLength(0)",
-      "resumes running release report commands by waiting for the stored step runtime",
+      "forbids historical self-iteration fields and commands from starting or resuming manager execution",
+      "resumes an interrupted manager-slot run from the persisted OpenClaw task ref",
       "expect(adapter.waitCalls[0]).toMatchObject",
       "treats provider-started native sessions as fallback boundaries instead of proven resume",
       "provider_started_new_session",
@@ -223,7 +246,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     ]);
     expectSourceToContainAll(approvalDiscussionResolverTests, [
       "treats missing binding as missing canonical discussion facts",
-      "keeps message-only bindings from creating candidate replies",
+      "keeps message-only bindings from streaming replies",
       "does not project unavailable executor sessions as message-only"
     ]);
     expectSourceToContainAll(migrationTests, [
@@ -231,20 +254,22 @@ describe("execution rebuild old-path exclusion gate", () => {
       "fails verification when migrated execution facts are missing"
     ]);
     expectSourceToContainAll(runStateTests, [
-      "uses ApprovalRequest selectedReplyId instead of node output selection",
-      "expect(approvals[0]?.replies?.[0]).not.toHaveProperty(\"selected\")",
+      "uses approval reply facts instead of node output reply facts",
+      "expect(approvals[0]).not.toHaveProperty(\"selectedReplyId\")",
+      "body: \"approval reply answer\"",
       "uses backend-projected approval discussion capabilities",
       "does not resolve raw approval discussion bindings in the browser",
       "marks missing approval discussion projection unavailable instead of synthesizing message-only",
-      "detects runs without transcript facts"
+      "does not synthesize pending approvals from legacy node output"
     ]);
     expectSourceToContainAll(workspacePageTests, [
-      "renders transcript facts before any legacy timeline fallback",
+      "renders RunRoomFeed rows instead of residual transcript and timeline facts",
       "derives preflight display mode from command step facts instead of node-run id prefixes",
-      "does not use legacy timeline fallback when command and step facts exist without transcript",
+      "does not use legacy timeline fallback when command and step facts exist",
       "renders explicit missing execution facts when canonical trace facts are absent",
       "does not project preflight approval fallback without execution facts",
-      "does not infer manager report rounds without execution facts"
+      "does not infer manager report rounds without execution facts",
+      "does not guess missing manager report rounds from text or ids"
     ]);
     expectSourceToContainAll(adapterTests, [
       "does not mark Codex resume proven when the provider starts a new thread",

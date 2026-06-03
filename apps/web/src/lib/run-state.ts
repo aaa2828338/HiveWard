@@ -153,7 +153,6 @@ function buildApprovalItemFromRequest(
     readApprovalFactReplies(runView, request),
     readApprovalDecisionReplies(runView, request.id)
   );
-  const selectedReplyId = request.selectedReplyId ?? null;
   const discussion = readApprovalRequestDiscussion(runView, request.id);
   const isPending = request.status === "pending";
   return {
@@ -173,7 +172,6 @@ function buildApprovalItemFromRequest(
     reviewOutput: request.body,
     discussion,
     ...(replies ? { replies } : {}),
-    selectedReplyId,
     canApprove: request.capabilities.approve,
     canReject: request.capabilities.reject,
     canReply: request.capabilities.reply,
@@ -234,7 +232,6 @@ function readApprovalRequestDiscussion(
     ?.discussion ?? {
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "backend_discussion_projection_missing"
     };
 }

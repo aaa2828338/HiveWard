@@ -88,15 +88,12 @@ import {
   readPortableBlueprintPackage,
   approvalThreadFromRequest,
   approvalThreadIdForRequest,
-  resolveApprovalCapabilities,
   resolveFinalRunResult
 } from "@hiveward/shared";
 import { FileHivewardChatStore, type LegacyHivewardChatState } from "./fileHivewardChatStore";
 import type {
   ApplyApprovalDecisionInput,
   ApplyApprovalDecisionResult,
-  ApplyInboxDecisionInput,
-  ApplyInboxDecisionResult,
   CancelNodeRunInput,
   ClaimNodeRunResult,
   CompleteNodeRunInput,
@@ -725,202 +722,6 @@ export class FileHivewardStore implements HivewardStore {
       index.inboxItems[companyId] = [item, ...(index.inboxItems[companyId] ?? [])];
       await this.writeIndexUnlocked(index);
       return item;
-    });
-  }
-
-  async approveInboxItem(
-    itemId: string,
-    defaults: BlueprintImportDefaults = {},
-    comment?: string
-  ): Promise<{ item: InboxItem; importedBlueprints?: BlueprintDefinition[] }> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const items = index.inboxItems[companyId] ?? [];
-      const itemIndex = items.findIndex((item) => item.id === itemId);
-      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
-      const item = items[itemIndex]!;
-      if (item.status === "approved") {
-        return { item };
-      }
-      let importedBlueprints: BlueprintDefinition[] | undefined;
-      const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
-      if (item.type === "blueprint_proposal" && !blueprintPackage) {
-        throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
-      }
-      if (item.type === "blueprint_proposal") {
-        const importableBlueprintPackage = blueprintPackage;
-        if (!importableBlueprintPackage) {
-          throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
-        }
-        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, importableBlueprintPackage, {
-          ...defaults,
-          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? defaults.runtimeId,
-          replaceBlueprintId: item.blueprintId ?? defaults.replaceBlueprintId
-        });
-      }
-      const now = new Date().toISOString();
-      const approved: InboxItem = {
-        ...item,
-        status: "approved",
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(comment)
-      };
-      items[itemIndex] = approved;
-      index.inboxItems[companyId] = items;
-      await this.writeIndexUnlocked(index);
-      return { item: approved, importedBlueprints };
-    });
-  }
-
-  async rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const items = index.inboxItems[companyId] ?? [];
-      const itemIndex = items.findIndex((item) => item.id === itemId);
-      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
-      const item = items[itemIndex]!;
-      if (item.status === "approved") {
-        return item;
-      }
-      const now = new Date().toISOString();
-      const rejected: InboxItem = {
-        ...item,
-        status: "rejected",
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(comment)
-      };
-      items[itemIndex] = rejected;
-      index.inboxItems[companyId] = items;
-      await this.writeIndexUnlocked(index);
-      return rejected;
-    });
-  }
-
-  async replyToInboxItem(itemId: string, message: string): Promise<InboxItem> {
-    return this.enqueue(async () => {
-      const body = readOptionalString(message);
-      if (!body) {
-        throw new Error("Inbox reply message is required.");
-      }
-
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const items = index.inboxItems[companyId] ?? [];
-      const itemIndex = items.findIndex((item) => item.id === itemId);
-      if (itemIndex < 0) throw new Error(`Inbox item not found: ${itemId}`);
-      const item = items[itemIndex]!;
-      if (item.status === "approved") {
-        return item;
-      }
-
-      const now = new Date().toISOString();
-      const replied: InboxItem = {
-        ...item,
-        replies: [
-          ...(item.replies ?? []),
-          {
-            id: `inbox-reply-${nanoid(10)}`,
-            role: "user",
-            body,
-            createdAt: now
-          }
-        ],
-        updatedAt: now
-      };
-      items[itemIndex] = replied;
-      index.inboxItems[companyId] = items;
-      await this.writeIndexUnlocked(index);
-      return replied;
-    });
-  }
-
-  async applyInboxDecision(input: ApplyInboxDecisionInput): Promise<ApplyInboxDecisionResult> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const items = index.inboxItems[companyId] ?? [];
-      const itemIndex = items.findIndex((item) => item.id === input.inboxItemId);
-      const item = itemIndex >= 0 ? items[itemIndex]! : undefined;
-      if (!item || item.status !== "pending") return { status: "conflict", item };
-      const requestIndex = input.approvalRequestId
-        ? index.approvalRequests.findIndex((request) => request.id === input.approvalRequestId)
-        : -1;
-      const request = requestIndex >= 0 ? index.approvalRequests[requestIndex]! : undefined;
-      if (input.approvalRequestId && (!request || request.status !== "pending")) {
-        return { status: "conflict", item };
-      }
-
-      let importedBlueprints: BlueprintDefinition[] | undefined;
-      const now = new Date().toISOString();
-      if (input.action === "reply") {
-        const body = readOptionalString(input.comment);
-        if (!body) throw new Error("Inbox reply message is required.");
-        const replied = {
-          ...item,
-          replies: [...(item.replies ?? []), { id: `inbox-reply-${nanoid(10)}`, role: "user" as const, body, createdAt: now }],
-          updatedAt: now
-        };
-        items[itemIndex] = replied;
-        index.inboxItems[companyId] = items;
-        if (requestIndex >= 0 && request) {
-          const updatedRequest = { ...request, updatedAt: now };
-          index.approvalRequests[requestIndex] = updatedRequest;
-          upsertById(index.approvalThreads, approvalThreadFromRequest(updatedRequest));
-          if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
-          if (input.approvalDecision) appendApprovalReplyFromDecision(index, input.approvalDecision, updatedRequest);
-          if (input.approvalTimelineItem) {
-            upsertById(index.runTimeline, {
-              ...input.approvalTimelineItem,
-              sequence: input.approvalTimelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.approvalTimelineItem.runId)
-            });
-          }
-        }
-        await this.writeIndexUnlocked(index);
-        return { status: "applied", item: replied };
-      }
-
-      if (input.action === "approve" && item.type === "blueprint_proposal") {
-        const blueprintPackage = readBlueprintPackagePayload(item.payload?.blueprintPackage);
-        if (!blueprintPackage) throw new Error(`Blueprint proposal inbox item ${item.id} is missing an importable blueprintPackage.`);
-        importedBlueprints = await this.importBlueprintPackageUnlocked(index, companyId, blueprintPackage, {
-          ...(input.defaults ?? {}),
-          runtimeId: readAgentRuntimeId(item.payload?.runtimeId) ?? input.defaults?.runtimeId,
-          replaceBlueprintId: item.blueprintId ?? input.defaults?.replaceBlueprintId
-        });
-      }
-
-      const decided: InboxItem = {
-        ...item,
-        status: input.action === "approve" ? "approved" : "rejected",
-        updatedAt: now,
-        decidedAt: now,
-        decisionComment: readOptionalString(input.comment)
-      };
-      items[itemIndex] = decided;
-      index.inboxItems[companyId] = items;
-      if (requestIndex >= 0 && request) {
-        index.approvalRequests[requestIndex] = {
-          ...request,
-          status: input.action === "approve" ? "approved" : "rejected",
-          capabilities: resolveApprovalCapabilities(request.kind, input.action === "approve" ? "approved" : "rejected"),
-          updatedAt: now
-        };
-        upsertById(index.approvalThreads, approvalThreadFromRequest(index.approvalRequests[requestIndex]!));
-        if (input.approvalDecision) upsertById(index.approvalDecisions, input.approvalDecision);
-        if (input.approvalTimelineItem) {
-          upsertById(index.runTimeline, {
-            ...input.approvalTimelineItem,
-            sequence: input.approvalTimelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.approvalTimelineItem.runId)
-          });
-        }
-      }
-      await this.writeIndexUnlocked(index);
-      await Promise.all((importedBlueprints ?? []).map((blueprint) => this.writeBlueprintUnlocked(blueprint)));
-      return { status: "applied", item: decided, importedBlueprints };
     });
   }
 
@@ -1696,7 +1497,6 @@ export class FileHivewardStore implements HivewardStore {
           const nodeRun = request.nodeRunId
             ? archive?.nodeRuns.find((candidate) => candidate.id === request.nodeRunId)
             : undefined;
-          const selectedReplyId = request.selectedReplyId;
           const replies = pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }));
           const binding = index.approvalDiscussionBindings.find((candidate) => candidate.approvalRequestId === request.id);
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
@@ -1724,7 +1524,6 @@ export class FileHivewardStore implements HivewardStore {
             status: nodeRun?.status === "running" ? "replying" as const : "pending" as const,
             reviewOutput: request.body,
             ...(replies ? { replies } : {}),
-            ...(selectedReplyId !== undefined ? { selectedReplyId } : {}),
             ...(upstream ? { upstream } : {}),
             canApprove: request.capabilities.approve,
             canReject: request.capabilities.reject,
@@ -2060,7 +1859,6 @@ export class FileHivewardStore implements HivewardStore {
       approvalRequestId: input.approvalRequestId,
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: input.reason,
       updatedAt: input.updatedAt
     });
@@ -3197,7 +2995,6 @@ function buildHistoricalApprovalDiscussionBinding(request: ApprovalRequest): App
       mode: "message_only",
       route: "message_only",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "message_only_approval_kind",
       resolverVersion: 1,
       createdAt: timestamp,
@@ -3210,7 +3007,6 @@ function buildHistoricalApprovalDiscussionBinding(request: ApprovalRequest): App
     mode: "none",
     route: "none",
     canStreamReply: false,
-    canCreateCandidate: false,
     reason: "historical_discussion_binding_unavailable",
     resolverVersion: 1,
     createdAt: timestamp,

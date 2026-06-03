@@ -72,7 +72,6 @@ export function resolveApprovalDiscussion(input: ResolveApprovalDiscussionInput)
     capability: {
       mode: "executor",
       canStreamReply: binding.canStreamReply,
-      canCreateCandidate: binding.canCreateCandidate,
       ...(capabilityExecutorKind(binding.executorKind ?? binding.route)
         ? { executorKind: capabilityExecutorKind(binding.executorKind ?? binding.route) }
         : {}),
@@ -95,7 +94,6 @@ function noneResolution(reason: string, binding?: ApprovalDiscussionBinding): Ap
     capability: {
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason
     }
   };
@@ -112,7 +110,6 @@ function messageOnlyResolution(
     capability: {
       mode: "message_only",
       canStreamReply: false,
-      canCreateCandidate: false,
       ...(capabilityExecutorKind(binding.executorKind ?? binding.route)
         ? { executorKind: capabilityExecutorKind(binding.executorKind ?? binding.route) }
         : {}),

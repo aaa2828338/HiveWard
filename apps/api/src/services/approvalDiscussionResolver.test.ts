@@ -12,12 +12,11 @@ describe("approval discussion resolver", () => {
     expect(resolveApprovalDiscussion({ request }).capability).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "discussion_binding_missing"
     });
   });
 
-  it("keeps message-only bindings from creating candidate replies", () => {
+  it("keeps message-only bindings from streaming replies", () => {
     const request = createApprovalRequest({ id: "approval-message-only", kind: "blueprint_proposal" });
     const binding: ApprovalDiscussionBinding = {
       approvalRequestId: request.id,
@@ -25,7 +24,6 @@ describe("approval discussion resolver", () => {
       mode: "message_only",
       route: "message_only",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "message_only_approval_kind",
       resolverVersion: 1,
       createdAt: now,
@@ -35,7 +33,6 @@ describe("approval discussion resolver", () => {
     expect(resolveApprovalDiscussion({ request, binding }).capability).toEqual({
       mode: "message_only",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "message_only_approval_kind"
     });
   });
@@ -53,7 +50,6 @@ describe("approval discussion resolver", () => {
       executorNodeRunId: "node-run-delivery",
       executorSessionId: "session-unavailable",
       canStreamReply: true,
-      canCreateCandidate: true,
       resolverVersion: 1,
       createdAt: now,
       updatedAt: now
@@ -73,7 +69,6 @@ describe("approval discussion resolver", () => {
     expect(resolveApprovalDiscussion({ request, binding, sessions: [unavailableSession] }).capability).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "executor_session_unavailable"
     });
   });

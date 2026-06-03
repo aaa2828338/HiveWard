@@ -260,7 +260,6 @@ describe("BlueprintWorker", () => {
     }).capability).toMatchObject({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "discussion_binding_missing"
     });
   });
@@ -298,7 +297,6 @@ describe("BlueprintWorker", () => {
       executorNodeId: "delivery",
       executorNodeRunId: "node-run-delivery",
       canStreamReply: false,
-      canCreateCandidate: false,
       resolverVersion: 1,
       createdAt: now,
       updatedAt: now
@@ -307,7 +305,6 @@ describe("BlueprintWorker", () => {
     expect(resolveApprovalDiscussion({ request, binding }).capability).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "executor_binding_incomplete"
     });
     expect(resolveApprovalDiscussion({
@@ -337,7 +334,6 @@ describe("BlueprintWorker", () => {
     }).capability).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "executor_session_unavailable"
     });
   });
@@ -1165,117 +1161,6 @@ describe("BlueprintWorker", () => {
     ]));
   });
 
-  it("falls back before publishing approval candidate replies when native resume is unproven", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-    await store.init();
-
-    const delivery = createAgentNode("delivery", "Delivery");
-    delivery.config = {
-      ...delivery.config,
-      approval: {
-        enabled: true
-      }
-    };
-    const blueprint = createBlueprint([delivery], []);
-    const adapter = new ScriptedAdapter([
-      {
-        ...createStartedAgentTask("task-candidate-fallback-1"),
-        sessionKey: "runtime-candidate-original",
-        nativeSessionId: "native-candidate-original"
-      },
-      {
-        ...createStartedAgentTask("task-candidate-fallback-resume"),
-        sessionKey: "runtime-candidate-resume",
-        resumeRequested: true,
-        resumeAttempted: true,
-        resumeProven: false,
-        providerStartedNewSession: true,
-        resumable: false
-      },
-      {
-        ...createStartedAgentTask("task-candidate-fallback-retry"),
-        sessionKey: "runtime-candidate-fallback",
-        nativeSessionId: "native-candidate-fallback"
-      }
-    ], [
-      {
-        ...createCompletedAgentTask("task-candidate-fallback-1", "succeeded", "draft answer"),
-        sessionKey: "runtime-candidate-original",
-        nativeSessionId: "native-candidate-original"
-      },
-      {
-        ...createCompletedAgentTask("task-candidate-fallback-resume", "succeeded", "discarded candidate reply"),
-        sessionKey: "runtime-candidate-resume",
-        providerSessionId: "native-candidate-provider-new",
-        resumeRequested: true,
-        resumeAttempted: true,
-        resumeProven: false,
-        providerStartedNewSession: true,
-        resumable: false
-      },
-      {
-        ...createCompletedAgentTask("task-candidate-fallback-retry", "succeeded", "fallback candidate reply"),
-        sessionKey: "runtime-candidate-fallback",
-        nativeSessionId: "native-candidate-fallback"
-      }
-    ]);
-    const worker = new BlueprintWorker(store, adapter);
-
-    const run = await worker.startRun(blueprint, "test-user");
-    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-    if (!approvalRequest) throw new Error("Expected agent approval request.");
-
-    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
-      discussionMode: "candidate",
-      message: "Generate the final candidate."
-    });
-    await waitForRunStatus(store, run.id, "waiting_approval");
-    const approvalReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
-    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: waitingNode.id });
-    const unavailable = sessions.find((session) => session.status === "unavailable");
-    const fallback = sessions.find((session) => session.status === "fallback");
-    if (!unavailable) throw new Error("Expected unavailable execution session.");
-    if (!fallback) throw new Error("Expected fallback execution session.");
-    const binding = await store.getApprovalDiscussionBinding(approvalRequest.id);
-    const unavailableEvents = await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id });
-    const fallbackEvents = await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id });
-
-    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
-      undefined,
-      "native-candidate-original",
-      undefined
-    ]);
-    expect(approvalReplies.map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
-      ["agent", "candidate", "fallback candidate reply"]
-    ]);
-    expect(approvalReplies.map((reply) => reply.body)).not.toContain("discarded candidate reply");
-    expect(unavailable).toMatchObject({
-      status: "unavailable",
-      statusReason: expect.stringContaining("provider_started_new_session")
-    });
-    expect(fallback).toMatchObject({
-      status: "fallback",
-      nativeSessionId: "native-candidate-fallback",
-      fallbackOfSessionId: unavailable.id
-    });
-    expect(binding).toMatchObject({
-      mode: "executor",
-      executorSessionId: fallback.id
-    });
-    expect(unavailableEvents.filter((event) => event.kind === "assistant_message")).toEqual([]);
-    expect(unavailableEvents.map((event) => event.content)).not.toContain("discarded candidate reply");
-    expect(fallbackEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "user",
-        kind: "user_message",
-        content: "Generate the final candidate."
-      })
-    ]));
-  });
-
   it("keeps Agent approval rejection from rerunning or continuing the run", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
@@ -1354,7 +1239,6 @@ describe("BlueprintWorker", () => {
       threadId: approvalRequest.threadId,
       mode: "executor",
       route: "agent_approval",
-      canCreateCandidate: true,
       resolverVersion: 1
     });
     const pendingApproval = (await store.listPendingApprovals()).find((approval) => approval.approvalRequestId === approvalRequest.id);
@@ -1590,149 +1474,7 @@ describe("BlueprintWorker", () => {
     });
   });
 
-  it("keeps approvalRequestId Agent approval replies append-only until approval", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-    await store.init();
-
-    const delivery = createAgentNode("delivery", "Delivery");
-    delivery.config = {
-      ...delivery.config,
-      approval: {
-        enabled: true
-      }
-    };
-    const blueprint = createBlueprint([delivery], []);
-    const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-approval-request-1"),
-      createStartedAgentTask("task-approval-request-2"),
-      createStartedAgentTask("task-approval-request-3")
-    ], [
-      createCompletedAgentTask("task-approval-request-1", "succeeded", "draft answer"),
-      createCompletedAgentTask("task-approval-request-2", "succeeded", "assistant discussion answer"),
-      createCompletedAgentTask("task-approval-request-3", "succeeded", "assistant candidate answer")
-    ]);
-    const worker = new BlueprintWorker(store, adapter);
-
-    const run = await worker.startRun(blueprint, "test-user");
-    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-    if (!approvalRequest) throw new Error("Expected agent approval request.");
-
-    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
-      message: "Give me a shippable version."
-    });
-
-    const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const pendingAfterReply = (await store.listPendingApprovals()).find((approval) => approval.approvalRequestId === approvalRequest.id);
-
-    expect(pendingAfterReply).toMatchObject({
-      reviewOutput: "draft answer",
-      status: "pending"
-    });
-    expect(pendingAfterReply?.replies?.map((reply) => [reply.role, reply.purpose, reply.body])).toEqual([
-      ["user", "message", "Give me a shippable version."],
-      ["assistant", "message", "assistant discussion answer"]
-    ]);
-
-    const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
-    if (!repliedNode) throw new Error("Expected replied node.");
-    expect(adapter.calls).toHaveLength(2);
-
-    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "reply", {
-      discussionMode: "candidate",
-      message: "Generate the final candidate."
-    });
-    const candidateReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
-    const candidateReply = candidateReplies.find((reply) => reply.purpose === "candidate");
-    expect(candidateReply).toMatchObject({
-      actor: "agent",
-      body: "assistant candidate answer",
-      purpose: "candidate"
-    });
-    expect(candidateReplies.filter((reply) => reply.purpose === "message").map((reply) => reply.body)).toEqual([
-      "Give me a shippable version.",
-      "assistant discussion answer"
-    ]);
-
-    if (!candidateReply) throw new Error("Expected candidate reply.");
-    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, candidateReply.id);
-    expect(await store.getApprovalRequest(approvalRequest.id)).toMatchObject({
-      selectedReplyId: candidateReply.id
-    });
-    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, null);
-    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
-    await worker.selectApprovalReply(blueprint, repliedView.run, approvalRequest.id, candidateReply.id);
-
-    const currentRun = await store.getBlueprintRun(run.id);
-    if (!currentRun) throw new Error("Expected current run.");
-    await worker.applyApprovalRequest(blueprint, currentRun, approvalRequest.id, "approve");
-
-    const finalView = await waitForRunTerminal(store, run.id);
-    const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
-    expect(finalView?.run.status).toBe("succeeded");
-    expect(finalNode?.output).toMatchObject({
-      approvedOutput: "assistant candidate answer",
-      approval: {
-        status: "approved",
-        selectedReplyId: candidateReply.id
-      }
-    });
-    expect(finalView?.approvalRequests?.find((request) => request.id === approvalRequest.id)?.status).toBe("approved");
-    expect(finalView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["reply", "approve"]);
-  });
-
-  it("fails approval when selectedReplyId is not a candidate on the current request", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-    await store.init();
-
-    const delivery = createAgentNode("delivery", "Delivery");
-    delivery.config = {
-      ...delivery.config,
-      approval: {
-        enabled: true
-      }
-    };
-    const blueprint = createBlueprint([delivery], []);
-    const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-approval-request-1")
-    ], [
-      createCompletedAgentTask("task-approval-request-1", "succeeded", "draft answer")
-    ]);
-    const worker = new BlueprintWorker(store, adapter);
-
-    const run = await worker.startRun(blueprint, "test-user");
-    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-    if (!approvalRequest) throw new Error("Expected agent approval request.");
-    const foreignRequest = await store.upsertApprovalRequest({
-      ...approvalRequest,
-      id: "approval-foreign-candidate",
-      threadId: "thread-foreign-candidate",
-      selectedReplyId: undefined
-    });
-    await store.appendApprovalReply({
-      id: "reply-foreign-candidate",
-      threadId: foreignRequest.threadId ?? foreignRequest.id,
-      approvalRequestId: foreignRequest.id,
-      actor: "agent",
-      purpose: "candidate",
-      body: "foreign candidate answer",
-      createdAt: new Date().toISOString()
-    });
-    await store.upsertApprovalRequest({
-      ...approvalRequest,
-      selectedReplyId: "reply-foreign-candidate"
-    });
-
-    await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "approve"))
-      .rejects.toThrow("Selected approval reply does not belong to this request.");
-    expect((await store.getApprovalRequest(approvalRequest.id))?.status).toBe("pending");
-    expect((await store.listNodeRuns(run.id)).find((nodeRun) => nodeRun.nodeId === "delivery")?.status).toBe("waiting_approval");
-  });
-
-  it("keeps Agent approval comments from changing the selected output", async () => {
+  it("keeps approvalRequestId Agent approval replies append-only and approves the original output", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -1758,9 +1500,10 @@ describe("BlueprintWorker", () => {
 
     const run = await worker.startRun(blueprint, "test-user");
     const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
     if (!approvalRequest) throw new Error("Expected agent approval request.");
+    expect("selectApprovalReply" in worker).toBe(false);
+    expect(approvalRequest).not.toHaveProperty("selectedReplyId");
 
     await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
       message: "Give me a concrete plan."
@@ -1776,24 +1519,19 @@ describe("BlueprintWorker", () => {
       ["agent", "first usable plan"]
     ]);
 
-    await worker.selectApprovalReply(blueprint, firstReplyView.run, approvalRequest.id, null);
-    const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    expect((await store.getApprovalRequest(approvalRequest.id))?.selectedReplyId).toBeNull();
-
-    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
+    await worker.applyApprovalRequest(blueprint, firstReplyView.run, approvalRequest.id, "reply", {
       message: "Try one more variant."
     });
     const secondReplyView = await waitForRunStatus(store, run.id, "waiting_approval");
     const secondReplyNode = secondReplyView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
     const secondReplyOutput = secondReplyNode.output as {
       reviewOutput: string;
-      selectedReplyId?: string;
       replies: Array<{ role: string; body: string }>;
     };
 
     expect(secondReplyOutput.reviewOutput).toBe("draft answer");
-    expect(secondReplyOutput.selectedReplyId).toBeUndefined();
     expect(secondReplyOutput.replies).toEqual([]);
+    expect(secondReplyOutput).not.toHaveProperty("selectedReplyId");
     expect((await store.listApprovalReplies({ approvalRequestId: approvalRequest.id })).map((reply) => [reply.actor, reply.body])).toEqual([
       ["user", "Give me a concrete plan."],
       ["agent", "first usable plan"],
@@ -1813,60 +1551,11 @@ describe("BlueprintWorker", () => {
         status: "approved"
       }
     });
-  });
-
-  it("keeps the selected original approval message stable while later comments are appended", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-    await store.init();
-
-    const delivery = createAgentNode("delivery", "Delivery");
-    delivery.config = {
-      ...delivery.config,
-      approval: {
-        enabled: true
-      }
-    };
-    const blueprint = createBlueprint([delivery], []);
-    const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-1"),
-      createStartedAgentTask("task-2")
-    ], [
-      createCompletedAgentTask("task-1", "succeeded", "original plan"),
-      createCompletedAgentTask("task-2", "succeeded", "revised plan")
-    ]);
-    const worker = new BlueprintWorker(store, adapter);
-
-    const run = await worker.startRun(blueprint, "test-user");
-    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-    if (!approvalRequest) throw new Error("Expected agent approval request.");
-
-    await worker.selectApprovalReply(blueprint, waitingView.run, approvalRequest.id, null);
-    const selectedView = await waitForRunStatus(store, run.id, "waiting_approval");
-
-    await worker.applyApprovalRequest(blueprint, selectedView.run, approvalRequest.id, "reply", {
-      message: "Show another option."
-    });
-    const repliedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const repliedNode = repliedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
-    const repliedOutput = repliedNode.output as { reviewOutput: string; selectedReplyId?: string };
-
-    expect(repliedOutput.reviewOutput).toBe("original plan");
-    expect(repliedOutput.selectedReplyId).toBeUndefined();
-    expect(adapter.calls).toHaveLength(2);
-
-    await worker.applyApprovalRequest(blueprint, repliedView.run, approvalRequest.id, "approve");
-    const finalView = await waitForRunTerminal(store, run.id);
-    const finalNode = finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
-
-    expect(finalView?.run.status).toBe("succeeded");
-    expect(finalNode?.output).toMatchObject({
-      approvedOutput: "original plan",
-      approval: {
-        status: "approved"
-      }
-    });
+    expect(finalNode?.output).not.toHaveProperty("selectedReplyId");
+    expect((finalNode?.output as { approval?: Record<string, unknown> } | undefined)?.approval).not.toHaveProperty("selectedReplyId");
+    expect(finalView?.approvalRequests?.find((request) => request.id === approvalRequest.id)).not.toHaveProperty("selectedReplyId");
+    expect(finalView?.approvalDecisions?.map((decision) => decision.action)).toEqual(["reply", "reply", "approve"]);
+    expect(finalView?.approvalDecisions?.some((decision) => "selectedReplyId" in decision)).toBe(false);
   });
 
   it("keeps the run waiting when an Agent approval discussion reply is added", async () => {

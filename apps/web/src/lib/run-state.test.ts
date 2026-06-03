@@ -283,25 +283,24 @@ describe("run state sync", () => {
     ]);
   });
 
-  it("uses ApprovalRequest selectedReplyId instead of node output selection", () => {
+  it("uses approval reply facts instead of node output reply facts", () => {
     const runView = createRunView("waiting_approval");
     runView.approvalRequests = [
       createApprovalRequest({
         id: "approval-agent-1",
         threadId: "approval-thread-agent-1",
         kind: "agent_proposal",
-        nodeRunId: "node-run-agent",
-        selectedReplyId: "reply-candidate"
+        nodeRunId: "node-run-agent"
       })
     ];
     runView.approvalReplies = [
       {
-        id: "reply-candidate",
+        id: "reply-message",
         threadId: "approval-thread-agent-1",
         approvalRequestId: "approval-agent-1",
         actor: "agent",
-        purpose: "candidate",
-        body: "candidate answer",
+        purpose: "message",
+        body: "approval reply answer",
         createdAt: "2026-05-21T01:07:00.000Z"
       }
     ];
@@ -310,19 +309,11 @@ describe("run state sync", () => {
       output: {
         approvalType: "agent",
         reviewOutput: "draft answer",
-        selectedReplyId: "legacy-node-selected",
         replies: [
           {
-            id: "reply-message",
+            id: "legacy-node-reply",
             role: "assistant",
-            body: "ordinary message",
-            createdAt: "2026-05-21T01:06:00.000Z"
-          },
-          {
-            id: "reply-candidate",
-            role: "assistant",
-            purpose: "candidate",
-            body: "candidate answer",
+            body: "legacy node reply",
             createdAt: "2026-05-21T01:07:00.000Z"
           }
         ]
@@ -331,17 +322,16 @@ describe("run state sync", () => {
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals[0]?.selectedReplyId).toBe("reply-candidate");
+    expect(approvals[0]).not.toHaveProperty("selectedReplyId");
     expect(approvals[0]?.replies).toEqual([
       {
-        id: "reply-candidate",
+        id: "reply-message",
         role: "assistant",
-        purpose: "candidate",
-        body: "candidate answer",
+        purpose: "message",
+        body: "approval reply answer",
         createdAt: "2026-05-21T01:07:00.000Z"
       }
     ]);
-    expect(approvals[0]?.replies?.[0]).not.toHaveProperty("selected");
   });
 
   it("uses backend-projected approval discussion capabilities", () => {
@@ -360,7 +350,6 @@ describe("run state sync", () => {
         discussion: {
           mode: "executor",
           canStreamReply: true,
-          canCreateCandidate: true,
           executorKind: "agent_approval"
         }
       }
@@ -377,7 +366,6 @@ describe("run state sync", () => {
         executorNodeRunId: "node-run-agent",
         executorSessionId: "session-agent-1",
         canStreamReply: true,
-        canCreateCandidate: true,
         resolverVersion: 1,
         createdAt: "2026-05-21T01:03:00.000Z",
         updatedAt: "2026-05-21T01:03:00.000Z"
@@ -402,7 +390,6 @@ describe("run state sync", () => {
     expect(approvals[0]?.discussion).toEqual({
       mode: "executor",
       canStreamReply: true,
-      canCreateCandidate: true,
       executorKind: "agent_approval"
     });
   });
@@ -423,7 +410,6 @@ describe("run state sync", () => {
         discussion: {
           mode: "none",
           canStreamReply: false,
-          canCreateCandidate: false,
           reason: "executor_session_unavailable"
         }
       }
@@ -440,7 +426,6 @@ describe("run state sync", () => {
         executorNodeRunId: "node-run-agent",
         executorSessionId: "session-agent-raw",
         canStreamReply: true,
-        canCreateCandidate: true,
         resolverVersion: 1,
         createdAt: "2026-05-21T01:03:00.000Z",
         updatedAt: "2026-05-21T01:03:00.000Z"
@@ -452,7 +437,6 @@ describe("run state sync", () => {
     expect(approvals[0]?.discussion).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "executor_session_unavailable"
     });
   });
@@ -472,10 +456,9 @@ describe("run state sync", () => {
     expect(approvals[0]?.discussion).toEqual({
       mode: "none",
       canStreamReply: false,
-      canCreateCandidate: false,
       reason: "backend_discussion_projection_missing"
     });
-    expect(approvals[0]?.selectedReplyId).toBeNull();
+    expect(approvals[0]).not.toHaveProperty("selectedReplyId");
   });
 
   it("keeps an approved request-backed approval visible but non-actionable after completion", () => {

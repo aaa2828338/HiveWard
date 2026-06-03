@@ -274,7 +274,7 @@ type VerificationSnapshot = {
   agentOutputEvents: Array<Pick<AgentOutputEvent, "id" | "ownerType" | "ownerId" | "actorType" | "kind" | "sequence" | "bodyMarkdown" | "createdAt">>;
   nodeExecutionSessions: Array<Pick<NodeExecutionSession, "id" | "runId" | "nodeRunId" | "nodeId" | "harnessId" | "nativeSessionId" | "policy" | "status" | "fallbackOfSessionId" | "resumedFromSessionId">>;
   nodeSessionTranscriptEvents: Array<Pick<NodeSessionTranscriptEvent, "id" | "sessionId" | "sequence" | "runId" | "nodeRunId" | "role" | "kind" | "content">>;
-  approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "canCreateCandidate" | "reason">>;
+  approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "reason">>;
   pendingApprovals: Array<Pick<ApprovalRequest, "id" | "kind" | "status" | "runId" | "roundId" | "revision">>;
   approvalDecisions: Array<Pick<ApprovalDecision, "id" | "approvalRequestId" | "action" | "actor" | "resultingStatus">>;
   inboxPending: Array<Pick<InboxItem, "id" | "status" | "type" | "blueprintId"> & { payloadHash: string }>;
@@ -540,7 +540,6 @@ function collectArchiveSnapshot(snapshot: VerificationSnapshot, archive: Bluepri
     executorSessionId: binding.executorSessionId,
     runtimeId: binding.runtimeId,
     canStreamReply: binding.canStreamReply,
-    canCreateCandidate: binding.canCreateCandidate,
     reason: binding.reason
   })));
   snapshot.pendingApprovals.push(...(archive.approvalRequests ?? [])

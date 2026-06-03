@@ -201,12 +201,12 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
 
       const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
       await store.appendApprovalReply({
-        id: "approval-reply-candidate-contract",
+        id: "approval-reply-discussion-contract",
         threadId: approval.id,
         approvalRequestId: approval.id,
         actor: "agent",
-        purpose: "candidate",
-        body: "Candidate approval response.",
+        purpose: "message",
+        body: "Discussion approval response.",
         createdAt: contractNow
       });
       const discussionBinding: ApprovalDiscussionBinding = {
@@ -221,7 +221,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         executorSessionId: executionSession.id,
         runtimeId: "codex",
         canStreamReply: true,
-        canCreateCandidate: true,
         resolverVersion: 1,
         createdAt: contractNow,
         updatedAt: contractNow
@@ -233,7 +232,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await store.upsertApprovalRequest({
         ...approval,
         status: "replied",
-        selectedReplyId: "approval-reply-candidate-contract",
         capabilities: resolveClosedCapabilities(),
         updatedAt: contractNow
       });
@@ -264,7 +262,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
             reason: "approval_not_pending"
           })
         })],
-        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied", selectedReplyId: "approval-reply-candidate-contract" })],
+        approvalRequests: [expect.objectContaining({ id: approval.id, status: "replied" })],
         approvalThreads: [expect.objectContaining({ id: approval.id, status: "closed", currentRevision: 1 })],
         approvalReplies: expect.arrayContaining([
           expect.objectContaining({
@@ -275,9 +273,9 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
             body: "Please tighten the report."
           }),
           expect.objectContaining({
-            id: "approval-reply-candidate-contract",
-            purpose: "candidate",
-            body: "Candidate approval response."
+            id: "approval-reply-discussion-contract",
+            purpose: "message",
+            body: "Discussion approval response."
           })
         ]),
         artifacts: [expect.objectContaining({ id: artifact.id, slot: "deliverable" })],
@@ -316,8 +314,8 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
           })
         }),
         expect.objectContaining({
-          id: "approval-reply-candidate-contract",
-          purpose: "candidate"
+          id: "approval-reply-discussion-contract",
+          purpose: "message"
         })
       ]));
       await expect(store.getApprovalDiscussionBinding(approval.id)).resolves.toMatchObject({
@@ -325,23 +323,38 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         executorSessionId: executionSession.id
       });
 
-      const inbox = await store.createBlueprintProposal({
-        title: "Import proposal",
-        summary: "Import a portable blueprint.",
-        blueprintPackage: createContractPortablePackage()
-      });
-      const replied = await store.replyToInboxItem(inbox.id, "Please narrow scope.");
-      expect(replied.replies?.[0]?.body).toBe("Please narrow scope.");
-      const approved = await store.approveInboxItem(inbox.id, undefined, "Approved.");
-      expect(approved.item.status).toBe("approved");
-      expect(approved.importedBlueprints?.[0]?.name).toBe("Portable Contract Blueprint");
-
-      const rejectedProposal = await store.createBlueprintProposal({
-        title: "Reject proposal",
-        summary: "Reject a portable blueprint.",
-        blueprintPackage: createContractPortablePackage()
-      });
-      await expect(store.rejectInboxItem(rejectedProposal.id, "No capacity.")).resolves.toMatchObject({ status: "rejected" });
+      const humanActionRequest: HumanActionRequest = {
+        id: "human-action-request-contract",
+        sourceContextType: "run_room",
+        sourceContextId: "run-room-contract",
+        responseIntent: "reply_required",
+        status: "pending",
+        title: "Clarify scope",
+        bodyMarkdown: "Please clarify the requested scope.",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await expect(store.appendHumanActionRequest(humanActionRequest)).resolves.toMatchObject({ id: humanActionRequest.id });
+      const humanActionResponse: HumanActionResponse = {
+        id: "human-action-response-contract",
+        requestId: humanActionRequest.id,
+        messageMarkdown: "Scope clarified.",
+        createdAt: contractNow
+      };
+      await expect(store.appendHumanActionResponse(humanActionResponse)).resolves.toMatchObject({ id: humanActionResponse.id });
+      await expect(store.listHumanActionResponses({ requestId: humanActionRequest.id })).resolves.toEqual([
+        expect.objectContaining({ id: humanActionResponse.id, messageMarkdown: "Scope clarified." })
+      ]);
+      await expect(store.listInboxProjections()).resolves.toEqual([
+        expect.objectContaining({
+          humanActionRequestId: humanActionRequest.id,
+          title: "Clarify scope",
+          latestResponseAt: contractNow
+        })
+      ]);
+      expect("replyToInboxItem" in store).toBe(false);
+      expect("approveInboxItem" in store).toBe(false);
+      expect("rejectInboxItem" in store).toBe(false);
 
       const sessionRecord = await store.createChatSession({ harnessId: "codex", title: "Contract chat" });
       await expect(store.appendChatMessage({
@@ -526,8 +539,8 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
           replies: [{
             id: "legacy-node-reply",
             role: "assistant",
-            purpose: "candidate",
-            body: "legacy node candidate must not project",
+            purpose: "message",
+            body: "legacy node reply must not project",
             createdAt: contractNow
           }]
         }
@@ -535,16 +548,15 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await store.upsertNodeRun(waitingNodeRun);
       const approval = await store.upsertApprovalRequest({
         ...createContractApproval(run.id, waitingNodeRun.id),
-        body: "request body is the projection source",
-        selectedReplyId: null
+        body: "request body is the projection source"
       });
       await store.appendApprovalReply({
-        id: "approval-fact-candidate",
+        id: "approval-fact-message",
         threadId: approval.threadId ?? approval.id,
         approvalRequestId: approval.id,
         actor: "agent",
-        purpose: "candidate",
-        body: "approval fact candidate",
+        purpose: "message",
+        body: "approval fact message",
         createdAt: contractNow
       });
 
@@ -552,13 +564,12 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expect.objectContaining({
           approvalRequestId: approval.id,
           reviewOutput: "request body is the projection source",
-          selectedReplyId: null,
           canReturnForRevision: true,
           replies: [
             expect.objectContaining({
-              id: "approval-fact-candidate",
-              purpose: "candidate",
-              body: "approval fact candidate"
+              id: "approval-fact-message",
+              purpose: "message",
+              body: "approval fact message"
             })
           ]
         })
@@ -568,7 +579,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
     }
   });
 
-  it("applies approval and inbox decisions once with conflict on repeats", async () => {
+  it("applies approval decisions once and does not expose inbox decision actions", async () => {
     const { store, close } = await createHarness();
     try {
       const blueprint = await store.saveBlueprint(createContractBlueprint());
@@ -595,55 +606,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         decision: createDecision("decision-approval-duplicate", approval.id, "approve", "approved")
       })).resolves.toMatchObject({ status: "conflict" });
       await expect(store.listApprovalDecisions(approval.id)).resolves.toHaveLength(1);
-
-      const inbox = await store.createBlueprintProposal({
-        title: "Atomic inbox proposal",
-        summary: "Import a portable blueprint.",
-        blueprintPackage: createContractPortablePackage()
-      });
-      const inboxApproval = await store.upsertApprovalRequest({
-        ...createContractApproval(inbox.id, "inbox-node"),
-        id: `approval-${inbox.id}`,
-        runId: inbox.id,
-        kind: "blueprint_proposal",
-        sourceRef: { type: "inbox_item", id: inbox.id },
-        payloadRef: inbox.id
-      });
-      const inboxReplyDecision = createDecision("decision-inbox-reply", inboxApproval.id, "reply", "pending", "Need details.");
-      await expect(store.applyInboxDecision({
-        inboxItemId: inbox.id,
-        approvalRequestId: inboxApproval.id,
-        action: "reply",
-        comment: "Need details.",
-        approvalDecision: inboxReplyDecision
-      })).resolves.toMatchObject({ status: "applied", item: expect.objectContaining({ status: "pending" }) });
-      await expect(store.listApprovalReplies({ approvalRequestId: inboxApproval.id })).resolves.toEqual([
-        expect.objectContaining({ id: "reply-decision-inbox-reply", body: "Need details.", threadId: inboxApproval.id })
-      ]);
-      await expect(store.listApprovalThreads({ runId: inbox.id, status: "open" })).resolves.toEqual([
-        expect.objectContaining({ id: inboxApproval.id, currentRequestId: inboxApproval.id })
-      ]);
-      const inboxDecision = createDecision("decision-inbox-once", inboxApproval.id, "approve", "approved");
-      await expect(store.applyInboxDecision({
-        inboxItemId: inbox.id,
-        approvalRequestId: inboxApproval.id,
-        action: "approve",
-        defaults: {},
-        approvalDecision: inboxDecision
-      })).resolves.toMatchObject({ status: "applied", item: expect.objectContaining({ status: "approved" }) });
-      await expect(store.applyInboxDecision({
-        inboxItemId: inbox.id,
-        approvalRequestId: inboxApproval.id,
-        action: "approve",
-        approvalDecision: createDecision("decision-inbox-duplicate", inboxApproval.id, "approve", "approved")
-      })).resolves.toMatchObject({ status: "conflict" });
-      await expect(store.listApprovalDecisions(inboxApproval.id)).resolves.toEqual([
-        expect.objectContaining({ id: "decision-inbox-reply" }),
-        expect.objectContaining({ id: "decision-inbox-once" })
-      ]);
-      await expect(store.listApprovalThreads({ runId: inbox.id, status: "closed" })).resolves.toEqual([
-        expect.objectContaining({ id: inboxApproval.id, currentRequestId: undefined })
-      ]);
+      expect("applyInboxDecision" in store).toBe(false);
     } finally {
       close?.();
     }
@@ -708,9 +671,9 @@ describe("SqliteHivewardStore execution schema constraints", () => {
       expect(() => driver.db.prepare(
         `INSERT INTO approval_discussion_bindings (
           approval_request_id, mode, route, executor_actor, executor_kind, executor_node_run_id,
-          executor_session_id, runtime_id, can_stream_reply, can_create_candidate,
+          executor_session_id, runtime_id, can_stream_reply,
           resolver_version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         approvalRequestId,
         "executor",
@@ -720,7 +683,6 @@ describe("SqliteHivewardStore execution schema constraints", () => {
         nodeRunId,
         "missing-executor-session",
         "codex",
-        1,
         1,
         1,
         contractNow,

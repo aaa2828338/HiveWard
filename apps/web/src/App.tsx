@@ -50,8 +50,8 @@ import type {
   ArchitectureBlueprintView,
   ApprovalThread,
   CompanyRoleDirectory,
-  InboxDiscussionMode,
-  InboxItem,
+  HumanActionResponse,
+  InboxProjection,
   OpenClawConfigWizardMetadata,
   OpenClawConfigState,
   OpenClawModelUsageSummary,
@@ -241,7 +241,8 @@ export function App() {
   const [approvalThreads, setApprovalThreads] = useState<ApprovalThread[]>([]);
   const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
   const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
-  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [inboxProjections, setInboxProjections] = useState<InboxProjection[]>([]);
+  const [inboxResponsesByRequestId, setInboxResponsesByRequestId] = useState<Record<string, HumanActionResponse[]>>({});
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
@@ -380,7 +381,7 @@ export function App() {
         nextApprovals,
         nextApprovalThreads,
         nextRoles,
-        nextInboxItems,
+        nextInboxProjections,
         nextDashboard,
         nextRuntime
       ] = await Promise.all([
@@ -398,7 +399,7 @@ export function App() {
         api.listPendingApprovals(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.getRoleDirectory().catch(() => undefined),
-        api.listInboxItems().catch(() => []),
+        api.listInboxProjections().catch(() => []),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
@@ -432,7 +433,7 @@ export function App() {
       setApprovalThreads(nextApprovalThreads);
       setRoleDirectory(nextRoles?.roles);
       setArchitecture(nextRoles?.architecture);
-      setInboxItems(nextInboxItems);
+      setInboxProjections(nextInboxProjections);
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
       setDashboardDirty(false);
@@ -664,7 +665,7 @@ export function App() {
     () => approvals.filter(isActionableApproval).length,
     [approvals]
   );
-  const pendingInboxCount = useMemo(() => inboxItems.filter((item) => item.status === "pending").length, [inboxItems]);
+  const pendingInboxCount = useMemo(() => inboxProjections.filter((item) => item.status === "pending").length, [inboxProjections]);
   const pollingRunId = useMemo(
     () =>
       selectRunPollingTarget({
@@ -1323,9 +1324,9 @@ export function App() {
   );
 
   const replyToApprovalRequest = useCallback(
-    (approvalRequestId: string, message: string, discussionMode: InboxDiscussionMode = "reply") => {
+    (approvalRequestId: string, message: string) => {
       void withApprovalRequestBusy("replyApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message, discussionMode));
+        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
       });
     },
     [applyApprovalRequestResponse, withApprovalRequestBusy]
@@ -1350,55 +1351,30 @@ export function App() {
     [applyApprovalRequestResponse, withApprovalRequestBusy]
   );
 
-  const selectApprovalReply = useCallback(
-    (approvalRequestId: string, selectedReplyId: string | null) => {
-      void withApprovalRequestBusy("selectRunApprovalReply", async () => {
-        await applyApprovalRequestResponse(await api.selectApprovalRequestReply(approvalRequestId, selectedReplyId));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const replyToInboxItem = useCallback(
-    (itemId: string, message: string) => {
-      void withBusy("replyInboxItem", async () => {
-        const item = await api.replyToInboxItem(itemId, message);
-        setInboxItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
+  const sendHumanActionResponse = useCallback(
+    (requestId: string, messageMarkdown: string) => {
+      void withBusy("sendHumanActionResponse", async () => {
+        const result = await api.sendHumanActionResponse(requestId, { messageMarkdown });
+        setInboxProjections(result.projections);
+        setInboxResponsesByRequestId((current) => ({
+          ...current,
+          [requestId]: [...(current[requestId] ?? []), result.response]
+        }));
       });
     },
     [withBusy]
   );
 
-  const approveInboxItem = useCallback(
-    (itemId: string, comment?: string) => {
-      void withBusy("approveInboxItem", async () => {
-        const result = await api.approveInboxItem(itemId, comment);
-        await hydrateWorkspace({ blueprintId: result.importedBlueprints?.[0]?.id ?? blueprint?.id });
-      });
-    },
-    [blueprint?.id, hydrateWorkspace, withBusy]
-  );
-
-  const rejectInboxItem = useCallback(
-    (itemId: string, comment?: string) => {
-      void withBusy("rejectInboxItem", async () => {
-        await api.rejectInboxItem(itemId, comment);
-        await hydrateWorkspace({ blueprintId: blueprint?.id });
-      });
-    },
-    [blueprint?.id, hydrateWorkspace, withBusy]
-  );
-
   const refreshInboxAndApprovals = useCallback(async () => {
     try {
-      const [nextApprovals, nextApprovalThreads, nextInboxItems] = await Promise.all([
+      const [nextApprovals, nextApprovalThreads, nextInboxProjections] = await Promise.all([
         api.listPendingApprovals(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
-        api.listInboxItems()
+        api.listInboxProjections()
       ]);
       setApprovals(nextApprovals);
       setApprovalThreads(nextApprovalThreads);
-      setInboxItems(nextInboxItems);
+      setInboxProjections(nextInboxProjections);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
     }
@@ -1691,7 +1667,8 @@ export function App() {
         <ApprovalsPage
           approvals={approvals}
           approvalThreads={approvalThreads}
-          inboxItems={inboxItems}
+          inboxProjections={inboxProjections}
+          inboxResponsesByRequestId={inboxResponsesByRequestId}
           language={language}
           t={t}
           actionPending={isApprovalInboxActionBusy(busyAction)}
@@ -1700,10 +1677,7 @@ export function App() {
           onRejectApprovalRequest={rejectApprovalRequest}
           onReplyApprovalRequest={replyToApprovalRequest}
           onReturnForRevisionApprovalRequest={returnForRevisionApprovalRequest}
-          onSelectApprovalReply={selectApprovalReply}
-          onReplyInboxItem={replyToInboxItem}
-          onApproveInboxItem={approveInboxItem}
-          onRejectInboxItem={rejectInboxItem}
+          onSendHumanActionResponse={sendHumanActionResponse}
         />
       );
     }
@@ -3974,7 +3948,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "sendRunInterjection") return t.errors.run;
   if (action === "completeRunApproval") return t.errors.approve;
-  if (action === "selectRunApprovalReply") return t.errors.approve;
+  if (action === "sendHumanActionResponse") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
   if (action === "addOpenClawAgent") return t.errors.catalog;
@@ -3990,9 +3964,6 @@ function isApprovalInboxActionBusy(action: string | undefined): boolean {
     action === "replyApprovalRequest" ||
     action === "returnForRevisionApprovalRequest" ||
     action === "completeRunApproval" ||
-    action === "selectRunApprovalReply" ||
-    action === "approveInboxItem" ||
-    action === "rejectInboxItem" ||
-    action === "replyInboxItem"
+    action === "sendHumanActionResponse"
   ));
 }

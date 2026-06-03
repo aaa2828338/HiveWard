@@ -14,11 +14,11 @@ import type {
   RuntimeUsageFact
 } from "./runtime";
 import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
-import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
+import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 import type { AgentOutputEvent, RunRoomFeed } from "./agentOutput";
-import type { RunInterjection } from "./runRoom";
+import type { HumanActionResponse, InboxProjection, RunInterjection } from "./runRoom";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -122,7 +122,6 @@ export interface ApprovalRequestResponse {
 
 export interface ReplyApprovalRequestRequest {
   message: string;
-  discussionMode?: InboxDiscussionMode;
 }
 
 export interface CompleteApprovalRequestRequest {
@@ -146,8 +145,8 @@ export interface SaveArchitectureBlueprintLayoutRequest {
   positions: Record<string, ArchitectureBlueprintView["nodes"][number]["position"]>;
 }
 
-export interface ListInboxItemsResponse {
-  items: InboxItem[];
+export interface ListInboxProjectionsResponse {
+  projections: InboxProjection[];
 }
 
 export interface CreateLeaderDelegationRequest {
@@ -170,31 +169,18 @@ export interface CreateBlueprintProposalRequest {
   runtimeId?: AgentRuntimeId;
 }
 
-export interface InboxItemResponse {
-  item: InboxItem;
+export interface CreateHumanActionResponseRequest {
+  messageMarkdown: string;
+  createdByRoleId?: string;
 }
 
-export interface ApproveInboxItemRequest {
-  comment?: string;
+export interface HumanActionResponseResponse {
+  response: HumanActionResponse;
+  projections: InboxProjection[];
 }
 
-export interface RejectInboxItemRequest {
-  comment?: string;
-}
-
-export interface ReplyInboxItemRequest {
-  message: string;
-}
-
-export interface ApproveInboxItemResponse {
-  item: InboxItem;
-  importedBlueprints?: BlueprintDefinition[];
-}
-
-export type InboxDiscussionMode = "reply" | "candidate";
-
-export interface SelectApprovalRequestReplyRequest {
-  selectedReplyId: string | null;
+export interface ListHumanActionResponsesResponse {
+  responses: HumanActionResponse[];
 }
 
 export interface DashboardStateResponse {

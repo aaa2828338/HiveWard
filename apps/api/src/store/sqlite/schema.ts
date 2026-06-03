@@ -242,7 +242,6 @@ const sqliteInitialSchemaStatements = [
     action TEXT NOT NULL,
     actor TEXT NOT NULL CHECK (actor IN ('user','system','manager')),
     comment TEXT,
-    selected_reply_id TEXT,
     resulting_status TEXT NOT NULL,
     created_at TEXT NOT NULL
   )`,
@@ -608,13 +607,11 @@ const sqliteExecutionFactsStatements = [
     executor_session_id TEXT,
     runtime_id TEXT,
     can_stream_reply INTEGER NOT NULL CHECK (can_stream_reply IN (0,1)),
-    can_create_candidate INTEGER NOT NULL CHECK (can_create_candidate IN (0,1)),
     reason TEXT,
     resolver_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
-  "ALTER TABLE approval_requests ADD COLUMN selected_reply_id TEXT",
   "ALTER TABLE approval_replies ADD COLUMN purpose TEXT NOT NULL DEFAULT 'message'",
   `CREATE INDEX IF NOT EXISTS idx_run_commands_run_status ON run_commands(run_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_run_commands_round_kind ON run_commands(run_id, round_id, kind)`,
@@ -745,7 +742,6 @@ const sqliteExecutionFactConstraintStatements = [
     executor_session_id TEXT REFERENCES node_execution_sessions_next(id) ON DELETE SET NULL,
     runtime_id TEXT,
     can_stream_reply INTEGER NOT NULL CHECK (can_stream_reply IN (0,1)),
-    can_create_candidate INTEGER NOT NULL CHECK (can_create_candidate IN (0,1)),
     reason TEXT,
     resolver_version INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
@@ -754,12 +750,12 @@ const sqliteExecutionFactConstraintStatements = [
   `INSERT INTO approval_discussion_bindings_next (
      approval_request_id, thread_id, mode, route, executor_actor, executor_kind,
      executor_node_id, executor_node_run_id, executor_session_id, runtime_id,
-     can_stream_reply, can_create_candidate, reason, resolver_version, created_at, updated_at
+     can_stream_reply, reason, resolver_version, created_at, updated_at
    )
    SELECT
      approval_request_id, thread_id, mode, route, executor_actor, executor_kind,
      executor_node_id, executor_node_run_id, executor_session_id, runtime_id,
-     can_stream_reply, can_create_candidate, reason, resolver_version, created_at, updated_at
+     can_stream_reply, reason, resolver_version, created_at, updated_at
    FROM approval_discussion_bindings`,
   "DROP TABLE node_session_transcript_events",
   "DROP TABLE approval_discussion_bindings",
@@ -963,11 +959,11 @@ export const sqliteRequiredSchema = {
   agent_output_events: ["id", "owner_type", "owner_id", "actor_type", "kind", "sequence", "created_at"],
   node_execution_sessions: ["id", "run_id", "node_run_id", "node_id", "harness_id", "policy", "status", "created_at", "updated_at"],
   node_session_transcript_events: ["id", "session_id", "sequence", "run_id", "node_run_id", "role", "kind", "created_at"],
-  approval_discussion_bindings: ["approval_request_id", "mode", "route", "can_stream_reply", "can_create_candidate", "resolver_version", "created_at", "updated_at"],
+  approval_discussion_bindings: ["approval_request_id", "mode", "route", "can_stream_reply", "resolver_version", "created_at", "updated_at"],
   run_events: ["id", "run_id", "node_run_id", "sequence", "type", "message", "created_at"],
   approval_threads: ["id", "kind", "status", "title", "current_revision", "capabilities_json", "created_at", "updated_at"],
   approval_replies: ["id", "approval_request_id", "thread_id", "message", "actor", "purpose", "created_at", "metadata_json"],
-  approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "selected_reply_id", "requested_by_json", "requested_at"],
+  approval_requests: ["id", "run_id", "round_id", "node_run_id", "kind", "status", "title", "body", "revision", "requested_by_json", "requested_at"],
   approval_decisions: ["id", "approval_request_id", "action", "actor", "resulting_status", "created_at"],
   inbox_items: ["id", "company_id", "type", "status", "title", "summary", "created_by_role_id", "created_at", "updated_at"],
   agent_outputs: ["id", "run_id", "round_id", "node_run_id", "node_id", "envelope_json", "created_at"],

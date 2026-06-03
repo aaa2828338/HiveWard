@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { flushSync } from "react-dom";
 import {
   Activity,
   ArrowLeft,
@@ -39,7 +38,8 @@ import type {
   CompanyOverview,
   DashboardWidget,
   DashboardWidgetType,
-  InboxItem,
+  HumanActionResponse,
+  InboxProjection,
   ApprovalThread,
   PendingApprovalItem,
   RuntimeOverview,
@@ -1310,7 +1310,8 @@ function resolveArtifactDownloadUrl(downloadUrl: string): string {
 export function ApprovalsPage({
   approvals,
   approvalThreads = [],
-  inboxItems,
+  inboxProjections,
+  inboxResponsesByRequestId = {},
   language,
   t,
   actionPending = false,
@@ -1319,1369 +1320,594 @@ export function ApprovalsPage({
   onRejectApprovalRequest,
   onReplyApprovalRequest,
   onReturnForRevisionApprovalRequest,
-  onSelectApprovalReply,
-  onReplyInboxItem,
-  onApproveInboxItem,
-  onRejectInboxItem
+  onSendHumanActionResponse
 }: {
   approvals: PendingApprovalItem[];
   approvalThreads?: ApprovalThread[];
-  inboxItems: InboxItem[];
+  inboxProjections: InboxProjection[];
+  inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
   language: Language;
   t: Messages;
   actionPending?: boolean;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onReplyApprovalRequest: (approvalRequestId: string, message: string, discussionMode?: "reply" | "candidate") => void;
+  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
   onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
-  onSelectApprovalReply: (approvalRequestId: string, selectedReplyId: string | null) => void;
-  onReplyInboxItem: (itemId: string, message: string) => void;
-  onApproveInboxItem: (itemId: string, comment?: string) => void;
-  onRejectInboxItem: (itemId: string, comment?: string) => void;
+  onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void;
 }) {
-  const approvalsPage = t.pages.approvals ?? { title: "Approvals", description: "" };
-  const inboxCopy = getInboxCopy(language);
-  const [blueprintFilter, setBlueprintFilter] = useState(allInboxBlueprintFilterValue);
-  const [timeFilter, setTimeFilter] = useState<InboxTimeFilter>("all");
-  const blueprintFilterOptions = useMemo(
-    () => buildInboxBlueprintFilterOptions(inboxItems, approvals, inboxCopy),
-    [approvals, inboxCopy, inboxItems]
+  const approvalsPage = t.pages.approvals ?? { title: 'Approvals', description: '' };
+  const copy = getHumanActionInboxCopy(language);
+  const [sourceFilter, setSourceFilter] = useState<HumanActionSourceFilter>('all');
+  const [timeFilter, setTimeFilter] = useState<HumanActionTimeFilter>('all');
+  const [selectedEntryId, setSelectedEntryId] = useState<string | undefined>();
+  const [draftsByEntryId, setDraftsByEntryId] = useState<Record<string, string>>({});
+  const approvalThreadsById = useMemo(
+    () => new Map(approvalThreads.map((thread) => [thread.id, thread])),
+    [approvalThreads]
   );
-  const inboxThreadItems = useMemo(
-    () => buildInboxThreadItems(inboxItems, approvals, approvalThreads, blueprintFilter, timeFilter),
-    [approvalThreads, approvals, blueprintFilter, inboxItems, timeFilter]
+  const entries = useMemo(
+    () => buildHumanActionInboxEntries({ approvals, approvalThreadsById, projections: inboxProjections, sourceFilter, timeFilter, language, t, copy }),
+    [approvalThreadsById, approvals, copy, inboxProjections, language, sourceFilter, t, timeFilter]
   );
-  const totalInboxItems = inboxItems.length + approvals.length;
-  const pendingInboxCount =
-    inboxItems.filter((item) => item.status === "pending").length +
-    approvals.filter(isActionableApprovalThread).length;
-  const [selectedThread, setSelectedThread] = useState<InboxThreadSelection | undefined>(() =>
-    firstInboxThreadSelection(inboxItems, approvals, approvalThreads)
-  );
-  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-  const [localReplies, setLocalReplies] = useState<Record<string, InboxLocalReply[]>>({});
-  const [pendingHarnessReplies, setPendingHarnessReplies] = useState<Record<string, InboxPendingHarnessReply>>({});
-  const selectedInboxItem =
-    selectedThread?.kind === "inbox"
-      ? inboxItems.find((item) => item.id === selectedThread.id)
-      : undefined;
-  const selectedApprovalThread =
-    selectedThread?.kind === "approval"
-      ? inboxThreadItems.find((thread): thread is InboxApprovalThreadListItem => thread.kind === "approval" && thread.id === selectedThread.id)
-      : undefined;
-  const selectedApproval = selectedApprovalThread?.approval;
-  const selectedInboxApproved = selectedInboxItem?.status === "approved";
-  const selectedInboxOperable = Boolean(selectedInboxItem && !selectedInboxApproved && !actionPending);
-  const selectedApprovalOperable = hasActionableApprovalRequest(selectedApproval);
-  const canReplyToApproval = Boolean(!actionPending && selectedApprovalOperable && canSendApprovalDiscussionReply(selectedApproval));
-  const canCreateCandidateForSelection = Boolean(
-    !actionPending &&
-    selectedApproval?.approvalRequestId &&
-    selectedApproval.discussion?.canCreateCandidate === true &&
-    isActionableApprovalThread(selectedApproval)
-  );
-  const canReplyToSelection = Boolean(canReplyToApproval || selectedInboxOperable);
-  const canApproveSelection = Boolean(
-    !actionPending && (selectedApproval ? selectedApprovalOperable && (selectedApproval.canApprove !== false || selectedApproval.canComplete === true) : selectedInboxOperable)
-  );
-  const canRejectSelection = Boolean(!actionPending && ((selectedApprovalOperable && selectedApproval?.canReject) || selectedInboxOperable));
-  const canReturnForRevisionSelection = Boolean(
-    !actionPending &&
-    selectedApproval?.approvalRequestId &&
-    selectedApproval.canReturnForRevision
-  );
-  const selectedThreadKey = selectedThread ? inboxThreadKey(selectedThread) : undefined;
-  const selectedReplyDraft = selectedThreadKey ? (replyDrafts[selectedThreadKey] ?? "") : "";
-  const selectedMessages = useMemo(
-    () =>
-      selectedThread
-        ? buildInboxConversationMessages({
-            selection: selectedThread,
-            inboxItem: selectedInboxItem,
-            approval: selectedApproval,
-            replies: selectedThreadKey ? (localReplies[selectedThreadKey] ?? []) : [],
-            pendingHarnessReply: selectedThreadKey ? pendingHarnessReplies[selectedThreadKey] : undefined,
-            copy: inboxCopy,
-            t,
-            language
-          })
-        : [],
-    [inboxCopy, language, localReplies, pendingHarnessReplies, selectedApproval, selectedInboxItem, selectedThread, selectedThreadKey, t]
-  );
+  const totalEntries = approvals.length + inboxProjections.length;
+  const pendingEntries = entries.filter((entry) => entry.status === 'pending' || entry.status === 'replying').length;
+  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? entries[0];
+  const selectedDraft = selectedEntry ? draftsByEntryId[selectedEntry.id] ?? '' : '';
 
   useEffect(() => {
-    if (
-      blueprintFilter !== allInboxBlueprintFilterValue &&
-      !blueprintFilterOptions.some((option) => option.value === blueprintFilter)
-    ) {
-      setBlueprintFilter(allInboxBlueprintFilterValue);
-    }
-  }, [blueprintFilter, blueprintFilterOptions]);
+    if (selectedEntryId && entries.some((entry) => entry.id === selectedEntryId)) return;
+    setSelectedEntryId(entries[0]?.id);
+  }, [entries, selectedEntryId]);
 
-  useEffect(() => {
-    setSelectedThread((current) => {
-      if (current && hasInboxThread(current, inboxThreadItems)) return current;
-      return firstInboxThreadListSelection(inboxThreadItems);
-    });
-  }, [inboxThreadItems]);
+  const updateDraft = (entryId: string, value: string) => {
+    setDraftsByEntryId((current) => ({ ...current, [entryId]: value }));
+  };
 
-  useEffect(() => {
-    setPendingHarnessReplies((current) => {
-      let next = current;
-      for (const approval of approvals) {
-        const key = inboxThreadKey({ kind: "approval", id: approvalThreadIdForApproval(approval) });
-        const pending = current[key];
-        if (!pending || !hasAssistantReplyAfter(approval, pending.createdAt)) continue;
-        if (next === current) next = { ...current };
-        delete next[key];
-      }
+  const clearDraft = (entryId: string) => {
+    setDraftsByEntryId((current) => {
+      const next = { ...current };
+      delete next[entryId];
       return next;
     });
-  }, [approvals]);
-
-  const updateReplyDraft = (value: string) => {
-    if (!selectedThreadKey) return;
-    setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: value }));
   };
 
-  const clearReplyDraft = () => {
-    if (!selectedThreadKey) return;
-    setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
+  const sendApprovalReply = (approval: PendingApprovalItem, entryId: string, body: string) => {
+    if (!approval.approvalRequestId || !canSendApprovalReply(approval) || actionPending) return;
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    onReplyApprovalRequest(approval.approvalRequestId, trimmed);
+    clearDraft(entryId);
   };
 
-  const sendApprovalDiscussion = (discussionMode: "reply" | "candidate") => {
-    if (!selectedThreadKey || !selectedApproval) return;
-    if (discussionMode === "reply" && !canReplyToApproval) return;
-    if (discussionMode === "candidate" && !canCreateCandidateForSelection) return;
-    const body = selectedReplyDraft.trim();
-    if (!body) return;
-    const reply = {
-      id: makeLocalInboxReplyId(),
-      body,
-      createdAt: new Date().toISOString()
-    };
-    const shouldWaitForHarnessReply = shouldAwaitApprovalHarnessReply(selectedApproval);
-    const pendingHarnessReply = shouldWaitForHarnessReply
-      ? {
-          id: `${reply.id}:pending`,
-          harnessLabel: formatInboxHarnessLabel(selectedApproval.harnessId),
-          createdAt: reply.createdAt
-        }
-      : undefined;
-    flushSync(() => {
-      setLocalReplies((current) => ({
-        ...current,
-        [selectedThreadKey]: [
-          ...(current[selectedThreadKey] ?? []),
-          reply
-        ]
-      }));
-      if (pendingHarnessReply) {
-        setPendingHarnessReplies((current) => ({ ...current, [selectedThreadKey]: pendingHarnessReply }));
-      } else {
-        setPendingHarnessReplies((current) => {
-          if (!current[selectedThreadKey]) return current;
-          const next = { ...current };
-          delete next[selectedThreadKey];
-          return next;
-        });
-      }
-      setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
-    });
-    window.setTimeout(() => {
-      if (selectedApproval.approvalRequestId) onReplyApprovalRequest(selectedApproval.approvalRequestId, body, discussionMode);
-    }, 0);
+  const returnApprovalForRevision = (approval: PendingApprovalItem, entryId: string, body: string) => {
+    if (!approval.approvalRequestId || approval.canReturnForRevision !== true || actionPending) return;
+    const trimmed = body.trim();
+    if (!trimmed) return;
+    onReturnForRevisionApprovalRequest(approval.approvalRequestId, trimmed);
+    clearDraft(entryId);
   };
 
-  const sendLocalReply = () => {
-    if (!selectedThreadKey || !canReplyToSelection) return;
-    if (selectedApproval) {
-      sendApprovalDiscussion("reply");
-      return;
-    }
-    const body = selectedReplyDraft.trim();
-    if (!body) return;
-    const reply = {
-      id: makeLocalInboxReplyId(),
-      body,
-      createdAt: new Date().toISOString()
-    };
-    flushSync(() => {
-      setLocalReplies((current) => ({
-        ...current,
-        [selectedThreadKey]: [
-          ...(current[selectedThreadKey] ?? []),
-          reply
-        ]
-      }));
-      setReplyDrafts((current) => ({ ...current, [selectedThreadKey]: "" }));
-    });
-    if (selectedInboxItem && !selectedInboxApproved) {
-      window.setTimeout(() => {
-        onReplyInboxItem(selectedInboxItem.id, body);
-      }, 0);
-    }
-  };
-
-  const generateCandidateReply = () => {
-    sendApprovalDiscussion("candidate");
-  };
-
-  const approveSelectedThread = () => {
-    const comment = selectedReplyDraft.trim() || undefined;
-    if (selectedInboxItem && !selectedInboxApproved) {
-      onApproveInboxItem(selectedInboxItem.id, comment);
-      clearReplyDraft();
-      return;
-    }
-    if (selectedApproval?.approvalRequestId && selectedApproval.canApprove !== false) {
-      onApproveApprovalRequest(selectedApproval.approvalRequestId, comment);
-      clearReplyDraft();
-      return;
-    }
-    if (selectedApproval?.canComplete && selectedApproval.approvalRequestId) {
-      onComplete(selectedApproval.approvalRequestId, comment);
-      clearReplyDraft();
-    }
-  };
-
-  const selectApprovalCandidate = (candidateReplyId: string) => {
-    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
-    const reply = (selectedApproval.replies ?? []).find((candidate) => candidate.id === candidateReplyId);
-    if (reply?.purpose !== "candidate") return;
-    onSelectApprovalReply(selectedApproval.approvalRequestId, candidateReplyId);
-  };
-
-  const selectOriginalApprovalContent = () => {
-    if (!selectedApproval?.approvalRequestId || selectedApproval.canApprove === false) return;
-    onSelectApprovalReply(selectedApproval.approvalRequestId, null);
-  };
-
-  const rejectSelectedThread = () => {
-    const comment = selectedReplyDraft.trim() || undefined;
-    if (selectedInboxItem && !selectedInboxApproved) {
-      onRejectInboxItem(selectedInboxItem.id, comment);
-      clearReplyDraft();
-      return;
-    }
-    if (selectedApproval?.canReject) {
-      if (selectedApproval.approvalRequestId) onRejectApprovalRequest(selectedApproval.approvalRequestId, comment);
-    }
-    clearReplyDraft();
-  };
-
-  const returnForRevisionSelectedThread = () => {
-    const feedback = selectedReplyDraft.trim();
-    if (!selectedApproval?.approvalRequestId || !feedback) return;
-    onReturnForRevisionApprovalRequest(selectedApproval.approvalRequestId, feedback);
-    clearReplyDraft();
+  const sendHumanResponse = (projection: InboxProjection, entryId: string, body: string) => {
+    const trimmed = body.trim();
+    if (projection.status !== 'pending' || !trimmed || actionPending) return;
+    onSendHumanActionResponse(projection.humanActionRequestId, trimmed);
+    clearDraft(entryId);
   };
 
   return (
-    <section className="page-grid trace-page-grid inbox-page-grid">
-      <div className="trace-page-title inbox-page-title">
-        <h2>{approvalsPage.title}</h2>
-        <p>{inboxCopy.listMetric(inboxThreadItems.length, totalInboxItems, pendingInboxCount)}</p>
+    <section className="page-grid approvals-page">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <div className="card-title-block">
+            <h3>{approvalsPage.title}</h3>
+            <p>{copy.metric(entries.length, totalEntries, pendingEntries)}</p>
+          </div>
+          <div className="toolbar-cluster wrap">
+            <label className="filter-label">
+              <span>{copy.sourceFilter}</span>
+              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as HumanActionSourceFilter)}>
+                <option value="all">{copy.allSources}</option>
+                <option value="run_room">{copy.runRoom}</option>
+                <option value="executive_chat">{copy.executiveChat}</option>
+                <option value="blueprint_governance">{copy.blueprintGovernance}</option>
+              </select>
+            </label>
+            <label className="filter-label">
+              <span>{copy.timeFilter}</span>
+              <select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as HumanActionTimeFilter)}>
+                <option value="all">{copy.allTime}</option>
+                <option value="today">{copy.today}</option>
+                <option value="week">{copy.week}</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </div>
 
-      <section className="trace-layout inbox-layout">
-        <div className="trace-column-shell inbox-column-shell">
-          <div className="trace-column-header inbox-column-header">
-            <h3>{inboxCopy.listTitle}</h3>
-            <div className="inbox-filters">
-              <label className="inbox-filter-field">
-                <span>{inboxCopy.blueprintFilter}</span>
-                <select value={blueprintFilter} onChange={(event) => setBlueprintFilter(event.target.value)}>
-                  {blueprintFilterOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="inbox-filter-field">
-                <span>{inboxCopy.timeFilter}</span>
-                <select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as InboxTimeFilter)}>
-                  {inboxTimeFilterOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {inboxTimeFilterLabel(option.value, language)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+      <div className="inbox-shell">
+        <div className="content-card stack-card inbox-list-card">
+          <div className="inbox-list-header">
+            <strong>{copy.queueTitle}</strong>
+            <span>{copy.entryCount(entries.length)}</span>
           </div>
-          <div className="content-card stack-card inbox-list-column">
-            <div className="inbox-list" role="list" aria-label={inboxCopy.listTitle}>
-              {inboxThreadItems.length === 0 ? (
-                <div className="inbox-empty-copy">
-                  <strong>{totalInboxItems === 0 ? inboxCopy.emptyListTitle : inboxCopy.emptyFilterTitle}</strong>
-                  <p>{totalInboxItems === 0 ? inboxCopy.emptyListBody : inboxCopy.emptyFilterBody}</p>
-                </div>
-              ) : (
-                <>
-                {inboxThreadItems.map((thread, index) => {
-                  if (thread.kind === "inbox") {
-                    const item = thread.item;
-                    const selected = selectedThread?.kind === "inbox" && item.id === selectedThread.id;
-                    const processed = item.status === "approved";
-                    return (
-                      <article
-                        key={item.id}
-                        className={`inbox-row inbox-formal-row inbox-row-${item.status}${processed ? " processed" : ""}${selected ? " selected" : ""}`}
-                        role="listitem"
-                      >
-                        <button
-                          type="button"
-                          className="inbox-row-main"
-                          aria-pressed={selected}
-                          onClick={() => setSelectedThread({ kind: "inbox", id: item.id })}
-                        >
-                          <span className="inbox-row-index">{index + 1}</span>
-                          <span className="inbox-row-content">
-                            <span className="inbox-row-topline">
-                              <strong>{item.title}</strong>
-                              <span className={`status-pill ${inboxStatusClassName(item.status)}`}>
-                                {inboxStatusLabel(item.status, language)}
-                              </span>
-                            </span>
-                            <span className="inbox-row-preview">{item.summary}</span>
-                            <span className="inbox-row-meta">
-                              <span>{inboxItemContextLabel(item, language)}</span>
-                              <time dateTime={item.createdAt}>{formatDateTime(item.createdAt, language)}</time>
-                            </span>
-                          </span>
-                        </button>
-                        <div className="inbox-row-actions">
-                          <button
-                            type="button"
-                            className="inbox-row-action primary-action"
-                            title={processed ? inboxCopy.processedAction : t.actions.approve}
-                            aria-label={t.actions.approve}
-                            disabled={processed || actionPending}
-                            onClick={() => onApproveInboxItem(item.id)}
-                          >
-                            <BadgeCheck size={16} />
-                          </button>
-                          <button
-                            type="button"
-                            className="inbox-row-action danger-action"
-                            title={processed ? inboxCopy.processedAction : inboxCopy.reject}
-                            aria-label={inboxCopy.reject}
-                            disabled={processed || actionPending}
-                            onClick={() => onRejectInboxItem(item.id)}
-                          >
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </article>
-                    );
+          {entries.length === 0 ? (
+            <div className="empty-state page-empty">
+              <strong>{totalEntries === 0 ? copy.emptyTitle : copy.emptyFilterTitle}</strong>
+              <p>{totalEntries === 0 ? copy.emptyBody : copy.emptyFilterBody}</p>
+            </div>
+          ) : (
+            <div className="inbox-thread-list" role="listbox" aria-label={copy.queueTitle}>
+              {entries.map((entry) => {
+                const selected = selectedEntry?.id === entry.id;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className={'inbox-thread-item ' + (selected ? 'selected' : '')}
+                    onClick={() => setSelectedEntryId(entry.id)}
+                    aria-pressed={selected}
+                  >
+                    <span className={'status-dot ' + humanActionStatusClassName(entry.status)} />
+                    <span className="inbox-thread-main">
+                      <strong>{entry.title}</strong>
+                      <span>{entry.subtitle}</span>
+                    </span>
+                    <span className="inbox-thread-meta">
+                      <span>{humanActionStatusLabel(entry.status, language)}</span>
+                      <span>{formatDateTime(entry.updatedAt, language)}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="content-card stack-card inbox-detail-card">
+          {selectedEntry ? (
+            selectedEntry.kind === 'approval' ? (
+              <ApprovalRequestDetail
+                entry={selectedEntry}
+                draft={selectedDraft}
+                language={language}
+                t={t}
+                copy={copy}
+                actionPending={actionPending}
+                onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
+                onSendReply={() => sendApprovalReply(selectedEntry.approval, selectedEntry.id, selectedDraft)}
+                onReturnForRevision={() => returnApprovalForRevision(selectedEntry.approval, selectedEntry.id, selectedDraft)}
+                onApprove={() => {
+                  if (!selectedEntry.approval.approvalRequestId || actionPending) return;
+                  if (selectedEntry.approval.canApprove === false && selectedEntry.approval.canComplete === true) {
+                    onComplete(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
+                    clearDraft(selectedEntry.id);
+                    return;
                   }
-
-                  const approval = thread.approval;
-                  const selected = selectedThread?.kind === "approval" && thread.id === selectedThread.id;
-                  const processed = !isActionableApprovalThread(approval);
-                  const canApproveOrComplete = Boolean(approval.approvalRequestId && (approval.canApprove !== false || approval.canComplete === true));
-                  const approveOrCompleteLabel = approval.canApprove === false && approval.canComplete ? inboxCopy.complete : t.actions.approve;
-                  return (
-                    <article
-                      key={thread.id}
-                      className={`inbox-row inbox-row-${approval.status ?? "pending"}${processed ? " processed" : ""}${selected ? " selected" : ""}`}
-                      role="listitem"
-                    >
-                      <button
-                        type="button"
-                        className="inbox-row-main"
-                        aria-pressed={selected}
-                        onClick={() => setSelectedThread({ kind: "approval", id: thread.id })}
-                      >
-                        <span className="inbox-row-index">{index + 1}</span>
-                        <span className="inbox-row-content">
-                          <span className="inbox-row-topline">
-                            <strong>{approvalSubject(approval)}</strong>
-                            <span className={`status-pill ${approvalStatusClassName(approval)}`}>
-                              {approvalStatusLabel(approval, language, t)}
-                            </span>
-                          </span>
-                          <span className="inbox-row-preview">{approvalPreviewText(approval, inboxCopy, t)}</span>
-                          <span className="inbox-row-meta">
-                            <span>{approval.blueprintName}</span>
-                            <time dateTime={approval.requestedAt}>{formatDateTime(approval.requestedAt, language)}</time>
-                          </span>
-                        </span>
-                      </button>
-                      <div className="inbox-row-actions">
-                        <button
-                          type="button"
-                          className="inbox-row-action primary-action"
-                          title={canApproveOrComplete ? approveOrCompleteLabel : inboxCopy.processedAction}
-                          aria-label={approveOrCompleteLabel}
-                          disabled={!canApproveOrComplete || actionPending}
-                          onClick={() => {
-                            if (approval.canApprove === false && approval.canComplete && approval.approvalRequestId) {
-                              onComplete(approval.approvalRequestId);
-                              return;
-                            }
-                            if (approval.approvalRequestId) onApproveApprovalRequest(approval.approvalRequestId);
-                          }}
-                        >
-                          <BadgeCheck size={16} />
-                        </button>
-                        <button
-                          type="button"
-                          className="inbox-row-action danger-action"
-                          title={inboxCopy.reject}
-                          aria-label={inboxCopy.reject}
-                          disabled={!approval.approvalRequestId || !approval.canReject || actionPending}
-                          onClick={() => {
-                            if (approval.approvalRequestId) onRejectApprovalRequest(approval.approvalRequestId);
-                          }}
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-                </>
-              )}
+                  onApproveApprovalRequest(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
+                  clearDraft(selectedEntry.id);
+                }}
+                onReject={() => {
+                  if (!selectedEntry.approval.approvalRequestId || actionPending) return;
+                  onRejectApprovalRequest(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
+                  clearDraft(selectedEntry.id);
+                }}
+              />
+            ) : (
+              <HumanActionProjectionDetail
+                entry={selectedEntry}
+                responses={inboxResponsesByRequestId[selectedEntry.projection.humanActionRequestId] ?? []}
+                draft={selectedDraft}
+                language={language}
+                copy={copy}
+                actionPending={actionPending}
+                onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
+                onSend={() => sendHumanResponse(selectedEntry.projection, selectedEntry.id, selectedDraft)}
+              />
+            )
+          ) : (
+            <div className="empty-state page-empty">
+              <MessageSquareText size={22} />
+              <strong>{copy.noSelectionTitle}</strong>
+              <p>{copy.noSelectionBody}</p>
             </div>
-          </div>
+          )}
         </div>
-
-        <div className="trace-column-shell inbox-column-shell">
-          <div className="trace-column-header inbox-column-header">
-            <h3>{inboxCopy.detailTitle}</h3>
-          </div>
-          <InboxConversationPanel
-            approval={selectedApproval}
-            copy={inboxCopy}
-            inboxItem={selectedInboxItem}
-            language={language}
-            messages={selectedMessages}
-            onApprove={approveSelectedThread}
-            approveLabel={selectedApproval?.canApprove === false && selectedApproval.canComplete ? inboxCopy.complete : inboxCopy.approve}
-            canApprove={canApproveSelection}
-            canReject={canRejectSelection}
-            canReply={canReplyToSelection}
-            canCreateCandidate={canCreateCandidateForSelection}
-            canReturnForRevision={canReturnForRevisionSelection}
-            onReject={rejectSelectedThread}
-            onReplyDraftChange={updateReplyDraft}
-            onReturnForRevision={returnForRevisionSelectedThread}
-            onSelectCandidate={selectApprovalCandidate}
-            onSelectOriginal={selectOriginalApprovalContent}
-            onSendCandidate={generateCandidateReply}
-            onSendReply={sendLocalReply}
-            replyDraft={selectedReplyDraft}
-            returnForRevisionLabel={selectedApproval?.kind === "agent_proposal" ? inboxCopy.returnForRevision : inboxCopy.regenerate}
-          />
-        </div>
-      </section>
+      </div>
     </section>
   );
 }
 
-type InboxThreadSelection = {
-  kind: "approval" | "inbox";
-  id: string;
-};
-
-type InboxTimeFilter = "all" | "today" | "last7" | "last30";
-
-type InboxBlueprintFilterOption = {
-  value: string;
-  label: string;
-};
-
-type InboxThreadListItem =
+type HumanActionInboxEntry =
   | {
-      kind: "inbox";
+      kind: 'approval';
       id: string;
-      timestamp: string;
-      blueprintKey: string;
-      item: InboxItem;
-    }
-  | {
-      kind: "approval";
-      id: string;
-      timestamp: string;
-      blueprintKey: string;
+      title: string;
+      subtitle: string;
+      status: string;
+      updatedAt: string;
+      sourceContextType: InboxProjection['sourceContextType'];
       approval: PendingApprovalItem;
       thread?: ApprovalThread;
+    }
+  | {
+      kind: 'projection';
+      id: string;
+      title: string;
+      subtitle: string;
+      status: InboxProjection['status'];
+      updatedAt: string;
+      sourceContextType: InboxProjection['sourceContextType'];
+      projection: InboxProjection;
     };
-type InboxApprovalThreadListItem = Extract<InboxThreadListItem, { kind: "approval" }>;
 
-const allInboxBlueprintFilterValue = "__all_blueprints__";
-const inboxTimeFilterOptions = [
-  { value: "all" },
-  { value: "today" },
-  { value: "last7" },
-  { value: "last30" }
-] satisfies Array<{ value: InboxTimeFilter }>;
+type HumanActionSourceFilter = 'all' | InboxProjection['sourceContextType'];
+type HumanActionTimeFilter = 'all' | 'today' | 'week';
 
-type InboxLocalReply = {
-  id: string;
-  body: string;
-  createdAt: string;
+type HumanActionInboxCopy = {
+  metric: (shown: number, total: number, pending: number) => string;
+  entryCount: (count: number) => string;
+  sourceFilter: string;
+  timeFilter: string;
+  allSources: string;
+  allTime: string;
+  today: string;
+  week: string;
+  runRoom: string;
+  executiveChat: string;
+  blueprintGovernance: string;
+  queueTitle: string;
+  emptyTitle: string;
+  emptyBody: string;
+  emptyFilterTitle: string;
+  emptyFilterBody: string;
+  noSelectionTitle: string;
+  noSelectionBody: string;
+  requestBody: string;
+  replies: string;
+  responseHistory: string;
+  messagePlaceholder: string;
+  sendMessage: string;
+  sendResponse: string;
+  returnForRevision: string;
+  approvalDetail: string;
+  humanActionDetail: string;
+  context: string;
+  intent: string;
+  createdBy: string;
+  acceptAction: string;
+  completeAction: string;
+  rejectAction: string;
 };
 
-type InboxPendingHarnessReply = {
-  id: string;
-  harnessLabel: string;
-  createdAt: string;
-};
-
-type InboxConversationMessage = {
-  id: string;
-  role: "assistant" | "user";
-  speaker: string;
-  body: string;
-  createdAt?: string;
-  categoryLabel?: string;
-  progressText?: string;
-  pending?: boolean;
-  candidateReplyId?: string;
-  selectedCandidate?: boolean;
-  selectedOriginal?: boolean;
-  selectOriginal?: boolean;
-};
-
-function InboxConversationPanel({
-  approval,
-  approveLabel,
-  copy,
-  inboxItem,
+function ApprovalRequestDetail({
+  entry,
+  draft,
   language,
-  messages,
-  replyDraft,
-  canApprove,
-  canReject,
-  canCreateCandidate,
-  canReply,
-  canReturnForRevision,
-  onApprove,
-  onReject,
-  onReplyDraftChange,
-  onReturnForRevision,
-  onSelectCandidate,
-  onSelectOriginal,
-  onSendCandidate,
+  t,
+  copy,
+  actionPending,
+  onDraftChange,
   onSendReply,
-  returnForRevisionLabel
+  onReturnForRevision,
+  onApprove,
+  onReject
 }: {
-  approval?: PendingApprovalItem;
-  approveLabel: string;
-  copy: InboxCopy;
-  inboxItem?: InboxItem;
+  entry: Extract<HumanActionInboxEntry, { kind: 'approval' }>;
+  draft: string;
   language: Language;
-  messages: InboxConversationMessage[];
-  replyDraft: string;
-  canApprove: boolean;
-  canReject: boolean;
-  canCreateCandidate: boolean;
-  canReply: boolean;
-  canReturnForRevision: boolean;
+  t: Messages;
+  copy: HumanActionInboxCopy;
+  actionPending: boolean;
+  onDraftChange: (value: string) => void;
+  onSendReply: () => void;
+  onReturnForRevision: () => void;
   onApprove: () => void;
   onReject: () => void;
-  onReplyDraftChange: (value: string) => void;
-  onReturnForRevision: () => void;
-  onSelectCandidate: (candidateReplyId: string) => void;
-  onSelectOriginal: () => void;
-  onSendCandidate: () => void;
-  onSendReply: () => void;
-  returnForRevisionLabel: string;
 }) {
-  const threadRef = useRef<HTMLDivElement | null>(null);
-  const hasSelection = Boolean(inboxItem || approval);
-  const returnForRevisionDescription = returnForRevisionLabel === copy.regenerate
-    ? copy.regenerateDescription
-    : copy.returnForRevisionDescription;
-  const title = inboxItem?.title ?? (approval ? approvalSubject(approval) : copy.noSelectionTitle);
-  const subtitle = inboxItem
-    ? inboxItem.blueprintName ?? inboxItem.targetRoleId ?? inboxItem.createdByRoleId
-    : approval
-      ? approval.blueprintName
-      : "";
-  const statusLabel = inboxItem ? inboxStatusLabel(inboxItem.status, language) : approval ? copy.approvalRequest : "";
-  const typeLabel = inboxItem ? formalInboxTypeLabel(inboxItem.type, language) : undefined;
-  const discussionUnavailable =
-    approval && !canReply && !canCreateCandidate && (!approval.discussion || approval.discussion.mode === "none");
-
-  useEffect(() => {
-    const thread = threadRef.current;
-    if (!thread) return;
-    thread.scrollTop = thread.scrollHeight;
-  }, [messages.length]);
+  const approval = entry.approval;
+  const canApprove = Boolean(approval.approvalRequestId && !actionPending && (approval.canApprove !== false || approval.canComplete === true));
+  const canReject = Boolean(approval.approvalRequestId && !actionPending && approval.canReject === true);
+  const canReply = Boolean(approval.approvalRequestId && !actionPending && canSendApprovalReply(approval));
+  const canReturn = Boolean(approval.approvalRequestId && !actionPending && approval.canReturnForRevision === true && draft.trim());
+  const canEditDraft = (approval.status ?? 'pending') === 'pending' && !actionPending;
+  const approveLabel = approval.canApprove === false && approval.canComplete === true ? copy.completeAction : copy.acceptAction;
+  void t;
 
   return (
-    <section className="content-card inbox-workspace-column inbox-conversation-card" aria-label={copy.detailTitle}>
-      <div className="chat-window-header inbox-conversation-header">
-        <div className="chat-session-view-heading">
-          <span>{copy.conversation}</span>
-          <strong>{title}</strong>
+    <div className="inbox-detail-stack">
+      <div className="inbox-detail-header">
+        <div>
+          <span className="eyebrow">{copy.approvalDetail}</span>
+          <h3>{entry.title}</h3>
+          <p>{entry.subtitle}</p>
         </div>
-        <div className="chat-context-strip">
-          {statusLabel && <span className="bound">{statusLabel}</span>}
-          {typeLabel && <span>{typeLabel}</span>}
-          {subtitle && <span>{subtitle}</span>}
-        </div>
+        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
       </div>
 
-      <div className="chat-thread inbox-conversation-thread" ref={threadRef}>
-        {!hasSelection ? (
-          <div className="chat-empty-state">
-            <MessageSquareText size={22} />
-            <strong>{copy.noSelectionTitle}</strong>
-            <span>{copy.noSelectionBody}</span>
-          </div>
-        ) : (
-          messages.map((message) => (
-            <article key={message.id} className={`chat-message-row chat-message-row-${message.role}`}>
-              <div className={`chat-avatar chat-avatar-${message.role}`} aria-label={message.speaker}>
-                {message.role === "user" ? copy.youAvatar : <MessageSquareText size={16} />}
-              </div>
-              <div className={`chat-message chat-message-${message.role}`}>
-                <div className="chat-message-speaker">
-                  <strong>{message.speaker}</strong>
-                  {message.categoryLabel && <span>{message.categoryLabel}</span>}
-                  {message.createdAt && <span>{formatDateTime(message.createdAt, language)}</span>}
-                </div>
-                {message.pending ? (
-                  <div className="chat-message-pending">
-                    <Loader2 className="spin" size={15} />
-                    {message.progressText ?? copy.waitingHarness(message.speaker)}
-                  </div>
-                ) : (
-                  <MarkdownRenderer value={message.body} className="chat-message-body" />
-                )}
-                {(message.selectedOriginal || message.selectOriginal || message.candidateReplyId) && (
-                  <div className="inbox-message-actions">
-                    {message.selectedOriginal ? (
-                      <span className="inbox-solution-button selected">
-                        <Check size={14} />
-                        {copy.originalSelected}
-                      </span>
-                    ) : message.selectOriginal ? (
-                      <button
-                        type="button"
-                        className="inbox-solution-button"
-                        disabled={!canApprove}
-                        onClick={onSelectOriginal}
-                      >
-                        <Check size={14} />
-                        {copy.useOriginal}
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className={`inbox-solution-button${message.selectedCandidate ? " selected" : ""}`}
-                        disabled={!canApprove || message.selectedCandidate}
-                        onClick={() => message.candidateReplyId && onSelectCandidate(message.candidateReplyId)}
-                      >
-                        <Check size={14} />
-                        {message.selectedCandidate ? copy.candidateSelected : copy.useCandidate}
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </article>
-          ))
-        )}
+      <div className="inbox-content-block">
+        <span>{copy.requestBody}</span>
+        <MarkdownRenderer value={formatHumanActionMarkdownValue(approval.reviewOutput)} />
       </div>
 
-      <div className="chat-composer inbox-conversation-composer">
-        <textarea
-          value={replyDraft}
-          disabled={!canReply && !canCreateCandidate && !canReturnForRevision}
-          placeholder={!hasSelection ? copy.noSelectionBody : canReply || canCreateCandidate || canReturnForRevision ? copy.replyPlaceholder : copy.processedPlaceholder}
-          onChange={(event) => onReplyDraftChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              onSendReply();
-            }
-          }}
-        />
-        <div className="inbox-conversation-actions">
-          <button type="button" disabled={!canReply} onClick={onSendReply}>
-            <Send size={15} />
-            {copy.sendReply}
-          </button>
-          <button type="button" disabled={!canCreateCandidate} onClick={onSendCandidate}>
-            <BotMessageSquare size={15} />
-            {copy.generateCandidate}
-          </button>
-          <button
-            type="button"
-            disabled={!canReturnForRevision || !replyDraft.trim()}
-            title={returnForRevisionDescription}
-            aria-label={returnForRevisionDescription}
-            onClick={onReturnForRevision}
-          >
-            <RefreshCw size={15} />
-            {returnForRevisionLabel}
-          </button>
-          <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
-            <BadgeCheck size={15} />
-            {approveLabel}
-          </button>
-          <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
-            <Trash2 size={15} />
-            {copy.reject}
-          </button>
+      {(approval.replies?.length ?? 0) > 0 && (
+        <div className="inbox-message-list">
+          <span>{copy.replies}</span>
+          {approval.replies?.map((reply) => (
+            <div key={reply.id} className={'inbox-message ' + (reply.role === 'user' ? 'from-user' : 'from-assistant')}>
+              <div className="inbox-message-avatar">{reply.role === 'user' ? 'You' : <MessageSquareText size={15} />}</div>
+              <div>
+                <MarkdownRenderer value={reply.body} />
+                <small>{formatDateTime(reply.createdAt, language)}</small>
+              </div>
+            </div>
+          ))}
         </div>
-        {discussionUnavailable && (
-          <p className="inbox-composer-note">
-            {copy.discussionUnavailable}
-          </p>
-        )}
+      )}
+
+      <textarea
+        className="inbox-reply-textarea"
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        placeholder={copy.messagePlaceholder}
+        disabled={!canEditDraft}
+      />
+      <div className="inbox-detail-actions">
+        <button type="button" disabled={!canReply || !draft.trim()} onClick={onSendReply}>
+          {actionPending ? <Loader2 className="spin" size={15} /> : <Send size={15} />}
+          {copy.sendMessage}
+        </button>
+        <button type="button" disabled={!canReturn} onClick={onReturnForRevision}>
+          <RefreshCw size={15} />
+          {copy.returnForRevision}
+        </button>
+        <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
+          <BadgeCheck size={15} />
+          {approveLabel}
+        </button>
+        <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
+          <X size={15} />
+          {copy.rejectAction}
+        </button>
       </div>
-    </section>
+    </div>
   );
 }
 
-type InboxCopy = {
-  allBlueprints: string;
-  approvalRequest: string;
-  approve: string;
-  candidateReply: string;
-  candidateSelected: string;
-  complete: string;
-  blueprintFilter: string;
-  conversation: string;
-  decidedAt: string;
-  decisionComment: string;
-  detailTitle: string;
-  discussionUnavailable: string;
-  emptyFilterBody: string;
-  emptyFilterTitle: string;
-  emptyListBody: string;
-  emptyListTitle: string;
-  from: string;
-  generateCandidate: string;
-  listTitle: string;
-  listMetric: (visibleCount: number, totalCount: number, pendingCount: number) => string;
-  noSelectionBody: string;
-  noSelectionTitle: string;
-  noUpstreamOutput: string;
-  openedAt: string;
-  originalContent: string;
-  originalSelected: string;
-  payload: string;
-  processedAction: string;
-  processedPlaceholder: string;
-  regenerate: string;
-  regenerateDescription: string;
-  reject: string;
-  messageReply: string;
-  replyPlaceholder: string;
-  returnForRevision: string;
-  returnForRevisionDescription: string;
-  sendReply: string;
-  status: string;
-  system: string;
-  timeFilter: string;
-  to: string;
-  useCandidate: string;
-  useOriginal: string;
-  waitingHarness: (harnessLabel: string) => string;
-  you: string;
-  youAvatar: string;
-};
-
-type InboxContentBlock = {
-  key: string;
-  label: string;
-  body: string;
-};
-
-function getInboxCopy(language: Language): InboxCopy {
-  if (language === "zh-CN") {
-    return {
-      allBlueprints: "全部蓝图",
-      approvalRequest: "\u5ba1\u6279\u8bf7\u6c42",
-      approve: "\u6279\u51c6",
-      candidateReply: "\u5019\u9009\u56de\u590d",
-      candidateSelected: "\u5df2\u9009\u7528\u5019\u9009",
-      complete: "\u5b8c\u6210",
-      blueprintFilter: "蓝图",
-      conversation: "\u5bf9\u8bdd",
-      decidedAt: "处理时间",
-      decisionComment: "处理备注",
-      detailTitle: "\u5bf9\u8bdd\u8be6\u60c5",
-      discussionUnavailable: "\u8fd9\u4e2a\u5386\u53f2\u5ba1\u6279\u6ca1\u6709\u53ef\u7528\u7684\u8ba8\u8bba\u80fd\u529b\u6295\u5f71\u3002",
-      emptyFilterBody: "调整蓝图或时间筛选后可以继续查看历史收件。",
-      emptyFilterTitle: "当前筛选没有收件",
-      emptyListBody: "\u65b0\u7684\u4eba\u5de5\u5ba1\u6279\u4f1a\u6309\u65f6\u95f4\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
-      emptyListTitle: "当前没有收件",
-      from: "\u6765\u81ea",
-      generateCandidate: "\u751f\u6210\u5019\u9009",
-      listTitle: "\u6536\u4ef6",
-      listMetric: (visibleCount, totalCount, pendingCount) =>
-        `显示 ${visibleCount}/${totalCount} 封，${pendingCount} 封待处理`,
-      noSelectionBody: "\u4ece\u5de6\u4fa7\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u5b83\u7684\u5bf9\u8bdd\u548c\u7559\u8a00\u6846\u3002",
-      noSelectionTitle: "\u9009\u62e9\u4e00\u5c01\u90ae\u4ef6",
-      noUpstreamOutput: "\u6ca1\u6709\u62ff\u5230\u4e0a\u4e00\u4e2a\u8282\u70b9\u8f93\u51fa\u3002",
-      openedAt: "\u53d1\u8d77\u65f6\u95f4",
-      originalContent: "\u539f\u59cb\u5ba1\u6279\u5185\u5bb9",
-      originalSelected: "\u5df2\u9009\u539f\u59cb\u5185\u5bb9",
-      payload: "\u8be6\u7ec6\u5185\u5bb9",
-      processedAction: "已处理，不能重复操作",
-      processedPlaceholder: "这封收件已经处理，不能继续留言或再次审批。",
-      regenerate: "\u91cd\u65b0\u751f\u6210",
-      regenerateDescription: "\u91cd\u65b0\u8fd0\u884c\u5e76\u751f\u6210\u65b0\u7248\u672c",
-      reject: "\u9a73\u56de",
-      messageReply: "\u666e\u901a\u7559\u8a00",
-      replyPlaceholder: "\u8f93\u5165\u7559\u8a00\uff0c\u4e0d\u4f1a\u6539\u53d8\u6d41\u7a0b\uff1bShift+Enter \u6362\u884c...",
-      returnForRevision: "\u9000\u56de\u4fee\u8ba2",
-      returnForRevisionDescription: "\u8981\u6c42 Agent \u6839\u636e\u7559\u8a00\u751f\u6210\u4fee\u8ba2\u7248\u672c",
-      sendReply: "\u7559\u8a00",
-      status: "状态",
-      system: "HiveWard",
-      timeFilter: "时间",
-      to: "\u53d1\u7ed9",
-      useCandidate: "\u4f7f\u7528\u6b64\u5019\u9009",
-      useOriginal: "\u9009\u56de\u539f\u59cb\u5185\u5bb9",
-      waitingHarness: (harnessLabel) => `\u6b63\u5728\u7b49\u5f85 ${harnessLabel} \u8f93\u51fa...`,
-      you: "\u4f60",
-      youAvatar: "\u4f60"
-    };
-  }
-
-  return {
-    allBlueprints: "All blueprints",
-    approvalRequest: "Approval request",
-    approve: "Approve",
-    candidateReply: "Candidate reply",
-    candidateSelected: "Candidate selected",
-    complete: "Complete",
-    blueprintFilter: "Blueprint",
-    conversation: "Conversation",
-    decidedAt: "Decided",
-    decisionComment: "Decision note",
-    detailTitle: "Conversation detail",
-    discussionUnavailable: "Discussion capability is unavailable for this legacy approval.",
-    emptyFilterBody: "Change the blueprint or time filter to view more inbox history.",
-    emptyFilterTitle: "No inbox items match this filter",
-    emptyListBody: "New human approvals will appear here by request time.",
-    emptyListTitle: "No inbox items",
-    from: "From",
-    generateCandidate: "Generate candidate",
-    listTitle: "Messages",
-    listMetric: (visibleCount, totalCount, pendingCount) =>
-      `${visibleCount}/${totalCount} shown, ${pendingCount} pending`,
-    noSelectionBody: "Select a message on the left to show its conversation and comment box here.",
-    noSelectionTitle: "Select a message",
-    noUpstreamOutput: "No previous node output was captured.",
-    openedAt: "Opened",
-    originalContent: "Original approval content",
-    originalSelected: "Original content selected",
-    payload: "Payload",
-    processedAction: "Already processed",
-    processedPlaceholder: "This inbox item has already been processed.",
-    regenerate: "Regenerate",
-    regenerateDescription: "Rerun this step and generate a new version",
-    reject: "Reject",
-    messageReply: "Message reply",
-    replyPlaceholder: "Add a comment; comments do not change the workflow. Shift+Enter for a new line...",
-    returnForRevision: "Return for revision",
-    returnForRevisionDescription: "Ask the Agent to create a revised version from this comment",
-    sendReply: "Comment",
-    status: "Status",
-    system: "HiveWard",
-    timeFilter: "Time",
-    to: "To",
-    useCandidate: "Use this option",
-    useOriginal: "Use original",
-    waitingHarness: (harnessLabel) => `Waiting for ${harnessLabel} output...`,
-    you: "You",
-    youAvatar: "You"
-  };
-}
-
-function buildInboxBlueprintFilterOptions(
-  inboxItems: InboxItem[],
-  approvals: PendingApprovalItem[],
-  copy: InboxCopy
-): InboxBlueprintFilterOption[] {
-  const options = new Map<string, string>();
-  for (const item of inboxItems) {
-    const key = inboxItemBlueprintKey(item);
-    if (key) options.set(key, item.blueprintName ?? item.blueprintId ?? key);
-  }
-  for (const approval of approvals) {
-    const key = approval.blueprintId || approval.blueprintName;
-    if (key) options.set(key, approval.blueprintName || approval.blueprintId);
-  }
-  return [
-    { value: allInboxBlueprintFilterValue, label: copy.allBlueprints },
-    ...[...options.entries()]
-      .map(([value, label]) => ({ value, label }))
-      .sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: "base" }))
-  ];
-}
-
-function buildInboxThreadItems(
-  inboxItems: InboxItem[],
-  approvals: PendingApprovalItem[],
-  approvalThreads: ApprovalThread[],
-  blueprintFilter: string,
-  timeFilter: InboxTimeFilter
-): InboxThreadListItem[] {
-  const approvalThreadsById = new Map(approvalThreads.map((thread) => [thread.id, thread]));
-  const approvalsByThreadId = new Map<string, PendingApprovalItem[]>();
-  for (const approval of approvals) {
-    const threadId = approvalThreadIdForApproval(approval);
-    approvalsByThreadId.set(threadId, [...(approvalsByThreadId.get(threadId) ?? []), approval]);
-  }
-  const approvalThreadItems: InboxThreadListItem[] = [...approvalsByThreadId.entries()].map(([threadId, threadApprovals]) => {
-    const thread = approvalThreadsById.get(threadId);
-    const approval = selectCurrentApprovalForThread(threadApprovals, thread);
-    return {
-      kind: "approval" as const,
-      id: threadId,
-      timestamp: thread?.updatedAt ?? approval.requestedAt,
-      blueprintKey: approval.blueprintId || approval.blueprintName,
-      approval,
-      ...(thread ? { thread } : {})
-    };
-  });
-  const threads: InboxThreadListItem[] = [
-    ...inboxItems.map((item) => ({
-      kind: "inbox" as const,
-      id: item.id,
-      timestamp: item.createdAt,
-      blueprintKey: inboxItemBlueprintKey(item),
-      item
-    })),
-    ...approvalThreadItems
-  ];
-
-  return threads
-    .filter((thread) => blueprintFilter === allInboxBlueprintFilterValue || thread.blueprintKey === blueprintFilter)
-    .filter((thread) => isInboxTimestampInTimeFilter(thread.timestamp, timeFilter))
-    .sort((left, right) => toSafeTimestamp(right.timestamp) - toSafeTimestamp(left.timestamp));
-}
-
-function selectCurrentApprovalForThread(approvals: PendingApprovalItem[], thread?: ApprovalThread): PendingApprovalItem {
-  const currentRequestId = thread?.currentRequestId;
-  const current = currentRequestId
-    ? approvals.find((approval) => approval.approvalRequestId === currentRequestId)
-    : undefined;
-  return current ?? approvals
-    .slice()
-    .sort((left, right) => toSafeTimestamp(right.requestedAt) - toSafeTimestamp(left.requestedAt))[0]!;
-}
-
-function firstInboxThreadListSelection(items: InboxThreadListItem[]): InboxThreadSelection | undefined {
-  const first = items[0];
-  return first ? { kind: first.kind, id: first.id } : undefined;
-}
-
-function inboxItemBlueprintKey(item: InboxItem): string {
-  return item.blueprintId || item.blueprintName || "";
-}
-
-function inboxItemContextLabel(item: InboxItem, language: Language): string {
-  return [
-    item.blueprintName ?? item.blueprintId ?? item.targetRoleId ?? item.createdByRoleId,
-    formalInboxTypeLabel(item.type, language)
-  ].filter(Boolean).join(" / ");
-}
-
-function inboxStatusClassName(status: InboxItem["status"]): string {
-  if (status === "approved") return "status-approved";
-  if (status === "rejected") return "status-rejected";
-  return "status-waiting_approval";
-}
-
-function inboxStatusLabel(status: InboxItem["status"], language: Language): string {
-  if (language === "zh-CN") {
-    if (status === "approved") return "已批准";
-    if (status === "rejected") return "已驳回";
-    return "待处理";
-  }
-  if (status === "approved") return "Approved";
-  if (status === "rejected") return "Rejected";
-  return "Pending";
-}
-
-function isActionableApprovalThread(approval: PendingApprovalItem): boolean {
-  return approval.status === undefined || approval.status === "pending";
-}
-
-function hasActionableApprovalRequest(
-  approval: PendingApprovalItem | undefined,
-): approval is PendingApprovalItem & { approvalRequestId: string } {
-  return Boolean(approval?.approvalRequestId && isActionableApprovalThread(approval));
-}
-
-function canSendApprovalDiscussionReply(approval: PendingApprovalItem): boolean {
-  if (!isActionableApprovalThread(approval)) return false;
-  const discussion = approval.discussion;
-  return Boolean(discussion && (discussion.mode === "message_only" || discussion.canStreamReply));
-}
-
-function approvalStatusClassName(approval: PendingApprovalItem): string {
-  if (approval.status === "approved") return "status-approved";
-  if (approval.status === "completed") return "status-approved";
-  if (approval.status === "replied") return "status-approved";
-  if (approval.status === "superseded") return "status-approved";
-  if (approval.status === "rejected") return "status-rejected";
-  if (approval.status === "terminated") return "status-rejected";
-  if (approval.status === "replying") return "status-running";
-  return "status-waiting_approval";
-}
-
-function approvalStatusLabel(approval: PendingApprovalItem, language: Language, t: Messages): string {
-  if (language === "zh-CN") {
-    if (approval.status === "approved") return "已批准";
-    if (approval.status === "completed") return "已完成";
-    if (approval.status === "rejected") return "已驳回";
-    if (approval.status === "replied") return "已留言";
-    if (approval.status === "terminated") return "已终止";
-    if (approval.status === "superseded") return "已替换";
-    if (approval.status === "replying") return "处理中";
-    return "待处理";
-  }
-  if (approval.status === "approved") return "Approved";
-  if (approval.status === "completed") return "Completed";
-  if (approval.status === "rejected") return "Rejected";
-  if (approval.status === "replied") return "Commented";
-  if (approval.status === "terminated") return "Terminated";
-  if (approval.status === "superseded") return "Superseded";
-  if (approval.status === "replying") return "Working";
-  return t.status.waiting_approval;
-}
-
-function inboxTimeFilterLabel(filter: InboxTimeFilter, language: Language): string {
-  if (language === "zh-CN") {
-    if (filter === "today") return "今天";
-    if (filter === "last7") return "最近 7 天";
-    if (filter === "last30") return "最近 30 天";
-    return "全部时间";
-  }
-  if (filter === "today") return "Today";
-  if (filter === "last7") return "Last 7 days";
-  if (filter === "last30") return "Last 30 days";
-  return "All time";
-}
-
-function isInboxTimestampInTimeFilter(timestamp: string, filter: InboxTimeFilter): boolean {
-  if (filter === "all") return true;
-  const value = toSafeTimestamp(timestamp);
-  if (!value) return false;
-  const today = startOfLocalDay(new Date()).getTime();
-  if (filter === "today") return value >= today;
-  if (filter === "last7") return value >= addDays(new Date(today), -6).getTime();
-  return value >= addDays(new Date(today), -29).getTime();
-}
-
-function formalInboxTypeLabel(type: InboxItem["type"], language: Language): string {
-  const labels =
-    language === "zh-CN"
-      ? {
-          leader_delegation: "召集 Leader",
-          blueprint_proposal: "蓝图内容包",
-          run_request: "运行请求",
-          report: "报告",
-          company_config: "公司配置"
-        }
-      : {
-          leader_delegation: "Leader delegation",
-          blueprint_proposal: "Blueprint package",
-          run_request: "Run request",
-          report: "Report",
-          company_config: "Company config"
-        };
-  return labels[type];
-}
-
-function approvalSubject(approval: PendingApprovalItem): string {
-  if (approval.kind === "iteration_requirement_plan") {
-    if (approval.canApprove === false && approval.canReturnForRevision) return "问题上报";
-    return "计划确认";
-  }
-  return approval.nodeLabel || approval.blueprintName;
-}
-
-function approvalPreviewText(approval: PendingApprovalItem, copy: InboxCopy, t: Messages): string {
-  return approvalContentBlocks(approval, copy, t)
-    .map((block) => block.body)
-    .join("\n\n");
-}
-
-function approvalContentBlocks(approval: PendingApprovalItem, copy: InboxCopy, t: Messages): InboxContentBlock[] {
-  if (approval.reviewOutput !== undefined) {
-    const formatted = (formatOutput(approval.reviewOutput) ?? "").trim();
-    return [
-      {
-        key: `${approval.nodeRunId}:review-output`,
-        label: approval.nodeLabel || t.trace.modelOutput,
-        body: formatted || t.trace.noOutput
-      }
-    ];
-  }
-
-  const upstream = approval.upstream ?? [];
-  if (!upstream.length) {
-    return [
-      {
-        key: `${approval.nodeRunId}:empty`,
-        label: t.trace.modelOutput,
-        body: copy.noUpstreamOutput
-      }
-    ];
-  }
-
-  return upstream.map((item) => {
-    const formatted = (formatOutput(item.output) ?? "").trim();
-    return {
-      key: item.nodeRunId,
-      label: item.nodeLabel,
-      body: formatted || t.trace.noOutput
-    };
-  });
-}
-
-function firstInboxThreadSelection(
-  inboxItems: InboxItem[],
-  approvals: PendingApprovalItem[],
-  approvalThreads: ApprovalThread[]
-): InboxThreadSelection | undefined {
-  const firstInboxItem = inboxItems[0];
-  if (firstInboxItem) return { kind: "inbox", id: firstInboxItem.id };
-  const firstApproval = buildInboxThreadItems(
-    [],
-    approvals,
-    approvalThreads,
-    allInboxBlueprintFilterValue,
-    "all"
-  ).find((thread) => thread.kind === "approval");
-  if (firstApproval) return { kind: "approval", id: firstApproval.id };
-  return undefined;
-}
-
-function hasInboxThread(selection: InboxThreadSelection, items: InboxThreadListItem[]): boolean {
-  return items.some((item) => item.kind === selection.kind && item.id === selection.id);
-}
-
-function inboxThreadKey(selection: InboxThreadSelection): string {
-  return `${selection.kind}:${selection.id}`;
-}
-
-function approvalThreadIdForApproval(approval: PendingApprovalItem): string {
-  return approval.approvalThreadId ?? approval.approvalRequestId ?? approval.nodeRunId;
-}
-
-export function shouldAwaitApprovalHarnessReply(approval: PendingApprovalItem): boolean {
-  return !approval.approvalRequestId;
-}
-
-function hasAssistantReplyAfter(approval: PendingApprovalItem, createdAt: string): boolean {
-  const pendingTimestamp = toSafeTimestamp(createdAt);
-  return (approval.replies ?? []).some(
-    (reply) => reply.role === "assistant" && toSafeTimestamp(reply.createdAt) >= pendingTimestamp
-  );
-}
-
-function formatInboxHarnessLabel(harnessId: string | undefined): string {
-  return harnessLikeDisplayLabel(harnessId);
-}
-
-function makeLocalInboxReplyId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `inbox-reply-${crypto.randomUUID()}`;
-  }
-  return `inbox-reply-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
-function buildInboxConversationMessages({
-  selection,
-  inboxItem,
-  approval,
-  replies,
-  pendingHarnessReply,
+function HumanActionProjectionDetail({
+  entry,
+  responses,
+  draft,
+  language,
   copy,
-  t,
-  language
+  actionPending,
+  onDraftChange,
+  onSend
 }: {
-  selection: InboxThreadSelection;
-  inboxItem?: InboxItem;
-  approval?: PendingApprovalItem;
-  replies: InboxLocalReply[];
-  pendingHarnessReply?: InboxPendingHarnessReply;
-  copy: InboxCopy;
-  t: Messages;
+  entry: Extract<HumanActionInboxEntry, { kind: 'projection' }>;
+  responses: HumanActionResponse[];
+  draft: string;
   language: Language;
-}): InboxConversationMessage[] {
-  const baseMessages =
-    selection.kind === "inbox" && inboxItem
-      ? buildFormalInboxConversation(inboxItem, copy, language)
-      : selection.kind === "approval" && approval
-        ? buildApprovalConversation(approval, copy, t)
-        : [];
-  const approvalReplies =
-    selection.kind === "approval"
-      ? (approval?.replies ?? []).map((reply) => ({
-          id: reply.id,
-          role: reply.role,
-          speaker: reply.role === "user" ? copy.you : approval?.nodeLabel ?? copy.system,
-          body: reply.body,
-          createdAt: reply.createdAt,
-          categoryLabel: reply.purpose === "candidate" ? copy.candidateReply : copy.messageReply,
-          ...(reply.purpose === "candidate"
-            ? {
-                candidateReplyId: reply.id,
-                selectedCandidate: approval?.selectedReplyId === reply.id
-              }
-            : {})
-        }))
-      : [];
-  const serverUserReplyBodies = new Set(
-    selection.kind === "approval"
-      ? (approval?.replies ?? [])
-          .filter((reply) => reply.role === "user")
-          .map((reply) => reply.body.trim())
-      : (inboxItem?.replies ?? []).map((reply) => reply.body.trim())
+  copy: HumanActionInboxCopy;
+  actionPending: boolean;
+  onDraftChange: (value: string) => void;
+  onSend: () => void;
+}) {
+  const projection = entry.projection;
+  const canRespond = projection.status === 'pending' && !actionPending;
+  return (
+    <div className="inbox-detail-stack">
+      <div className="inbox-detail-header">
+        <div>
+          <span className="eyebrow">{copy.humanActionDetail}</span>
+          <h3>{entry.title}</h3>
+          <p>{entry.subtitle}</p>
+        </div>
+        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
+      </div>
+
+      <div className="inbox-detail-facts">
+        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+      </div>
+
+      <div className="inbox-content-block">
+        <span>{copy.requestBody}</span>
+        <MarkdownRenderer value={projection.bodyMarkdown} />
+      </div>
+
+      {responses.length > 0 && (
+        <div className="inbox-message-list">
+          <span>{copy.responseHistory}</span>
+          {responses.map((response) => (
+            <div key={response.id} className="inbox-message from-user">
+              <div className="inbox-message-avatar">You</div>
+              <div>
+                <MarkdownRenderer value={response.messageMarkdown} />
+                <small>{formatDateTime(response.createdAt, language)}</small>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <textarea
+        className="inbox-reply-textarea"
+        value={draft}
+        onChange={(event) => onDraftChange(event.target.value)}
+        placeholder={copy.messagePlaceholder}
+        disabled={!canRespond}
+      />
+      <div className="inbox-detail-actions">
+        <button type="button" className="primary-action" disabled={!canRespond || !draft.trim()} onClick={onSend}>
+          {actionPending ? <Loader2 className="spin" size={15} /> : <Send size={15} />}
+          {copy.sendResponse}
+        </button>
+      </div>
+    </div>
   );
-  const visibleLocalReplies = replies.filter((reply) => !serverUserReplyBodies.has(reply.body.trim()));
-  const pendingMessages =
-    pendingHarnessReply && selection.kind === "approval"
-      ? [
-          {
-            id: pendingHarnessReply.id,
-            role: "assistant" as const,
-            speaker: pendingHarnessReply.harnessLabel,
-            body: "",
-            createdAt: pendingHarnessReply.createdAt,
-            progressText: copy.waitingHarness(pendingHarnessReply.harnessLabel),
-            pending: true
-          }
-        ]
-      : [];
-
-  return [
-    ...baseMessages,
-    ...approvalReplies,
-    ...visibleLocalReplies.map((reply) => ({
-      id: reply.id,
-      role: "user" as const,
-      speaker: copy.you,
-      body: reply.body,
-      createdAt: reply.createdAt
-    })),
-    ...pendingMessages
-  ];
 }
 
-function buildFormalInboxConversation(item: InboxItem, copy: InboxCopy, language: Language): InboxConversationMessage[] {
-  const facts = [
-    `${copy.from}: ${item.createdByRoleId}`,
-    item.targetRoleId ? `${copy.to}: ${item.targetRoleId}` : undefined,
-    item.blueprintName ? `${copy.conversation}: ${item.blueprintName}` : undefined,
-    `${copy.status}: ${inboxStatusLabel(item.status, language)}`,
-    `${copy.openedAt}: ${formatDateTime(item.createdAt, language)}`,
-    item.decidedAt ? `${copy.decidedAt}: ${formatDateTime(item.decidedAt, language)}` : undefined,
-    item.decisionComment ? `${copy.decisionComment}: ${item.decisionComment}` : undefined
-  ].filter((fact): fact is string => Boolean(fact));
-  const messages: InboxConversationMessage[] = [
-    {
-      id: `${item.id}:summary`,
-      role: "assistant",
-      speaker: copy.system,
-      body: [`### ${item.title}`, item.summary, ...facts.map((fact) => `- ${fact}`)].join("\n\n"),
-      createdAt: item.createdAt
-    }
-  ];
-
-  const payloadBody = formatInboxPayload(item.payload, copy);
-  if (payloadBody) {
-    messages.push({
-      id: `${item.id}:payload`,
-      role: "assistant",
-      speaker: copy.system,
-      body: payloadBody,
-      createdAt: item.createdAt
-    });
-  }
-
-  messages.push(
-    ...(item.replies ?? []).map((reply) => ({
-      id: reply.id,
-      role: "user" as const,
-      speaker: copy.you,
-      body: reply.body,
-      createdAt: reply.createdAt
-    }))
-  );
-
-  return messages;
-}
-
-function buildApprovalConversation(
-  approval: PendingApprovalItem,
-  copy: InboxCopy,
-  t: Messages
-): InboxConversationMessage[] {
-  const selectedReplyId = approval.selectedReplyId ?? null;
-  return approvalContentBlocks(approval, copy, t).map((block) => ({
-    id: block.key,
-    role: "assistant" as const,
-    speaker: block.label,
-    body: block.body,
-    createdAt: approval.requestedAt,
-    categoryLabel: copy.originalContent,
-    selectedOriginal: selectedReplyId === null,
-    selectOriginal: selectedReplyId !== null
-  }));
-}
-
-function formatInboxPayload(payload: Record<string, unknown> | undefined, copy: InboxCopy): string {
-  if (!payload) return "";
-  const visiblePayload = compactInboxPayload(payload);
-  const formatted = formatOutput(visiblePayload);
-  if (!formatted.trim() || formatted.trim() === "{}") return "";
-  const trimmed = formatted.length > 6_000 ? `${formatted.slice(0, 6_000)}\n...` : formatted;
-  return [copy.payload, "", "```json", trimmed, "```"].join("\n");
-}
-
-function compactInboxPayload(payload: Record<string, unknown>): Record<string, unknown> {
-  const compacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(payload)) {
-    if (key === "blueprintPackage") {
-      compacted[key] = summarizeBlueprintPackagePayload(value);
-      continue;
-    }
-    compacted[key] = value;
-  }
-  return compacted;
-}
-
-function summarizeBlueprintPackagePayload(value: unknown): unknown {
-  if (!isPlainObject(value)) return value;
-  const blueprints = Array.isArray(value.blueprints) ? value.blueprints : [];
+function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
+  void language;
   return {
-    blueprints: blueprints.map((blueprint) =>
-      isPlainObject(blueprint)
-        ? {
-            id: blueprint.id,
-            name: blueprint.name,
-            nodes: Array.isArray(blueprint.nodes) ? blueprint.nodes.length : undefined,
-            edges: Array.isArray(blueprint.edges) ? blueprint.edges.length : undefined
-          }
-        : blueprint
-    ),
-    exportedAt: value.exportedAt,
-    version: value.version
+    metric: (shown, total, pending) => shown + ' of ' + total + ' shown, ' + pending + ' pending',
+    entryCount: (count) => count + ' items',
+    sourceFilter: 'Source',
+    timeFilter: 'Time',
+    allSources: 'All sources',
+    allTime: 'All time',
+    today: 'Today',
+    week: '7 days',
+    runRoom: 'Run Room',
+    executiveChat: 'Executive chat',
+    blueprintGovernance: 'Blueprint governance',
+    queueTitle: 'Human action queue',
+    emptyTitle: 'No human action requests',
+    emptyBody: 'New human requests will appear here.',
+    emptyFilterTitle: 'No matching requests',
+    emptyFilterBody: 'Adjust the source or time filter.',
+    noSelectionTitle: 'No request selected',
+    noSelectionBody: 'Select a human request from the list.',
+    requestBody: 'Request body',
+    replies: 'Conversation',
+    responseHistory: 'Human responses',
+    messagePlaceholder: 'Write a response...',
+    sendMessage: 'Send message',
+    sendResponse: 'Send response',
+    returnForRevision: 'Return for revision',
+    approvalDetail: 'Approval request',
+    humanActionDetail: 'Human action request',
+    context: 'Context',
+    intent: 'Intent',
+    createdBy: 'Created by',
+    acceptAction: 'Accept',
+    completeAction: 'Complete',
+    rejectAction: 'Decline'
   };
+}
+
+function buildHumanActionInboxEntries({
+  approvals,
+  approvalThreadsById,
+  projections,
+  sourceFilter,
+  timeFilter,
+  language,
+  t
+}: {
+  approvals: PendingApprovalItem[];
+  approvalThreadsById: Map<string, ApprovalThread>;
+  projections: InboxProjection[];
+  sourceFilter: HumanActionSourceFilter;
+  timeFilter: HumanActionTimeFilter;
+  language: Language;
+  t: Messages;
+  copy: HumanActionInboxCopy;
+}): HumanActionInboxEntry[] {
+  const approvalEntriesByThreadId = new Map<string, HumanActionInboxEntry>();
+  for (const approval of approvals) {
+    const threadId = approval.approvalThreadId ?? approval.approvalRequestId ?? approval.nodeRunId;
+    const thread = approvalThreadsById.get(threadId);
+    const entry: HumanActionInboxEntry = {
+      kind: 'approval',
+      id: 'approval:' + (approval.approvalRequestId ?? threadId),
+      title: approval.nodeLabel || 'Approval',
+      subtitle: approval.blueprintName + ' / ' + approval.kind,
+      status: approval.status ?? 'pending',
+      updatedAt: thread?.updatedAt ?? approval.requestedAt,
+      sourceContextType: 'run_room',
+      approval,
+      thread
+    };
+    const existing = approvalEntriesByThreadId.get(threadId);
+    const currentRequestId = thread?.currentRequestId;
+    const entryIsCurrent = currentRequestId ? approval.approvalRequestId === currentRequestId : false;
+    const existingApprovalRequestId = existing?.kind === 'approval' ? existing.approval.approvalRequestId : undefined;
+    const existingIsCurrent = currentRequestId ? existingApprovalRequestId === currentRequestId : false;
+    const entryTime = new Date(entry.updatedAt).getTime();
+    const existingTime = existing ? new Date(existing.updatedAt).getTime() : Number.NEGATIVE_INFINITY;
+    if (!existing || entryIsCurrent || (!existingIsCurrent && entryTime >= existingTime)) {
+      approvalEntriesByThreadId.set(threadId, entry);
+    }
+  }
+  const approvalEntries = [...approvalEntriesByThreadId.values()];
+  const projectionEntries: HumanActionInboxEntry[] = projections.map((projection) => ({
+    kind: 'projection',
+    id: 'human:' + projection.humanActionRequestId,
+    title: projection.title,
+    subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
+    status: projection.status,
+    updatedAt: projection.updatedAt,
+    sourceContextType: projection.sourceContextType,
+    projection
+  }));
+  return [...approvalEntries, ...projectionEntries]
+    .filter((entry) => sourceFilter === 'all' || entry.sourceContextType === sourceFilter)
+    .filter((entry) => isWithinHumanActionTimeFilter(entry.updatedAt, timeFilter))
+    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+}
+
+function canSendApprovalReply(approval: PendingApprovalItem): boolean {
+  return (approval.status ?? 'pending') === 'pending' && approval.canReply === true && approval.discussion?.mode !== 'none';
+}
+
+function formatHumanActionMarkdownValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined || value === null) return '';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function isWithinHumanActionTimeFilter(value: string, filter: HumanActionTimeFilter): boolean {
+  if (filter === 'all') return true;
+  const timestamp = new Date(value).getTime();
+  if (!Number.isFinite(timestamp)) return true;
+  const now = Date.now();
+  if (filter === 'today') return new Date(value).toDateString() === new Date(now).toDateString();
+  return now - timestamp <= 7 * 24 * 60 * 60 * 1000;
+}
+
+function humanActionStatusClassName(status: string): string {
+  if (status === 'pending' || status === 'replying') return 'pending';
+  if (status === 'responded' || status === 'completed' || status === 'approved') return 'approved';
+  if (status === 'rejected' || status === 'terminated') return 'rejected';
+  return 'neutral';
+}
+
+function humanActionStatusLabel(status: string, language: Language): string {
+  void language;
+  if (status === 'pending') return 'pending';
+  if (status === 'replying') return 'replying';
+  if (status === 'responded') return 'responded';
+  if (status === 'completed') return 'completed';
+  if (status === 'approved') return 'approved';
+  if (status === 'rejected') return 'rejected';
+  if (status === 'terminated') return 'terminated';
+  if (status === 'closed') return 'closed';
+  if (status === 'cancelled') return 'cancelled';
+  return status.replaceAll('_', ' ');
+}
+
+function humanActionContextLabel(value: InboxProjection['sourceContextType'], language: Language): string {
+  void language;
+  if (value === 'run_room') return 'Run Room';
+  if (value === 'executive_chat') return 'Executive chat';
+  return 'Blueprint governance';
+}
+
+function humanActionIntentLabel(value: InboxProjection['responseIntent'], language: Language): string {
+  void language;
+  if (value === 'decision_required') return 'decision required';
+  if (value === 'reply_required') return 'reply required';
+  return 'review required';
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 export function DashboardPage({

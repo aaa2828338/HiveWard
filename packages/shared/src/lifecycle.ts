@@ -102,14 +102,13 @@ export interface ApprovalThread {
 }
 
 export type ApprovalReplyActor = "user" | "agent" | "manager" | "system";
-export type ApprovalReplyPurpose = "message" | "candidate";
 
 export interface ApprovalReply {
   id: string;
   threadId: string;
   approvalRequestId?: string;
   actor: ApprovalReplyActor;
-  purpose?: ApprovalReplyPurpose;
+  purpose?: "message";
   body: string;
   createdAt: string;
   metadata?: Record<string, unknown>;
@@ -147,7 +146,6 @@ export interface ApprovalDiscussionBinding {
   executorSessionId?: string;
   runtimeId?: AgentRuntimeId;
   canStreamReply: boolean;
-  canCreateCandidate: boolean;
   reason?: string;
   resolverVersion: number;
   createdAt: string;
@@ -172,7 +170,6 @@ export interface ApprovalRequest {
   revision: number;
   replacesRequestId?: string;
   supersededByRequestId?: string;
-  selectedReplyId?: string | null;
   capabilities: ApprovalCapabilities;
   requestedBy: {
     type: "node" | "role" | "system";
@@ -200,7 +197,6 @@ export interface ApprovalDecision {
   action: ApprovalDecisionAction;
   actor: "user" | "system" | "manager";
   comment?: string;
-  selectedReplyId?: string | null;
   resultingStatus: ApprovalRequestStatus;
   createdAt: string;
 }

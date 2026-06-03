@@ -182,7 +182,7 @@ describe("ApprovalService", () => {
     expect(replies).toEqual([]);
   });
 
-  it("rejects approval selection in approve and persists explicit original selection through select", async () => {
+  it("does not expose approval selection or persist selected reply facts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-selection-"));
     const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
     await store.init();
@@ -204,17 +204,16 @@ describe("ApprovalService", () => {
       threadId: request.threadId ?? request.id,
       approvalRequestId: request.id,
       actor: "agent",
-      purpose: "candidate",
-      body: "Candidate output",
+      purpose: "message",
+      body: "Discussion reply",
       createdAt: new Date().toISOString()
     });
 
-    await service.selectApprovalCandidate(request.id, "reply-candidate-selection");
-    expect((await store.getApprovalRequest(request.id))?.selectedReplyId).toBe("reply-candidate-selection");
-    await service.selectApprovalCandidate(request.id, null);
-    expect((await store.getApprovalRequest(request.id))?.selectedReplyId).toBeNull();
-    await expect(service.approve(request.id, "Looks good.", "reply-candidate-selection"))
-      .rejects.toThrow("approve does not accept selectedReplyId");
+    expect("selectApprovalCandidate" in service).toBe(false);
+    const result = await service.approve(request.id, "Looks good.");
+    expect(result.approvalRequest).not.toHaveProperty("selectedReplyId");
+    expect(result.decision).not.toHaveProperty("selectedReplyId");
+    expect(await store.getApprovalRequest(request.id)).not.toHaveProperty("selectedReplyId");
   });
 
   it("reply then approve release report carries reply into next round humanFeedback", async () => {

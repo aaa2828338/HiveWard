@@ -11,8 +11,7 @@
   CreateHermesProfileRequest,
   CreateOpenClawAgentRequest,
   CreateBlueprintRequest,
-  CreateBlueprintProposalRequest,
-  CreateLeaderDelegationRequest,
+  CreateHumanActionResponseRequest,
   DashboardStateResponse,
   DeleteBlueprintResponse,
   DeleteCompanyResponse,
@@ -54,9 +53,6 @@
   SelectCompanyRequest,
   UpdateCompanyRequest,
   ReplyApprovalRequestRequest,
-  SelectApprovalRequestReplyRequest,
-  InboxDiscussionMode,
-  ReplyInboxItemRequest,
   ChatSessionHistoryResponse,
   ChatSessionMessagesResponse,
   CreateChatSessionRequest,
@@ -70,11 +66,12 @@
   UpdateClaudeCodeModelConfigRequest,
   SendChatSessionMessageRequest,
   AgentOutputEvent,
+  HumanActionResponse,
   HivewardChatSession,
   HivewardChatSessionResponse,
-  InboxItem,
-  InboxItemResponse,
-  ApproveInboxItemResponse,
+  InboxProjection,
+  ListHumanActionResponsesResponse,
+  ListInboxProjectionsResponse,
   ListChatSessionsResponse,
   StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
@@ -527,22 +524,11 @@ export const api = {
 
   async replyToApprovalRequest(
     approvalRequestId: string,
-    message: string,
-    discussionMode: InboxDiscussionMode = "reply"
+    message: string
   ): Promise<ApprovalRequestResponse> {
     return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/reply`, {
       method: "POST",
-      body: JSON.stringify({ message, discussionMode } satisfies ReplyApprovalRequestRequest)
-    });
-  },
-
-  async selectApprovalRequestReply(
-    approvalRequestId: string,
-    selectedReplyId: string | null
-  ): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/select-reply`, {
-      method: "POST",
-      body: JSON.stringify({ selectedReplyId } satisfies SelectApprovalRequestReplyRequest)
+      body: JSON.stringify({ message } satisfies ReplyApprovalRequestRequest)
     });
   },
 
@@ -580,48 +566,29 @@ export const api = {
     });
   },
 
-  async listInboxItems(): Promise<InboxItem[]> {
-    const response = await request<{ items: InboxItem[] }>("/api/inbox");
-    return response.items;
+  async listInboxProjections(): Promise<InboxProjection[]> {
+    const response = await request<ListInboxProjectionsResponse>("/api/inbox-projections");
+    return response.projections;
   },
 
-  async createLeaderDelegation(input: CreateLeaderDelegationRequest): Promise<InboxItem> {
-    const response = await request<InboxItemResponse>("/api/inbox/delegations", {
-      method: "POST",
-      body: JSON.stringify(input satisfies CreateLeaderDelegationRequest)
-    });
-    return response.item;
+  async listHumanActionResponses(requestId: string): Promise<HumanActionResponse[]> {
+    const response = await request<ListHumanActionResponsesResponse>(
+      `/api/human-action-requests/${encodeURIComponent(requestId)}/responses`
+    );
+    return response.responses;
   },
 
-  async createBlueprintProposal(input: CreateBlueprintProposalRequest): Promise<InboxItem> {
-    const response = await request<InboxItemResponse>("/api/inbox/blueprint-proposals", {
-      method: "POST",
-      body: JSON.stringify(input satisfies CreateBlueprintProposalRequest)
-    });
-    return response.item;
-  },
-
-  async approveInboxItem(itemId: string, comment?: string): Promise<ApproveInboxItemResponse> {
-    return request<ApproveInboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/approve`, {
-      method: "POST",
-      body: JSON.stringify({ comment })
-    });
-  },
-
-  async rejectInboxItem(itemId: string, comment?: string): Promise<InboxItem> {
-    const response = await request<InboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/reject`, {
-      method: "POST",
-      body: JSON.stringify({ comment })
-    });
-    return response.item;
-  },
-
-  async replyToInboxItem(itemId: string, message: string): Promise<InboxItem> {
-    const response = await request<InboxItemResponse>(`/api/inbox/${encodeURIComponent(itemId)}/reply`, {
-      method: "POST",
-      body: JSON.stringify({ message } satisfies ReplyInboxItemRequest)
-    });
-    return response.item;
+  async sendHumanActionResponse(
+    requestId: string,
+    input: CreateHumanActionResponseRequest
+  ): Promise<{ response: HumanActionResponse; projections: InboxProjection[] }> {
+    return request<{ response: HumanActionResponse; projections: InboxProjection[] }>(
+      `/api/human-action-requests/${encodeURIComponent(requestId)}/responses`,
+      {
+        method: "POST",
+        body: JSON.stringify(input satisfies CreateHumanActionResponseRequest)
+      }
+    );
   },
 
   async saveBlueprint(blueprint: BlueprintDefinition): Promise<BlueprintDefinition> {

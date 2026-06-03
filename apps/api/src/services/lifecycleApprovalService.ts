@@ -168,12 +168,7 @@ export class ApprovalService {
     return request;
   }
 
-  async approve(id: string, comment?: string, selectedReplyId?: string | null): Promise<ApprovalActionResult> {
-    if (selectedReplyId !== undefined) {
-      throw new Error("Select an approval reply before approving; approve does not accept selectedReplyId.");
-    }
-    const current = await this.requirePendingRequest(id, "approve");
-    await this.assertSelectedCandidateBelongsToRequest(current);
+  approve(id: string, comment?: string): Promise<ApprovalActionResult> {
     return this.decide(id, "approve", "approved", { comment });
   }
 
@@ -288,42 +283,6 @@ export class ApprovalService {
     return this.recordPendingReply(id, message);
   }
 
-  async selectApprovalCandidate(id: string, selectedReplyId: string | null): Promise<ApprovalRequest> {
-    const current = await this.requireRequest(id);
-    if (current.status !== "pending") {
-      throw new ApprovalConflictError("Approval request is already closed.");
-    }
-    const nextSelectedReplyId = selectedReplyId === null ? null : selectedReplyId.trim();
-    if (nextSelectedReplyId) {
-      await this.assertSelectedCandidateBelongsToRequest(current, nextSelectedReplyId);
-    }
-    const updated: ApprovalRequest = {
-      ...current,
-      selectedReplyId: nextSelectedReplyId || null,
-      updatedAt: new Date().toISOString()
-    };
-    return this.store.upsertApprovalRequest(updated);
-  }
-
-  private async assertSelectedCandidateBelongsToRequest(
-    request: ApprovalRequest,
-    selectedReplyId = typeof request.selectedReplyId === "string" ? request.selectedReplyId.trim() : ""
-  ): Promise<void> {
-    if (!selectedReplyId) return;
-    const threadId = request.threadId ?? request.id;
-    const selected = (await this.store.listApprovalReplies({ approvalRequestId: request.id })).find((reply) =>
-      reply.id === selectedReplyId &&
-      reply.approvalRequestId === request.id &&
-      reply.threadId === threadId
-    );
-    if (!selected) {
-      throw new Error("Selected approval reply does not belong to this request.");
-    }
-    if (selected.purpose !== "candidate") {
-      throw new Error("Only candidate approval replies can be selected.");
-    }
-  }
-
   async recordPendingReply(id: string, message: string): Promise<ApprovalActionResult> {
     const trimmed = message.trim();
     if (!trimmed) throw new Error("Approval reply message is required.");
@@ -379,7 +338,7 @@ export class ApprovalService {
     id: string,
     action: ApprovalDecisionAction,
     resultingStatus: ApprovalRequestStatus,
-    options: { actor?: ApprovalDecision["actor"]; comment?: string; selectedReplyId?: string } = {}
+    options: { actor?: ApprovalDecision["actor"]; comment?: string } = {}
   ): Promise<ApprovalActionResult> {
     const current = await this.requirePendingRequest(id, action);
     if (action === "complete" && current.kind !== "manager_release_report") {
@@ -395,8 +354,7 @@ export class ApprovalService {
       resultingStatus,
       options.actor ?? "user",
       options.comment,
-      now,
-      action === "approve" ? current.selectedReplyId : options.selectedReplyId
+      now
     );
     const next: ApprovalRequest = {
       ...current,
@@ -451,8 +409,7 @@ export class ApprovalService {
     resultingStatus: ApprovalRequestStatus,
     actor: ApprovalDecision["actor"],
     comment: string | undefined,
-    createdAt: string,
-    selectedReplyId?: string | null
+    createdAt: string
   ): ApprovalDecision {
     return {
       id: `decision-${nanoid(10)}`,
@@ -460,7 +417,6 @@ export class ApprovalService {
       action,
       actor,
       comment: comment?.trim() || undefined,
-      selectedReplyId,
       resultingStatus,
       createdAt
     };
@@ -613,7 +569,6 @@ function buildDefaultApprovalDiscussionBinding(
     mode: "message_only",
     route: "message_only",
     canStreamReply: false,
-    canCreateCandidate: false,
     reason: "message_only_approval_kind",
     resolverVersion: 1,
     createdAt: now,

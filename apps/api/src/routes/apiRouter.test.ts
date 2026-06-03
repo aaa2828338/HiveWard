@@ -700,13 +700,11 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes request-scoped approval selection through the worker owner", async () => {
+  it("does not expose request-scoped approval selection as a normal route", async () => {
     const fixture = await createStoreFixture();
-    const calls: Array<{ approvalRequestId: string; selectedReplyId: string | null }> = [];
     const worker = {
-      async selectApprovalReply(_blueprint: BlueprintDefinition, run: BlueprintRun, approvalRequestId: string, selectedReplyId: string | null) {
-        calls.push({ approvalRequestId, selectedReplyId });
-        return { ...run, status: "waiting_approval" as const };
+      async selectApprovalReply() {
+        throw new Error("Request-scoped approval selection routes must not call the worker.");
       }
     } as unknown as BlueprintWorker;
 
@@ -716,24 +714,23 @@ describe("apiRouter", () => {
       const approvalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-select");
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approvalRequest.id}/select-reply`, {
+        const response = await fetch(`${baseUrl}/api/approval-requests/${approvalRequest.id}/select-reply`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ selectedReplyId: null })
-        }));
+        });
+        expect(response.status).toBe(404);
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
-
-      expect(calls).toEqual([{ approvalRequestId: approvalRequest.id, selectedReplyId: null }]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("rejects request-scoped approval selection on terminal runs", async () => {
+  it("does not expose request-scoped approval selection on terminal runs", async () => {
     const fixture = await createStoreFixture();
     const worker = {
       async selectApprovalReply() {
-        throw new Error("Terminal selection must not call the worker.");
+        throw new Error("Terminal selection routes must not call the worker.");
       }
     } as unknown as BlueprintWorker;
 
@@ -753,12 +750,7 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ selectedReplyId: null })
         });
-        const body = await response.json() as { error?: { code?: string; message?: string } };
-        expect(response.status, JSON.stringify(body)).toBe(409);
-        expect(body.error).toMatchObject({
-          code: "run_already_finished",
-          message: "Run is already finished."
-        });
+        expect(response.status).toBe(404);
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -825,7 +817,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("returns 409 for repeated approval and inbox decisions", async () => {
+  it("returns 409 for repeated approval decisions and forbids old inbox decision routes", async () => {
     const fixture = await createStoreFixture();
     try {
       const approval = await seedStandaloneApprovalRequest(fixture.store, "external-approval");
@@ -852,13 +844,18 @@ describe("apiRouter", () => {
         expect(secondApprovalBody.error?.code).toBe("approval_conflict");
         expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
 
-        await readOkJson(await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" }));
-        const secondInbox = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
-        const secondInboxBody = await secondInbox.json() as { error?: { code?: string } };
-        expect(secondInbox.status).toBe(409);
-        expect(secondInboxBody.error?.code).toBe("inbox_decision_conflict");
+        const oldApprove = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
+        const oldReject = await fetch(`${baseUrl}/api/inbox/${item.id}/reject`, { method: "POST" });
+        const oldReply = await fetch(`${baseUrl}/api/inbox/${item.id}/reply`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "old inbox reply" })
+        });
+        expect(oldApprove.status).toBe(404);
+        expect(oldReject.status).toBe(404);
+        expect(oldReply.status).toBe(404);
         const inboxRequest = (await fixture.store.listApprovalRequests({ runId: item.id }))[0]!;
-        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(1);
+        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(0);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
