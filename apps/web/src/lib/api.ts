@@ -86,7 +86,8 @@
   BlueprintResponse,
   BlueprintRunResponse,
   ExecutiveCommand,
-  ExecuteExecutiveCommandResponse
+  ExecuteExecutiveCommandResponse,
+  RunRoomFeedResponse
 } from "@hiveward/shared";
 
 const importMetaEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
@@ -459,6 +460,11 @@ export const api = {
   async getBlueprintRun(runId: string): Promise<BlueprintRunResponse["run"]> {
     const response = await request<BlueprintRunResponse>(`/api/blueprint-runs/${runId}`);
     return response.run;
+  },
+
+  async getRunRoomFeed(runRoomId: string): Promise<RunRoomFeedResponse["feed"]> {
+    const response = await request<RunRoomFeedResponse>(`/api/run-rooms/${encodeURIComponent(runRoomId)}/feed`);
+    return response.feed;
   },
 
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {

@@ -10,7 +10,6 @@ import type {
 
 export type RunPollingView = "blueprint" | "runs";
 export type BlueprintActivityState = "idle" | "running" | "succeeded" | "failed";
-export type RunTranscriptEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 
 export const acknowledgedTerminalRunIdsStorageKey = "hiveward-acknowledged-terminal-run-ids";
 
@@ -54,22 +53,6 @@ export function resolveRunViewDisplayStatus(runView?: BlueprintRunView): Bluepri
   return isActiveRunView(runView) ? "running" : runView.run.status;
 }
 
-export function sortedRunTranscriptEventsForDisplay(runView: BlueprintRunView): RunTranscriptEvent[] {
-  const sessionOrder = buildTranscriptSessionOrder(runView);
-  return [...(runView.nodeSessionTranscriptEvents ?? [])].sort((left, right) => {
-    const sessionOrderDelta = (sessionOrder.get(left.sessionId) ?? Number.MAX_SAFE_INTEGER) -
-      (sessionOrder.get(right.sessionId) ?? Number.MAX_SAFE_INTEGER);
-    if (sessionOrderDelta !== 0) return sessionOrderDelta;
-    const sequenceOrder = toSortableSequence(left.sequence) - toSortableSequence(right.sequence);
-    if (sequenceOrder !== 0) return sequenceOrder;
-    return toSortableTimestamp(left.createdAt) - toSortableTimestamp(right.createdAt);
-  });
-}
-
-export function hasRunTranscriptEvents(runView: BlueprintRunView): boolean {
-  return sortedRunTranscriptEventsForDisplay(runView).length > 0;
-}
-
 function hasActiveNodeRun(runView: BlueprintRunView): boolean {
   return runView.nodeRuns.some((nodeRun) => isActiveNodeRunStatus(nodeRun.status));
 }
@@ -81,74 +64,6 @@ function isActiveNodeRunStatus(status?: BlueprintNodeRunStatus): boolean {
 function toSortableTimestamp(value: string): number {
   const timestamp = new Date(value).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
-}
-
-function toSortableSequence(value: number | undefined): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
-}
-
-function buildTranscriptSessionOrder(runView: BlueprintRunView): Map<string, number> {
-  const commands = [...(runView.runCommands ?? [])].sort((left, right) =>
-    compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id)
-  );
-  const commandOrderById = new Map(commands.map((command, index) => [command.id, index]));
-  const steps = [...(runView.runCommandSteps ?? [])].sort((left, right) => {
-    const commandOrder = (commandOrderById.get(left.commandId) ?? Number.MAX_SAFE_INTEGER) -
-      (commandOrderById.get(right.commandId) ?? Number.MAX_SAFE_INTEGER);
-    if (commandOrder !== 0) return commandOrder;
-    const revisionOrder = left.revision - right.revision;
-    if (revisionOrder !== 0) return revisionOrder;
-    return compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id);
-  });
-  const stepOrderByNodeRunId = new Map<string, number>();
-  steps.forEach((step, index) => {
-    if (step.nodeRunId && !stepOrderByNodeRunId.has(step.nodeRunId)) {
-      stepOrderByNodeRunId.set(step.nodeRunId, index);
-    }
-  });
-
-  const firstEventBySessionId = new Map<string, RunTranscriptEvent>();
-  for (const event of runView.nodeSessionTranscriptEvents ?? []) {
-    const current = firstEventBySessionId.get(event.sessionId);
-    if (!current || compareTranscriptEvents(event, current) < 0) {
-      firstEventBySessionId.set(event.sessionId, event);
-    }
-  }
-
-  const sessionIds = new Set<string>();
-  for (const session of runView.nodeExecutionSessions ?? []) sessionIds.add(session.id);
-  for (const event of runView.nodeSessionTranscriptEvents ?? []) sessionIds.add(event.sessionId);
-
-  const sessionsById = new Map((runView.nodeExecutionSessions ?? []).map((session) => [session.id, session]));
-  const orderedSessionIds = [...sessionIds].sort((leftId, rightId) => {
-    const leftSession = sessionsById.get(leftId);
-    const rightSession = sessionsById.get(rightId);
-    const leftEvent = firstEventBySessionId.get(leftId);
-    const rightEvent = firstEventBySessionId.get(rightId);
-    const leftStepOrder = stepOrderByNodeRunId.get(leftSession?.nodeRunId ?? leftEvent?.nodeRunId ?? "") ?? Number.MAX_SAFE_INTEGER;
-    const rightStepOrder = stepOrderByNodeRunId.get(rightSession?.nodeRunId ?? rightEvent?.nodeRunId ?? "") ?? Number.MAX_SAFE_INTEGER;
-    if (leftStepOrder !== rightStepOrder) return leftStepOrder - rightStepOrder;
-    const timestampOrder = toSortableTimestamp(leftSession?.createdAt ?? leftEvent?.createdAt ?? "") -
-      toSortableTimestamp(rightSession?.createdAt ?? rightEvent?.createdAt ?? "");
-    if (timestampOrder !== 0) return timestampOrder;
-    return leftId.localeCompare(rightId);
-  });
-
-  return new Map(orderedSessionIds.map((sessionId, index) => [sessionId, index]));
-}
-
-function compareTranscriptEvents(left: RunTranscriptEvent, right: RunTranscriptEvent): number {
-  const sequenceOrder = toSortableSequence(left.sequence) - toSortableSequence(right.sequence);
-  if (sequenceOrder !== 0) return sequenceOrder;
-  const timestampOrder = toSortableTimestamp(left.createdAt) - toSortableTimestamp(right.createdAt);
-  if (timestampOrder !== 0) return timestampOrder;
-  return left.id.localeCompare(right.id);
-}
-
-function compareByTimestampThenId(leftDate: string, rightDate: string, leftId: string, rightId: string): number {
-  const timestampOrder = toSortableTimestamp(leftDate) - toSortableTimestamp(rightDate);
-  if (timestampOrder !== 0) return timestampOrder;
-  return leftId.localeCompare(rightId);
 }
 
 function hasFailedNodeRun(runView: BlueprintRunView): boolean {

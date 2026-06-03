@@ -559,7 +559,7 @@ describe("RunsPage", () => {
     expect(html).not.toContain("machine-only");
   });
 
-  it("renders transcript facts before any legacy timeline fallback", () => {
+  it("renders RunRoomFeed rows instead of residual transcript and timeline facts", () => {
     const runView = createRunPageRunView({
       runCommands: [{
         id: "command-1",
@@ -622,6 +622,39 @@ describe("RunsPage", () => {
           createdAt: "2026-05-28T00:01:30.000Z"
         }
       ],
+      runRoomFeed: {
+        runRoomId: "run-room-transcript",
+        rows: [
+          {
+            id: "feed-manager",
+            runRoomId: "run-room-transcript",
+            sourceType: "manager",
+            displayMode: "formal_message",
+            bodyMarkdown: "Manager is coordinating **step one**.",
+            createdAt: "2026-05-28T00:01:00.000Z"
+          },
+          {
+            id: "feed-worker",
+            runRoomId: "run-room-transcript",
+            sourceType: "worker",
+            displayMode: "execution_output",
+            bodyMarkdown: "Worker completed execution output.",
+            workerTaskId: "worker-task-1",
+            managerCommandId: "manager-command-1",
+            agentOutputEventId: "agent-output-1",
+            runtimeState: { phase: "tool", status: "running", label: "npm test" },
+            createdAt: "2026-05-28T00:02:00.000Z"
+          },
+          {
+            id: "feed-system",
+            runRoomId: "run-room-transcript",
+            sourceType: "system",
+            displayMode: "formal_message",
+            bodyMarkdown: "RunRoom opened.",
+            createdAt: "2026-05-28T00:03:00.000Z"
+          }
+        ]
+      },
       runTimeline: [{
         id: "timeline-legacy-summary",
         runId: "run-transcript",
@@ -636,23 +669,30 @@ describe("RunsPage", () => {
 
     const html = renderRunsPageForRun(runView);
 
-    expect(html).toContain("Execution ledger");
-    expect(html).toContain("Commands and steps");
-    expect(html).toContain("Regular run");
-    expect(html).toContain("Node execution");
-    expect(html).toContain("Session transcript");
-    expect(html).toContain("System note");
-    expect(html).toContain("Fallback adapter was unavailable");
-    expect(html).toContain("Assistant transcript answer");
-    const transcriptLedger = html.match(/<article class="run-session-card"[\s\S]*?<\/article>/)?.[0] ?? "";
-    expect(transcriptLedger.indexOf("Fallback adapter was unavailable")).toBeLessThan(transcriptLedger.indexOf("Assistant transcript answer"));
+    expect(html).toContain("RunRoom office feed");
+    expect(html).toContain("Manager is coordinating");
+    expect(html).toContain("Worker completed execution output.");
+    expect(html).toContain("RunRoom opened.");
+    expect(html).toContain("Runtime state: tool / running / npm test");
+    expect(html).toContain("Execution details");
     const issueCards = extractTraceIssueCards(html).join("");
     expect(issueCards).toContain("Research Agent / Node execution");
-    expect(issueCards).toContain("Assistant transcript answer");
+    expect(issueCards).not.toContain("Assistant transcript answer");
     expect(issueCards).not.toContain("Legacy run summary");
     expect(issueCards).not.toContain("Legacy timeline fallback body");
     expect(issueCards).not.toContain("Legacy read-only");
+    expect(html).not.toContain("Execution ledger");
+    expect(html).not.toContain("Session transcript");
+    expect(html).not.toContain("Fallback adapter was unavailable");
+    expect(html).not.toContain("Assistant transcript answer");
     expect(html).not.toContain("Legacy timeline fallback body");
+    expect(html).not.toContain("<textarea");
+    expect(html).not.toContain("Reply");
+    expect(html).not.toContain("Mention");
+    expect(html).not.toContain("Direct message");
+    expect(html).not.toContain("Send target");
+    expect(html).not.toContain("Approve");
+    expect(html).not.toContain("Reject");
   });
 
   it("derives preflight display mode from command step facts instead of node-run id prefixes", () => {
@@ -695,17 +735,6 @@ describe("RunsPage", () => {
         createdAt: "2026-05-28T00:00:01.000Z",
         updatedAt: "2026-05-28T00:00:02.000Z"
       }],
-      nodeSessionTranscriptEvents: [{
-        id: "event-context",
-        sessionId: "session-context",
-        sequence: 1,
-        runId: "run-preflight-mode",
-        nodeRunId: "preflight-research_resolution-round-1-manager",
-        role: "assistant",
-        kind: "assistant_message",
-        content: "Context snapshot transcript",
-        createdAt: "2026-05-28T00:00:02.000Z"
-      }],
       runTimeline: [{
         id: "timeline-legacy-research",
         runId: "run-preflight-mode",
@@ -723,12 +752,12 @@ describe("RunsPage", () => {
 
     expect(issueCards).toContain("Manager / Context snapshot");
     expect(issueCards).toContain("Review memory");
-    expect(issueCards).toContain("Context snapshot transcript");
+    expect(issueCards).not.toContain("legacy node output");
     expect(issueCards).not.toContain("Research resolution");
     expect(issueCards).not.toContain("Legacy research fallback");
   });
 
-  it("orders multi-session main trace rows by command and step order before session ids", () => {
+  it("orders multi-session trace rows by command and step order before session ids", () => {
     const runView = createRunPageRunView({
       nodeRuns: [
         {
@@ -818,44 +847,18 @@ describe("RunsPage", () => {
           createdAt: "2026-05-28T00:00:02.000Z",
           updatedAt: "2026-05-28T00:00:04.000Z"
         }
-      ],
-      nodeSessionTranscriptEvents: [
-        {
-          id: "event-second",
-          sessionId: "session-a-second",
-          sequence: 1,
-          runId: "run-multi-session",
-          nodeRunId: "node-run-second",
-          role: "assistant",
-          kind: "assistant_message",
-          content: "Second step transcript",
-          createdAt: "2026-05-28T00:00:04.000Z"
-        },
-        {
-          id: "event-first",
-          sessionId: "session-z-first",
-          sequence: 1,
-          runId: "run-multi-session",
-          nodeRunId: "node-run-first",
-          role: "assistant",
-          kind: "assistant_message",
-          content: "First step transcript",
-          createdAt: "2026-05-28T00:00:03.000Z"
-        }
       ]
     }, { id: "run-multi-session" });
 
     const html = renderRunsPageForRun(runView);
     const issueCards = extractTraceIssueCards(html).join("");
-    const sessionCards = html.match(/<article class="run-session-card"[\s\S]*?<\/article>/g)?.join("") ?? "";
 
-    expect(issueCards.indexOf("First step transcript")).toBeGreaterThanOrEqual(0);
-    expect(issueCards.indexOf("First step transcript")).toBeLessThan(issueCards.indexOf("Second step transcript"));
-    expect(sessionCards.indexOf("First step transcript")).toBeGreaterThanOrEqual(0);
-    expect(sessionCards.indexOf("First step transcript")).toBeLessThan(sessionCards.indexOf("Second step transcript"));
+    expect(issueCards.indexOf("agent-first / Node execution")).toBeGreaterThanOrEqual(0);
+    expect(issueCards.indexOf("agent-first / Node execution")).toBeLessThan(issueCards.indexOf("agent-second / Node execution"));
+    expect(html).not.toContain("run-session-card");
   });
 
-  it("does not use legacy timeline fallback when command and step facts exist without transcript", () => {
+  it("does not use legacy timeline fallback when command and step facts exist", () => {
     const runView = createRunPageRunView({
       runCommands: [{
         id: "command-without-transcript",
@@ -918,11 +921,12 @@ describe("RunsPage", () => {
     const html = renderRunsPageForRun(runView);
 
     expect(html).toContain("Execution facts missing");
-    expect(html).toContain("Historical run is missing canonical execution facts");
+    expect(html).toContain("保留为历史事实，不参与决策");
     expect(html).not.toContain("Legacy run summary");
     expect(html).not.toContain("Legacy read-only");
     expect(html).not.toContain("Legacy timeline fallback body");
     expect(html).not.toContain("Assistant transcript answer");
+    expect(html).not.toContain("Rendered output");
   });
 
   it("keeps the run page free of writable discussion and decision controls", () => {
@@ -930,10 +934,18 @@ describe("RunsPage", () => {
 
     expect(html).not.toContain("<textarea");
     expect(html).not.toContain("composer");
+    expect(html).not.toContain("Send");
+    expect(html).not.toContain("Pause");
+    expect(html).not.toContain("Continue");
+    expect(html).not.toContain("Stop");
     expect(html).not.toContain("Generate candidate");
     expect(html).not.toContain("Request changes");
     expect(html).not.toContain("Approve");
     expect(html).not.toContain("Candidate");
+    expect(html).not.toContain("Reply");
+    expect(html).not.toContain("Mention");
+    expect(html).not.toContain("Direct message");
+    expect(html).not.toContain("Send target");
   });
 
   it("displays command and step status without mutating run state", () => {
@@ -972,7 +984,10 @@ describe("RunsPage", () => {
     const html = renderRunsPageForRun(runView);
 
     expect(html).toContain("Running");
-    expect(html).toContain("Ledger version");
+    expect(html).toContain("RunRoom office feed");
+    expect(html).toContain("Research Agent / Node execution");
+    expect(html).not.toContain("Execution ledger");
+    expect(html).not.toContain("Ledger version");
     expect(JSON.stringify({
       runCommands: runView.runCommands,
       runCommandSteps: runView.runCommandSteps
@@ -1254,7 +1269,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("Execution facts missing");
-    expect(html).toContain("No command, step, execution session, or transcript facts are available");
+    expect(html).toContain("No command, step, or execution session facts are available");
     expect(html).not.toContain("D:/HiveWard/raw-only.html");
     expect(html).not.toContain('href="D:/HiveWard/raw-only.html"');
   });
@@ -1344,7 +1359,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
-    expect(html).toContain("\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts");
+    expect(html).toContain("\u6ca1\u6709 command\u3001step \u6216 execution session facts");
     expect(html).not.toContain("\ud83d\udccd \u4ea4\u4ed8\u4f4d\u7f6e");
     expect(html).not.toContain("\ud83d\udce6 \u4ea7\u7269");
     expect(html).not.toContain("本步骤没有产生新的交付物");
@@ -1477,7 +1492,8 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
-    expect(html).not.toContain("\u51b3\u7b56");
+    expect(html).toContain("保留为历史事实，不参与决策");
+    expect(html).not.toContain("\u51b3\u7b56摘要");
     expect(html).not.toContain("\u6458\u8981");
     expect(html).not.toContain("\u9a8c\u8bc1");
     expect(html).not.toContain("\u8def\u7531\u5230 Slot 3");
@@ -1680,7 +1696,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("Execution facts missing");
-    expect(html).toContain("No command, step, execution session, or transcript facts are available");
+    expect(html).toContain("No command, step, or execution session facts are available");
     expect(html).not.toMatch(/trace-actor-title.*<strong>QA Agent<\/strong>/s);
     expect(html).not.toContain("QA passed the delivery.");
     expect(html).not.toMatch(/trace-actor-title.*<strong>Slot 1 - QA<\/strong>/s);
@@ -2093,7 +2109,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
-    expect(html).toContain("\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts");
+    expect(html).toContain("\u6ca1\u6709 command\u3001step \u6216 execution session facts");
     expect(html).not.toContain("Round 1 started");
     expect(html).not.toContain("Top Manager");
     expect(html).not.toContain(messages["zh-CN"].empty.noRunHistory);

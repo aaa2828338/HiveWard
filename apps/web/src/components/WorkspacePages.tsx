@@ -58,20 +58,20 @@ import {
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
-  sortedRunTranscriptEventsForDisplay,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
+import { buildRunRoomFeedRowsForDisplay } from "../lib/run-room-state";
 import { resolveApiResourceUrl } from "../lib/api";
 import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { RunRoomFeedView } from "./RunRoomFeedView";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
 type RunCommandFact = NonNullable<BlueprintRunView["runCommands"]>[number];
 type RunCommandStepFact = NonNullable<BlueprintRunView["runCommandSteps"]>[number];
 type RunExecutionSession = NonNullable<BlueprintRunView["nodeExecutionSessions"]>[number];
-type RunTranscriptProjectionEvent = NonNullable<BlueprintRunView["nodeSessionTranscriptEvents"]>[number];
 type RunPreflightMode = "research_resolution" | "requirement_resolution" | "revise_plan" | "preflight_judgment" | "context_snapshot";
 type RunOutputTabKey = "current" | "artifacts" | "release";
 type TraceActorKind = "manager" | "agent" | "user" | "system";
@@ -226,7 +226,6 @@ type RunExecutionTraceRow = {
   command?: RunCommandFact;
   step?: RunCommandStepFact;
   session?: RunExecutionSession;
-  transcriptEvents: RunTranscriptProjectionEvent[];
   node?: BlueprintNode;
   mode?: RunCommandStepFact["mode"];
   actorLabel: string;
@@ -580,7 +579,6 @@ export function RunsPage({
     activeRun?.runCommands,
     activeRun?.runCommandSteps,
     activeRun?.nodeExecutionSessions,
-    activeRun?.nodeSessionTranscriptEvents,
     activeRun?.run.status,
     t,
     language,
@@ -588,14 +586,13 @@ export function RunsPage({
   ]);
 
   const defaultActiveIssue = issues.find((issue) => issue.issueStatus === "in_progress") ?? issues.find(
-    (issue) => issue.outputBody !== undefined || issue.nodeRun?.output !== undefined || issue.nodeRun?.error
+    (issue) => issue.outputBody !== undefined || issue.nodeRun?.error
   ) ?? issues[0];
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : defaultActiveIssue;
-  const activeIssueOutput =
-    activeIssue?.outputBody !== undefined
-      ? activeIssue.outputBody
-      : activeIssue?.nodeRun?.error;
-  const isActiveIssueError = activeIssue?.outputBody === undefined && Boolean(activeIssue?.nodeRun?.error);
+  const runRoomFeedRows = useMemo(
+    () => buildRunRoomFeedRowsForDisplay(activeRun, language),
+    [activeRun?.run.id, activeRun?.runRoomFeed, language]
+  );
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
   const reportLayerCopy = getRunReportLayerCopy(language);
@@ -620,7 +617,7 @@ export function RunsPage({
   useEffect(() => {
     if (!activeRun || activeIssueKey || issues.length === 0) return;
     const firstIssueWithDetail = issues.find(
-      (issue) => issue.outputBody !== undefined || issue.nodeRun?.output !== undefined || issue.nodeRun?.error
+      (issue) => issue.outputBody !== undefined || issue.nodeRun?.error
     );
     setActiveIssueKey((firstIssueWithDetail ?? issues[0])?.key);
   }, [activeIssueKey, activeRun?.run.id, issues]);
@@ -832,9 +829,7 @@ export function RunsPage({
           <div className="trace-column-header">
             <h3>{t.trace.modelOutput}</h3>
           </div>
-          <div className="content-card stack-card trace-output-column run-output-column">
-            {activeRun && <RunExecutionProjectionPanel runView={activeRun} language={language} />}
-
+          <div className="content-card stack-card trace-output-column run-output-column" style={{ gridTemplateRows: "auto minmax(0, 1fr)" }}>
             <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
               {outputTabs.map((tab) => (
                 <button
@@ -854,19 +849,10 @@ export function RunsPage({
 
             <div className="run-output-panel-stack">
               <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "current"}>
-                {activeIssue ? (
-                  activeIssueOutput !== undefined ? (
-                    <MarkdownRenderer
-                      value={activeIssueOutput}
-                      className={`trace-output-body ${isActiveIssueError ? "trace-output-body-error" : ""}`}
-                    />
-                  ) : (
-                    <div className="empty-state compact-empty-state">{t.empty.noNodeOutput}</div>
-                  )
-                ) : !blueprint ? (
+                {!blueprint ? (
                   <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
                 ) : activeRun ? (
-                  <div className="empty-state page-empty">{t.empty.selectNode}</div>
+                  <RunRoomFeedView rows={runRoomFeedRows} language={language} />
                 ) : (
                   <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
                 )}
@@ -953,224 +939,6 @@ function getRunReportLayerCopy(language: Language) {
   };
 }
 
-function RunExecutionProjectionPanel({
-  runView,
-  language
-}: {
-  runView: BlueprintRunView;
-  language: Language;
-}) {
-  const copy = getRunExecutionProjectionCopy(language);
-  const commands = sortRunCommands(runView.runCommands ?? []);
-  const stepsByCommandId = groupRunCommandSteps(runView.runCommandSteps ?? []);
-  const sessions = sortRunExecutionSessions(runView.nodeExecutionSessions ?? []);
-  const transcriptEvents = sortedRunTranscriptEventsForDisplay(runView);
-  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
-  const transcriptSessionIds = sessionIdsForTranscript(sessions, eventsBySessionId, transcriptEvents);
-  const hasTranscript = transcriptEvents.length > 0;
-  const hasExecutionFacts = commands.length > 0 || (runView.runCommandSteps ?? []).length > 0 || sessions.length > 0 || hasTranscript;
-
-  return (
-    <section className="run-execution-projection run-output-section" aria-label={copy.title}>
-      <div className="run-output-section-header">
-        <div>
-          <h4>{copy.title}</h4>
-          <p>{copy.hint}</p>
-        </div>
-        <span className="status-pill status-default">{copy.readOnly}</span>
-      </div>
-
-      <div className="run-execution-grid">
-        <section className="run-execution-block" aria-label={copy.commandsTitle}>
-          <div className="run-execution-block-header">
-            <strong>{copy.commandsTitle}</strong>
-            <span>{copy.count(commands.length)}</span>
-          </div>
-          {commands.length === 0 ? (
-            <div className="empty-state compact-empty-state">{copy.noCommands}</div>
-          ) : (
-            <div className="run-command-list">
-              {commands.map((command) => {
-                const steps = stepsByCommandId.get(command.id) ?? [];
-                return (
-                  <article className="run-command-card" key={command.id}>
-                    <div className="run-command-card-header">
-                      <div>
-                        <strong>{runCommandKindLabel(command.kind, language)}</strong>
-                        <span>{command.commandKey}</span>
-                      </div>
-                      <span className={`status-pill ${runExecutionProjectionStatusClass(command.status)}`}>
-                        {runExecutionStatusLabel(command.status, language)}
-                      </span>
-                    </div>
-                    <dl className="run-execution-meta">
-                      <div>
-                        <dt>{copy.currentStep}</dt>
-                        <dd>{command.currentStep ? runCommandStepModeLabel(command.currentStep, language) : copy.none}</dd>
-                      </div>
-                      <div>
-                        <dt>{copy.ledgerVersion}</dt>
-                        <dd>{command.currentRevision}</dd>
-                      </div>
-                      <div>
-                        <dt>{copy.updated}</dt>
-                        <dd>{formatTraceTime(command.updatedAt, language)}</dd>
-                      </div>
-                    </dl>
-                    {command.error && <MarkdownRenderer value={command.error} className="run-execution-error" />}
-                    {steps.length === 0 ? (
-                      <div className="run-command-step-empty">{copy.noSteps}</div>
-                    ) : (
-                      <ol className="run-command-step-list">
-                        {steps.map((step) => (
-                          <li key={step.id}>
-                            <span className={`status-pill ${runExecutionProjectionStatusClass(step.status)}`}>
-                              {runExecutionStatusLabel(step.status, language)}
-                            </span>
-                            <div>
-                              <strong>{runCommandStepModeLabel(step.mode, language)}</strong>
-                              <span>{copy.stepMeta(step.revision, nodeLabelForStep(runView, step))}</span>
-                            </div>
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <section className="run-execution-block run-transcript-block" aria-label={copy.transcriptTitle}>
-          <div className="run-execution-block-header">
-            <strong>{copy.transcriptTitle}</strong>
-            <span>{hasTranscript ? copy.transcriptAvailable : copy.transcriptMissing}</span>
-          </div>
-          {hasTranscript ? (
-            <div className="run-session-list">
-              {transcriptSessionIds.map((sessionId) => {
-                const session = sessions.find((candidate) => candidate.id === sessionId);
-                const events = eventsBySessionId.get(sessionId) ?? [];
-                return (
-                  <article className="run-session-card" key={sessionId}>
-                    <div className="run-session-card-header">
-                      <div>
-                        <strong>{nodeLabelForRunSession(runView, session, events[0])}</strong>
-                        <span>{session?.nativeSessionId ?? sessionId}</span>
-                      </div>
-                      <span className={`status-pill ${runExecutionProjectionStatusClass(session?.status ?? "default")}`}>
-                        {session ? runExecutionStatusLabel(session.status, language) : copy.sessionMissing}
-                      </span>
-                    </div>
-                    <dl className="run-execution-meta">
-                      <div>
-                        <dt>{copy.harness}</dt>
-                        <dd>{session?.harnessId ?? copy.unknown}</dd>
-                      </div>
-                      <div>
-                        <dt>{copy.policy}</dt>
-                        <dd>{session ? runSessionPolicyLabel(session.policy, language) : copy.unknown}</dd>
-                      </div>
-                      <div>
-                        <dt>{copy.updated}</dt>
-                        <dd>{session ? formatTraceTime(session.updatedAt, language) : copy.unknown}</dd>
-                      </div>
-                    </dl>
-                    {session?.statusReason && (
-                      <MarkdownRenderer value={session.statusReason} className="run-execution-system-note" />
-                    )}
-                    <div className="run-transcript-event-list">
-                      {events.map((event) => (
-                        <RunTranscriptEventRow key={event.id} event={event} language={language} />
-                      ))}
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="run-execution-missing-facts">
-              <strong>{hasExecutionFacts ? copy.transcriptUnavailable : copy.executionFactsMissing}</strong>
-              <span>{hasExecutionFacts ? copy.noTranscriptHint : copy.noExecutionFactsHint}</span>
-              {!hasExecutionFacts && <div className="empty-state compact-empty-state">{copy.unsupportedHistoricalRun}</div>}
-            </div>
-          )}
-        </section>
-      </div>
-    </section>
-  );
-}
-
-function RunTranscriptEventRow({
-  event,
-  language
-}: {
-  event: RunTranscriptProjectionEvent;
-  language: Language;
-}) {
-  const copy = getRunExecutionProjectionCopy(language);
-  const content = event.content?.trim();
-
-  return (
-    <div className={`run-transcript-event run-transcript-event-${event.kind}`}>
-      <div className="run-transcript-event-meta">
-        <strong>{runTranscriptEventLabel(event.kind, event.role, language)}</strong>
-        <time dateTime={event.createdAt}>{formatTraceTime(event.createdAt, language)}</time>
-      </div>
-      {event.kind === "system_note" ? (
-        <div className="run-execution-system-note">
-          <strong>{copy.systemNote}</strong>
-          <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
-        </div>
-      ) : (
-        <MarkdownRenderer value={content || copy.noEventContent} className="run-transcript-event-body" />
-      )}
-    </div>
-  );
-}
-
-function getRunExecutionProjectionCopy(language: Language) {
-  const zh = language === "zh-CN";
-  return {
-    title: zh ? "\u6267\u884c\u8d26\u672c" : "Execution ledger",
-    hint: zh
-      ? "\u53ea\u8bfb\u5c55\u793a command\u3001step\u3001execution session \u548c transcript \u4e8b\u5b9e\u3002"
-      : "Read-only projection of command, step, execution session, and transcript facts.",
-    readOnly: zh ? "\u53ea\u8bfb" : "Read-only",
-    commandsTitle: zh ? "\u6307\u4ee4\u548c\u6b65\u9aa4" : "Commands and steps",
-    transcriptTitle: "Session transcript",
-    transcriptAvailable: zh ? "\u5df2\u8bb0\u5f55 transcript" : "Transcript recorded",
-    transcriptMissing: zh ? "\u7f3a\u5c11 transcript" : "Transcript missing",
-    noCommands: zh ? "\u6ca1\u6709 command \u4e8b\u5b9e\u3002" : "No command facts recorded.",
-    noSteps: zh ? "\u6ca1\u6709 step \u8bb0\u5f55\u3002" : "No step records.",
-    currentStep: zh ? "\u5f53\u524d\u6b65\u9aa4" : "Current step",
-    ledgerVersion: zh ? "\u8d26\u672c\u7248\u672c" : "Ledger version",
-    updated: zh ? "\u66f4\u65b0" : "Updated",
-    none: zh ? "\u65e0" : "None",
-    count: (value: number) => zh ? `${value} \u6761` : `${value}`,
-    stepMeta: (version: number, nodeLabel: string) =>
-      zh ? `v${version} / ${nodeLabel}` : `v${version} / ${nodeLabel}`,
-    harness: "Harness",
-    policy: "Policy",
-    unknown: zh ? "\u672a\u77e5" : "Unknown",
-    sessionMissing: zh ? "\u7f3a\u5c11 session" : "Session missing",
-    transcriptUnavailable: zh ? "Transcript \u4e0d\u53ef\u7528" : "Transcript unavailable",
-    executionFactsMissing: zh ? "\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931" : "Execution facts missing",
-    noTranscriptHint: zh
-      ? "\u6ca1\u6709 transcript facts\uff1b\u6b64\u9875\u4e0d\u4ece timeline \u5386\u53f2\u6216\u65e7 node output \u5408\u6210 transcript\u3002"
-      : "No transcript facts are available; this page does not synthesize transcript content from timeline history or old node output.",
-    noExecutionFactsHint: zh
-      ? "\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts\uff1b\u6b64 run \u4e0d\u80fd\u663e\u793a canonical execution trace\u3002"
-      : "No command, step, execution session, or transcript facts are available; this run cannot show a canonical execution trace.",
-    unsupportedHistoricalRun: zh
-      ? "\u5386\u53f2 run \u7f3a\u5c11 canonical execution facts\uff0c\u5df2\u660e\u786e\u6807\u8bb0\u4e3a\u4e0d\u652f\u6301\u6295\u5f71\u3002"
-      : "Historical run is missing canonical execution facts, so execution projection is unsupported.",
-    systemNote: zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note",
-    noEventContent: zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content."
-  };
-}
-
 function sortRunCommands(commands: RunCommandFact[]): RunCommandFact[] {
   return [...commands].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
 }
@@ -1183,58 +951,12 @@ function sortRunCommandSteps(steps: RunCommandStepFact[]): RunCommandStepFact[] 
   });
 }
 
-function sortRunExecutionSessions(sessions: RunExecutionSession[]): RunExecutionSession[] {
-  return [...sessions].sort((left, right) => compareByTimestampThenId(left.createdAt, right.createdAt, left.id, right.id));
-}
-
 function groupRunCommandSteps(steps: RunCommandStepFact[]): Map<string, RunCommandStepFact[]> {
   const grouped = new Map<string, RunCommandStepFact[]>();
   for (const step of sortRunCommandSteps(steps)) {
     grouped.set(step.commandId, [...(grouped.get(step.commandId) ?? []), step]);
   }
   return grouped;
-}
-
-function groupRunTranscriptEvents(events: RunTranscriptProjectionEvent[]): Map<string, RunTranscriptProjectionEvent[]> {
-  const grouped = new Map<string, RunTranscriptProjectionEvent[]>();
-  for (const event of events) {
-    grouped.set(event.sessionId, [...(grouped.get(event.sessionId) ?? []), event]);
-  }
-  return grouped;
-}
-
-function sessionIdsForTranscript(
-  sessions: RunExecutionSession[],
-  eventsBySessionId: Map<string, RunTranscriptProjectionEvent[]>,
-  orderedEvents: RunTranscriptProjectionEvent[]
-): string[] {
-  const emitted = new Set<string>();
-  const orderedEventSessionIds: string[] = [];
-  for (const event of orderedEvents) {
-    if (emitted.has(event.sessionId)) continue;
-    emitted.add(event.sessionId);
-    orderedEventSessionIds.push(event.sessionId);
-  }
-  const sessionOnlyIds = sessions.map((session) => session.id).filter((sessionId) => !emitted.has(sessionId));
-  for (const sessionId of sessionOnlyIds) emitted.add(sessionId);
-  const eventOnlyIds = [...eventsBySessionId.keys()].filter((sessionId) => !emitted.has(sessionId)).sort();
-  return [...orderedEventSessionIds, ...sessionOnlyIds, ...eventOnlyIds];
-}
-
-function nodeLabelForStep(runView: BlueprintRunView, step: RunCommandStepFact): string {
-  return runView.nodeRuns.find((nodeRun) => nodeRun.id === step.nodeRunId)?.nodeLabel ??
-    runView.nodeRuns.find((nodeRun) => nodeRun.nodeId === step.nodeId)?.nodeLabel ??
-    step.nodeId;
-}
-
-function nodeLabelForRunSession(
-  runView: BlueprintRunView,
-  session: RunExecutionSession | undefined,
-  firstEvent: RunTranscriptProjectionEvent | undefined
-): string {
-  const nodeRunId = session?.nodeRunId ?? firstEvent?.nodeRunId;
-  const nodeRun = nodeRunId ? runView.nodeRuns.find((candidate) => candidate.id === nodeRunId) : undefined;
-  return nodeRun?.nodeLabel ?? session?.nodeId ?? firstEvent?.nodeRunId ?? "Session";
 }
 
 function runCommandKindLabel(kind: RunCommandFact["kind"], language: Language): string {
@@ -1256,29 +978,6 @@ function runCommandStepModeLabel(mode: RunCommandStepFact["mode"], language: Lan
   return zh ? "\u8282\u70b9\u6267\u884c" : "Node execution";
 }
 
-function runSessionPolicyLabel(policy: RunExecutionSession["policy"], language: Language): string {
-  const zh = language === "zh-CN";
-  if (policy === "refresh_per_run") return zh ? "\u6bcf\u6b21 run \u5237\u65b0" : "Refresh per run";
-  if (policy === "refresh_per_round") return zh ? "\u6bcf\u8f6e\u5237\u65b0" : "Refresh per round";
-  return zh ? "\u8de8\u8f6e\u4fdd\u7559" : "Preserve across rounds";
-}
-
-function runTranscriptEventLabel(
-  kind: RunTranscriptProjectionEvent["kind"],
-  role: RunTranscriptProjectionEvent["role"],
-  language: Language
-): string {
-  const zh = language === "zh-CN";
-  if (kind === "system_note") return zh ? "\u7cfb\u7edf\u8bf4\u660e" : "System note";
-  if (kind === "runtime_started") return zh ? "\u8fd0\u884c\u65f6\u542f\u52a8" : "Runtime started";
-  if (kind === "runtime_state") return zh ? "\u8fd0\u884c\u65f6\u72b6\u6001" : "Runtime state";
-  if (kind === "runtime_done") return zh ? "\u8fd0\u884c\u65f6\u5b8c\u6210" : "Runtime done";
-  if (kind === "assistant_delta") return zh ? "\u52a9\u624b\u589e\u91cf" : "Assistant delta";
-  if (kind === "assistant_message") return zh ? "\u52a9\u624b\u6700\u7ec8\u6d88\u606f" : "Assistant final message";
-  if (kind === "user_message") return zh ? "\u7528\u6237\u6d88\u606f" : "User message";
-  return role;
-}
-
 function runExecutionStatusLabel(status: string, language: Language): string {
   const zh = language === "zh-CN";
   if (status === "queued") return zh ? "\u6392\u961f\u4e2d" : "Queued";
@@ -1290,15 +989,6 @@ function runExecutionStatusLabel(status: string, language: Language): string {
   if (status === "unavailable") return zh ? "\u4e0d\u53ef\u7528" : "Unavailable";
   if (status === "fallback") return zh ? "\u964d\u7ea7" : "Fallback";
   return status;
-}
-
-function runExecutionProjectionStatusClass(status: string): string {
-  if (status === "queued" || status === "running" || status === "waiting_approval" || status === "active" || status === "paused") {
-    return "status-running";
-  }
-  if (status === "succeeded" || status === "completed") return "status-succeeded";
-  if (status === "failed" || status === "cancelled" || status === "unavailable") return "status-failed";
-  return "status-default";
 }
 
 function compareByTimestampThenId(leftDate: string, rightDate: string, leftId: string, rightId: string): number {
@@ -4373,8 +4063,8 @@ function createMissingExecutionFactsTraceIssue(
     `## ${title}`,
     "",
     zh
-      ? "\u6ca1\u6709 command\u3001step\u3001execution session \u6216 transcript facts\uff0c\u56e0\u6b64\u6b64 run \u4e0d\u80fd\u751f\u6210 canonical execution trace\u3002"
-      : "No command, step, execution session, or transcript facts are available, so this run cannot produce a canonical execution trace.",
+      ? "\u6ca1\u6709 command\u3001step \u6216 execution session facts\uff0c\u56e0\u6b64\u6b64 run \u4e0d\u80fd\u751f\u6210 canonical execution trace\u3002"
+      : "No command, step, or execution session facts are available, so this run cannot produce a canonical execution trace.",
     "",
     zh
       ? "\u8fd0\u884c\u9875\u4e0d\u4f1a\u4ece timeline \u5386\u53f2\u3001node id \u524d\u7f00\u6216\u65e7 node output \u518d\u6784\u9020\u7b2c\u4e8c\u5957 trace\u3002"
@@ -4398,20 +4088,6 @@ function createMissingExecutionFactsTraceIssue(
   };
 }
 
-function groupByNodeRunId<T extends { nodeRunId?: string }>(items: T[]): Map<string, T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const item of items) {
-    if (!item.nodeRunId) continue;
-    const existing = grouped.get(item.nodeRunId);
-    if (existing) {
-      existing.push(item);
-    } else {
-      grouped.set(item.nodeRunId, [item]);
-    }
-  }
-  return grouped;
-}
-
 function buildRunExecutionTraceRows(
   activeRun: BlueprintRunView,
   nodesById: Map<string, BlueprintNode>
@@ -4421,10 +4097,7 @@ function buildRunExecutionTraceRows(
   const stepsByCommandId = groupRunCommandSteps(activeRun.runCommandSteps ?? []);
   const allSteps = sortRunCommandStepsForTrace(activeRun);
   const sessions = sortRunSessionsForTrace(activeRun);
-  const transcriptEvents = sortedRunTranscriptEventsForDisplay(activeRun);
-  const eventsBySessionId = groupRunTranscriptEvents(transcriptEvents);
   const sessionsByNodeRunId = groupSessionsByNodeRunId(sessions);
-  const eventsByNodeRunId = groupByNodeRunId(transcriptEvents);
   const consumedStepIds = new Set<string>();
   const consumedSessionIds = new Set<string>();
   let order = 0;
@@ -4440,17 +4113,14 @@ function buildRunExecutionTraceRows(
       consumedStepIds.add(step.id);
       const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
       if (stepSessions.length === 0) {
-        const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
         rows.push(buildStepTraceRow({
           activeRun,
           nodesById,
           command,
           step,
           session: undefined,
-          transcriptEvents: stepEvents,
           order: order++
         }));
-        markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
         continue;
       }
 
@@ -4462,7 +4132,6 @@ function buildRunExecutionTraceRows(
           command,
           step,
           session,
-          transcriptEvents: eventsBySessionId.get(session.id) ?? [],
           order: order++
         }));
       }
@@ -4474,17 +4143,14 @@ function buildRunExecutionTraceRows(
     if (consumedStepIds.has(step.id) || commandIds.has(step.commandId)) continue;
     const stepSessions = sessionsForStep(step, sessionsByNodeRunId).filter((session) => !consumedSessionIds.has(session.id));
     if (stepSessions.length === 0) {
-      const stepEvents = transcriptEventsForStepWithoutSession(step, eventsByNodeRunId, consumedSessionIds);
       rows.push(buildStepTraceRow({
         activeRun,
         nodesById,
         command: undefined,
         step,
         session: undefined,
-        transcriptEvents: stepEvents,
         order: order++
       }));
-      markConsumedTranscriptSessionIds(stepEvents, consumedSessionIds);
       continue;
     }
     for (const session of stepSessions) {
@@ -4495,7 +4161,6 @@ function buildRunExecutionTraceRows(
         command: undefined,
         step,
         session,
-        transcriptEvents: eventsBySessionId.get(session.id) ?? [],
         order: order++
       }));
     }
@@ -4507,21 +4172,9 @@ function buildRunExecutionTraceRows(
       activeRun,
       nodesById,
       session,
-      transcriptEvents: eventsBySessionId.get(session.id) ?? [],
       order: order++
     }));
     consumedSessionIds.add(session.id);
-  }
-
-  for (const [sessionId, events] of eventsBySessionId) {
-    if (consumedSessionIds.has(sessionId)) continue;
-    rows.push(buildTranscriptOnlyTraceRow({
-      activeRun,
-      nodesById,
-      sessionId,
-      transcriptEvents: events,
-      order: order++
-    }));
   }
 
   return rows;
@@ -4535,7 +4188,6 @@ function buildCommandOnlyTraceRow(
   return {
     key: `execution-command:${command.id}`,
     command,
-    transcriptEvents: [],
     actorLabel: runCommandKindLabel(command.kind, "en"),
     actorKind: "system",
     status: command.status,
@@ -4553,7 +4205,6 @@ function buildStepTraceRow({
   command,
   step,
   session,
-  transcriptEvents,
   order
 }: {
   activeRun: BlueprintRunView;
@@ -4561,18 +4212,16 @@ function buildStepTraceRow({
   command?: RunCommandFact;
   step: RunCommandStepFact;
   session?: RunExecutionSession;
-  transcriptEvents: RunTranscriptProjectionEvent[];
   order: number;
 }): RunExecutionTraceRow {
   const node = nodesById.get(step.nodeId);
-  const runtimeRefs = collectExecutionRuntimeRefs(step.runtimeRef, session?.runtimeRef, transcriptEvents);
+  const runtimeRefs = collectExecutionRuntimeRefs(step.runtimeRef, session?.runtimeRef);
   const actorLabel = node?.config.label ?? step.nodeId;
   return {
     key: `execution-step:${step.id}${session ? `:${session.id}` : ""}`,
     command,
     step,
     session,
-    transcriptEvents,
     node,
     mode: step.mode,
     actorLabel,
@@ -4580,7 +4229,7 @@ function buildStepTraceRow({
     status: step.status,
     startedAt: step.startedAt ?? session?.createdAt,
     endedAt: step.endedAt,
-    createdAt: step.startedAt ?? session?.createdAt ?? transcriptEvents[0]?.createdAt ?? step.createdAt ?? activeRun.run.startedAt,
+    createdAt: step.startedAt ?? session?.createdAt ?? step.createdAt ?? activeRun.run.startedAt,
     order,
     runtimeRefs
   };
@@ -4590,57 +4239,26 @@ function buildSessionOnlyTraceRow({
   activeRun,
   nodesById,
   session,
-  transcriptEvents,
   order
 }: {
   activeRun: BlueprintRunView;
   nodesById: Map<string, BlueprintNode>;
   session: RunExecutionSession;
-  transcriptEvents: RunTranscriptProjectionEvent[];
   order: number;
 }): RunExecutionTraceRow {
   const node = nodesById.get(session.nodeId);
   return {
     key: `execution-session:${session.id}`,
     session,
-    transcriptEvents,
     node,
     actorLabel: node?.config.label ?? session.nodeId,
     actorKind: traceActorKindForBlueprintNode(node),
     status: session.status,
     startedAt: session.createdAt,
     endedAt: session.status === "completed" || session.status === "failed" ? session.updatedAt : undefined,
-    createdAt: session.createdAt ?? transcriptEvents[0]?.createdAt ?? activeRun.run.startedAt,
+    createdAt: session.createdAt ?? activeRun.run.startedAt,
     order,
-    runtimeRefs: collectExecutionRuntimeRefs(session.runtimeRef, undefined, transcriptEvents)
-  };
-}
-
-function buildTranscriptOnlyTraceRow({
-  activeRun,
-  nodesById,
-  sessionId,
-  transcriptEvents,
-  order
-}: {
-  activeRun: BlueprintRunView;
-  nodesById: Map<string, BlueprintNode>;
-  sessionId: string;
-  transcriptEvents: RunTranscriptProjectionEvent[];
-  order: number;
-}): RunExecutionTraceRow {
-  const firstEvent = transcriptEvents[0];
-  return {
-    key: `execution-transcript:${sessionId}`,
-    transcriptEvents,
-    actorLabel: firstEvent?.nodeRunId ?? sessionId,
-    actorKind: "agent",
-    status: activeRun.run.status,
-    startedAt: firstEvent?.createdAt,
-    endedAt: transcriptEvents.at(-1)?.createdAt,
-    createdAt: firstEvent?.createdAt ?? activeRun.run.startedAt,
-    order,
-    runtimeRefs: collectExecutionRuntimeRefs(undefined, undefined, transcriptEvents)
+    runtimeRefs: collectExecutionRuntimeRefs(session.runtimeRef, undefined)
   };
 }
 
@@ -4663,16 +4281,11 @@ function sortRunSessionsForTrace(activeRun: BlueprintRunView): RunExecutionSessi
       stepOrderByNodeRunId.set(step.nodeRunId, index);
     }
   });
-  const firstEventBySessionId = new Map<string, RunTranscriptProjectionEvent>();
-  for (const event of sortedRunTranscriptEventsForDisplay(activeRun)) {
-    if (!firstEventBySessionId.has(event.sessionId)) firstEventBySessionId.set(event.sessionId, event);
-  }
   return [...(activeRun.nodeExecutionSessions ?? [])].sort((left, right) => {
     const stepOrder = (stepOrderByNodeRunId.get(left.nodeRunId) ?? Number.MAX_SAFE_INTEGER) -
       (stepOrderByNodeRunId.get(right.nodeRunId) ?? Number.MAX_SAFE_INTEGER);
     if (stepOrder !== 0) return stepOrder;
-    const timestampOrder = toSafeTimestamp(left.createdAt ?? firstEventBySessionId.get(left.id)?.createdAt ?? "") -
-      toSafeTimestamp(right.createdAt ?? firstEventBySessionId.get(right.id)?.createdAt ?? "");
+    const timestampOrder = toSafeTimestamp(left.createdAt ?? "") - toSafeTimestamp(right.createdAt ?? "");
     if (timestampOrder !== 0) return timestampOrder;
     return left.id.localeCompare(right.id);
   });
@@ -4693,29 +4306,11 @@ function sessionsForStep(
   return step.nodeRunId ? sessionsByNodeRunId.get(step.nodeRunId) ?? [] : [];
 }
 
-function transcriptEventsForStepWithoutSession(
-  step: RunCommandStepFact,
-  eventsByNodeRunId: Map<string, RunTranscriptProjectionEvent[]>,
-  consumedSessionIds: Set<string>
-): RunTranscriptProjectionEvent[] {
-  return step.nodeRunId
-    ? (eventsByNodeRunId.get(step.nodeRunId) ?? []).filter((event) => !consumedSessionIds.has(event.sessionId))
-    : [];
-}
-
-function markConsumedTranscriptSessionIds(
-  events: RunTranscriptProjectionEvent[],
-  consumedSessionIds: Set<string>
-): void {
-  for (const event of events) consumedSessionIds.add(event.sessionId);
-}
-
 function collectExecutionRuntimeRefs(
   stepRuntimeRef: RunCommandStepFact["runtimeRef"] | undefined,
-  sessionRuntimeRef: RunExecutionSession["runtimeRef"] | undefined,
-  transcriptEvents: RunTranscriptProjectionEvent[]
+  sessionRuntimeRef: RunExecutionSession["runtimeRef"] | undefined
 ): Array<NonNullable<RunCommandStepFact["runtimeRef"]>> {
-  const refs = [stepRuntimeRef, sessionRuntimeRef, ...transcriptEvents.map((event) => event.runtimeRef)]
+  const refs = [stepRuntimeRef, sessionRuntimeRef]
     .filter((ref): ref is NonNullable<RunCommandStepFact["runtimeRef"]> => Boolean(ref));
   const seen = new Set<string>();
   return refs.filter((ref) => {
@@ -4738,8 +4333,7 @@ function createExecutionTraceIssue(
 ): TraceIssue {
   const label = executionTraceRowLabel(row, language);
   const body = buildExecutionTraceIssueBody(row, language);
-  const previewSource = row.transcriptEvents.at(-1)?.content ??
-    row.step?.error ??
+  const previewSource = row.step?.error ??
     row.command?.error ??
     executionTraceRowSummary(row, language);
   return {
@@ -4781,14 +4375,6 @@ function buildExecutionTraceIssueBody(row: RunExecutionTraceRow, language: Langu
     row.session ? `${zh ? "Harness" : "Harness"}: ${row.session.harnessId}` : undefined
   ].filter((line): line is string => Boolean(line));
   const runtimeRefs = row.runtimeRefs.map(formatRuntimeObjectRefForTrace);
-  const transcriptLines = row.transcriptEvents.flatMap((event) => {
-    const content = event.content?.trim();
-    return [
-      `### ${runTranscriptEventLabel(event.kind, event.role, language)}`,
-      `${zh ? "\u65f6\u95f4" : "Time"}: ${formatTraceTime(event.createdAt, language)}`,
-      content || (zh ? "\u6ca1\u6709\u5185\u5bb9\u3002" : "No content.")
-    ];
-  });
   return [
     `## ${zh ? "\u6267\u884c\u4e8b\u5b9e" : "Execution facts"}`,
     "",
@@ -4798,11 +4384,7 @@ function buildExecutionTraceIssueBody(row: RunExecutionTraceRow, language: Langu
     runtimeRefs.length > 0 ? "" : undefined,
     runtimeRefs.length > 0 ? `## ${zh ? "\u8fd0\u884c\u65f6\u5f15\u7528" : "Runtime refs"}` : undefined,
     runtimeRefs.length > 0 ? "" : undefined,
-    runtimeRefs.join("\n"),
-    transcriptLines.length > 0 ? "" : undefined,
-    transcriptLines.length > 0 ? `## ${zh ? "Transcript" : "Transcript"}` : undefined,
-    transcriptLines.length > 0 ? "" : undefined,
-    transcriptLines.join("\n\n")
+    runtimeRefs.join("\n")
   ].filter((part): part is string => part !== undefined && part.trim().length > 0).join("\n");
 }
 
@@ -4812,8 +4394,8 @@ function executionTraceRowSummary(row: RunExecutionTraceRow, language: Language)
   const actor = cleanTraceActorLabel(row.actorLabel);
   if (mode) {
     return zh
-      ? `${actor} \u7684 ${mode} \u6b65\u9aa4\u6765\u81ea command/step/session/transcript \u4e8b\u5b9e\u3002`
-      : `${actor} ${mode} is projected from command, step, session, and transcript facts.`;
+      ? `${actor} \u7684 ${mode} \u6b65\u9aa4\u6765\u81ea command/step/session \u4e8b\u5b9e\u3002`
+      : `${actor} ${mode} is projected from command, step, and session facts.`;
   }
   return zh
     ? `${actor} \u6765\u81ea execution fact \u6295\u5f71\u3002`

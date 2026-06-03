@@ -17,7 +17,7 @@ import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, Blu
 import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
-import type { AgentOutputEvent } from "./agentOutput";
+import type { AgentOutputEvent, RunRoomFeed } from "./agentOutput";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -66,6 +66,10 @@ export interface LatestBlueprintRunResponse {
 
 export interface BlueprintRunResponse {
   run: BlueprintRunView;
+}
+
+export interface RunRoomFeedResponse {
+  feed: RunRoomFeed;
 }
 
 export interface ListBlueprintRunSummariesResponse {

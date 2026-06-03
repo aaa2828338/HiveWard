@@ -248,6 +248,16 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const inboxSubmissionService = new InboxSubmissionService(store, approvalService, managerMailProjector);
   const agentOutputService = new AgentOutputService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
+  const attachRunRoomFeed = async (view: BlueprintRunView | undefined): Promise<BlueprintRunView | undefined> => {
+    if (!view) return undefined;
+    const runRooms = await store.listRunRooms({ blueprintId: view.run.blueprintId });
+    const runRoom = runRooms.find((candidate) => candidate.runId === view.run.id);
+    if (!runRoom) return view;
+    return {
+      ...view,
+      runRoomFeed: await agentOutputService.projectRunRoomFeed(runRoom.id)
+    };
+  };
 
   router.get("/healthz", (_req, res) => {
     res.json({ ok: true });
@@ -659,7 +669,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         body.startedBy ?? "local-user"
       );
       const view = await store.getRunView(run.id);
-      res.status(201).json({ run: view });
+      res.status(201).json({ run: await attachRunRoomFeed(view) });
     } catch (error) {
       next(error);
     }
@@ -674,7 +684,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         return;
       }
       const view = await store.getLatestRunViewForBlueprint(blueprintId);
-      res.json({ run: view ?? null });
+      res.json({ run: (await attachRunRoomFeed(view ?? undefined)) ?? null });
     } catch (error) {
       next(error);
     }
@@ -687,7 +697,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      res.json({ run: view });
+      res.json({ run: await attachRunRoomFeed(view) });
     } catch (error) {
       next(error);
     }
@@ -714,7 +724,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      res.json({ run: view });
+      res.json({ run: await attachRunRoomFeed(view) });
     } catch (error) {
       next(error);
     }
