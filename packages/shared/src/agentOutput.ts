@@ -1,10 +1,9 @@
-export const agentOutputOwnerTypes = [
-  "executive_chat",
+﻿export const agentOutputOwnerTypes = [
+  "chat_session",
   "run_room",
-  "manager_command",
+  "manager_thread",
   "worker_task",
-  "human_action_request",
-  "blueprint_governance"
+  "human_action_request"
 ] as const;
 export type AgentOutputOwnerType = typeof agentOutputOwnerTypes[number];
 
@@ -48,6 +47,9 @@ export interface RunRoomFeedRowActions {
   canMention?: boolean;
   canDirectMessage?: boolean;
   canSelectSendTarget?: boolean;
+  canApprove?: boolean;
+  canReject?: boolean;
+  canOpenInbox?: boolean;
 }
 
 export interface RunRoomFeedRow {
@@ -60,6 +62,7 @@ export interface RunRoomFeedRow {
   workerTaskId?: string;
   managerCommandId?: string;
   humanActionRequestId?: string;
+  runtimeState?: Record<string, unknown>;
   actions?: RunRoomFeedRowActions;
   createdAt: string;
 }
@@ -81,6 +84,15 @@ export function assertAgentOutputEvent(event: AgentOutputEvent): void {
   assertString(event.createdAt, "AgentOutputEvent.createdAt");
 }
 
+export function isAgentOutputEvent(value: unknown): value is AgentOutputEvent {
+  try {
+    assertAgentOutputEvent(value as AgentOutputEvent);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function assertRunRoomFeedRow(row: RunRoomFeedRow): void {
   assertString(row.id, "RunRoomFeedRow.id");
   assertString(row.runRoomId, "RunRoomFeedRow.runRoomId");
@@ -88,16 +100,22 @@ export function assertRunRoomFeedRow(row: RunRoomFeedRow): void {
   assertAllowed(row.displayMode, runRoomFeedRowDisplayModes, "RunRoomFeedRow.displayMode");
   assertString(row.bodyMarkdown, "RunRoomFeedRow.bodyMarkdown");
   assertString(row.createdAt, "RunRoomFeedRow.createdAt");
+  if (row.sourceType === "worker" && row.displayMode !== "execution_output") {
+    throw new Error("RunRoomFeedRow.sourceType worker must use execution_output displayMode.");
+  }
   if (
     row.displayMode === "execution_output" &&
     (
       row.actions?.canReply === true ||
       row.actions?.canMention === true ||
       row.actions?.canDirectMessage === true ||
-      row.actions?.canSelectSendTarget === true
+      row.actions?.canSelectSendTarget === true ||
+      row.actions?.canApprove === true ||
+      row.actions?.canReject === true ||
+      row.actions?.canOpenInbox === true
     )
   ) {
-    throw new Error("RunRoomFeedRow.displayMode execution_output cannot expose reply, mention, direct message, or send-target actions.");
+    throw new Error("RunRoomFeedRow.displayMode execution_output cannot expose reply, mention, direct message, send-target, approval, or inbox actions.");
   }
 }
 

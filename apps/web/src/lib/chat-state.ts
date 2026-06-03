@@ -1,5 +1,3 @@
-import type { ChatStreamEvent } from "@hiveward/shared";
-
 type ChatStatus = "sent" | "streaming" | "failed";
 
 interface ChatStateMessage {
@@ -12,6 +10,10 @@ interface ChatStateMessage {
 export interface ChatRuntimeStatusView {
   phase: "thinking" | "tool" | "command";
   label: string;
+}
+
+interface AgentOutputRuntimeState {
+  runtimeState?: Record<string, unknown>;
 }
 
 export function shouldRefreshStreamingChatMessages({
@@ -31,12 +33,15 @@ export function shouldRefreshStreamingChatMessages({
   return serverMessages.length >= localMessages.length;
 }
 
-export function toChatRuntimeStatus(
-  event: Extract<ChatStreamEvent, { type: "runtime_state" }>
-): ChatRuntimeStatusView {
+export function toChatRuntimeStatus(event: AgentOutputRuntimeState): ChatRuntimeStatusView | undefined {
+  const phase = event.runtimeState?.phase;
+  const label = event.runtimeState?.label;
+  if ((phase !== "thinking" && phase !== "tool" && phase !== "command") || typeof label !== "string") {
+    return undefined;
+  }
   return {
-    phase: event.phase,
-    label: event.label
+    phase,
+    label
   };
 }
 

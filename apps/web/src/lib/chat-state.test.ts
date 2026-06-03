@@ -55,10 +55,11 @@ describe("chat state reconciliation", () => {
   it("maps command runtime events to a simple command status", () => {
     expect(
       toChatRuntimeStatus({
-        type: "runtime_state",
-        source: "codex",
-        phase: "command",
-        label: "command_execution"
+        runtimeState: {
+          source: "codex",
+          phase: "command",
+          label: "command_execution"
+        }
       })
     ).toEqual({
       phase: "command",
@@ -69,10 +70,11 @@ describe("chat state reconciliation", () => {
   it("maps tool runtime events to a simple tool status", () => {
     expect(
       toChatRuntimeStatus({
-        type: "runtime_state",
-        source: "codex",
-        phase: "tool",
-        label: "mcp_tool_call"
+        runtimeState: {
+          source: "codex",
+          phase: "tool",
+          label: "mcp_tool_call"
+        }
       })
     ).toEqual({
       phase: "tool",
@@ -83,10 +85,11 @@ describe("chat state reconciliation", () => {
   it("maps reasoning runtime events to a simple thinking status", () => {
     expect(
       toChatRuntimeStatus({
-        type: "runtime_state",
-        source: "codex",
-        phase: "thinking",
-        label: "reasoning"
+        runtimeState: {
+          source: "codex",
+          phase: "thinking",
+          label: "reasoning"
+        }
       })
     ).toEqual({
       phase: "thinking",

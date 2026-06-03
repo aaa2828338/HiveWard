@@ -1394,16 +1394,6 @@ export function App() {
     }
   }, []);
 
-  const handleChatInboxItemCreated = useCallback(
-    (item: InboxItem) => {
-      setInboxItems((current) => [item, ...current.filter((candidate) => candidate.id !== item.id)]);
-      void hydrateWorkspace({ blueprintId: item.blueprintId ?? blueprint?.id }).catch((refreshError) => {
-        setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
-      });
-    },
-    [blueprint?.id, hydrateWorkspace]
-  );
-
   const addWidget = useCallback(
     (type: DashboardWidgetType) => {
       mutateDashboard((current) => ({
@@ -1609,7 +1599,6 @@ export function App() {
           roleDirectory={roleDirectory}
           language={language}
           harnessPermissionModes={chatPermissionModes}
-          onInboxItemCreated={handleChatInboxItemCreated}
           onInboxItemsRefreshNeeded={refreshInboxAndApprovals}
         />
       );

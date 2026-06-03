@@ -9,7 +9,7 @@ import type {
   RuntimeExecutionStatus,
   RuntimeOverview,
   ChatHistoryMessage,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   ChatThinkingEffort,
   SendChannelInput,
   SendChannelResult,
@@ -145,7 +145,7 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
     });
   }
 
-  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     const session = await this.getSession();
     const requestedRunId = createGatewayId(input.idempotencyKey);
     const knownRunIds = new Set([requestedRunId]);
@@ -932,7 +932,7 @@ function mapGatewayChatEvent(
   fallbackSessionKey: string,
   currentOutput: string,
   currentUsage: RuntimeUsageFact | undefined,
-): ChatStreamEvent | undefined {
+): RuntimeChatEvent | undefined {
   if (!isRecord(payload)) return undefined;
   const eventRunId = readString(payload.runId) ?? readString(payload.taskId) ?? readString(payload.id);
   if (eventRunId && !knownRunIds.has(eventRunId)) return undefined;

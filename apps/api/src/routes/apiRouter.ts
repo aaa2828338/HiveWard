@@ -71,13 +71,13 @@ import type {
   SendChatSessionMessageRequest,
   UpdateChatSessionTitleRequest,
   UpdateHivewardChatSessionRequest,
-  ChatStreamEvent,
+  AgentOutputEvent,
+  RuntimeChatEvent,
   ApprovalDecision,
   ApprovalRequest,
   ApprovalThread,
   BlueprintDefinition,
   BlueprintRun,
-  HivewardChatMessage,
   HivewardChatSession,
   StartBlueprintRunRequest,
   ApplyHivewardUpdateResponse,
@@ -98,6 +98,7 @@ import { buildHivewardRoleSkillPrompt, hivewardInboxSubmissionContract, hiveward
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { InboxSubmissionService } from "../services/inboxSubmissionService";
+import { AgentOutputService } from "../services/agentOutputService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import { isRuntimeAdapterError, type RuntimeAdapter } from "@hiveward/adapter";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -159,7 +160,16 @@ class ApiBadRequestError extends Error {
   }
 }
 
-type ChatDoneEvent = Extract<ChatStreamEvent, { type: "done" }>;
+type ChatDoneEvent = Extract<RuntimeChatEvent, { type: "done" }>;
+type ChatAgentOutputInput =
+  Omit<AgentOutputEvent, "id" | "sequence" | "createdAt"> &
+  Partial<Pick<AgentOutputEvent, "id" | "sequence" | "createdAt">>;
+
+interface ChatHistoryProjection {
+  role: "user" | "assistant" | "system";
+  content: string;
+  runtimeRef?: ChatRuntimeRef;
+}
 
 type ChatInboxSubmissionResult = {
   item: InboxItem;
@@ -241,6 +251,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const approvalService = new ApprovalService(store);
   const managerMailProjector = new ManagerMailProjector(store);
   const inboxSubmissionService = new InboxSubmissionService(store, approvalService, managerMailProjector);
+  const agentOutputService = new AgentOutputService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
 
   router.get("/healthz", (_req, res) => {
@@ -1103,7 +1114,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
         return;
       }
-      res.json({ messages: await store.listChatMessages(sessionId) });
+      res.json({ messages: await agentOutputService.listOwnerEvents("chat_session", sessionId) });
     } catch (error) {
       next(error);
     }
@@ -1147,6 +1158,15 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       res,
       inboxSubmissionService
     });
+  });
+
+  router.get("/api/run-rooms/:runRoomId/feed", async (req, res, next) => {
+    try {
+      const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
+      res.json({ feed: await agentOutputService.projectRunRoomFeed(runRoomId) });
+    } catch (error) {
+      next(error);
+    }
   });
 
   router.post("/api/chat/session", async (req, res) => {
@@ -1757,6 +1777,8 @@ async function streamHivewardChatSession({
     return;
   }
 
+  const chatSessionId = session.id;
+  const outputService = new AgentOutputService(store);
   const config = await openClawConfigStore.getState();
   const harnessDefaults = resolveHarnessModelDefaults();
   const defaults = {
@@ -1768,13 +1790,14 @@ async function streamHivewardChatSession({
     opencode: harnessDefaults.opencode,
     hermes: harnessDefaults.hermes
   };
-  const messagesBefore = await store.listChatMessages(session.id);
+  const outputEventsBefore = await outputService.listOwnerEvents("chat_session", chatSessionId);
+  const messagesBefore = projectChatHistoryMessages(outputEventsBefore);
   const shouldRebuildFromHivewardHistory =
     ("rebuildFromHivewardHistory" in body && body.rebuildFromHivewardHistory === true) ||
     shouldAutoRebuildChatFromHivewardHistory(session, messagesBefore);
   const rebuildContext = shouldRebuildFromHivewardHistory ? buildHivewardHistoryContext(messagesBefore) : undefined;
   if (shouldRebuildFromHivewardHistory) {
-    session = await store.updateChatSession(session.id, {
+    session = await store.updateChatSession(chatSessionId, {
       nativeSessionId: undefined,
       nativeSessionState: "unknown",
       status: "active"
@@ -1797,25 +1820,21 @@ async function streamHivewardChatSession({
   const source = sourceForChatHarness(requestBody.harnessId);
   const agentId = requestBody.agentId || selectDefaultAgentId(config.configuredAgents);
   const modelId = resolveChatModelId(requestBody, config, defaults);
-  const userMessage = await store.appendChatMessage({
-    sessionId: session.id,
-    role: "user",
-    content: requestBody.message || "Uploaded files",
-    attachments: requestBody.attachments,
-    harnessId: requestBody.harnessId,
-    modelId: requestBody.modelId,
-    status: "sent"
+  const userMessage = await outputService.appendEvent({
+    ownerType: "chat_session",
+    ownerId: chatSessionId,
+    actorType: "user",
+    kind: "message_completed",
+    bodyMarkdown: requestBody.message || "Uploaded files",
+    metadata: {
+      role: "user",
+      attachments: requestBody.attachments,
+      harnessId: requestBody.harnessId,
+      modelId: requestBody.modelId
+    }
   });
-  const assistantMessage = await store.appendChatMessage({
-    sessionId: session.id,
-    role: "assistant",
-    content: "",
-    harnessId: requestBody.harnessId,
-    modelId: requestBody.modelId,
-    status: "streaming"
-  });
-  const persistedSessionId = session.id;
-  session = await store.updateChatSession(session.id, {
+  session = await store.updateChatSession(chatSessionId, {
+    title: deriveChatSessionTitleFromContent(session, userMessage.bodyMarkdown ?? "Uploaded files"),
     modelId: requestBody.modelId,
     agentId,
     thinkingEffort: requestBody.thinkingEffort,
@@ -1842,45 +1861,26 @@ async function streamHivewardChatSession({
   let runtimeAcceptedAtMs: number | undefined;
   let runtimeFirstDeltaAtMs: number | undefined;
   const runtimeActivities: ChatRuntimeActivity[] = [];
-  let runtimeRefDraft: ChatRuntimeRef | undefined;
   let nativeSessionKey = requestBody.nativeSessionKey ?? "";
   const attemptedNativeResume = Boolean(nativeSessionKey) && !shouldRebuildFromHivewardHistory;
   const runtimeStartedAtMs = Date.now();
-  const maxPersistedStreamingChars = 200_000;
-  let streamingPersistTimer: ReturnType<typeof setTimeout> | undefined;
-  let streamingPersistPromise: Promise<unknown> = Promise.resolve();
+  let outputWriteQueue: Promise<AgentOutputEvent | undefined> = Promise.resolve(undefined);
 
-  const queueStreamingPersist = () => {
-    if (streamingPersistTimer) return;
-    streamingPersistTimer = setTimeout(() => {
-      streamingPersistTimer = undefined;
-      const content =
-        streamedOutput.length > maxPersistedStreamingChars
-          ? streamedOutput.slice(streamedOutput.length - maxPersistedStreamingChars)
-          : streamedOutput;
-      const runtimeRef = runtimeRefDraft;
-      streamingPersistPromise = streamingPersistPromise
-        .then(() => store.updateChatMessage(persistedSessionId, assistantMessage.id, {
-          content,
-          status: "streaming",
-          ...(runtimeRef ? { runtimeRef } : {})
-        }))
-        .catch(() => undefined);
-    }, 750);
+  const enqueueOutputEvent = (input: ChatAgentOutputInput): void => {
+    outputWriteQueue = outputWriteQueue
+      .then(async () => {
+        const event = await outputService.appendEvent(input);
+        writeAgentOutputEvent(res, event, isClosed);
+        return event;
+      })
+      .catch(() => undefined);
   };
 
-  const flushStreamingPersist = async () => {
-    if (streamingPersistTimer) {
-      clearTimeout(streamingPersistTimer);
-      streamingPersistTimer = undefined;
-    }
-    await streamingPersistPromise.catch(() => undefined);
-    if (!streamedOutput && !runtimeRefDraft) return;
-    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
-      content: streamedOutput,
-      status: "streaming",
-      ...(runtimeRefDraft ? { runtimeRef: runtimeRefDraft } : {})
-    });
+  const appendAndWriteOutputEvent = async (input: ChatAgentOutputInput): Promise<AgentOutputEvent> => {
+    await outputWriteQueue.catch(() => undefined);
+    const event = await outputService.appendEvent(input);
+    writeAgentOutputEvent(res, event, isClosed);
+    return event;
   };
 
   try {
@@ -1888,7 +1888,7 @@ async function streamHivewardChatSession({
       const nativeSession = await adapter.createChatSession({ agentId });
       nativeSessionKey = nativeSession.sessionKey;
       requestBody.nativeSessionKey = nativeSessionKey;
-      session = await store.updateChatSession(session.id, {
+      session = await store.updateChatSession(chatSessionId, {
         nativeSessionId: nativeSessionKey,
         nativeSessionState: "resumable"
       }) ?? session;
@@ -1917,45 +1917,37 @@ async function streamHivewardChatSession({
       (event) => {
         if (event.type === "started") {
           runtimeAcceptedAtMs ??= Date.now();
-          runtimeRefDraft = toChatRuntimeRefFromStart(event, runtimeActivities);
-          queueStreamingPersist();
+          enqueueOutputEvent(runtimeChatEventToAgentOutputInput(chatSessionId, event, requestBody, runtimeActivities));
         }
         if (event.type === "done") {
           doneEvent = event;
           return;
         }
         if (event.type === "runtime_state") {
-          const activity = upsertChatRuntimeActivity(runtimeActivities, event);
-          if (runtimeRefDraft) {
-            runtimeRefDraft = {
-              ...runtimeRefDraft,
-              activity: runtimeActivities.length ? [...runtimeActivities] : undefined,
-              updatedAt: activity.updatedAt
-            };
-          }
-          queueStreamingPersist();
+          upsertChatRuntimeActivity(runtimeActivities, event);
+          enqueueOutputEvent(runtimeChatEventToAgentOutputInput(chatSessionId, event, requestBody, runtimeActivities));
         }
         if (event.type === "delta") {
           runtimeFirstDeltaAtMs ??= Date.now();
           streamedOutput = event.replace ? event.text : `${streamedOutput}${event.text}`;
-          queueStreamingPersist();
+          enqueueOutputEvent(runtimeChatEventToAgentOutputInput(chatSessionId, event, requestBody, runtimeActivities));
         }
-        writeChatStreamEvent(res, event, isClosed);
       }
     );
   } catch (error) {
-    await flushStreamingPersist();
+    await outputWriteQueue.catch(() => undefined);
     const message = error instanceof Error ? error.message : "Chat request failed.";
     const code = isRuntimeAdapterError(error) ? error.code : undefined;
-    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
-      content: message,
-      status: "failed"
-    });
-    await store.updateChatSession(session.id, {
+    await store.updateChatSession(chatSessionId, {
       status: attemptedNativeResume && isNativeResumeFailure(message) ? "native_missing" : "failed",
       nativeSessionState: attemptedNativeResume && isNativeResumeFailure(message) ? "missing" : session.nativeSessionState
     });
-    writeChatStreamEvent(res, { type: "error", code, message }, isClosed);
+    await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
+      chatSessionId,
+      { type: "error", code, message },
+      requestBody,
+      runtimeActivities
+    ));
     res.end();
     return;
   }
@@ -1963,19 +1955,20 @@ async function streamHivewardChatSession({
   const runtimeFinishedAtMs = Date.now();
   const postprocessStartedAtMs = Date.now();
   if (!doneEvent) {
-    await flushStreamingPersist();
+    await outputWriteQueue.catch(() => undefined);
     const message = "Chat request completed without a final runtime event.";
-    await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
-      content: streamedOutput || message,
-      status: streamedOutput ? "sent" : "failed"
-    });
-    writeChatStreamEvent(res, { type: "error", message }, isClosed);
+    await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
+      chatSessionId,
+      { type: "error", message },
+      requestBody,
+      runtimeActivities
+    ));
     res.end();
     return;
   }
 
   const finalOutput = doneEvent.output ?? streamedOutput;
-  await flushStreamingPersist();
+  await outputWriteQueue.catch(() => undefined);
   const submissionBlock = extractChatInboxSubmissionBlock(finalOutput);
   let submission: ChatInboxSubmissionResult | undefined;
   let inboxSubmissionMs: number | undefined;
@@ -1995,7 +1988,12 @@ async function streamHivewardChatSession({
     } catch (submissionError) {
       const message = submissionError instanceof Error ? submissionError.message : "Invalid Hiveward inbox submission.";
       const failedOutput = buildChatInboxSubmissionFailureOutput(finalOutput, submissionBlock.fullMatch, message);
-      writeChatStreamEvent(res, { type: "delta", text: failedOutput, replace: true }, isClosed);
+      await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
+        chatSessionId,
+        { type: "delta", text: failedOutput, replace: true },
+        requestBody,
+        runtimeActivities
+      ));
       finalDoneEvent = {
         ...doneEvent,
         status: "failed",
@@ -2008,12 +2006,12 @@ async function streamHivewardChatSession({
 
   if (submission) {
     assistantOutput = submission.output;
-    writeChatStreamEvent(res, { type: "delta", text: submission.output, replace: true }, isClosed);
-    writeChatStreamEvent(res, {
-      type: "inbox_item_created",
-      item: submission.item,
-      message: `Created Hiveward inbox item ${submission.item.id}.`
-    }, isClosed);
+    await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
+      chatSessionId,
+      { type: "delta", text: submission.output, replace: true },
+      requestBody,
+      runtimeActivities
+    ));
     finalDoneEvent = { ...doneEvent, output: submission.output };
   }
 
@@ -2027,14 +2025,7 @@ async function streamHivewardChatSession({
     runtimeAcceptedAtMs,
     runtimeFirstDeltaAtMs
   );
-  const runtimeRef = toChatRuntimeRef(finalEventWithTimings, runtimeActivities);
   const nativeMissing = attemptedNativeResume && finalEventWithTimings.status === "failed" && isNativeResumeFailure(finalEventWithTimings.error);
-  await store.updateChatMessage(persistedSessionId, assistantMessage.id, {
-    content: assistantOutput,
-    status: finalEventWithTimings.status === "failed" || finalEventWithTimings.status === "cancelled" ? "failed" : "sent",
-    runtimeRef,
-    modelId: requestBody.modelId
-  });
   const sessionPatch: UpdateHivewardChatSessionRequest = {
     status: nativeMissing ? "native_missing" : "active",
     nativeSessionState: nativeMissing ? "missing" : finalEventWithTimings.sessionKey ? "resumable" : session.nativeSessionState
@@ -2042,8 +2033,13 @@ async function streamHivewardChatSession({
   if (finalEventWithTimings.sessionKey) {
     sessionPatch.nativeSessionId = finalEventWithTimings.sessionKey;
   }
-  await store.updateChatSession(session.id, sessionPatch);
-  writeChatStreamEvent(res, finalEventWithTimings, isClosed);
+  await store.updateChatSession(chatSessionId, sessionPatch);
+  await appendAndWriteOutputEvent(runtimeChatEventToAgentOutputInput(
+    chatSessionId,
+    { ...finalEventWithTimings, output: assistantOutput },
+    requestBody,
+    runtimeActivities
+  ));
   res.end();
 }
 
@@ -2506,16 +2502,138 @@ function includesAny(value: string, needles: string[]): boolean {
   return needles.some((needle) => value.includes(needle));
 }
 
-function writeChatStreamEvent(
+function writeAgentOutputEvent(
   res: Response,
-  event: ChatStreamEvent,
+  event: AgentOutputEvent,
   isClosed: () => boolean
 ): boolean {
   if (isClosed()) return false;
-  res.write(`event: ${event.type}\n`);
+  res.write(`event: ${event.kind}\n`);
   res.write(`data: ${JSON.stringify(event)}\n\n`);
   (res as Response & { flush?: () => void }).flush?.();
   return !isClosed();
+}
+
+function runtimeChatEventToAgentOutputInput(
+  sessionId: string,
+  event: RuntimeChatEvent,
+  requestBody: ResolvedChatSessionMessage,
+  activity: ChatRuntimeActivity[] = []
+): ChatAgentOutputInput {
+  const source = sourceForChatHarness(requestBody.harnessId);
+  const metadata: Record<string, unknown> = {
+    role: "assistant",
+    harnessId: requestBody.harnessId,
+    modelId: requestBody.modelId,
+    agentId: requestBody.agentId
+  };
+  if (event.type === "started") {
+    return {
+      ownerType: "chat_session",
+      ownerId: sessionId,
+      actorType: "worker",
+      kind: "message_started",
+      sourceType: event.source,
+      runtimeState: runtimeStateFromStartedEvent(event, activity),
+      metadata
+    };
+  }
+  if (event.type === "delta") {
+    return {
+      ownerType: "chat_session",
+      ownerId: sessionId,
+      actorType: "worker",
+      kind: "message_delta",
+      delta: event.text,
+      sourceType: source,
+      metadata: {
+        ...metadata,
+        replace: event.replace === true
+      }
+    };
+  }
+  if (event.type === "runtime_state") {
+    return {
+      ownerType: "chat_session",
+      ownerId: sessionId,
+      actorType: "worker",
+      kind: "runtime_state",
+      sourceType: event.source,
+      runtimeState: {
+        source: event.source,
+        phase: event.phase,
+        label: event.label,
+        activityId: event.id,
+        activityStatus: event.status ?? "updated",
+        updatedAt: event.updatedAt ?? new Date().toISOString(),
+        activity: activity.length ? [...activity] : undefined
+      },
+      metadata
+    };
+  }
+  if (event.type === "done") {
+    const failed = event.status === "failed" || event.status === "cancelled";
+    return {
+      ownerType: "chat_session",
+      ownerId: sessionId,
+      actorType: "worker",
+      kind: failed ? "message_failed" : "message_completed",
+      bodyMarkdown: event.output ?? event.error ?? "",
+      sourceType: event.source,
+      runtimeState: runtimeStateFromDoneEvent(event, activity),
+      metadata
+    };
+  }
+  return {
+    ownerType: "chat_session",
+    ownerId: sessionId,
+    actorType: "worker",
+    kind: "message_failed",
+    bodyMarkdown: event.message,
+    sourceType: source,
+    runtimeState: {
+      source,
+      status: "failed",
+      code: event.code,
+      error: event.message,
+      updatedAt: new Date().toISOString(),
+      activity: activity.length ? [...activity] : undefined
+    },
+    metadata
+  };
+}
+
+function runtimeStateFromStartedEvent(
+  event: Extract<RuntimeChatEvent, { type: "started" }>,
+  activity: ChatRuntimeActivity[] = []
+): Record<string, unknown> {
+  return {
+    taskId: event.taskId,
+    runId: event.runId,
+    sessionKey: event.sessionKey,
+    source: event.source,
+    status: event.status,
+    updatedAt: event.updatedAt,
+    activity: activity.length ? [...activity] : undefined
+  };
+}
+
+function runtimeStateFromDoneEvent(
+  event: ChatDoneEvent,
+  activity: ChatRuntimeActivity[] = []
+): Record<string, unknown> {
+  return {
+    taskId: event.taskId,
+    runId: event.runId,
+    sessionKey: event.sessionKey,
+    source: event.source,
+    status: event.status,
+    updatedAt: event.updatedAt,
+    error: event.error,
+    usage: event.usage,
+    timings: event.timings,
+    activity: activity.length ? [...activity] : undefined
+  };
 }
 
 function withChatStreamTimings<T extends ChatDoneEvent>(
@@ -2543,39 +2661,9 @@ function withChatStreamTimings<T extends ChatDoneEvent>(
   };
 }
 
-function toChatRuntimeRefFromStart(
-  event: Extract<ChatStreamEvent, { type: "started" }>,
-  activity: ChatRuntimeActivity[] = []
-): ChatRuntimeRef {
-  return {
-    taskId: event.taskId,
-    runId: event.runId,
-    sessionKey: event.sessionKey,
-    source: event.source,
-    status: event.status,
-    updatedAt: event.updatedAt,
-    activity: activity.length ? [...activity] : undefined
-  };
-}
-
-function toChatRuntimeRef(event: ChatDoneEvent, activity: ChatRuntimeActivity[] = []): ChatRuntimeRef {
-  return {
-    taskId: event.taskId,
-    runId: event.runId,
-    sessionKey: event.sessionKey,
-    source: event.source,
-    status: event.status,
-    updatedAt: event.updatedAt,
-    error: event.error,
-    usage: event.usage,
-    timings: event.timings,
-    activity: activity.length ? [...activity] : undefined
-  };
-}
-
 function upsertChatRuntimeActivity(
   activities: ChatRuntimeActivity[],
-  event: Extract<ChatStreamEvent, { type: "runtime_state" }>
+  event: Extract<RuntimeChatEvent, { type: "runtime_state" }>
 ): ChatRuntimeActivity {
   const updatedAt = event.updatedAt ?? new Date().toISOString();
   const activity: ChatRuntimeActivity = {
@@ -2595,7 +2683,134 @@ function upsertChatRuntimeActivity(
   return activity;
 }
 
-function buildHivewardHistoryContext(messages: HivewardChatMessage[]): string {
+function projectChatHistoryMessages(events: readonly AgentOutputEvent[]): ChatHistoryProjection[] {
+  const messages: ChatHistoryProjection[] = [];
+  let activeAssistantIndex = -1;
+  const sortedEvents = [...events].sort((left, right) => {
+    const sequenceDifference = left.sequence - right.sequence;
+    if (sequenceDifference !== 0) return sequenceDifference;
+    const createdAtDifference = left.createdAt.localeCompare(right.createdAt);
+    return createdAtDifference !== 0 ? createdAtDifference : left.id.localeCompare(right.id);
+  });
+  for (const event of sortedEvents) {
+    const role = readAgentOutputRole(event);
+    if (role === "user" || role === "system") {
+      if (event.kind === "message_completed" || event.kind === "message_failed") {
+        messages.push({
+          role,
+          content: event.bodyMarkdown ?? "",
+          runtimeRef: runtimeRefFromAgentOutputEvent(event)
+        });
+      }
+      continue;
+    }
+    if (event.kind === "message_started") {
+      messages.push({
+        role: "assistant",
+        content: "",
+        runtimeRef: runtimeRefFromAgentOutputEvent(event)
+      });
+      activeAssistantIndex = messages.length - 1;
+      continue;
+    }
+    if (event.kind === "message_delta") {
+      if (activeAssistantIndex < 0) {
+        messages.push({ role: "assistant", content: "" });
+        activeAssistantIndex = messages.length - 1;
+      }
+      const current = messages[activeAssistantIndex]!;
+      messages[activeAssistantIndex] = {
+        ...current,
+        content: event.metadata?.replace === true ? event.delta ?? "" : `${current.content}${event.delta ?? ""}`
+      };
+      continue;
+    }
+    if (event.kind === "runtime_state") {
+      if (activeAssistantIndex >= 0) {
+        const current = messages[activeAssistantIndex]!;
+        messages[activeAssistantIndex] = {
+          ...current,
+          runtimeRef: current.runtimeRef ?? runtimeRefFromAgentOutputEvent(event)
+        };
+      }
+      continue;
+    }
+    if (event.kind === "message_completed" || event.kind === "message_failed") {
+      const runtimeRef = runtimeRefFromAgentOutputEvent(event);
+      if (activeAssistantIndex >= 0) {
+        const current = messages[activeAssistantIndex]!;
+        messages[activeAssistantIndex] = {
+          ...current,
+          content: event.bodyMarkdown ?? current.content,
+          runtimeRef: runtimeRef ?? current.runtimeRef
+        };
+      } else {
+        messages.push({
+          role: "assistant",
+          content: event.bodyMarkdown ?? "",
+          runtimeRef
+        });
+      }
+      activeAssistantIndex = -1;
+    }
+  }
+  return messages;
+}
+
+function readAgentOutputRole(event: AgentOutputEvent): ChatHistoryProjection["role"] {
+  const role = event.metadata?.role;
+  if (role === "user" || role === "assistant" || role === "system") return role;
+  if (event.actorType === "user") return "user";
+  if (event.actorType === "system") return "system";
+  return "assistant";
+}
+
+function runtimeRefFromAgentOutputEvent(event: AgentOutputEvent): ChatRuntimeRef | undefined {
+  const state = event.runtimeState;
+  if (!state) return undefined;
+  const taskId = readRuntimeString(state, "taskId");
+  const runId = readRuntimeString(state, "runId");
+  const sessionKey = readRuntimeString(state, "sessionKey");
+  const source = readRuntimeObjectSource(state.source);
+  const status = readRuntimeString(state, "status");
+  const updatedAt = readRuntimeString(state, "updatedAt");
+  if (!taskId || !runId || !sessionKey || !source || !status || !updatedAt) return undefined;
+  return {
+    taskId,
+    runId,
+    sessionKey,
+    source,
+    status,
+    updatedAt,
+    error: readRuntimeString(state, "error"),
+    usage: isRecordValue(state.usage) ? state.usage as unknown as ChatRuntimeRef["usage"] : undefined,
+    timings: isRecordValue(state.timings) ? state.timings as unknown as ChatRuntimeRef["timings"] : undefined,
+    activity: Array.isArray(state.activity) ? state.activity as ChatRuntimeActivity[] : undefined
+  };
+}
+
+function readRuntimeString(state: Record<string, unknown>, key: string): string | undefined {
+  const value = state[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function readRuntimeObjectSource(value: unknown): RuntimeObjectSource | undefined {
+  return value === "openclaw" ||
+    value === "claude" ||
+    value === "codex" ||
+    value === "google" ||
+    value === "cursor" ||
+    value === "opencode" ||
+    value === "hermes"
+    ? value
+    : undefined;
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildHivewardHistoryContext(messages: ChatHistoryProjection[]): string {
   const maxMessages = 40;
   const maxChars = 24_000;
   const visibleMessages = messages
@@ -2614,9 +2829,16 @@ function buildHivewardHistoryContext(messages: HivewardChatMessage[]): string {
   ].join("\n");
 }
 
+function deriveChatSessionTitleFromContent(session: HivewardChatSession, content: string): string {
+  if (session.title && session.title !== "New chat") return session.title;
+  const trimmed = content.trim();
+  if (!trimmed) return session.title || "New chat";
+  return trimmed.length > 42 ? `${trimmed.slice(0, 42)}...` : trimmed;
+}
+
 function shouldAutoRebuildChatFromHivewardHistory(
   session: HivewardChatSession,
-  messagesBefore: HivewardChatMessage[]
+  messagesBefore: ChatHistoryProjection[]
 ): boolean {
   if (session.harnessId !== "codex" || !session.nativeSessionId) return false;
   const lastAssistant = [...messagesBefore].reverse().find((message) => message.role === "assistant" && message.runtimeRef);

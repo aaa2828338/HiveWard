@@ -4,7 +4,7 @@ import type {
   AgentSdkProvider,
   AgentTaskResult,
   ChatPermissionMode,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
@@ -56,7 +56,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     this.config = cliHarnessConfigs[harnessId];
   }
 
-  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const taskId = `${this.harnessId}-chat-${nanoid(10)}`;
     const runId = `${this.harnessId}-chat-run-${nanoid(10)}`;

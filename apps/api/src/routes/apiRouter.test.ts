@@ -14,17 +14,18 @@ import {
 } from "@hiveward/adapter";
 import type {
   AgentNodeConfig,
+  AgentOutputEvent,
   BlueprintDefinition,
   BlueprintNodeRun,
   BlueprintRun,
   ChatHistoryMessage,
-  ChatStreamEvent,
-  HivewardChatMessage,
+  RuntimeChatEvent,
   HivewardChatSession,
   ManagerNodeConfig,
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
+  RunRoomFeed,
   StartAgentTaskInput,
   WorkspaceDashboard,
   ApprovalRequest
@@ -35,6 +36,8 @@ import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
+
+const oldInboxCreatedChatOutputEventName = ["inbox", "item", "created"].join("_");
 
 class TrackingAdapter extends MockRuntimeAdapter {
   runtimeOverviewCalls = 0;
@@ -48,7 +51,7 @@ class TrackingAdapter extends MockRuntimeAdapter {
     return super.startAgentTask(input);
   }
 
-  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
     this.lastChatStreamInput = input;
     return super.streamChatMessage(input, onEvent);
   }
@@ -83,7 +86,7 @@ class ChatOutputAdapter extends TrackingAdapter {
     super();
   }
 
-  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
     this.lastChatStreamInput = input;
     const now = new Date().toISOString();
     const runId = input.idempotencyKey;
@@ -114,7 +117,7 @@ class ChatOutputAdapter extends TrackingAdapter {
 }
 
 class ChatRuntimeActivityAdapter extends TrackingAdapter {
-  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
     this.lastChatStreamInput = input;
     const now = new Date().toISOString();
     const runId = input.idempotencyKey;
@@ -179,7 +182,7 @@ class NativeSessionTrackingAdapter extends TrackingAdapter {
     super();
   }
 
-  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
     this.chatInputs.push(input);
     this.lastChatStreamInput = input;
     const now = new Date().toISOString();
@@ -210,7 +213,7 @@ class NativeSessionTrackingAdapter extends TrackingAdapter {
 class NativeMissingAdapter extends TrackingAdapter {
   readonly chatInputs: RuntimeChatStreamInput[] = [];
 
-  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void) {
+  override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
     this.chatInputs.push(input);
     this.lastChatStreamInput = input;
     const now = new Date().toISOString();
@@ -2794,9 +2797,9 @@ describe("apiRouter", () => {
 
         expect(response.status, text).toBe(200);
         expect(response.headers.get("content-type")).toContain("text/event-stream");
-        expect(text).toContain("event: started");
-        expect(text).toContain("event: delta");
-        expect(text).toContain("event: done");
+        expect(text).toContain("event: message_started");
+        expect(text).toContain("event: message_delta");
+        expect(text).toContain("event: message_completed");
         expect(text).toContain("main completed through runtime adapter");
         expect(adapter.lastStartInput).toBeUndefined();
         expect(adapter.lastChatStreamInput?.sessionKey).toBe("main");
@@ -2837,7 +2840,7 @@ describe("apiRouter", () => {
         const text = await response.text();
 
         expect(response.status, text).toBe(200);
-        expect(text).toContain("event: error");
+        expect(text).toContain("event: message_failed");
         expect(text).toContain("\"code\":\"openclaw_gateway_not_configured\"");
         expect(text).toContain("OpenClaw Gateway is not configured.");
         expect(text).not.toContain("completed through runtime adapter");
@@ -2891,6 +2894,95 @@ describe("apiRouter", () => {
         });
 
         expect(response.status).toBe(404);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("forbids historical chat messages from mutating normal chat output", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const session = await fixture.store.createChatSession({
+        harnessId: "codex",
+        title: "Historical write guard"
+      });
+
+      await expect(
+        fixture.store.appendChatMessage({
+          sessionId: session.id,
+          role: "assistant",
+          content: "old output path",
+          harnessId: "codex",
+          status: "sent"
+        })
+      ).rejects.toThrow("保留为历史事实，不参与决策");
+      expect(await fixture.store.listChatMessages(session.id)).toEqual([]);
+      expect(await fixture.store.listAgentOutputEvents({ ownerType: "chat_session", ownerId: session.id })).toEqual([]);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects run room output feed rows without worker action capabilities", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const createdAt = "2026-06-03T00:00:00.000Z";
+      await fixture.store.appendAgentOutputEvent({
+        id: "worker-output-1",
+        ownerType: "worker_task",
+        ownerId: "worker-task-1",
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Worker execution output.",
+        metadata: {
+          runRoomId: "run-room-1",
+          workerTaskId: "worker-task-1"
+        },
+        runtimeState: {
+          source: "codex",
+          status: "succeeded"
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "manager-output-1",
+        ownerType: "manager_thread",
+        ownerId: "manager-thread-1",
+        actorType: "manager",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Manager formal message.",
+        metadata: {
+          runRoomId: "run-room-1",
+          managerCommandId: "manager-command-1"
+        },
+        createdAt
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/run-room-1/feed`);
+        const { feed } = await readOkJson<{ feed: RunRoomFeed }>(feedResponse);
+
+        expect(feed.rows).toHaveLength(2);
+        const workerRow = feed.rows.find((row) => row.sourceType === "worker");
+        const managerRow = feed.rows.find((row) => row.sourceType === "manager");
+        expect(workerRow).toMatchObject({
+          sourceType: "worker",
+          displayMode: "execution_output",
+          bodyMarkdown: "Worker execution output.",
+          actions: {}
+        });
+        expect(workerRow?.actions?.canReply).not.toBe(true);
+        expect(workerRow?.actions?.canApprove).not.toBe(true);
+        expect(workerRow?.actions?.canReject).not.toBe(true);
+        expect(workerRow?.actions?.canOpenInbox).not.toBe(true);
+        expect(managerRow).toMatchObject({
+          sourceType: "manager",
+          displayMode: "formal_message",
+          actions: { canReply: true }
+        });
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -3170,13 +3262,15 @@ describe("apiRouter", () => {
         expect(text).toContain("event: runtime_state");
         expect(text).toContain("First visible sentence.");
         const session = (await fixture.store.listChatSessions())[0]!;
-        const messages = await fixture.store.listChatMessages(session.id);
-        const assistant = messages.find((message) => message.role === "assistant");
+        const historicalMessages = await fixture.store.listChatMessages(session.id);
+        expect(historicalMessages).toEqual([]);
+        const events = await fixture.store.listAgentOutputEvents({ ownerType: "chat_session", ownerId: session.id });
+        const assistant = events.find((event) => event.kind === "message_completed" && event.metadata?.role === "assistant");
         expect(assistant).toMatchObject({
-          status: "sent",
-          content: "First visible sentence."
+          kind: "message_completed",
+          bodyMarkdown: "First visible sentence."
         });
-        expect(assistant?.runtimeRef?.activity).toEqual([
+        expect(assistant?.runtimeState?.activity).toEqual([
           expect.objectContaining({
             id: "tool-1",
             phase: "tool",
@@ -3204,23 +3298,36 @@ describe("apiRouter", () => {
         mode: "blueprint",
         roleScope: { role: "ceo" }
       });
-      await fixture.store.appendChatMessage({
-        sessionId: session.id,
-        role: "user",
-        content: "先分析当前蓝图逻辑。",
-        attachments: [],
-        harnessId: "codex",
-        modelId: "codex/test-default",
-        status: "sent"
+      await fixture.store.appendAgentOutputEvent({
+        id: "agent-output-user-heavy",
+        ownerType: "chat_session",
+        ownerId: session.id,
+        actorType: "user",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "先分析当前蓝图逻辑。",
+        metadata: {
+          role: "user",
+          attachments: [],
+          harnessId: "codex",
+          modelId: "codex/test-default"
+        },
+        createdAt: now
       });
-      await fixture.store.appendChatMessage({
-        sessionId: session.id,
-        role: "assistant",
-        content: "Heavy analysis summary.",
-        harnessId: "codex",
-        modelId: "codex/test-default",
-        status: "sent",
-        runtimeRef: {
+      await fixture.store.appendAgentOutputEvent({
+        id: "agent-output-assistant-heavy",
+        ownerType: "chat_session",
+        ownerId: session.id,
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 2,
+        bodyMarkdown: "Heavy analysis summary.",
+        metadata: {
+          role: "assistant",
+          harnessId: "codex",
+          modelId: "codex/test-default"
+        },
+        runtimeState: {
           taskId: "heavy-task",
           runId: "heavy-run",
           sessionKey: "codex-heavy-session",
@@ -3241,7 +3348,8 @@ describe("apiRouter", () => {
             runtimeMs: 899_000,
             hivewardPostprocessMs: 10
           }
-        }
+        },
+        createdAt: now
       });
 
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -3365,7 +3473,7 @@ describe("apiRouter", () => {
         const text = await response.text();
 
         expect(response.status, text).toBe(200);
-        expect(text).toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
         expect(text).toContain("\"replace\":true");
         expect(text).toContain("Review generated blueprint package");
         expect(text).toContain("已提交到收件箱，请前往收件箱审批。");
@@ -3487,7 +3595,7 @@ describe("apiRouter", () => {
         expect(text).toContain("\"replace\":true");
         expect(text).toContain("\"status\":\"failed\"");
         expect(text).toContain("Blueprint proposal request requires blueprintPackage.");
-        expect(text).not.toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
 
         const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
         const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
@@ -3563,7 +3671,7 @@ describe("apiRouter", () => {
         });
         const text = await response.text();
         expect(response.status, text).toBe(200);
-        expect(text).toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
 
         const inbox = await readOkJson<{ items: Array<{ id: string; payload?: Record<string, unknown> }> }>(
           await fetch(`${baseUrl}/api/inbox`)
@@ -3638,7 +3746,7 @@ describe("apiRouter", () => {
         expect(response.status, text).toBe(200);
         expect(text).toContain("\"status\":\"failed\"");
         expect(text).toContain(`Expected ${hivewardInboxSubmissionSchema}.`);
-        expect(text).not.toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
       }, adapter);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -3705,7 +3813,7 @@ describe("apiRouter", () => {
         expect(response.status, text).toBe(200);
         expect(text).toContain("\"status\":\"failed\"");
         expect(text).toContain("Unsupported blueprint node type: http.get.");
-        expect(text).not.toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
 
         const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
         const inboxBody = await readOkJson<{ items: Array<{ id: string }> }>(inboxResponse);
@@ -3794,7 +3902,7 @@ describe("apiRouter", () => {
         const text = await response.text();
 
         expect(response.status, text).toBe(200);
-        expect(text).toContain("event: inbox_item_created");
+        expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
         expect(text).not.toContain("Inbox submission failed");
 
         const inboxResponse = await fetch(`${baseUrl}/api/inbox`);
@@ -4070,14 +4178,25 @@ describe("apiRouter", () => {
         expect(adapter.chatInputs[0]?.sessionKey).toBe("");
         expect(adapter.chatInputs[1]?.sessionKey).toBe("codex-native-session-1");
 
-        const messages = await readOkJson<{ messages: HivewardChatMessage[] }>(
+        const messages = await readOkJson<{ messages: AgentOutputEvent[] }>(
           await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/messages`)
         );
-        expect(messages.messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
-        expect(messages.messages[1]).toMatchObject({
-          harnessId: "codex",
-          content: "codex persisted response",
-          status: "sent"
+        expect(messages.messages.map((message) => [message.kind, message.metadata?.role])).toEqual([
+          ["message_completed", "user"],
+          ["message_started", "assistant"],
+          ["message_delta", "assistant"],
+          ["message_completed", "assistant"],
+          ["message_completed", "user"],
+          ["message_started", "assistant"],
+          ["message_delta", "assistant"],
+          ["message_completed", "assistant"]
+        ]);
+        expect(messages.messages[3]).toMatchObject({
+          kind: "message_completed",
+          bodyMarkdown: "codex persisted response",
+          metadata: {
+            harnessId: "codex"
+          }
         });
       }, adapter);
     } finally {

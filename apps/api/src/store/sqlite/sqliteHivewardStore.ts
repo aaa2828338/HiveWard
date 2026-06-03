@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +34,7 @@ import type {
   CompanyRoleDirectory,
   CreateHivewardChatSessionRequest,
   HarnessId,
-  HivewardChatMessage,
+  HistoricalChatMessageFact,
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
@@ -2235,68 +2235,30 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.updateChatSession(id, { status: "ended" });
   }
 
-  async listChatMessages(sessionId: string): Promise<HivewardChatMessage[]> {
+  async listChatMessages(sessionId: string): Promise<HistoricalChatMessageFact[]> {
     const session = await this.getChatSession(sessionId);
     if (!session) return [];
     return this.readChatMessages(sessionId);
   }
 
   async appendChatMessage(
-    input: Omit<HivewardChatMessage, "id" | "createdAt" | "updatedAt"> & {
+    _input: Omit<HistoricalChatMessageFact, "id" | "createdAt" | "updatedAt" | "retentionNote"> & {
       id?: string;
       createdAt?: string;
       updatedAt?: string;
     }
-  ): Promise<HivewardChatMessage> {
-    return this.driver.transaction(() => {
-      const session = this.getChatSessionSync(input.sessionId);
-      if (!session) throw new Error(`Chat session not found: ${input.sessionId}`);
-      const now = new Date().toISOString();
-      const message: HivewardChatMessage = {
-        id: input.id ?? `chat-message-${nanoid(10)}`,
-        sessionId: input.sessionId,
-        role: normalizeChatMessageRole(input.role) ?? "user",
-        content: input.content,
-        attachments: input.attachments,
-        harnessId: normalizeHarnessId(input.harnessId),
-        modelId: readOptionalString(input.modelId),
-        nativeMessageId: readOptionalString(input.nativeMessageId),
-        status: normalizeChatMessageStatus(input.status) ?? "sent",
-        runtimeRef: input.runtimeRef,
-        createdAt: input.createdAt ?? now,
-        updatedAt: input.updatedAt
-      };
-      this.upsertChatMessage(message);
-      this.enforceMessageRetention(input.sessionId);
-      this.upsertChatSession({
-        ...session,
-        title: deriveChatSessionTitle(session, message),
-        updatedAt: now
-      });
-      return message;
-    });
+  ): Promise<HistoricalChatMessageFact> {
+    throw new Error("HistoricalChatMessageFact is 保留为历史事实，不参与决策 and cannot be appended as normal output.");
   }
 
   async updateChatMessage(
     sessionId: string,
     messageId: string,
-    patch: Partial<Pick<HivewardChatMessage, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
-  ): Promise<HivewardChatMessage | undefined> {
-    return this.driver.transaction(() => {
-      const current = this.readChatMessages(sessionId).find((message) => message.id === messageId);
-      if (!current) return undefined;
-      const next: HivewardChatMessage = {
-        ...current,
-        content: patch.content ?? current.content,
-        status: normalizeChatMessageStatus(patch.status) ?? current.status,
-        runtimeRef: patch.runtimeRef === undefined ? current.runtimeRef : patch.runtimeRef,
-        nativeMessageId: readOptionalString(patch.nativeMessageId) ?? current.nativeMessageId,
-        modelId: readOptionalString(patch.modelId) ?? current.modelId,
-        updatedAt: new Date().toISOString()
-      };
-      this.upsertChatMessage(next);
-      return next;
-    });
+    _patch: Partial<Pick<HistoricalChatMessageFact, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
+  ): Promise<HistoricalChatMessageFact | undefined> {
+    void sessionId;
+    void messageId;
+    throw new Error("HistoricalChatMessageFact is 保留为历史事实，不参与决策 and cannot be updated as normal output.");
   }
 
   async claimNodeRun(input: { nodeRunId: string; owner: string; leaseMs: number }): Promise<ClaimNodeRunResult> {
@@ -4049,7 +4011,7 @@ export class SqliteHivewardStore implements HivewardStore {
     return row ? chatSessionFromRow(row) : undefined;
   }
 
-  private upsertChatMessage(message: HivewardChatMessage): void {
+  private upsertChatMessage(message: HistoricalChatMessageFact): void {
     this.driver.db.prepare(
       `INSERT INTO chat_messages (
         id, session_id, role, content, status, harness_id, model_id, native_message_id,
@@ -4083,9 +4045,10 @@ export class SqliteHivewardStore implements HivewardStore {
     }
   }
 
-  private readChatMessages(sessionId: string): HivewardChatMessage[] {
+  private readChatMessages(sessionId: string): HistoricalChatMessageFact[] {
     return (this.driver.db.prepare("SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at").all(sessionId) as Row[])
       .map((row) => ({
+        retentionNote: "保留为历史事实，不参与决策",
         id: requireString(row.id),
         sessionId: requireString(row.session_id),
         role: normalizeChatMessageRole(row.role) ?? "user",
@@ -4095,7 +4058,7 @@ export class SqliteHivewardStore implements HivewardStore {
         modelId: readString(row.model_id),
         nativeMessageId: readString(row.native_message_id),
         status: normalizeChatMessageStatus(row.status) ?? "sent",
-        runtimeRef: parseOptionalJson(row.runtime_ref_json) as HivewardChatMessage["runtimeRef"],
+        runtimeRef: parseOptionalJson(row.runtime_ref_json) as HistoricalChatMessageFact["runtimeRef"],
         createdAt: requireString(row.created_at),
         updatedAt: readString(row.updated_at)
       }));
@@ -5096,11 +5059,11 @@ function normalizeNativeSessionState(value: unknown): HivewardChatSession["nativ
   return value === "unknown" || value === "resumable" || value === "missing" ? value : undefined;
 }
 
-function normalizeChatMessageRole(value: unknown): HivewardChatMessage["role"] | undefined {
+function normalizeChatMessageRole(value: unknown): HistoricalChatMessageFact["role"] | undefined {
   return value === "user" || value === "assistant" || value === "system" ? value : undefined;
 }
 
-function normalizeChatMessageStatus(value: unknown): HivewardChatMessage["status"] | undefined {
+function normalizeChatMessageStatus(value: unknown): HistoricalChatMessageFact["status"] | undefined {
   return value === "sent" || value === "streaming" || value === "failed" ? value : undefined;
 }
 
@@ -5167,7 +5130,7 @@ function nextImportedBlueprintName(blueprints: Array<{ name: string }>, baseName
   return candidate;
 }
 
-function deriveChatSessionTitle(session: HivewardChatSession, message: HivewardChatMessage): string {
+function deriveChatSessionTitle(session: HivewardChatSession, message: HistoricalChatMessageFact): string {
   if (session.title && session.title !== "New chat") return session.title;
   if (message.role !== "user") return session.title || "New chat";
   const content = message.content.trim();

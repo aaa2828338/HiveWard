@@ -1,4 +1,4 @@
-import type { CatalogSnapshot } from "./catalog";
+﻿import type { CatalogSnapshot } from "./catalog";
 import type { CompanyOverview } from "./company";
 import type {
   OpenClawConfigState,
@@ -17,6 +17,7 @@ import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, Blu
 import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
+import type { AgentOutputEvent } from "./agentOutput";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -511,7 +512,8 @@ export interface HivewardChatSession {
   endedAt?: string;
 }
 
-export interface HivewardChatMessage {
+export interface HistoricalChatMessageFact {
+  retentionNote: "保留为历史事实，不参与决策";
   id: string;
   sessionId: string;
   role: "user" | "assistant" | "system";
@@ -595,7 +597,7 @@ export interface HivewardChatSessionResponse {
 }
 
 export interface ChatSessionMessagesResponse {
-  messages: HivewardChatMessage[];
+  messages: AgentOutputEvent[];
 }
 
 export interface ChatStreamTimings {
@@ -611,7 +613,7 @@ export interface ChatStreamTimings {
   openclawFirstDeltaMs?: number;
 }
 
-export type ChatStreamEvent =
+export type RuntimeChatEvent =
   | {
       type: "started";
       taskId: string;
@@ -647,11 +649,6 @@ export type ChatStreamEvent =
       usage?: RuntimeUsageFact;
       timings?: ChatStreamTimings;
       updatedAt: string;
-    }
-  | {
-      type: "inbox_item_created";
-      item: InboxItem;
-      message: string;
     }
   | {
       type: "error";

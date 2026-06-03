@@ -10,7 +10,7 @@ import type {
   ChatHistoryMessage,
   ChatAttachment,
   ChatPermissionMode,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   ChatThinkingEffort,
   HarnessId,
   HarnessSkillId,
@@ -38,7 +38,7 @@ export interface RuntimeAdapter {
   getSessionMessages(sessionKey: string): Promise<ChatHistoryMessage[]>;
   createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult>;
   updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult>;
-  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void>;
+  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void>;
   startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
@@ -206,7 +206,7 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     };
   }
 
-  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const runId = input.idempotencyKey;
     const source = input.source ?? "openclaw";
@@ -349,7 +349,7 @@ export class UnavailableOpenClawAdapter implements RuntimeAdapter {
     throw createOpenClawGatewayNotConfiguredError();
   }
 
-  async streamChatMessage(_input: RuntimeChatStreamInput, _onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(_input: RuntimeChatStreamInput, _onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     throw createOpenClawGatewayNotConfiguredError();
   }
 
@@ -416,7 +416,7 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
     return this.baseAdapter.updateChatSessionTitle(input);
   }
 
-  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     return isAgentSdkProvider(input.source)
       ? this.sdkRuntime.streamChatMessage({ ...input, source: input.source }, onEvent)
       : this.baseAdapter.streamChatMessage(input, onEvent);

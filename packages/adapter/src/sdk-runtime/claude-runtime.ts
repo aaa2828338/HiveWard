@@ -8,7 +8,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
   AgentTaskResult,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   RuntimeUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -32,7 +32,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     private readonly queryFn: ClaudeQueryFn = claudeQuery
   ) {}
 
-  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const taskId = `claude-chat-${nanoid(10)}`;
     const runId = `claude-chat-run-${nanoid(10)}`;
@@ -395,7 +395,7 @@ function shouldEmitClaudeRuntimeEvent(message: SDKMessage): boolean {
   return true;
 }
 
-function toClaudeRuntimeState(message: SDKMessage): ChatStreamEvent {
+function toClaudeRuntimeState(message: SDKMessage): RuntimeChatEvent {
   const record = message as Record<string, unknown>;
   return {
     type: "runtime_state",
@@ -418,7 +418,7 @@ function readRuntimeMessageId(record: Record<string, unknown>): string | undefin
   );
 }
 
-function claudeRuntimePhaseForMessage(message: SDKMessage): Extract<ChatStreamEvent, { type: "runtime_state" }>["phase"] {
+function claudeRuntimePhaseForMessage(message: SDKMessage): Extract<RuntimeChatEvent, { type: "runtime_state" }>["phase"] {
   const record = message as Record<string, unknown>;
   const subtype = readString(record.subtype);
   if (subtype === "command_execution") return "command";

@@ -1,6 +1,6 @@
 import type {
   AgentTaskResult,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
@@ -15,7 +15,7 @@ import { isAgentSdkProvider } from "./types";
 export class AgentSdkRuntimeRouter implements AgentSdkRuntime {
   constructor(private readonly runtimes: Record<"claude" | "codex" | "google" | "cursor" | "opencode" | "hermes", AgentSdkRuntime>) {}
 
-  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     return this.runtimes[input.source].streamChatMessage(input, onEvent);
   }
 

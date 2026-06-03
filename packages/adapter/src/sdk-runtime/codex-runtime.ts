@@ -2,7 +2,7 @@ import { nanoid } from "nanoid";
 import { Codex, type ThreadEvent, type ThreadOptions, type TurnOptions, type Usage } from "@openai/codex-sdk";
 import type {
   AgentTaskResult,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   RuntimeUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -42,7 +42,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     this.createCodexClient = createCodexClient ?? (() => new Codex({ apiKey: this.env.CODEX_API_KEY }));
   }
 
-  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+  async streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void> {
     const now = new Date().toISOString();
     const taskId = `codex-chat-${nanoid(10)}`;
     const runId = `codex-chat-run-${nanoid(10)}`;
@@ -340,7 +340,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     thread: CodexThreadLike,
     prompt: string,
     turnOptions: TurnOptions,
-    onEvent: (event: ChatStreamEvent) => void
+    onEvent: (event: RuntimeChatEvent) => void
   ): Promise<{ text: string; usage: Usage | null }> {
     const turn = await thread.run(prompt, turnOptions);
     if (turn.finalResponse) {
@@ -356,7 +356,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     thread: CodexThreadLike,
     prompt: string,
     turnOptions: TurnOptions,
-    onEvent: (event: ChatStreamEvent) => void,
+    onEvent: (event: RuntimeChatEvent) => void,
     onSessionKey: (sessionKey: string) => void
   ): Promise<{ text: string; usage: Usage | null }> {
     if (!thread.runStreamed) {
@@ -405,7 +405,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
   }
 }
 
-function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): ChatStreamEvent {
+function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): RuntimeChatEvent {
   const item = event.item as Record<string, unknown>;
   return {
     type: "runtime_state",
@@ -418,7 +418,7 @@ function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" 
   };
 }
 
-function codexRuntimePhaseForItem(itemType: string): Extract<ChatStreamEvent, { type: "runtime_state" }>["phase"] {
+function codexRuntimePhaseForItem(itemType: string): Extract<RuntimeChatEvent, { type: "runtime_state" }>["phase"] {
   if (itemType === "command_execution") return "command";
   if (
     itemType === "mcp_tool_call" ||

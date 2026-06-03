@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   AgentHandoff,
   AgentHumanReport,
   AgentOutputEvent,
@@ -25,7 +25,7 @@ import type {
   CompanyRoleDirectory,
   CreateHivewardChatSessionRequest,
   HarnessId,
-  HivewardChatMessage,
+  HistoricalChatMessageFact,
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
@@ -359,17 +359,17 @@ export interface HivewardStore {
   createChatSession(input: CreateHivewardChatSessionRequest): Promise<HivewardChatSession>;
   updateChatSession(id: string, patch: UpdateHivewardChatSessionRequest): Promise<HivewardChatSession | undefined>;
   endChatSession(id: string): Promise<HivewardChatSession | undefined>;
-  listChatMessages(sessionId: string): Promise<HivewardChatMessage[]>;
+  listChatMessages(sessionId: string): Promise<HistoricalChatMessageFact[]>;
   appendChatMessage(
-    input: Omit<HivewardChatMessage, "id" | "createdAt" | "updatedAt"> & {
+    input: Omit<HistoricalChatMessageFact, "id" | "createdAt" | "updatedAt" | "retentionNote"> & {
       id?: string;
       createdAt?: string;
       updatedAt?: string;
     }
-  ): Promise<HivewardChatMessage>;
+  ): Promise<HistoricalChatMessageFact>;
   updateChatMessage(
     sessionId: string,
     messageId: string,
-    patch: Partial<Pick<HivewardChatMessage, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
-  ): Promise<HivewardChatMessage | undefined>;
+    patch: Partial<Pick<HistoricalChatMessageFact, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
+  ): Promise<HistoricalChatMessageFact | undefined>;
 }

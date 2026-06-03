@@ -1,4 +1,4 @@
-import {
+﻿import {
   useCallback,
   useEffect,
   useMemo,
@@ -41,16 +41,14 @@ import type {
   ChatRuntimeActivity,
   ChatRoleScope,
   ChatRuntimeRef,
-  ChatStreamEvent,
   ChatStreamTimings,
   ChatThinkingEffort,
   CompanyOverview,
   CompanyRoleDirectory,
   HarnessId,
   HarnessStatus,
-  HivewardChatMessage,
+  AgentOutputEvent,
   HivewardChatSession,
-  InboxItem,
   OpenClawConfigState,
   RuntimeOverview
 } from "@hiveward/shared";
@@ -58,10 +56,11 @@ import type { Language } from "../lib/i18n";
 import { api } from "../lib/api";
 import { shouldRefreshStreamingChatMessages, shouldShowRuntimeStatus, toChatRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
 import { harnessDisplayParts, harnessLikeDisplayLabel, harnessLikeDisplayParts } from "../lib/harness-labels";
+import { projectModelOutputThread, type ModelOutputThreadMessage } from "../lib/model-output-thread";
 import { HarnessLabel } from "./HarnessLabel";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
-type ChatMessage = HivewardChatMessage & {
+type ChatMessage = Omit<ModelOutputThreadMessage, "runtimeStatus"> & {
   status?: "sent" | "streaming" | "failed";
   runtimeRef?: ChatRuntimeRef;
   runtimeStatus?: ChatRuntimeStatusView;
@@ -105,7 +104,6 @@ export function ChatPage({
   roleDirectory,
   language,
   harnessPermissionModes,
-  onInboxItemCreated,
   onInboxItemsRefreshNeeded
 }: {
   catalog?: CatalogSnapshot;
@@ -118,7 +116,6 @@ export function ChatPage({
   roleDirectory?: CompanyRoleDirectory;
   language: Language;
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
-  onInboxItemCreated?: (item: InboxItem) => void;
   onInboxItemsRefreshNeeded?: () => void | Promise<void>;
 }) {
   const copy = chatCopy(language);
@@ -229,10 +226,10 @@ export function ChatPage({
             : activeSessionViewId && sessions.some((session) => session.id === activeSessionViewId)
               ? activeSessionViewId
               : sessions[0]?.id;
-        const activeMessages = nextActiveId ? await api.getHivewardChatMessages(nextActiveId) : [];
+        const activeEvents = nextActiveId ? await api.getChatOutputEvents(nextActiveId) : [];
         const nextSessionViews = sessions.map((session) => ({
           ...session,
-          messages: session.id === nextActiveId ? activeMessages.map((message) => decorateHivewardMessage(message, copy)) : []
+          messages: session.id === nextActiveId ? decorateAgentOutputMessages(activeEvents, copy) : []
         }));
         setSessionViews(nextSessionViews);
         setActiveSessionViewId(nextActiveId);
@@ -404,13 +401,14 @@ export function ChatPage({
   );
 
   const bindActiveSessionView = useCallback(
-    (event: Extract<ChatStreamEvent, { type: "started" | "done" }>, eventHarnessId: HarnessId) => {
+    (event: AgentOutputEvent, eventHarnessId: HarnessId) => {
+      const sessionKey = readOutputRuntimeString(event, "sessionKey");
       updateActiveSessionView((sessionView) => ({
         ...sessionView,
         harnessId: eventHarnessId,
-        nativeSessionId: event.sessionKey || undefined,
-        nativeSessionState: event.sessionKey ? "resumable" : sessionView.nativeSessionState,
-        updatedAt: event.updatedAt
+        nativeSessionId: sessionKey || undefined,
+        nativeSessionState: sessionKey ? "resumable" : sessionView.nativeSessionState,
+        updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt
       }));
     },
     [updateActiveSessionView]
@@ -445,13 +443,13 @@ export function ChatPage({
     async (sessionViewId: string) => {
       setHistoryLoadingSessionKey(sessionViewId);
       try {
-        const messages = await api.getHivewardChatMessages(sessionViewId);
+        const events = await api.getChatOutputEvents(sessionViewId);
         setSessionViews((current) =>
           current.map((sessionView) =>
             sessionView.id === sessionViewId
               ? {
                   ...sessionView,
-                  messages: messages.map((message) => decorateHivewardMessage(message, copy)),
+                  messages: decorateAgentOutputMessages(events, copy),
                   updatedAt: new Date().toISOString()
                 }
               : sessionView
@@ -526,7 +524,8 @@ export function ChatPage({
     if (!activeSessionView?.messages.some((message) => message.status === "streaming")) return;
 
     const interval = window.setInterval(() => {
-      void api.getHivewardChatMessages(activeSessionView.id).then((serverMessages) => {
+      void api.getChatOutputEvents(activeSessionView.id).then((serverEvents) => {
+        const serverMessages = decorateAgentOutputMessages(serverEvents, copy);
         const shouldRefresh = shouldRefreshStreamingChatMessages({
           localMessages: activeSessionView.messages,
           serverMessages
@@ -538,7 +537,7 @@ export function ChatPage({
     }, 8_000);
 
     return () => window.clearInterval(interval);
-  }, [activeSessionView?.id, activeSessionView?.messages, loadSessionMessages]);
+  }, [activeSessionView?.id, activeSessionView?.messages, copy, loadSessionMessages]);
 
   useEffect(() => {
     const textarea = composerTextareaRef.current;
@@ -825,9 +824,10 @@ export function ChatPage({
         },
         {
           onEvent: (event) => {
-            applyChatEvent(assistantId, event, updateActiveSessionViewMessages, copy, sendHarnessId);
-            if (event.type === "started" || event.type === "done") bindActiveSessionView(event, sendHarnessId);
-            if (event.type === "inbox_item_created") onInboxItemCreated?.(event.item);
+            applyAgentOutputEvent(assistantId, event, updateActiveSessionViewMessages, copy, sendHarnessId);
+            if (event.kind === "message_started" || event.kind === "message_completed" || event.kind === "message_failed") {
+              bindActiveSessionView(event, sendHarnessId);
+            }
           }
         },
         controller.signal
@@ -1367,20 +1367,20 @@ function ChatSelect({
   );
 }
 
-function applyChatEvent(
+function applyAgentOutputEvent(
   assistantId: string,
-  event: ChatStreamEvent,
+  event: AgentOutputEvent,
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>,
   copy: ReturnType<typeof chatCopy>,
   fallbackHarnessId: HarnessId
 ) {
-  if (event.type === "delta") {
+  if (event.kind === "message_delta") {
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
           ? {
               ...message,
-              content: event.replace ? event.text : `${message.content}${event.text}`,
+              content: event.metadata?.replace === true ? event.delta ?? "" : `${message.content}${event.delta ?? ""}`,
               progressText: undefined
             }
           : message
@@ -1389,7 +1389,7 @@ function applyChatEvent(
     return;
   }
 
-  if (event.type === "runtime_state") {
+  if (event.kind === "runtime_state") {
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
@@ -1400,8 +1400,8 @@ function applyChatEvent(
     return;
   }
 
-  if (event.type === "started") {
-    const harnessLabel = formatHarnessLabel(event.source || fallbackHarnessId);
+  if (event.kind === "message_started") {
+    const harnessLabel = formatHarnessLabel(readOutputRuntimeString(event, "source") ?? fallbackHarnessId);
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
@@ -1418,7 +1418,7 @@ function applyChatEvent(
     return;
   }
 
-  if (event.type === "done") {
+  if (event.kind === "message_completed" || event.kind === "message_failed") {
     setMessages((current) =>
       current.map((message) =>
         message.id === assistantId
@@ -1426,8 +1426,8 @@ function applyChatEvent(
               ...message,
               progressText: undefined,
               runtimeStatus: undefined,
-              content: message.content || event.output || event.error || "",
-              status: event.status === "failed" || event.status === "cancelled" ? "failed" : "sent",
+              content: message.content || event.bodyMarkdown || readOutputRuntimeString(event, "error") || "",
+              status: event.kind === "message_failed" || readOutputRuntimeString(event, "status") === "failed" || readOutputRuntimeString(event, "status") === "cancelled" ? "failed" : "sent",
               runtimeRef: toRuntimeRef(event, message.runtimeActivities ?? message.runtimeRef?.activity),
               runtimeActivities: message.runtimeActivities ?? message.runtimeRef?.activity
             }
@@ -1437,11 +1437,7 @@ function applyChatEvent(
     return;
   }
 
-  if (event.type === "inbox_item_created") {
-    return;
-  }
-
-  const errorMessage = formatChatStreamError(event, copy);
+  const errorMessage = formatAgentOutputError(event, copy);
   setMessages((current) =>
     current.map((message) =>
       message.id === assistantId
@@ -1453,10 +1449,11 @@ function applyChatEvent(
 
 function updateMessageRuntimeActivity(
   message: ChatMessage,
-  event: Extract<ChatStreamEvent, { type: "runtime_state" }>
+  event: AgentOutputEvent
 ): ChatMessage {
   const runtimeStatus = toChatRuntimeStatus(event);
   const activity = toRuntimeActivity(event);
+  if (!activity || !runtimeStatus) return message;
   const runtimeActivities = upsertRuntimeActivity(message.runtimeActivities ?? message.runtimeRef?.activity ?? [], activity);
   return {
     ...message,
@@ -1472,14 +1469,21 @@ function updateMessageRuntimeActivity(
   };
 }
 
-function toRuntimeActivity(event: Extract<ChatStreamEvent, { type: "runtime_state" }>): ChatRuntimeActivity {
+function toRuntimeActivity(event: AgentOutputEvent): ChatRuntimeActivity | undefined {
+  const phase = event.runtimeState?.phase;
+  const label = event.runtimeState?.label;
+  const source = event.runtimeState?.source;
+  if ((phase !== "thinking" && phase !== "tool" && phase !== "command") || typeof label !== "string" || !isRuntimeObjectSource(source)) {
+    return undefined;
+  }
+  const activityStatus = event.runtimeState?.activityStatus;
   return {
-    id: event.id ?? `${event.source}:${event.phase}:${event.label}`,
-    source: event.source,
-    phase: event.phase,
-    label: event.label,
-    status: event.status ?? "updated",
-    updatedAt: event.updatedAt ?? new Date().toISOString()
+    id: readOutputRuntimeString(event, "activityId") ?? `${source}:${phase}:${label}`,
+    source,
+    phase,
+    label,
+    status: activityStatus === "started" || activityStatus === "completed" ? activityStatus : "updated",
+    updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt
   };
 }
 
@@ -1489,11 +1493,12 @@ function upsertRuntimeActivity(current: ChatRuntimeActivity[], activity: ChatRun
   return current.map((item, itemIndex) => itemIndex === index ? { ...item, ...activity } : item);
 }
 
-function formatChatStreamError(event: Extract<ChatStreamEvent, { type: "error" }>, copy: ReturnType<typeof chatCopy>): string {
-  if (event.code === "openclaw_gateway_not_configured") return copy.openClawGatewayNotConfigured;
-  if (event.code === "openclaw_gateway_unreachable") return copy.openClawGatewayUnreachable;
-  if (event.code === "openclaw_gateway_not_connected") return copy.openClawGatewayNotConnected;
-  return event.message;
+function formatAgentOutputError(event: AgentOutputEvent, copy: ReturnType<typeof chatCopy>): string {
+  const code = readOutputRuntimeString(event, "code");
+  if (code === "openclaw_gateway_not_configured") return copy.openClawGatewayNotConfigured;
+  if (code === "openclaw_gateway_unreachable") return copy.openClawGatewayUnreachable;
+  if (code === "openclaw_gateway_not_connected") return copy.openClawGatewayNotConnected;
+  return event.bodyMarkdown ?? readOutputRuntimeString(event, "error") ?? copy.runtimeError;
 }
 
 function formatWaitingProgress(
@@ -1530,7 +1535,7 @@ function formatRuntimeTimings(timings: ChatStreamTimings, source: string, copy: 
     runtimeAcceptedMs === undefined ? undefined : `${copy.timingAccepted} ${formatDurationMs(runtimeAcceptedMs)}`,
     runtimeFirstDeltaMs === undefined ? undefined : `${copy.timingFirstToken} ${formatDurationMs(runtimeFirstDeltaMs)}`
   ].filter((item): item is string => Boolean(item));
-  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} · ${harnessDetails.join(" / ")} · ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
+  return `${copy.timingTotal} ${formatDurationMs(timings.totalMs)} 路 ${harnessDetails.join(" / ")} 路 ${copy.timingHiveward} ${formatDurationMs(hivewardMs)}`;
 }
 
 function formatDurationMs(value: number): string {
@@ -1548,30 +1553,55 @@ function stripHivewardInboxSubmissionBlocks(content: string): string {
 }
 
 function toRuntimeRef(
-  event: Extract<ChatStreamEvent, { type: "started" | "done" }>,
+  event: AgentOutputEvent,
   activity?: ChatRuntimeActivity[]
-): ChatRuntimeRef {
+): ChatRuntimeRef | undefined {
+  const taskId = readOutputRuntimeString(event, "taskId");
+  const runId = readOutputRuntimeString(event, "runId");
+  const sessionKey = readOutputRuntimeString(event, "sessionKey");
+  const source = event.runtimeState?.source;
+  const status = readOutputRuntimeString(event, "status");
+  if (!taskId || !runId || !sessionKey || !isRuntimeObjectSource(source) || !status) return undefined;
   return {
-    taskId: event.taskId,
-    runId: event.runId,
-    sessionKey: event.sessionKey,
-    source: event.source,
-    status: event.status,
-    updatedAt: event.updatedAt,
-    error: "error" in event ? event.error : undefined,
-    usage: "usage" in event ? event.usage : undefined,
-    timings: "timings" in event ? event.timings : undefined,
+    taskId,
+    runId,
+    sessionKey,
+    source,
+    status,
+    updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt,
+    error: readOutputRuntimeString(event, "error"),
+    usage: readOutputRuntimeRecord(event, "usage") as ChatRuntimeRef["usage"],
+    timings: readOutputRuntimeRecord(event, "timings") as ChatRuntimeRef["timings"],
     activity: activity?.length ? activity : undefined
   };
 }
 
-function decorateHivewardMessage(message: HivewardChatMessage, copy: ReturnType<typeof chatCopy>): ChatMessage {
-  return {
+function decorateAgentOutputMessages(events: readonly AgentOutputEvent[], copy: ReturnType<typeof chatCopy>): ChatMessage[] {
+  return projectModelOutputThread(events).map((message) => ({
     ...message,
-    status: message.status,
-    runtimeActivities: message.runtimeRef?.activity,
-    speakerLabel: message.role === "user" ? copy.you : formatHarnessLabel(message.harnessId)
-  };
+    runtimeStatus: message.runtimeStatus,
+    speakerLabel: message.role === "user" ? copy.you : formatHarnessLabel(message.harnessId ?? "openclaw")
+  }));
+}
+
+function readOutputRuntimeString(event: AgentOutputEvent, key: string): string | undefined {
+  const value = event.runtimeState?.[key];
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function readOutputRuntimeRecord(event: AgentOutputEvent, key: string): Record<string, unknown> | undefined {
+  const value = event.runtimeState?.[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function isRuntimeObjectSource(value: unknown): value is ChatRuntimeRef["source"] {
+  return value === "openclaw" ||
+    value === "claude" ||
+    value === "codex" ||
+    value === "google" ||
+    value === "cursor" ||
+    value === "opencode" ||
+    value === "hermes";
 }
 
 function readNativeSessionOptionValue(value: string): string | undefined {

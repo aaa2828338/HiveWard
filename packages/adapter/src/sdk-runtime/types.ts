@@ -3,7 +3,7 @@ import type {
   AgentTaskResult,
   ChatAttachment,
   ChatPermissionMode,
-  ChatStreamEvent,
+  RuntimeChatEvent,
   ChatThinkingEffort,
   HarnessSkillId,
   StartAgentTaskInput,
@@ -13,7 +13,7 @@ import type {
 import { resolve } from "node:path";
 
 export interface AgentSdkRuntime {
-  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: ChatStreamEvent) => void): Promise<void>;
+  streamChatMessage(input: AgentSdkChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void>;
   startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
   waitForTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   cancelTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;

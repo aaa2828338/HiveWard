@@ -344,14 +344,14 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.rejectInboxItem(rejectedProposal.id, "No capacity.")).resolves.toMatchObject({ status: "rejected" });
 
       const sessionRecord = await store.createChatSession({ harnessId: "codex", title: "Contract chat" });
-      await store.appendChatMessage({
+      await expect(store.appendChatMessage({
         sessionId: sessionRecord.id,
         role: "user",
         content: "Hello",
         harnessId: "codex",
         status: "sent"
-      });
-      await expect(store.listChatMessages(sessionRecord.id)).resolves.toEqual([expect.objectContaining({ content: "Hello" })]);
+      })).rejects.toThrow("保留为历史事实，不参与决策");
+      await expect(store.listChatMessages(sessionRecord.id)).resolves.toEqual([]);
     } finally {
       close?.();
     }

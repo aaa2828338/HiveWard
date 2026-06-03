@@ -18,7 +18,7 @@ import type {
   BlueprintRunArchive,
   HumanActionRequest,
   HumanActionResponse,
-  HivewardChatMessage,
+  HistoricalChatMessageFact,
   HivewardChatSession,
   InboxItem,
   ManagerCommand,
@@ -283,7 +283,7 @@ type VerificationSnapshot = {
   artifacts: Array<Pick<Artifact, "id" | "runId" | "roundId" | "nodeRunId" | "kind" | "format" | "storagePath" | "downloadUrl" | "sha256" | "bytes" | "relativePath">>;
   releaseReports: Array<Pick<ReleaseReport, "id" | "roundId" | "approvalRequestId" | "version"> & { artifactRefsHash: string }>;
   chatSessions: Array<Pick<HivewardChatSession, "id" | "harnessId" | "nativeSessionId" | "status">>;
-  chatMessages: Array<Pick<HivewardChatMessage, "id" | "sessionId" | "role" | "content" | "status" | "nativeMessageId">>;
+  chatMessages: Array<Pick<HistoricalChatMessageFact, "id" | "sessionId" | "role" | "content" | "status" | "nativeMessageId">>;
 };
 
 async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardStore): Promise<VerificationSnapshot> {

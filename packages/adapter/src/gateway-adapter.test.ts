@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChatStreamEvent } from "@hiveward/shared";
+import type { RuntimeChatEvent } from "@hiveward/shared";
 import { GatewayOpenClawAdapter, formatAgentMessage, readAgentTranscriptMessages } from "./gateway-adapter";
 
 describe("gateway adapter transcript extraction", () => {
@@ -84,7 +84,7 @@ describe("gateway adapter transcript extraction", () => {
       }
     };
     (adapter as unknown as { getSession: () => Promise<typeof fakeSession> }).getSession = async () => fakeSession;
-    const events: ChatStreamEvent[] = [];
+    const events: RuntimeChatEvent[] = [];
 
     await adapter.streamChatMessage(
       {

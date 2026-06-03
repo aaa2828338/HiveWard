@@ -32,7 +32,7 @@ import type {
   ChatRoleScope,
   CreateHivewardChatSessionRequest,
   HarnessId,
-  HivewardChatMessage,
+  HistoricalChatMessageFact,
   HivewardChatSession,
   AgentHandoff,
   AgentHumanReport,
@@ -2299,7 +2299,7 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async listChatMessages(sessionId: string): Promise<HivewardChatMessage[]> {
+  async listChatMessages(sessionId: string): Promise<HistoricalChatMessageFact[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
@@ -2309,12 +2309,12 @@ export class FileHivewardStore implements HivewardStore {
   }
 
   async appendChatMessage(
-    input: Omit<HivewardChatMessage, "id" | "createdAt" | "updatedAt"> & {
+    input: Omit<HistoricalChatMessageFact, "id" | "createdAt" | "updatedAt" | "retentionNote"> & {
       id?: string;
       createdAt?: string;
       updatedAt?: string;
     }
-  ): Promise<HivewardChatMessage> {
+  ): Promise<HistoricalChatMessageFact> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);
@@ -2325,8 +2325,8 @@ export class FileHivewardStore implements HivewardStore {
   async updateChatMessage(
     sessionId: string,
     messageId: string,
-    patch: Partial<Pick<HivewardChatMessage, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
-  ): Promise<HivewardChatMessage | undefined> {
+    patch: Partial<Pick<HistoricalChatMessageFact, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
+  ): Promise<HistoricalChatMessageFact | undefined> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
       const companyId = this.getCurrentCompanyId(index);

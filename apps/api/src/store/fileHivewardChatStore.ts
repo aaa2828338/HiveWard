@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+﻿import { readFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import type {
   ChatAttachment,
@@ -12,7 +12,7 @@ import type {
   CompanyProfile,
   CreateHivewardChatSessionRequest,
   HarnessId,
-  HivewardChatMessage,
+  HistoricalChatMessageFact,
   HivewardChatSession,
   UpdateHivewardChatSessionRequest
 } from "@hiveward/shared";
@@ -24,7 +24,7 @@ const defaultMaxMessagesPerSession = 60;
 interface HivewardChatStoreState {
   schema: typeof chatStoreSchema;
   chatSessions: HivewardChatSession[];
-  chatMessages: Record<string, HivewardChatMessage[]>;
+  chatMessages: Record<string, HistoricalChatMessageFact[]>;
 }
 
 type RawHivewardChatStoreState = Partial<HivewardChatStoreState> & {
@@ -154,7 +154,7 @@ export class FileHivewardChatStore {
     return this.updateChatSession(companyId, id, { status: "ended" });
   }
 
-  async listChatMessages(companyId: string, sessionId: string): Promise<HivewardChatMessage[]> {
+  async listChatMessages(companyId: string, sessionId: string): Promise<HistoricalChatMessageFact[]> {
     return this.enqueue(async () => {
       const state = await this.readStateUnlocked();
       if (!state.chatSessions.some((session) => session.id === sessionId && session.companyId === companyId)) {
@@ -165,79 +165,26 @@ export class FileHivewardChatStore {
   }
 
   async appendChatMessage(
-    companyId: string | undefined,
-    input: Omit<HivewardChatMessage, "id" | "createdAt" | "updatedAt"> & {
+    _companyId: string | undefined,
+    _input: Omit<HistoricalChatMessageFact, "id" | "createdAt" | "updatedAt" | "retentionNote"> & {
       id?: string;
       createdAt?: string;
       updatedAt?: string;
     }
-  ): Promise<HivewardChatMessage> {
-    return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const sessionIndex = state.chatSessions.findIndex((session) => session.id === input.sessionId && session.companyId === companyId);
-      if (sessionIndex < 0) {
-        throw new Error(`Chat session not found: ${input.sessionId}`);
-      }
-      const now = new Date().toISOString();
-      const message: HivewardChatMessage = {
-        id: input.id ?? nextChatMessageId(state.chatMessages[input.sessionId] ?? []),
-        sessionId: input.sessionId,
-        role: normalizeChatMessageRole(input.role) ?? "user",
-        content: input.content,
-        attachments: normalizeStoredChatAttachments(input.attachments),
-        harnessId: normalizeHarnessId(input.harnessId),
-        modelId: readOptionalString(input.modelId),
-        nativeMessageId: readOptionalString(input.nativeMessageId),
-        status: normalizeChatMessageStatus(input.status) ?? "sent",
-        runtimeRef: normalizeChatRuntimeRef(input.runtimeRef),
-        createdAt: input.createdAt ?? now,
-        updatedAt: input.updatedAt
-      };
-      state.chatMessages[input.sessionId] = [...(state.chatMessages[input.sessionId] ?? []), message];
-      enforceMessageRetention(state, input.sessionId, this.maxMessagesPerSession);
-      state.chatSessions[sessionIndex] = {
-        ...state.chatSessions[sessionIndex]!,
-        title: deriveChatSessionTitle(state.chatSessions[sessionIndex]!, message),
-        updatedAt: now
-      };
-      await this.writeStateUnlocked(state);
-      return message;
-    });
+  ): Promise<HistoricalChatMessageFact> {
+    throw new Error("HistoricalChatMessageFact is 保留为历史事实，不参与决策 and cannot be appended as normal output.");
   }
 
   async updateChatMessage(
     companyId: string | undefined,
     sessionId: string,
     messageId: string,
-    patch: Partial<Pick<HivewardChatMessage, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
-  ): Promise<HivewardChatMessage | undefined> {
-    return this.enqueue(async () => {
-      const state = await this.readStateUnlocked();
-      const sessionIndex = state.chatSessions.findIndex((session) => session.id === sessionId && session.companyId === companyId);
-      if (sessionIndex < 0) return undefined;
-      const messages = state.chatMessages[sessionId] ?? [];
-      const messageIndex = messages.findIndex((message) => message.id === messageId);
-      if (messageIndex < 0) return undefined;
-      const now = new Date().toISOString();
-      const current = messages[messageIndex]!;
-      const next: HivewardChatMessage = {
-        ...current,
-        content: patch.content ?? current.content,
-        status: normalizeChatMessageStatus(patch.status) ?? current.status,
-        runtimeRef: patch.runtimeRef === undefined ? current.runtimeRef : normalizeChatRuntimeRef(patch.runtimeRef),
-        nativeMessageId: readOptionalString(patch.nativeMessageId) ?? current.nativeMessageId,
-        modelId: readOptionalString(patch.modelId) ?? current.modelId,
-        updatedAt: now
-      };
-      messages[messageIndex] = next;
-      state.chatMessages[sessionId] = messages;
-      state.chatSessions[sessionIndex] = {
-        ...state.chatSessions[sessionIndex]!,
-        updatedAt: now
-      };
-      await this.writeStateUnlocked(state);
-      return next;
-    });
+    _patch: Partial<Pick<HistoricalChatMessageFact, "content" | "status" | "runtimeRef" | "nativeMessageId" | "modelId">>
+  ): Promise<HistoricalChatMessageFact | undefined> {
+    void companyId;
+    void sessionId;
+    void messageId;
+    throw new Error("HistoricalChatMessageFact is 保留为历史事实，不参与决策 and cannot be updated as normal output.");
   }
 
   async deleteCompanyChats(companyId: string): Promise<void> {
@@ -307,9 +254,9 @@ function mergeChatStates(left: HivewardChatStoreState, right: HivewardChatStoreS
   }
 
   const sessionIds = new Set(sessionsById.keys());
-  const chatMessages: Record<string, HivewardChatMessage[]> = {};
+  const chatMessages: Record<string, HistoricalChatMessageFact[]> = {};
   for (const sessionId of sessionIds) {
-    const messagesById = new Map<string, HivewardChatMessage>();
+    const messagesById = new Map<string, HistoricalChatMessageFact>();
     for (const message of left.chatMessages[sessionId] ?? []) {
       messagesById.set(message.id, message);
     }
@@ -367,9 +314,9 @@ function normalizeChatSessions(value: unknown, companies: CompanyProfile[] | und
     : [];
 }
 
-function normalizeChatMessages(value: unknown, sessions: HivewardChatSession[], now: string): Record<string, HivewardChatMessage[]> {
+function normalizeChatMessages(value: unknown, sessions: HivewardChatSession[], now: string): Record<string, HistoricalChatMessageFact[]> {
   const sessionIds = new Set(sessions.map((session) => session.id));
-  const messagesBySession: Record<string, HivewardChatMessage[]> = {};
+  const messagesBySession: Record<string, HistoricalChatMessageFact[]> = {};
   for (const session of sessions) {
     messagesBySession[session.id] = [];
   }
@@ -383,11 +330,12 @@ function normalizeChatMessages(value: unknown, sessions: HivewardChatSession[], 
   return messagesBySession;
 }
 
-function normalizeChatMessage(value: unknown, sessionId: string, fallbackHarnessId: HarnessId, now: string): HivewardChatMessage[] {
+function normalizeChatMessage(value: unknown, sessionId: string, fallbackHarnessId: HarnessId, now: string): HistoricalChatMessageFact[] {
   if (!isRecord(value)) return [];
   const role = normalizeChatMessageRole(value.role);
   if (!role) return [];
   return [{
+    retentionNote: "保留为历史事实，不参与决策",
     id: readString(value.id) ?? `chat-message-${nanoid(8)}`,
     sessionId,
     role,
@@ -454,7 +402,7 @@ function normalizeNativeSessionState(value: unknown): ChatNativeSessionState | u
   return value === "unknown" || value === "resumable" || value === "missing" ? value : undefined;
 }
 
-function normalizeChatMessageRole(value: unknown): HivewardChatMessage["role"] | undefined {
+function normalizeChatMessageRole(value: unknown): HistoricalChatMessageFact["role"] | undefined {
   if (value === "user" || value === "assistant" || value === "system") return value;
   return undefined;
 }
@@ -541,7 +489,7 @@ function normalizeChatRuntimeActivities(value: unknown): ChatRuntimeRef["activit
   return activities.length ? activities : undefined;
 }
 
-function deriveChatSessionTitle(session: HivewardChatSession, message: HivewardChatMessage): string {
+function deriveChatSessionTitle(session: HivewardChatSession, message: HistoricalChatMessageFact): string {
   if (session.title && session.title !== "New chat") return session.title;
   if (message.role !== "user") return session.title || "New chat";
   const content = message.content.trim();

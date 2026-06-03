@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   CatalogSnapshot,
   CatalogSnapshotResponse,
   ClaudeCodeModelConfig,
@@ -68,7 +68,7 @@ import type {
   SaveClaudeCodeModelProfileRequest,
   UpdateClaudeCodeModelConfigRequest,
   SendChatSessionMessageRequest,
-  ChatStreamEvent,
+  AgentOutputEvent,
   HivewardChatSession,
   HivewardChatSessionResponse,
   InboxItem,
@@ -108,7 +108,7 @@ export function isClosedApprovalConflictError(error: unknown): boolean {
 }
 
 export interface ChatStreamHandlers {
-  onEvent: (event: ChatStreamEvent) => void;
+  onEvent: (event: AgentOutputEvent) => void;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -214,7 +214,7 @@ export const api = {
     return response.session;
   },
 
-  async getHivewardChatMessages(sessionId: string): Promise<ChatSessionMessagesResponse["messages"]> {
+  async getChatOutputEvents(sessionId: string): Promise<ChatSessionMessagesResponse["messages"]> {
     const response = await request<ChatSessionMessagesResponse>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
     return response.messages;
   },
@@ -683,12 +683,12 @@ function consumeChatStreamBuffer(buffer: string, handlers: ChatStreamHandlers): 
   return remainder;
 }
 
-function readChatStreamFrame(frame: string): ChatStreamEvent | undefined {
+function readChatStreamFrame(frame: string): AgentOutputEvent | undefined {
   const data = frame
     .split(/\n/)
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart())
     .join("\n");
   if (!data) return undefined;
-  return JSON.parse(data) as ChatStreamEvent;
+  return JSON.parse(data) as AgentOutputEvent;
 }

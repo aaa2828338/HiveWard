@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+﻿import { createHash } from "node:crypto";
 
 export interface SqliteMigration {
   version: number;
@@ -855,7 +855,7 @@ const sqliteRunRoomFoundationStatements = [
   )`,
   `CREATE TABLE IF NOT EXISTS agent_output_events (
     id TEXT PRIMARY KEY,
-    owner_type TEXT NOT NULL CHECK (owner_type IN ('executive_chat','run_room','manager_command','worker_task','human_action_request','blueprint_governance')),
+    owner_type TEXT NOT NULL CHECK (owner_type IN ('chat_session','run_room','manager_thread','worker_task','human_action_request')),
     owner_id TEXT NOT NULL,
     actor_type TEXT NOT NULL CHECK (actor_type IN ('user','ceo','leader','manager','worker','system')),
     kind TEXT NOT NULL CHECK (kind IN ('message_started','message_delta','message_completed','runtime_state','tool_state','message_failed')),
@@ -1065,7 +1065,7 @@ export const sqliteRequiredChecks = [
   { table: "human_action_requests", contains: "source_context_type IN ('run_room','executive_chat','blueprint_governance')" },
   { table: "human_action_requests", contains: "response_intent IN ('decision_required','reply_required','review_required')" },
   { table: "human_action_requests", contains: "status IN ('pending','responded','closed','cancelled')" },
-  { table: "agent_output_events", contains: "owner_type IN ('executive_chat','run_room','manager_command','worker_task','human_action_request','blueprint_governance')" },
+  { table: "agent_output_events", contains: "owner_type IN ('chat_session','run_room','manager_thread','worker_task','human_action_request')" },
   { table: "agent_output_events", contains: "actor_type IN ('user','ceo','leader','manager','worker','system')" },
   { table: "agent_output_events", contains: "kind IN ('message_started','message_delta','message_completed','runtime_state','tool_state','message_failed')" },
   { table: "agent_output_events", contains: "sequence >= 1" },

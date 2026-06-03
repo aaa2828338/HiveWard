@@ -655,7 +655,7 @@ describe("FileHivewardStore chat storage isolation", () => {
     await expect(store.listChatMessages("chat-session-unknown-company")).resolves.toEqual([]);
   });
 
-  it("keeps chat writes out of the main store file", async () => {
+  it("forbids historical chat message writes as normal output", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
     const storePath = join(dir, "hiveward-store.json");
     const chatStorePath = join(dir, "hiveward-chat-store.json");
@@ -664,19 +664,18 @@ describe("FileHivewardStore chat storage isolation", () => {
 
     const session = await store.createChatSession({ harnessId: "codex", title: "Storage boundary" });
     const mainBefore = readFileSync(storePath, "utf8");
-    await store.appendChatMessage({
+    const chatBefore = readFileSync(chatStorePath, "utf8");
+    await expect(store.appendChatMessage({
       sessionId: session.id,
       role: "user",
-      content: "This should only touch chat storage.",
+      content: "This old output path must not mutate state.",
       harnessId: "codex",
       status: "sent"
-    });
+    })).rejects.toThrow("保留为历史事实，不参与决策");
 
     expect(readFileSync(storePath, "utf8")).toBe(mainBefore);
-    const chatStore = JSON.parse(readFileSync(chatStorePath, "utf8")) as {
-      chatMessages?: Record<string, Array<{ content: string }>>;
-    };
-    expect(chatStore.chatMessages?.[session.id]?.[0]?.content).toBe("This should only touch chat storage.");
+    expect(readFileSync(chatStorePath, "utf8")).toBe(chatBefore);
+    await expect(store.listChatMessages(session.id)).resolves.toEqual([]);
   });
 
   it("keeps config writes out of the chat store file", async () => {
@@ -709,13 +708,6 @@ describe("FileHivewardStore chat storage isolation", () => {
     const created = await store.createCompany({ name: "Disposable Company" });
     const companyId = created.selectedCompanyId!;
     const session = await store.createChatSession({ harnessId: "codex", title: "Disposable chat" });
-    await store.appendChatMessage({
-      sessionId: session.id,
-      role: "user",
-      content: "Delete me with the company.",
-      harnessId: "codex",
-      status: "sent"
-    });
 
     await store.deleteCompany(companyId);
 
@@ -727,27 +719,25 @@ describe("FileHivewardStore chat storage isolation", () => {
     expect(chatStore.chatMessages?.[session.id]).toBeUndefined();
   });
 
-  it("keeps only the newest 60 visible messages per chat session", async () => {
+  it("keeps old chat message append from creating visible messages", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
     const storePath = join(dir, "hiveward-store.json");
     const store = new FileHivewardStore(storePath);
     await store.init();
 
     const session = await store.createChatSession({ harnessId: "codex", title: "Retention" });
-    for (let index = 1; index <= 65; index += 1) {
-      await store.appendChatMessage({
+    for (let index = 1; index <= 3; index += 1) {
+      await expect(store.appendChatMessage({
         sessionId: session.id,
         role: "user",
         content: `message ${index}`,
         harnessId: "codex",
         status: "sent"
-      });
+      })).rejects.toThrow("保留为历史事实，不参与决策");
     }
 
     const messages = await store.listChatMessages(session.id);
-    expect(messages).toHaveLength(60);
-    expect(messages[0]?.content).toBe("message 6");
-    expect(messages[59]?.content).toBe("message 65");
+    expect(messages).toEqual([]);
   });
 
   it("applies the message retention limit after merging existing and legacy chat stores", async () => {
