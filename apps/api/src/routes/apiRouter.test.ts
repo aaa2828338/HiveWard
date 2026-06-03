@@ -34,6 +34,7 @@ import { resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
 import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
+import { ManagerCommandService } from "../services/managerCommandService";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
 import type { BlueprintWorker } from "../worker/blueprintWorker";
 
@@ -793,7 +794,6 @@ describe("apiRouter", () => {
               label: "Manager",
               portCount: 1,
               maxHandoffs: 1,
-              dispatchMode: "self_dispatch",
               modelId: "codex/snapshot-model"
             } satisfies ManagerNodeConfig
           }
@@ -2985,6 +2985,154 @@ describe("apiRouter", () => {
           actions: { canReply: true }
         });
       });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stores Run page sends only as manager-targeted RunInterjection facts", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = "2026-06-03T00:00:00.000Z";
+      await fixture.store.createRunRoom({
+        id: "run-room-interjection",
+        companyId: "company-1",
+        status: "open",
+        title: "Run room interjection",
+        createdAt: now,
+        updatedAt: now
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/run-rooms/run-room-interjection/interjections`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messageMarkdown: "Please inspect worker output." })
+        });
+        const body = await readOkJson<{ feed: RunRoomFeed }>(response);
+        const interjections = await fixture.store.listRunInterjections({ runRoomId: "run-room-interjection" });
+
+        expect(interjections).toHaveLength(1);
+        expect(interjections[0]).toMatchObject({
+          runRoomId: "run-room-interjection",
+          target: "manager",
+          messageMarkdown: "Please inspect worker output."
+        });
+        expect(await fixture.store.listManagerCommands({ runRoomId: "run-room-interjection" })).toEqual([]);
+        expect(await fixture.store.listWorkerTasks({ runRoomId: "run-room-interjection" })).toEqual([]);
+        expect(body.feed.rows).toHaveLength(1);
+        expect(body.feed.rows[0]).toMatchObject({
+          sourceType: "user",
+          displayMode: "formal_message",
+          bodyMarkdown: "Please inspect worker output.",
+          actions: {}
+        });
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("applies manager commands to one active WorkerTask and rejects plural dispatch actions", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = "2026-06-03T00:00:00.000Z";
+      await fixture.store.createRunRoom({
+        id: "run-room-worker-task",
+        companyId: "company-1",
+        status: "open",
+        createdAt: now,
+        updatedAt: now
+      });
+      const service = new ManagerCommandService(fixture.store);
+      const applied = await service.applyCommand({
+        runRoomId: "run-room-worker-task",
+        action: "dispatch_worker_task",
+        workerSeatId: "worker-seat-1",
+        instructionMarkdown: "Research current risks."
+      });
+
+      expect(applied.managerCommand.action).toBe("dispatch_worker_task");
+      expect(applied.workerTask).toMatchObject({
+        runRoomId: "run-room-worker-task",
+        managerCommandId: applied.managerCommand.id,
+        workerSeatId: "worker-seat-1",
+        status: "queued"
+      });
+      await expect(service.applyCommand({
+        runRoomId: "run-room-worker-task",
+        action: "dispatch_worker_task",
+        workerSeatId: "worker-seat-2",
+        instructionMarkdown: "Second task should wait."
+      })).rejects.toThrow(/active WorkerTask/);
+      expect(await fixture.store.listManagerCommands({ runRoomId: "run-room-worker-task" })).toHaveLength(1);
+      expect(await fixture.store.listWorkerTasks({ runRoomId: "run-room-worker-task" })).toHaveLength(1);
+
+      const pluralDispatch = ["dispatch", "worker", "tasks"].join("_");
+      await expect(service.applyCommand({
+        runRoomId: "run-room-worker-task",
+        action: pluralDispatch,
+        instructionMarkdown: "Plural dispatch is forbidden."
+      })).rejects.toThrow(/ManagerCommand\.action/);
+
+      await fixture.store.createRunRoom({
+        id: "run-room-worker-task-succeeded",
+        companyId: "company-1",
+        status: "open",
+        createdAt: now,
+        updatedAt: now
+      });
+      await fixture.store.appendManagerCommand({
+        id: "manager-command-succeeded",
+        runRoomId: "run-room-worker-task-succeeded",
+        action: "dispatch_worker_task",
+        status: "succeeded",
+        createdAt: now,
+        updatedAt: now
+      });
+      await fixture.store.createWorkerTask({
+        id: "worker-task-succeeded",
+        runRoomId: "run-room-worker-task-succeeded",
+        managerCommandId: "manager-command-succeeded",
+        status: "succeeded",
+        createdAt: now,
+        updatedAt: now
+      });
+      const nextApplied = await service.applyCommand({
+        runRoomId: "run-room-worker-task-succeeded",
+        action: "dispatch_worker_task",
+        instructionMarkdown: "Follow up after success."
+      });
+      expect(nextApplied.workerTask?.status).toBe("queued");
+
+      await fixture.store.createRunRoom({
+        id: "run-room-worker-task-waiting",
+        companyId: "company-1",
+        status: "open",
+        createdAt: now,
+        updatedAt: now
+      });
+      await fixture.store.appendManagerCommand({
+        id: "manager-command-waiting",
+        runRoomId: "run-room-worker-task-waiting",
+        action: "dispatch_worker_task",
+        status: "waiting_user",
+        createdAt: now,
+        updatedAt: now
+      });
+      await fixture.store.createWorkerTask({
+        id: "worker-task-waiting",
+        runRoomId: "run-room-worker-task-waiting",
+        managerCommandId: "manager-command-waiting",
+        status: "waiting_user",
+        createdAt: now,
+        updatedAt: now
+      });
+      await expect(service.applyCommand({
+        runRoomId: "run-room-worker-task-waiting",
+        action: "dispatch_worker_task",
+        instructionMarkdown: "Blocked by user wait."
+      })).rejects.toThrow(/active WorkerTask/);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

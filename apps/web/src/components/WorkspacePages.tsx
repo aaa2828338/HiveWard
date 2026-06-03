@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import {
   Activity,
@@ -525,7 +525,8 @@ export function RunsPage({
   language,
   t,
   onSelectBlueprint,
-  onSelectRun
+  onSelectRun,
+  onSendRunInterjection
 }: {
   runs: BlueprintRunView[];
   blueprints: BlueprintDefinition[];
@@ -535,6 +536,7 @@ export function RunsPage({
   t: Messages;
   onSelectBlueprint: (blueprintId: string) => void;
   onSelectRun: (runId: string) => void;
+  onSendRunInterjection?: (runRoomId: string, messageMarkdown: string) => void;
 }) {
   const blueprintRuns = useMemo(
     () =>
@@ -550,6 +552,7 @@ export function RunsPage({
   const [activeOutputTab, setActiveOutputTab] = useState<RunOutputTabKey>("current");
   const [blueprintPickerOpen, setBlueprintPickerOpen] = useState(false);
   const [runHistoryOpen, setRunHistoryOpen] = useState(false);
+  const [runInterjectionDraft, setRunInterjectionDraft] = useState("");
   const [acknowledgedTerminalRunIds, setAcknowledgedTerminalRunIds] = useState<Set<string>>(() =>
     readAcknowledgedTerminalRunIds(getBrowserStorage())
   );
@@ -589,6 +592,7 @@ export function RunsPage({
     (issue) => issue.outputBody !== undefined || issue.nodeRun?.error
   ) ?? issues[0];
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : defaultActiveIssue;
+  const activeRunRoomId = activeRun?.runRoomFeed?.runRoomId;
   const runRoomFeedRows = useMemo(
     () => buildRunRoomFeedRowsForDisplay(activeRun, language),
     [activeRun?.run.id, activeRun?.runRoomFeed, language]
@@ -612,7 +616,16 @@ export function RunsPage({
 
   useEffect(() => {
     setActiveOutputTab("current");
+    setRunInterjectionDraft("");
   }, [activeRun?.run.id]);
+
+  const sendRunInterjection = useCallback((event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const messageMarkdown = runInterjectionDraft.trim();
+    if (!activeRunRoomId || !messageMarkdown || !onSendRunInterjection) return;
+    onSendRunInterjection(activeRunRoomId, messageMarkdown);
+    setRunInterjectionDraft("");
+  }, [activeRunRoomId, onSendRunInterjection, runInterjectionDraft]);
 
   useEffect(() => {
     if (!activeRun || activeIssueKey || issues.length === 0) return;
@@ -852,7 +865,31 @@ export function RunsPage({
                 {!blueprint ? (
                   <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
                 ) : activeRun ? (
-                  <RunRoomFeedView rows={runRoomFeedRows} language={language} />
+                  <div style={{ display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", gap: 12, minHeight: 0 }}>
+                    <RunRoomFeedView rows={runRoomFeedRows} language={language} />
+                    <form
+                      aria-label={language === "zh-CN" ? "RunRoom manager interjection" : "RunRoom manager interjection"}
+                      onSubmit={sendRunInterjection}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(0, 1fr) auto",
+                        gap: 8,
+                        alignItems: "end"
+                      }}
+                    >
+                      <textarea
+                        aria-label={language === "zh-CN" ? "Message to manager" : "Message to manager"}
+                        disabled={!activeRunRoomId}
+                        rows={2}
+                        value={runInterjectionDraft}
+                        onChange={(event) => setRunInterjectionDraft(event.currentTarget.value)}
+                      />
+                      <button type="submit" disabled={!activeRunRoomId || !onSendRunInterjection || runInterjectionDraft.trim().length === 0}>
+                        <Send size={16} />
+                        <span>Send</span>
+                      </button>
+                    </form>
+                  </div>
                 ) : (
                   <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
                 )}
@@ -959,11 +996,8 @@ function groupRunCommandSteps(steps: RunCommandStepFact[]): Map<string, RunComma
   return grouped;
 }
 
-function runCommandKindLabel(kind: RunCommandFact["kind"], language: Language): string {
+function runCommandKindLabel(_kind: RunCommandFact["kind"], language: Language): string {
   const zh = language === "zh-CN";
-  if (kind === "self_iteration_prepare_round") return zh ? "\u81ea\u8fed\u4ee3\u51c6\u5907" : "Self-iteration prepare";
-  if (kind === "self_iteration_execute_round") return zh ? "\u81ea\u8fed\u4ee3\u6267\u884c" : "Self-iteration execute";
-  if (kind === "self_iteration_release_report") return zh ? "\u81ea\u8fed\u4ee3\u62a5\u544a" : "Self-iteration report";
   return zh ? "\u5e38\u89c4\u8fd0\u884c" : "Regular run";
 }
 
@@ -4422,7 +4456,6 @@ function toExecutionTraceIssueStatus(status: string): TraceIssueStatus {
 
 function workTagsForExecutionTraceRow(row: RunExecutionTraceRow, label: string, language: Language): string[] {
   if (row.mode) return [workTagForExecutionMode(row.mode, language)];
-  if (row.command?.kind === "self_iteration_release_report") return [reportPublishWorkTag(language)];
   return [workTagFromLabel(label, language)];
 }
 

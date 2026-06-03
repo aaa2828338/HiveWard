@@ -1,5 +1,5 @@
 ﻿import { nanoid } from "nanoid";
-import type { AgentOutputEvent, RunRoomFeed, RunRoomFeedRow } from "@hiveward/shared";
+import type { AgentOutputEvent, RunInterjection, RunRoomFeed, RunRoomFeedRow } from "@hiveward/shared";
 import { assertAgentOutputEvent, assertRunRoomFeedRow } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
 
@@ -9,7 +9,7 @@ export type AppendAgentOutputEventInput =
 
 export class AgentOutputService {
   constructor(
-    private readonly store: Pick<HivewardStore, "appendAgentOutputEvent" | "listAgentOutputEvents">
+    private readonly store: Pick<HivewardStore, "appendAgentOutputEvent" | "listAgentOutputEvents" | "listRunInterjections">
   ) {}
 
   async appendEvent(input: AppendAgentOutputEventInput): Promise<AgentOutputEvent> {
@@ -30,8 +30,11 @@ export class AgentOutputService {
   }
 
   async projectRunRoomFeed(runRoomId: string): Promise<RunRoomFeed> {
-    const events = await this.store.listAgentOutputEvents();
-    return projectRunRoomFeed(runRoomId, events);
+    const [events, interjections] = await Promise.all([
+      this.store.listAgentOutputEvents(),
+      this.store.listRunInterjections({ runRoomId })
+    ]);
+    return projectRunRoomFeed(runRoomId, events, interjections);
   }
 
   private async nextSequence(ownerType: AgentOutputEvent["ownerType"], ownerId: string): Promise<number> {
@@ -40,15 +43,38 @@ export class AgentOutputService {
   }
 }
 
-export function projectRunRoomFeed(runRoomId: string, events: readonly AgentOutputEvent[]): RunRoomFeed {
-  const rows = events
-    .filter((event) => (event.ownerType === "run_room" && event.ownerId === runRoomId) || event.metadata?.runRoomId === runRoomId)
-    .filter((event) => event.kind === "message_completed" || event.kind === "message_failed" || event.kind === "runtime_state")
-    .map((event) => projectRunRoomFeedRow(runRoomId, event))
-    .filter((row): row is RunRoomFeedRow => Boolean(row))
+export function projectRunRoomFeed(
+  runRoomId: string,
+  events: readonly AgentOutputEvent[],
+  interjections: readonly RunInterjection[] = []
+): RunRoomFeed {
+  const rows = [
+    ...events
+      .filter((event) => (event.ownerType === "run_room" && event.ownerId === runRoomId) || event.metadata?.runRoomId === runRoomId)
+      .filter((event) => event.kind === "message_completed" || event.kind === "message_failed" || event.kind === "runtime_state")
+      .map((event) => projectRunRoomFeedRow(runRoomId, event))
+      .filter((row): row is RunRoomFeedRow => Boolean(row)),
+    ...interjections
+      .filter((interjection) => interjection.runRoomId === runRoomId)
+      .map((interjection) => projectRunInterjectionFeedRow(interjection))
+  ]
     .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() || left.id.localeCompare(right.id));
 
   return { runRoomId, rows };
+}
+
+function projectRunInterjectionFeedRow(interjection: RunInterjection): RunRoomFeedRow {
+  const row: RunRoomFeedRow = {
+    id: `run-room-feed-row-${interjection.id}`,
+    runRoomId: interjection.runRoomId,
+    sourceType: "user",
+    displayMode: "formal_message",
+    bodyMarkdown: interjection.messageMarkdown,
+    actions: {},
+    createdAt: interjection.createdAt
+  };
+  assertRunRoomFeedRow(row);
+  return row;
 }
 
 function projectRunRoomFeedRow(runRoomId: string, event: AgentOutputEvent): RunRoomFeedRow | undefined {

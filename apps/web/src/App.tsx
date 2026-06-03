@@ -1278,6 +1278,16 @@ export function App() {
     });
   }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
 
+  const sendRunInterjection = useCallback((runRoomId: string, messageMarkdown: string) => {
+    void withBusy("sendRunInterjection", async () => {
+      const response = await api.sendRunInterjection(runRoomId, { messageMarkdown });
+      if (response.run) {
+        applyRunView(response.run);
+        setSelectedRunId(response.run.run.id);
+      }
+    });
+  }, [applyRunView, withBusy]);
+
   const applyApprovalRequestResponse = useCallback(
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
       if (response.approvalThread) {
@@ -1672,6 +1682,7 @@ export function App() {
           t={t}
           onSelectBlueprint={selectRunPageBlueprint}
           onSelectRun={setSelectedRunId}
+          onSendRunInterjection={sendRunInterjection}
         />
       );
     }
@@ -3961,6 +3972,7 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "importBlueprint") return t.errors.save;
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
+  if (action === "sendRunInterjection") return t.errors.run;
   if (action === "completeRunApproval") return t.errors.approve;
   if (action === "selectRunApprovalReply") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;

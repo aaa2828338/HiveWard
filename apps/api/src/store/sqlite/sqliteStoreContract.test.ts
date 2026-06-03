@@ -106,7 +106,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         blueprintId: run.blueprintId,
         runId: run.id,
         roundId: round.id,
-        kind: "self_iteration_execute_round",
+        kind: "regular_run",
         status: "running",
         currentRevision: 1,
         currentStep: "node_execution",

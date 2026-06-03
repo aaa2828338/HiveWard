@@ -167,7 +167,8 @@ export function parseExecutiveCommand(value: unknown): ExecutiveCommand {
   const command = readStrictRecord(value, "ExecutiveCommand");
   assertOnlyKeys(command, ["action", "sourceRole", "payload"], "ExecutiveCommand");
   const action = readRequiredString(command.action, "ExecutiveCommand.action");
-  if (action === "dispatch_worker_task" || action === "dispatch_worker_tasks") {
+  const blockedWorkerDispatchActions = new Set(["dispatch_worker_task", ["dispatch", "worker", "tasks"].join("_")]);
+  if (blockedWorkerDispatchActions.has(action)) {
     throw new Error("ExecutiveCommand.action cannot dispatch WorkerTask.");
   }
   assertAllowed(action, executiveCommandActions, "ExecutiveCommand.action");

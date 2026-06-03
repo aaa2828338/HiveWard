@@ -61,6 +61,7 @@ import type {
   ChatRuntimeRef,
   ChatSessionStatus,
   ChatThinkingEffort,
+  CreateRunInterjectionRequest,
   CreateChatSessionRequest,
   CreateHivewardChatSessionRequest,
   ExecuteExecutiveCommandResponse,
@@ -105,6 +106,7 @@ import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { InboxSubmissionService } from "../services/inboxSubmissionService";
 import { AgentOutputService } from "../services/agentOutputService";
+import { RunRoomService } from "../services/runRoomService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import { isRuntimeAdapterError, type RuntimeAdapter } from "@hiveward/adapter";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -247,6 +249,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const managerMailProjector = new ManagerMailProjector(store);
   const inboxSubmissionService = new InboxSubmissionService(store, approvalService, managerMailProjector);
   const agentOutputService = new AgentOutputService(store);
+  const runRoomService = new RunRoomService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
   const attachRunRoomFeed = async (view: BlueprintRunView | undefined): Promise<BlueprintRunView | undefined> => {
     if (!view) return undefined;
@@ -1206,6 +1209,28 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
       res.json({ feed: await agentOutputService.projectRunRoomFeed(runRoomId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/api/run-rooms/:runRoomId/interjections", async (req, res, next) => {
+    try {
+      const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
+      const body = req.body as Partial<CreateRunInterjectionRequest>;
+      const messageMarkdown = typeof body.messageMarkdown === "string" ? body.messageMarkdown : "";
+      const interjection = await runRoomService.createInterjection({
+        runRoomId,
+        messageMarkdown,
+        createdByRoleId: body.createdByRoleId
+      });
+      const runRoom = await store.getRunRoom(runRoomId);
+      const view = runRoom?.runId ? await store.getRunView(runRoom.runId) : undefined;
+      res.status(201).json({
+        interjection,
+        run: await attachRunRoomFeed(view),
+        feed: await agentOutputService.projectRunRoomFeed(runRoomId)
+      });
     } catch (error) {
       next(error);
     }

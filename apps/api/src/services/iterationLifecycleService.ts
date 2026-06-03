@@ -8,7 +8,6 @@ import type {
   IterationRound,
   IterationSession,
   ManagerNodeConfig,
-  ManagerSlotNodeConfig,
   ReleaseReport
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -20,23 +19,8 @@ export class IterationService {
     private readonly approvalService: ApprovalService
   ) {}
 
-  findTopSelfIterationManager(blueprint: BlueprintDefinition): BlueprintNode | undefined {
-    const managedManagerIds = new Set(
-      blueprint.edges
-        .filter((edge) => edge.targetHandle?.startsWith("manager-in-"))
-        .filter((edge) => {
-          const source = blueprint.nodes.find((node) => node.id === edge.source);
-          if (source?.type !== "manager_slot") return true;
-          return (source.config as ManagerSlotNodeConfig).managerNodeId !== edge.target;
-        })
-        .map((edge) => edge.target)
-    );
-    return blueprint.nodes.find((node) =>
-      node.type === "manager" &&
-      !node.parentId &&
-      !managedManagerIds.has(node.id) &&
-      (node.config as ManagerNodeConfig).lifecycleMode === "self_iteration"
-    );
+  findTopSelfIterationManager(_blueprint: BlueprintDefinition): BlueprintNode | undefined {
+    return undefined;
   }
 
   async startSession(input: {

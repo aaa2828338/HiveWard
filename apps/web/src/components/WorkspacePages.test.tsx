@@ -686,7 +686,8 @@ describe("RunsPage", () => {
     expect(html).not.toContain("Fallback adapter was unavailable");
     expect(html).not.toContain("Assistant transcript answer");
     expect(html).not.toContain("Legacy timeline fallback body");
-    expect(html).not.toContain("<textarea");
+    expect(html.match(/<textarea/g) ?? []).toHaveLength(1);
+    expect(html).toContain("Send");
     expect(html).not.toContain("Reply");
     expect(html).not.toContain("Mention");
     expect(html).not.toContain("Direct message");
@@ -715,7 +716,7 @@ describe("RunsPage", () => {
         commandKey: "run:run-preflight-mode:prepare",
         blueprintId: "blueprint-run-page",
         runId: "run-preflight-mode",
-        kind: "self_iteration_prepare_round",
+        kind: "regular_run",
         status: "succeeded",
         currentRevision: 1,
         currentStep: "context_snapshot",
@@ -929,12 +930,17 @@ describe("RunsPage", () => {
     expect(html).not.toContain("Rendered output");
   });
 
-  it("keeps the run page free of writable discussion and decision controls", () => {
-    const html = renderRunsPageForRun(createRunPageRunView());
+  it("renders exactly one manager interjection input without old run or discussion controls", () => {
+    const html = renderRunsPageForRun(createRunPageRunView({
+      runRoomFeed: {
+        runRoomId: "run-room-action-bar",
+        rows: []
+      }
+    }));
 
-    expect(html).not.toContain("<textarea");
+    expect(html.match(/<textarea/g) ?? []).toHaveLength(1);
     expect(html).not.toContain("composer");
-    expect(html).not.toContain("Send");
+    expect(html).toContain("Send");
     expect(html).not.toContain("Pause");
     expect(html).not.toContain("Continue");
     expect(html).not.toContain("Stop");
@@ -2475,6 +2481,7 @@ function renderRunsPageForRun(
       t={messages[language]}
       onSelectBlueprint={() => undefined}
       onSelectRun={() => undefined}
+      onSendRunInterjection={() => undefined}
     />
   );
 }

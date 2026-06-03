@@ -14,8 +14,6 @@ import type {
   IterationRound,
   IterationSession,
   ManagerContextSnapshot,
-  ManagerDispatchMode,
-  ManagerLifecycleMode,
   ManagerMail,
   ReleaseReport,
   RunTimelineItem,
@@ -54,11 +52,7 @@ export type BlueprintNodeRunStatus =
   | "skipped"
   | "waiting_approval";
 
-export type RunCommandKind =
-  | "self_iteration_prepare_round"
-  | "self_iteration_execute_round"
-  | "self_iteration_release_report"
-  | "regular_run";
+export type RunCommandKind = "regular_run";
 
 export type RunCommandStatus =
   | "queued"
@@ -86,8 +80,6 @@ export type RunCommandStepMode =
   | "node_execution";
 
 export type BlueprintNodeResultRole = "auto" | "final" | "ignore";
-
-export type ManagerSlotExecutionMode = "manual" | "parallel";
 
 export type CrossRoundContextMode =
   | "off"
@@ -152,8 +144,6 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
   skillIds?: string[];
   permissionProfile?: AgentPermissionProfile;
   runtimeAccessPolicy?: RuntimeAccessPolicy;
-  lifecycleMode?: ManagerLifecycleMode;
-  dispatchMode?: ManagerDispatchMode;
   maxRounds?: number;
   researchAgentNodeId?: string;
   requirementAgentNodeId?: string;
@@ -168,7 +158,6 @@ export interface ManagerNodeConfig extends BlueprintNodeBaseConfig {
 export interface ManagerSlotNodeConfig extends BlueprintNodeBaseConfig {
   managerNodeId: string;
   slot: number;
-  executionMode?: ManagerSlotExecutionMode;
   parallelLaneCount?: number;
 }
 
@@ -298,7 +287,6 @@ const blueprintEdgeConditions = new Set<NonNullable<BlueprintEdge["condition"]>>
 ]);
 
 const blueprintNodeResultRoles = new Set<BlueprintNodeResultRole>(["auto", "final", "ignore"]);
-const managerSlotExecutionModes = new Set<ManagerSlotExecutionMode>(["manual", "parallel"]);
 const crossRoundContextModes = new Set<CrossRoundContextMode>([
   "off",
   "node_history",
@@ -316,12 +304,6 @@ const maxManagerPortCount = 8;
 const maxManagerSlotParallelLaneCount = 16;
 const managerSlotDefaultSize: CanvasSize = { width: 560, height: 300 };
 const managerSlotMinSize: CanvasSize = { width: 420, height: 260 };
-
-export function resolveManagerSlotExecutionMode(
-  config: Pick<ManagerSlotNodeConfig, "executionMode" | "parallelLaneCount">
-): ManagerSlotExecutionMode {
-  return resolveManagerSlotParallelLaneCount(config) > 1 ? "parallel" : "manual";
-}
 
 export function resolveManagerSlotParallelLaneCount(
   config: Pick<ManagerSlotNodeConfig, "parallelLaneCount">
@@ -1077,7 +1059,6 @@ export function createManagerDrivenHtmlBlueprint(now: string, companyId = "compa
         position: { x: 80, y: 420 },
         config: {
           label: "HTML Delivery Manager",
-          dispatchMode: "self_dispatch",
           portCount: 2,
           maxHandoffs: 8,
           openclawAgentId: "main",
@@ -1260,7 +1241,6 @@ export function createActiveManagerNewsHtmlChaosBlueprint(
           maxHandoffs: 10,
           openclawAgentId: "main",
           agentName: "active-dispatch-manager",
-          dispatchMode: "self_dispatch",
           timeoutMs: 3600000,
           tools: [],
           instructions:
@@ -1466,7 +1446,6 @@ export function createActiveManagerRemotionVideoChaosBlueprint(
           maxHandoffs: 14,
           openclawAgentId: "main",
           agentName: "remotion-dispatch-manager",
-          dispatchMode: "self_dispatch",
           timeoutMs: 3600000,
           tools: [],
           instructions:
@@ -1970,7 +1949,7 @@ function layoutManagerSlotChildNodes(
     if (!childIds.has(edge.target)) continue;
     if (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle)) continue;
     if (!childIds.has(edge.source)) continue;
-    if (resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig) === "parallel") continue;
+    if (resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig) > 1) continue;
     incomingCounts.set(edge.target, (incomingCounts.get(edge.target) ?? 0) + 1);
     outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target]);
   }
@@ -2258,8 +2237,6 @@ function readPortableBlueprintNodeConfig(
       skillIds: Array.isArray(config.skillIds) ? readStringArray(config.skillIds, `${fieldName}.skillIds`) : [],
       permissionProfile: readOptionalPermissionProfile(config.permissionProfile),
       runtimeAccessPolicy: readRuntimeAccessPolicy(config.runtimeAccessPolicy, config.permissionProfile),
-      lifecycleMode: readManagerLifecycleMode(config.lifecycleMode, `${fieldName}.lifecycleMode`),
-      dispatchMode: readManagerDispatchMode(config.dispatchMode, `${fieldName}.dispatchMode`),
       maxRounds: readBoundedInteger(config.maxRounds, 1, 50, 3),
       researchAgentNodeId: readOptionalString(config.researchAgentNodeId),
       requirementAgentNodeId: readOptionalString(config.requirementAgentNodeId),
@@ -2276,7 +2253,6 @@ function readPortableBlueprintNodeConfig(
       ...base,
       managerNodeId: readOptionalString(config.managerNodeId) ?? "",
       slot: readBoundedInteger(config.slot, 1, maxManagerPortCount, 1),
-      executionMode: readManagerSlotExecutionMode(config.executionMode, `${fieldName}.executionMode`),
       parallelLaneCount: readBoundedInteger(config.parallelLaneCount, 1, maxManagerSlotParallelLaneCount, 1)
     } as ManagerSlotNodeConfig;
   }
@@ -2650,7 +2626,7 @@ function ensureManagerSlotEdges(edges: BlueprintEdge[], nodes: BlueprintNode[], 
 
   const childNodes = nodes.filter((node) => node.parentId === slotNode.id);
   if (childNodes.length === 0) return nextEdges;
-  if (resolveManagerSlotExecutionMode(slotConfig) === "parallel") {
+  if (resolveManagerSlotParallelLaneCount(slotConfig) > 1) {
     return ensureManagerSlotParallelEdges(nextEdges, slotNode, childNodes);
   }
 
@@ -2818,26 +2794,6 @@ function readCrossRoundContextMode(value: unknown, fieldName: string): CrossRoun
     return value as CrossRoundContextMode;
   }
   throw new Error(`${fieldName} must be off, node_history, node_history_with_upstream, or node_history_with_upstream_and_manager_memory.`);
-}
-
-function readManagerSlotExecutionMode(value: unknown, fieldName: string): ManagerSlotExecutionMode {
-  if (value === undefined || value === null || value === "") return "parallel";
-  if (typeof value === "string" && managerSlotExecutionModes.has(value as ManagerSlotExecutionMode)) {
-    return value as ManagerSlotExecutionMode;
-  }
-  throw new Error(`${fieldName} must be manual or parallel.`);
-}
-
-function readManagerLifecycleMode(value: unknown, fieldName: string): ManagerLifecycleMode {
-  if (value === undefined || value === null || value === "") return "none";
-  if (value === "none" || value === "self_iteration") return value;
-  throw new Error(`${fieldName} must be none or self_iteration.`);
-}
-
-function readManagerDispatchMode(value: unknown, fieldName: string): ManagerDispatchMode {
-  if (value === undefined || value === null || value === "") return "sequential";
-  if (value === "sequential" || value === "self_dispatch") return value;
-  throw new Error(`${fieldName} must be sequential or self_dispatch.`);
 }
 
 function readOptionalPermissionProfile(value: unknown): AgentPermissionProfile | undefined {

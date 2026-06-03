@@ -66,7 +66,6 @@ import {
   normalizeRuntimeAccessPolicy,
   runtimeAccessPolicySupportByRuntime,
   resolveCrossRoundContextMode,
-  resolveManagerSlotExecutionMode,
   resolveManagerSlotParallelLaneCount,
   type AgentRuntimeId
 } from "@hiveward/shared";
@@ -727,14 +726,7 @@ export function BlueprintStudioPage({
     (nodeId: string, patch: Partial<BlueprintNode["config"]>) => {
       if (isBlueprintInteractionLocked) return;
       onUpdateBlueprint((current) => {
-        const normalizedPatch =
-          (patch as Partial<ManagerSlotNodeConfig>).executionMode === "parallel" &&
-          (patch as Partial<ManagerSlotNodeConfig>).parallelLaneCount === undefined
-            ? ({
-                ...patch,
-                parallelLaneCount: 1
-              } as Partial<BlueprintNode["config"]>)
-            : patch;
+        const normalizedPatch = patch;
         const currentNode = current.nodes.find((node) => node.id === nodeId);
         const isManagerSlotAssignmentPatch =
           currentNode?.type === "manager_slot" && ("managerNodeId" in normalizedPatch || "slot" in normalizedPatch);
@@ -1738,7 +1730,6 @@ export function BlueprintStudioPage({
             harnessStatuses={harnessStatuses}
             harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
-            allNodes={blueprint.nodes}
             node={inspectedNode}
             t={t}
             onClose={() => {
@@ -1992,7 +1983,6 @@ function NodeDetailSidebar({
   harnessStatuses,
   harnessPermissionModes,
   harnessSkillStatuses,
-  allNodes,
   node,
   t,
   onClose,
@@ -2004,7 +1994,6 @@ function NodeDetailSidebar({
   harnessStatuses?: HarnessStatus[];
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
-  allNodes: BlueprintNode[];
   node: BlueprintNode;
   t: Messages;
   onClose: () => void;
@@ -2038,7 +2027,6 @@ function NodeDetailSidebar({
             harnessStatuses={harnessStatuses}
             harnessPermissionModes={harnessPermissionModes}
             harnessSkillStatuses={harnessSkillStatuses}
-            allNodes={allNodes}
             models={models}
             channels={channels}
             onPatchNode={onPatchNode}
@@ -2329,78 +2317,12 @@ function resolveRuntimeAccessMode(policy: RuntimeAccessPolicy, runtimeId: AgentR
   return hasElevatedAccess ? "full" : "safe";
 }
 
-function resolveManagerPanelMode(config: ManagerNodeConfig): ManagerPanelMode {
-  if (config.lifecycleMode === "self_iteration") return "self_iteration";
-  if (config.dispatchMode === "self_dispatch") return "self_dispatch";
-  return "sequential";
-}
-
-function managerModePatch(mode: ManagerPanelMode): Partial<ManagerNodeConfig> {
-  const legacyPreflightFields = {
-    researchAgentNodeId: undefined,
-    requirementAgentNodeId: undefined
-  };
-  if (mode === "self_iteration") return { ...legacyPreflightFields, lifecycleMode: "self_iteration", dispatchMode: "self_dispatch" };
-  if (mode === "self_dispatch") return { ...legacyPreflightFields, lifecycleMode: "none", dispatchMode: "self_dispatch" };
-  return { ...legacyPreflightFields, lifecycleMode: "none", dispatchMode: "sequential" };
-}
-
 function accessModeLabel(mode: RuntimeAccessMode, t: Messages): string {
   return mode === "full" ? t.options.fullAccessMode : t.options.safeMode;
 }
 
 function accessModeForHarnessPermissionMode(permissionMode: ChatPermissionMode): RuntimeAccessMode {
   return permissionMode === "full_access" ? "full" : "safe";
-}
-
-function ManagerModeField({
-  value,
-  options,
-  t,
-  onChange
-}: {
-  value: ManagerPanelMode;
-  options: BlueprintSelectOption[];
-  t: Messages;
-  onChange: (mode: ManagerPanelMode) => void;
-}) {
-  const activeIndex = Math.max(0, options.findIndex((option) => option.value === value));
-
-  return (
-    <div className="config-field manager-mode-field field-span-full">
-      <span>{t.fields.managerMode}</span>
-      <div
-        className="manager-mode-control"
-        role="radiogroup"
-        aria-label={t.fields.managerMode}
-        style={{ "--manager-mode-count": options.length, "--manager-mode-index": activeIndex } as CSSProperties}
-      >
-        {options.map((option, index) => (
-          <span
-            key={`${option.value}-label`}
-            className="manager-mode-label"
-            data-active={option.value === value ? "true" : undefined}
-            style={{ gridColumn: index + 1 } as CSSProperties}
-            aria-hidden="true"
-          >
-            {option.label}
-          </span>
-        ))}
-        {options.map((option, index) => (
-          <button
-            key={option.value}
-            type="button"
-            role="radio"
-            className="manager-mode-hit-area"
-            style={{ gridColumn: index + 1 } as CSSProperties}
-            aria-checked={option.value === value}
-            aria-label={option.label}
-            onClick={() => onChange(option.value as ManagerPanelMode)}
-          />
-        ))}
-      </div>
-    </div>
-  );
 }
 
 function CrossRoundContextField({
@@ -2432,53 +2354,6 @@ function CrossRoundContextField({
       <small>{t.fields.crossRoundContextHint}</small>
     </label>
   );
-}
-
-function ManagerPreflightSlotSummary({
-  managerId,
-  nodes,
-  t
-}: {
-  managerId: string;
-  nodes: BlueprintNode[];
-  t: Messages;
-}) {
-  const researchAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 1);
-  const requirementAgentLabel = resolveManagerFixedSlotAgentLabel(nodes, managerId, 2);
-  const rows = [
-    { slot: 1, label: t.fields.researchInterface, agentLabel: researchAgentLabel },
-    { slot: 2, label: t.fields.requirementInterface, agentLabel: requirementAgentLabel }
-  ];
-
-  return (
-    <div className="manager-preflight-slots field-span-full">
-      {rows.map((row) => (
-        <div
-          key={row.slot}
-          className={`manager-preflight-slot-row ${row.agentLabel ? "connected" : "fallback"}`}
-        >
-          <span>{t.fields.slot} {row.slot} · {row.label}</span>
-          <strong>{row.agentLabel ?? t.options.managerFallback}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function resolveManagerFixedSlotAgentLabel(
-  nodes: BlueprintNode[],
-  managerId: string,
-  slot: number
-): string | undefined {
-  const slotNode = nodes.find((node) => {
-    if (node.type !== "manager_slot") return false;
-    const config = node.config as ManagerSlotNodeConfig;
-    return config.managerNodeId === managerId && config.slot === slot && !node.disabled;
-  });
-  if (!slotNode) return undefined;
-
-  const childAgent = nodes.find((node) => node.parentId === slotNode.id && node.type === "agent" && !node.disabled);
-  return childAgent?.config.label;
 }
 
 function BatchAgentSettingsModal({
@@ -2585,7 +2460,6 @@ function NodeConfigForm({
   harnessStatuses,
   harnessPermissionModes,
   harnessSkillStatuses,
-  allNodes,
   models,
   channels,
   onPatchNode,
@@ -2597,7 +2471,6 @@ function NodeConfigForm({
   harnessStatuses?: HarnessStatus[];
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
   harnessSkillStatuses?: Partial<Record<HarnessStatus["id"], HarnessSkillStatusResponse>>;
-  allNodes: BlueprintNode[];
   models: NonNullable<CatalogSnapshot["models"]>;
   channels: NonNullable<CatalogSnapshot["channels"]>;
   onPatchNode: (patch: Partial<BlueprintNode>) => void;
@@ -2832,12 +2705,6 @@ function NodeConfigForm({
     const agentOptions = configuredAgents ?? [];
     const openClawAgentOptions = buildOpenClawAgentSelectOptions(agentOptions, config.openclawAgentId, t.common.defaultOption);
     const openClawAgentSelectValue = resolveOpenClawAgentSelectValue(config.openclawAgentId, openClawAgentOptions);
-    const managerMode = resolveManagerPanelMode(config);
-    const isSelfIterationManager = managerMode === "self_iteration";
-    const binaryOptions: BlueprintSelectOption[] = [
-      { value: "no", label: t.common.no },
-      { value: "yes", label: t.common.yes }
-    ];
     const runtimeOptions: BlueprintSelectOption[] = buildAgentHarnessOptions();
     const inheritedPermissionMode = resolveRuntimeHarnessPermissionMode(runtimeId, harnessPermissionModes);
     const modelOptions: BlueprintSelectOption[] = buildBlueprintModelSelectOptions({
@@ -2846,26 +2713,12 @@ function NodeConfigForm({
       defaultLabel: t.common.defaultOption,
       defaultBadgeLabel: t.common.defaultOption
     });
-    const managerModeOptions: BlueprintSelectOption[] = [
-      { value: "sequential", label: t.options.sequential },
-      { value: "self_dispatch", label: t.options.selfDispatch },
-      { value: "self_iteration", label: t.options.selfIteration }
-    ];
     const switchRuntime = (nextRuntimeId: AgentRuntimeId) => {
       onPatchNode({ runtimeId: nextRuntimeId });
       onPatchConfig(buildRuntimeConfigPatch(config, nextRuntimeId, agentOptions, harnessPermissionModes));
     };
     return (
       <div className="config-form node-modal-form manager-config-form">
-        <ManagerModeField
-          value={managerMode}
-          options={managerModeOptions}
-          t={t}
-          onChange={(mode) => onPatchConfig({
-            ...managerModePatch(mode),
-            ...(mode === "self_iteration" ? { portCount: Math.max(2, config.portCount) } : {})
-          })}
-        />
         <label>
           <span>{t.fields.harness}</span>
           <BlueprintSelect
@@ -2938,33 +2791,6 @@ function NodeConfigForm({
             <span>{t.fields.advancedSettings}</span>
           </summary>
           <div className="config-form manager-advanced-grid">
-            {isSelfIterationManager && (
-              <>
-                <ManagerPreflightSlotSummary
-                  managerId={node.id}
-                  nodes={allNodes}
-                  t={t}
-                />
-                <label>
-                  <span>{t.fields.autoApproveRequirements}</span>
-                  <BlueprintSelect
-                    value={config.autoApproveRequirements ? "yes" : "no"}
-                    options={binaryOptions}
-                    ariaLabel={t.fields.autoApproveRequirements}
-                    onChange={(value) => onPatchConfig({ autoApproveRequirements: value === "yes" ? true : undefined })}
-                  />
-                </label>
-                <label>
-                  <span>{t.fields.autoApproveReleaseReports}</span>
-                  <BlueprintSelect
-                    value={config.autoApproveReleaseReports ? "yes" : "no"}
-                    options={binaryOptions}
-                    ariaLabel={t.fields.autoApproveReleaseReports}
-                    onChange={(value) => onPatchConfig({ autoApproveReleaseReports: value === "yes" ? true : undefined })}
-                  />
-                </label>
-              </>
-            )}
             <AgentSkillField
               className="field-span-full"
               selectedSkills={config.skillIds ?? []}
@@ -2988,18 +2814,6 @@ function NodeConfigForm({
                 onValueChange={(portCount) => onPatchConfig({ portCount })}
               />
             </label>
-            {isSelfIterationManager && (
-              <label>
-                <span>{t.fields.maxRounds}</span>
-                <BoundedNumberInput
-                  value={config.maxRounds ?? 3}
-                  min={1}
-                  max={50}
-                  fallback={3}
-                  onValueChange={(maxRounds) => onPatchConfig({ maxRounds })}
-                />
-              </label>
-            )}
             <label>
               <span>{t.fields.managerDispatchStepLimit}</span>
               <BoundedNumberInput
@@ -3342,8 +3156,6 @@ type BlueprintRuntimeModelOption = {
 };
 
 type RuntimeAccessMode = "safe" | "full";
-type ManagerPanelMode = "sequential" | "self_dispatch" | "self_iteration";
-
 type BlueprintSkillOption = {
   id: string;
   label: string;
@@ -4090,10 +3902,7 @@ function buildFlowNodes(
     const parentNode = node.parentId ? nodesById.get(node.parentId) : undefined;
     const extent = parentNode?.type === "manager_slot" ? managerSlotChildExtent(parentNode) : node.parentId ? "parent" : undefined;
     const managerConfig = node.type === "manager" ? node.config as ManagerNodeConfig : undefined;
-    const isSelfIterationManager = managerConfig?.lifecycleMode === "self_iteration";
-    const managerPortCount = managerConfig
-      ? Math.max(isSelfIterationManager ? 2 : 1, managerConfig.portCount)
-      : undefined;
+    const managerPortCount = managerConfig ? Math.max(1, managerConfig.portCount) : undefined;
     return {
       id: node.id,
       type: "blueprintNode",
@@ -4112,7 +3921,7 @@ function buildFlowNodes(
         disabled: node.disabled,
         isStartNode: isBlueprintStartNode(blueprint, node, nodesById),
         managerPortCount,
-        managerPreflightSlotsActive: node.type === "manager" ? isSelfIterationManager : undefined,
+        managerPreflightSlotsActive: false,
         managerPreflightSlotLabels: node.type === "manager"
           ? {
               1: t.fields.researchInterface,
@@ -4290,8 +4099,7 @@ function resolveManagerSlotLaneCount(
       (edge.source === slotNode.id && isManagerSlotInnerOutHandle(edge.sourceHandle) && childIds.has(edge.target)) ||
       (edge.target === slotNode.id && isManagerSlotInnerInHandle(edge.targetHandle) && childIds.has(edge.source))
   ).length;
-  const executionMode = resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig);
-  if (executionMode === "parallel") {
+  if (resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig) > 1) {
     return Math.max(
       resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig),
       Math.ceil(innerEdgeCount / 2)

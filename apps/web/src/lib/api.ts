@@ -62,6 +62,7 @@
   CreateChatSessionRequest,
   CreateChatSessionResponse,
   CreateHivewardChatSessionRequest,
+  CreateRunInterjectionRequest,
   UpdateChatSessionTitleRequest,
   UpdateChatSessionTitleResponse,
   UpdateHivewardChatSessionRequest,
@@ -87,6 +88,7 @@
   BlueprintRunResponse,
   ExecutiveCommand,
   ExecuteExecutiveCommandResponse,
+  RunInterjectionResponse,
   RunRoomFeedResponse
 } from "@hiveward/shared";
 
@@ -465,6 +467,13 @@ export const api = {
   async getRunRoomFeed(runRoomId: string): Promise<RunRoomFeedResponse["feed"]> {
     const response = await request<RunRoomFeedResponse>(`/api/run-rooms/${encodeURIComponent(runRoomId)}/feed`);
     return response.feed;
+  },
+
+  async sendRunInterjection(runRoomId: string, input: CreateRunInterjectionRequest): Promise<RunInterjectionResponse> {
+    return request<RunInterjectionResponse>(`/api/run-rooms/${encodeURIComponent(runRoomId)}/interjections`, {
+      method: "POST",
+      body: JSON.stringify(input satisfies CreateRunInterjectionRequest)
+    });
   },
 
   async listPendingApprovals(): Promise<PendingApprovalItem[]> {

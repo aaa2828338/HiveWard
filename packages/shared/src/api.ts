@@ -18,6 +18,7 @@ import type { PendingApprovalItem, InboxItem, WorkspaceDashboard } from "./works
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 import type { AgentOutputEvent, RunRoomFeed } from "./agentOutput";
+import type { RunInterjection } from "./runRoom";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -69,6 +70,17 @@ export interface BlueprintRunResponse {
 }
 
 export interface RunRoomFeedResponse {
+  feed: RunRoomFeed;
+}
+
+export interface CreateRunInterjectionRequest {
+  messageMarkdown: string;
+  createdByRoleId?: string;
+}
+
+export interface RunInterjectionResponse {
+  interjection: RunInterjection;
+  run?: BlueprintRunView;
   feed: RunRoomFeed;
 }
 

@@ -1,13 +1,5 @@
 import type { AgentRuntimeId, BlueprintNodeType } from "./blueprint";
 
-export type ManagerLifecycleMode = "none" | "self_iteration";
-export type ManagerDispatchMode = "sequential" | "self_dispatch";
-
-export interface ManagerModeConfig {
-  lifecycleMode: ManagerLifecycleMode;
-  dispatchMode: ManagerDispatchMode;
-}
-
 export interface RuntimeAccessPolicy {
   filesystem: "read_only" | "workspace_write";
   network: "disabled" | "enabled";

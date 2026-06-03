@@ -9,7 +9,7 @@ import {
   isManagerSlotInnerInHandle,
   isManagerSlotInnerOutHandle,
   resolveCrossRoundContextMode,
-  resolveManagerSlotExecutionMode,
+  resolveManagerSlotParallelLaneCount,
   type AgentHandoff,
   type AgentHumanReport,
   type AgentNodeConfig,
@@ -80,21 +80,18 @@ const executableTypes = new Set([
 const managerInHandlePrefix = "manager-in-";
 const managerOutHandlePrefix = "manager-out-";
 const defaultManagerAgentName = "manager";
-const selfIterationPreparationSlotCount = 2;
 const managerRosterPromptBudget = 24000;
 const managerRosterItemPromptBudget = 6000;
 const managerReceiptPromptBudget = 6000;
 const activeRunCommandStatuses: RunCommandStatus[] = ["queued", "running", "waiting_approval"];
 const activeRunCommandStepStatuses: RunCommandStep["status"][] = ["queued", "running", "waiting_approval"];
 const regularRunCommandKind: RunCommandKind = "regular_run";
-const prepareRoundCommandKind: RunCommandKind = "self_iteration_prepare_round";
-const executeRoundCommandKind: RunCommandKind = "self_iteration_execute_round";
-const releaseReportCommandKind: RunCommandKind = "self_iteration_release_report";
+const historicalRunCommandMessage = "保留为历史事实，不参与决策";
 const defaultManagerPrompt = [
   "You are a Hiveward manager agent.",
   "Route work inside the platform-provided Manager round by reading upstream input, previousResults, and delegationRoster.",
   "The platform owns round lifecycle state. You do not create, approve, or advance rounds.",
-  "If there is no better instruction, run connected slots in ascending order.",
+  "Use the delegation roster to choose a valid next slot when one is necessary.",
   "Return an AgentOutputEnvelope JSON object. Put status, roundNumber, nextSlot, and reason inside result; roundNumber must copy input.manager.roundNumber exactly.",
   "Use status=\"continue\" with nextSlot to delegate, or status=\"complete\" only when current-round delegation is done."
 ].join("\n");
@@ -490,21 +487,28 @@ export class BlueprintWorker {
       status: "running" as const
     };
     await this.store.updateBlueprintRun(runningRun);
+    await this.ensureRunRoomForRun(blueprint, runningRun);
     await this.event(runningRun.id, "blueprint.run.started", `Blueprint ${blueprint.name} started.`);
-    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-    if (topManager) {
-      const { session, round } = await this.iterationService.startSession({
-        blueprint,
-        run: runningRun,
-        topManagerNode: topManager
-      });
-      const command = await this.ensureSelfIterationPrepareCommand(blueprint, runningRun, round);
-      this.scheduleSelfIterationPreparation(blueprint, runningRun, session, round, topManager, command);
-      return runningRun;
-    }
     const command = await this.ensureRegularRunCommand(blueprint, runningRun);
     this.scheduleRun(blueprint, runningRun, command);
     return runningRun;
+  }
+
+  private async ensureRunRoomForRun(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<void> {
+    const existing = (await this.store.listRunRooms({ blueprintId: blueprint.id }))
+      .find((candidate) => candidate.runId === run.id);
+    if (existing) return;
+    const now = new Date().toISOString();
+    await this.store.createRunRoom({
+      id: `run-room-${nanoid(10)}`,
+      companyId: run.companyId,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      status: "open",
+      title: blueprint.name,
+      createdAt: run.startedAt,
+      updatedAt: now
+    });
   }
 
   async applyApprovalRequest(
@@ -586,9 +590,6 @@ export class BlueprintWorker {
     }
 
     const lifecycle = await this.iterationService.handleApprovalResult(result);
-    if (request.kind === "manager_release_report" && request.roundId && (action === "approve" || action === "complete")) {
-      await this.markRunCommandsForRoundSucceeded(currentRun.id, request.roundId, releaseReportCommandKind);
-    }
     if (requirementRevisionMetadata && result.nextApprovalRequest?.roundId) {
       const round = (await this.store.listIterationRounds({ runId: result.nextApprovalRequest.runId }))
         .find((candidate) => candidate.id === result.nextApprovalRequest?.roundId);
@@ -639,9 +640,7 @@ export class BlueprintWorker {
       }
       const running = { ...currentRun, status: "running" as const };
       await this.store.updateBlueprintRun(running);
-      const command = request.kind === "iteration_requirement_plan" && request.roundId
-        ? await this.ensureSelfIterationExecuteCommand(blueprint, running, request.roundId)
-        : await this.ensureExecutionRunCommand(blueprint, running);
+      const command = await this.ensureExecutionRunCommand(blueprint, running);
       this.scheduleRun(blueprint, running, command);
       return running;
     }
@@ -696,90 +695,31 @@ export class BlueprintWorker {
       return false;
     }
 
-    if (command.kind === regularRunCommandKind || command.kind === executeRoundCommandKind) {
+    if (command.kind === regularRunCommandKind) {
       const runningRun = { ...run, status: "running" as const };
       await this.store.updateBlueprintRun(runningRun);
       this.scheduleRun(blueprint, runningRun, command);
       return true;
     }
 
-    if (command.kind === releaseReportCommandKind) {
-      const runningRun = { ...run, status: "running" as const };
-      await this.store.updateBlueprintRun(runningRun);
-      const nodeRuns = await this.scopeNodeRunsForActiveIterationRound(run.id, await this.store.listNodeRuns(run.id));
-      await this.publishSelfIterationRoundIfNeeded(blueprint, runningRun, nodeRuns, undefined, command);
-      return true;
-    }
-
-    if (command.kind !== prepareRoundCommandKind) {
-      return false;
-    }
-
-    const topManager = this.iterationService.findTopSelfIterationManager(blueprint);
-    if (!topManager || !command.roundId) return false;
-    const round = (await this.store.listIterationRounds({ runId: run.id }))
-      .find((candidate) => candidate.id === command.roundId);
-    if (!round) return false;
-    const session = (await this.store.listIterationSessions(run.id))
-      .find((candidate) => candidate.id === round.sessionId);
-    if (!session) return false;
-
-    const completedDecisionStep = await this.findCompletedPrepareDecisionStep(command);
-    if (completedDecisionStep) {
-      await this.markRunCommandWaitingForApproval(command, completedDecisionStep.mode);
-      await this.store.updateBlueprintRun({ ...run, status: "waiting_approval" as const });
-      await this.managerMailProjector.refresh(run.id);
-      return true;
-    }
-
-    const runningRun = { ...run, status: "running" as const };
-    await this.store.updateBlueprintRun(runningRun);
-    this.scheduleSelfIterationPreparation(
-      blueprint,
-      runningRun,
-      session,
-      round,
-      topManager,
-      command,
-      readPrepareCommandContext(command)
-    );
+    await this.store.updateRunCommand({
+      id: command.id,
+      status: "failed",
+      error: historicalRunCommandMessage
+    });
     return true;
   }
 
   private async ensureSelfIterationPrepareCommand(
-    blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    round: IterationRound,
-    options: {
+    _blueprint: BlueprintDefinition,
+    _run: BlueprintRun,
+    _round: IterationRound,
+    _options: {
       status?: RunCommandStatus;
       metadata?: Record<string, unknown>;
     } = {}
   ): Promise<RunCommand> {
-    const now = new Date().toISOString();
-    const commandKey = buildRunCommandKey(run.id, round.id, prepareRoundCommandKind);
-    const { command, created } = await this.store.createRunCommandIfAbsent({
-      id: deterministicFactId("run-command", commandKey),
-      commandKey,
-      blueprintId: blueprint.id,
-      runId: run.id,
-      roundId: round.id,
-      kind: prepareRoundCommandKind,
-      status: options.status ?? "queued",
-      currentRevision: 0,
-      currentStep: "research_resolution",
-      metadata: options.metadata,
-      createdAt: now,
-      updatedAt: now
-    });
-    if (created || !options.status) return command;
-    return this.store.updateRunCommand({
-      id: command.id,
-      status: options.status,
-      metadata: {
-        ...(command.metadata ?? {}),
-        ...(options.metadata ?? {})
-      }
-    });
+    throw new Error(historicalRunCommandMessage);
   }
 
   private async ensureRegularRunCommand(
@@ -794,34 +734,31 @@ export class BlueprintWorker {
   }
 
   private async ensureSelfIterationExecuteCommand(
-    blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    roundId: string,
-    options: {
+    _blueprint: BlueprintDefinition,
+    _run: BlueprintRun,
+    _roundId: string,
+    _options: {
       status?: RunCommandStatus;
       metadata?: Record<string, unknown>;
     } = {}
   ): Promise<RunCommand> {
-    return this.ensureRunCommand(blueprint, run, roundId, executeRoundCommandKind, "node_execution", options);
+    throw new Error(historicalRunCommandMessage);
   }
 
   private async ensureSelfIterationReleaseReportCommand(
-    blueprint: BlueprintDefinition,
-    run: BlueprintRun,
-    roundId: string,
-    options: {
+    _blueprint: BlueprintDefinition,
+    _run: BlueprintRun,
+    _roundId: string,
+    _options: {
       status?: RunCommandStatus;
       metadata?: Record<string, unknown>;
     } = {}
   ): Promise<RunCommand> {
-    return this.ensureRunCommand(blueprint, run, roundId, releaseReportCommandKind, "release_report", options);
+    throw new Error(historicalRunCommandMessage);
   }
 
   private async ensureExecutionRunCommand(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<RunCommand> {
-    const executingRoundId = await this.currentExecutingRoundId(run.id);
-    return executingRoundId
-      ? this.ensureSelfIterationExecuteCommand(blueprint, run, executingRoundId)
-      : this.ensureRegularRunCommand(blueprint, run);
+    return this.ensureRegularRunCommand(blueprint, run);
   }
 
   private async ensureRunCommand(
@@ -905,8 +842,8 @@ export class BlueprintWorker {
     });
   }
 
-  private async markPrepareCommandsForRoundSucceeded(runId: string, roundId: string): Promise<void> {
-    await this.markRunCommandsForRoundSucceeded(runId, roundId, prepareRoundCommandKind);
+  private async markPrepareCommandsForRoundSucceeded(_runId: string, _roundId: string): Promise<void> {
+    return;
   }
 
   private async markRunCommandsForRoundSucceeded(runId: string, roundId: string, kind: RunCommandKind): Promise<void> {
@@ -927,33 +864,7 @@ export class BlueprintWorker {
     if (!request.roundId) return undefined;
     const feedback = message.trim();
     if (!feedback) throw new Error("Approval revision message is required.");
-
-    const commands = (await this.store.listRunCommands({
-      runId,
-      roundId: request.roundId,
-      kind: prepareRoundCommandKind
-    })).sort((left, right) =>
-      new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime()
-    );
-    const command = commands.find((candidate) => activeRunCommandStatuses.includes(candidate.status)) ?? commands[0];
-    if (!command) return undefined;
-
-    const revision = Math.max(command.currentRevision + 1, request.revision);
-    return this.store.updateRunCommand({
-      id: command.id,
-      status: "running",
-      currentRevision: revision,
-      currentStep: "revise_plan",
-      startedAt: command.startedAt ?? new Date().toISOString(),
-      endedAt: undefined,
-      error: undefined,
-      metadata: {
-        ...(command.metadata ?? {}),
-        humanFeedback: feedback,
-        previousRequirement: request.body,
-        revisionRequestedBy: request.id
-      }
-    });
+    return undefined;
   }
 
   private async prepareSelfIterationRound(
@@ -2502,10 +2413,10 @@ export class BlueprintWorker {
       const nodeRun = nodeRunsById.get(report.nodeRunId);
       return !(nodeRun?.nodeType === "manager" && report.source === "fallback");
     });
-    if (executeCommand?.kind === executeRoundCommandKind) {
+    if (executeCommand?.kind === regularRunCommandKind) {
       await this.markRunCommandSucceeded(executeCommand);
     }
-    const releaseCommand = releaseCommandInput ?? await this.ensureSelfIterationReleaseReportCommand(blueprint, run, executingRound.id);
+    const releaseCommand = releaseCommandInput ?? await this.ensureRegularRunCommand(blueprint, run);
     const runningReleaseCommand = await this.markRunCommandRunning(releaseCommand, "release_report");
     const releaseReportDraft = await this.writeSelfIterationReleaseReport({
       blueprint,
@@ -2566,7 +2477,7 @@ export class BlueprintWorker {
     const config = input.managerNode.config as ManagerNodeConfig;
     const runtimeId = this.resolveManagerRuntimeId(input.managerNode);
     const taskInput = {
-      task: "self_iteration_release_report",
+      task: "manager_release_report",
       runId: input.run.id,
       blueprintName: input.blueprint.name,
       manager: this.buildManagerRoundMetadata(input.managerNode, input.round.roundNumber),
@@ -3042,7 +2953,7 @@ export class BlueprintWorker {
           })
       : nodeRun;
     const managerUpstream = this.readUpstreamInput(nodeRunWithInput.input);
-    const isAgentDriven = this.isAgentDrivenManager(node);
+    const isAgentDriven = false;
     const firstWorkSlot = this.firstManagerWorkSlot(node);
     const trace: ManagerTraceItem[] = [];
     let managerRoundNumber = await this.resolveManagerRoundNumber(run.id, nodeRunWithInput);
@@ -3193,7 +3104,7 @@ export class BlueprintWorker {
         continue;
       }
 
-      const decision = this.resolveSequentialManagerDecision(blueprint, node, slot, portCount, firstWorkSlot);
+      const decision = this.resolveNextConnectedManagerSlot(blueprint, node, slot, portCount, firstWorkSlot);
       traceItem.decision = decision;
       if (decision.status === "complete" || !decision.nextSlot) {
         await this.completeNode(nodeRunWithInput, {
@@ -3440,19 +3351,6 @@ export class BlueprintWorker {
       : "openclaw";
   }
 
-  private isAgentDrivenManager(node: BlueprintNode): boolean {
-    const dispatchMode = (node.config as ManagerNodeConfig).dispatchMode;
-    return node.type === "manager" &&
-      dispatchMode === "self_dispatch" &&
-      (node.runtimeId === "openclaw" ||
-        node.runtimeId === "codex" ||
-        node.runtimeId === "claude" ||
-        node.runtimeId === "google" ||
-        node.runtimeId === "cursor" ||
-        node.runtimeId === "opencode" ||
-        node.runtimeId === "hermes");
-  }
-
   private resolveManagerPrompt(config: ManagerNodeConfig): string {
     const customPrompt = config.instructions?.trim();
     return [
@@ -3567,7 +3465,7 @@ export class BlueprintWorker {
         label: target.config.label,
         type: target.type,
         description: target.config.description,
-        executionMode: resolveManagerSlotExecutionMode(target.config as ManagerSlotNodeConfig),
+        parallelLaneCount: resolveManagerSlotParallelLaneCount(target.config as ManagerSlotNodeConfig),
         children
       };
     }
@@ -3744,16 +3642,6 @@ export class BlueprintWorker {
     if (waitingNodeRunIds.size === 0) return undefined;
     return (await this.store.listRunCommandSteps({ commandId: command.id }))
       .filter((step) => step.nodeRunId && waitingNodeRunIds.has(step.nodeRunId))
-      .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
-  }
-
-  private async findCompletedPrepareDecisionStep(command: RunCommand): Promise<RunCommandStep | undefined> {
-    if (command.kind !== prepareRoundCommandKind) return undefined;
-    return (await this.store.listRunCommandSteps({ commandId: command.id }))
-      .filter((step) =>
-        (step.mode === "requirement_resolution" || step.mode === "revise_plan") &&
-        step.status === "succeeded"
-      )
       .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime())[0];
   }
 
@@ -4122,7 +4010,7 @@ export class BlueprintWorker {
       upstream: managerUpstream,
       ...(dispatchRunContext ? { runContext: dispatchRunContext } : {})
     });
-    const isAgentDriven = this.isAgentDrivenManager(node);
+    const isAgentDriven = false;
     const firstWorkSlot = this.firstManagerWorkSlot(node);
     const trace: ManagerTraceItem[] = [];
     let slot = this.firstConnectedManagerSlot(blueprint, node, portCount, firstWorkSlot);
@@ -4301,7 +4189,7 @@ export class BlueprintWorker {
         continue;
       }
 
-      const decision = this.resolveSequentialManagerDecision(blueprint, node, slot, portCount, firstWorkSlot);
+      const decision = this.resolveNextConnectedManagerSlot(blueprint, node, slot, portCount, firstWorkSlot);
       traceItem.decision = decision;
       if (decision.status === "complete" || !decision.nextSlot) {
         const output = {
@@ -4605,7 +4493,7 @@ export class BlueprintWorker {
   private isParallelManagerSlot(slotNode: BlueprintNode): boolean {
     return (
       slotNode.type === "manager_slot" &&
-      resolveManagerSlotExecutionMode(slotNode.config as ManagerSlotNodeConfig) === "parallel"
+      resolveManagerSlotParallelLaneCount(slotNode.config as ManagerSlotNodeConfig) > 1
     );
   }
 
@@ -4885,8 +4773,7 @@ export class BlueprintWorker {
   }
 
   private firstManagerWorkSlot(managerNode: BlueprintNode): number {
-    const config = managerNode.config as ManagerNodeConfig;
-    return config.lifecycleMode === "self_iteration" ? selfIterationPreparationSlotCount + 1 : 1;
+    return managerNode.type === "manager" ? 1 : 1;
   }
 
   private findManagerSlotAssignment(
@@ -4908,7 +4795,7 @@ export class BlueprintWorker {
     return { target, returnEdgePresent };
   }
 
-  private resolveSequentialManagerDecision(
+  private resolveNextConnectedManagerSlot(
     blueprint: BlueprintDefinition,
     managerNode: BlueprintNode,
     currentSlot: number,
@@ -5386,6 +5273,52 @@ export class BlueprintWorker {
       }
     });
     if (published.published) this.nodeRunClaims.delete(nodeRun.id);
+    await this.publishRunRoomNodeOutputEvent(completed, output, completedAt);
+  }
+
+  private async publishRunRoomNodeOutputEvent(
+    nodeRun: BlueprintNodeRun,
+    output: unknown,
+    createdAt: string
+  ): Promise<void> {
+    if (output === undefined) return;
+    if (nodeRun.nodeType !== "agent" && nodeRun.nodeType !== "summary" && nodeRun.nodeType !== "manager") return;
+    const run = await this.store.getBlueprintRun(nodeRun.blueprintRunId);
+    if (!run) return;
+    const runRoom = (await this.store.listRunRooms({ blueprintId: run.blueprintId }))
+      .find((candidate) => candidate.runId === run.id);
+    if (!runRoom) return;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const existing = await this.store.listAgentOutputEvents({ ownerType: "run_room", ownerId: runRoom.id });
+      if (existing.some((event) => event.sourceId === nodeRun.id)) return;
+      const sequence = existing.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
+      try {
+        await this.store.appendAgentOutputEvent({
+          id: `agent-output-${nanoid(10)}`,
+          ownerType: "run_room",
+          ownerId: runRoom.id,
+          actorType: nodeRun.nodeType === "manager" ? "manager" : "worker",
+          kind: "message_completed",
+          sequence,
+          bodyMarkdown: formatTranscriptContent(output),
+          sourceType: "blueprint_node_run",
+          sourceId: nodeRun.id,
+          metadata: {
+            runRoomId: runRoom.id,
+            blueprintRunId: nodeRun.blueprintRunId,
+            nodeRunId: nodeRun.id,
+            nodeId: nodeRun.nodeId,
+            nodeType: nodeRun.nodeType
+          },
+          createdAt
+        });
+        return;
+      } catch (error) {
+        if (attempt >= 5 || !(error instanceof Error) || !/AgentOutputEvent sequence/.test(error.message)) {
+          throw error;
+        }
+      }
+    }
   }
 
   private async collectStandardNodeInput(
@@ -5843,11 +5776,6 @@ export class BlueprintWorker {
     };
     if (sessionContext) {
       sessionContext.session = await this.markNodeExecutionSessionStarted(sessionContext.session, started, runtimeRef);
-      await this.appendExecutionTranscriptEvent(sessionContext.session, "runtime", "runtime_started", "Runtime task started.", {
-        source: input.source,
-        ...this.runtimeResumeMetadata(started, input),
-        executionSessionPolicy: sessionContext.session.policy
-      }, runtimeRef);
     }
     await onStarted?.(runtimeRef);
 
@@ -6136,28 +6064,6 @@ export class BlueprintWorker {
     runtimeRef: RuntimeObjectRef
   ): Promise<NodeExecutionSession> {
     const nativeResumeBoundary = this.isUnprovenNativeResume(result);
-    if (result.output !== undefined && result.status === "succeeded" && !nativeResumeBoundary) {
-      await this.appendExecutionTranscriptEvent(
-        session,
-        "assistant",
-        "assistant_message",
-        formatTranscriptContent(result.output),
-        { status: result.status },
-        runtimeRef
-      );
-    }
-    await this.appendExecutionTranscriptEvent(
-      session,
-      "runtime",
-      "runtime_done",
-      result.status === "succeeded" ? "Runtime task completed." : `Runtime task ${result.status}.`,
-      {
-        status: result.status,
-        error: result.error,
-        ...this.runtimeResumeMetadata(result)
-      },
-      runtimeRef
-    );
     const endedStatus: NodeExecutionSessionStatus = session.status === "fallback"
       ? "fallback"
       : nativeResumeBoundary

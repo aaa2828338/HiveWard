@@ -12,7 +12,7 @@ import {
   hydrateImportedBlueprint,
   readPortableBlueprintPackage,
   resolveFinalRunResult,
-  resolveManagerSlotExecutionMode,
+  resolveManagerSlotParallelLaneCount,
   type AgentNodeConfig,
   type BlueprintDefinition,
   type BlueprintEdge,
@@ -462,7 +462,7 @@ describe("blueprint contracts", () => {
     const publish = portable.nodes.find((node) => node.id === "publish")!;
 
     expect(slot.config).toMatchObject({ managerNodeId: "manager", slot: 1, parallelLaneCount: 1 });
-    expect(resolveManagerSlotExecutionMode(slot.config as ManagerSlotNodeConfig)).toBe("manual");
+    expect(resolveManagerSlotParallelLaneCount(slot.config as ManagerSlotNodeConfig)).toBe(1);
     expect(slot.size).toEqual({ width: 560, height: 300 });
     expect(research.parentId).toBe("slot-1");
     expect(build.parentId).toBe("slot-1");
@@ -539,7 +539,6 @@ describe("blueprint contracts", () => {
                 label: "Manager",
                 portCount: 1,
                 maxHandoffs: 4,
-                lifecycleMode: "self_iteration",
                 researchAgentNodeId: "research",
                 requirementAgentNodeId: "requirements",
                 maxPreparationAttempts: 99
@@ -708,7 +707,7 @@ describe("blueprint contracts", () => {
               id: "slot-1",
               type: "manager_slot",
               position: { x: 0, y: 0 },
-              config: { label: "Slot 1", managerNodeId: "manager", slot: 1, executionMode: "parallel", parallelLaneCount: 3 }
+              config: { label: "Slot 1", managerNodeId: "manager", slot: 1, parallelLaneCount: 3 }
             },
             {
               ...createContractNode("alpha", "agent", "Alpha", undefined, { x: 0, y: 0 }),
@@ -733,9 +732,8 @@ describe("blueprint contracts", () => {
     const portable = blueprintPackage.blueprints[0]!;
     const slot = portable.nodes.find((node) => node.id === "slot-1")!;
 
-    expect((slot.config as ManagerSlotNodeConfig).executionMode).toBe("parallel");
     expect((slot.config as ManagerSlotNodeConfig).parallelLaneCount).toBe(3);
-    expect(resolveManagerSlotExecutionMode(slot.config as ManagerSlotNodeConfig)).toBe("parallel");
+    expect(resolveManagerSlotParallelLaneCount(slot.config as ManagerSlotNodeConfig)).toBe(3);
     expect(portable.edges).toEqual(expect.arrayContaining([
       expect.objectContaining({
         source: "slot-1",
@@ -761,9 +759,9 @@ describe("blueprint contracts", () => {
     expect(portable.edges.some((edge) => edge.source === "alpha" && edge.target === "beta")).toBe(false);
   });
 
-  it("derives manager slot execution from lane count rather than the legacy mode flag", () => {
-    expect(resolveManagerSlotExecutionMode({ executionMode: "parallel", parallelLaneCount: 1 })).toBe("manual");
-    expect(resolveManagerSlotExecutionMode({ executionMode: "manual", parallelLaneCount: 2 })).toBe("parallel");
+  it("derives manager slot lane count from the canonical lane-count field", () => {
+    expect(resolveManagerSlotParallelLaneCount({ parallelLaneCount: 1 })).toBe(1);
+    expect(resolveManagerSlotParallelLaneCount({ parallelLaneCount: 2 })).toBe(2);
   });
 
   it("resolves explicit final results without relying on node labels", () => {
