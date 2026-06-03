@@ -1044,6 +1044,263 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls[0]?.body).toContain("draft answer");
   });
 
+  it("falls back before publishing approval discussion replies when native resume is unproven", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-approval-fallback-1"),
+        sessionKey: "runtime-approval-original",
+        nativeSessionId: "native-approval-original"
+      },
+      {
+        ...createStartedAgentTask("task-approval-fallback-resume"),
+        sessionKey: "runtime-approval-resume",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createStartedAgentTask("task-approval-fallback-retry"),
+        sessionKey: "runtime-approval-fallback",
+        nativeSessionId: "native-approval-fallback"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-approval-fallback-1", "succeeded", "draft answer"),
+        sessionKey: "runtime-approval-original",
+        nativeSessionId: "native-approval-original"
+      },
+      {
+        ...createCompletedAgentTask("task-approval-fallback-resume", "succeeded", "discarded approval reply"),
+        sessionKey: "runtime-approval-resume",
+        providerSessionId: "native-provider-new",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createCompletedAgentTask("task-approval-fallback-retry", "succeeded", "fallback approval reply"),
+        sessionKey: "runtime-approval-fallback",
+        nativeSessionId: "native-approval-fallback"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+    const originalSessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: waitingNode.id });
+    const originalSession = originalSessions[0];
+    if (!originalSession) throw new Error("Expected original execution session.");
+
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      message: "Use the final wording."
+    });
+    await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: waitingNode.id });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    if (!unavailable) throw new Error("Expected unavailable execution session.");
+    if (!fallback) throw new Error("Expected fallback execution session.");
+    const binding = await store.getApprovalDiscussionBinding(approvalRequest.id);
+    const unavailableEvents = await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id });
+    const fallbackEvents = await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id });
+
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-approval-original",
+      undefined
+    ]);
+    expect(approvalReplies.map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
+      ["user", "message", "Use the final wording."],
+      ["agent", "message", "fallback approval reply"]
+    ]);
+    expect(approvalReplies.map((reply) => reply.body)).not.toContain("discarded approval reply");
+    expect(unavailable).toMatchObject({
+      id: originalSession.id,
+      status: "unavailable",
+      statusReason: expect.stringContaining("provider_started_new_session")
+    });
+    expect(fallback).toMatchObject({
+      status: "fallback",
+      nativeSessionId: "native-approval-fallback",
+      fallbackOfSessionId: unavailable.id
+    });
+    expect(binding).toMatchObject({
+      mode: "executor",
+      executorSessionId: fallback.id
+    });
+    expect(unavailableEvents.filter((event) => event.kind === "assistant_message").map((event) => event.content)).toEqual([
+      "draft answer"
+    ]);
+    expect(unavailableEvents.map((event) => event.content)).not.toContain("discarded approval reply");
+    expect(unavailableEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "runtime",
+        kind: "runtime_done",
+        metadata: expect.objectContaining({
+          providerStartedNewSession: true,
+          providerSessionId: "native-provider-new",
+          resumeProven: false
+        })
+      })
+    ]));
+    expect(fallbackEvents.map((event) => event.kind)).toEqual([
+      "user_message",
+      "runtime_started",
+      "assistant_message",
+      "runtime_done"
+    ]);
+    expect(fallbackEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "user",
+        kind: "user_message",
+        content: "Use the final wording."
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        kind: "assistant_message",
+        content: "fallback approval reply"
+      })
+    ]));
+  });
+
+  it("falls back before publishing approval candidate replies when native resume is unproven", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const delivery = createAgentNode("delivery", "Delivery");
+    delivery.config = {
+      ...delivery.config,
+      approval: {
+        enabled: true
+      }
+    };
+    const blueprint = createBlueprint([delivery], []);
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-candidate-fallback-1"),
+        sessionKey: "runtime-candidate-original",
+        nativeSessionId: "native-candidate-original"
+      },
+      {
+        ...createStartedAgentTask("task-candidate-fallback-resume"),
+        sessionKey: "runtime-candidate-resume",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createStartedAgentTask("task-candidate-fallback-retry"),
+        sessionKey: "runtime-candidate-fallback",
+        nativeSessionId: "native-candidate-fallback"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-candidate-fallback-1", "succeeded", "draft answer"),
+        sessionKey: "runtime-candidate-original",
+        nativeSessionId: "native-candidate-original"
+      },
+      {
+        ...createCompletedAgentTask("task-candidate-fallback-resume", "succeeded", "discarded candidate reply"),
+        sessionKey: "runtime-candidate-resume",
+        providerSessionId: "native-candidate-provider-new",
+        resumeRequested: true,
+        resumeAttempted: true,
+        resumeProven: false,
+        providerStartedNewSession: true,
+        resumable: false
+      },
+      {
+        ...createCompletedAgentTask("task-candidate-fallback-retry", "succeeded", "fallback candidate reply"),
+        sessionKey: "runtime-candidate-fallback",
+        nativeSessionId: "native-candidate-fallback"
+      }
+    ]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
+    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery")!;
+    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
+    if (!approvalRequest) throw new Error("Expected agent approval request.");
+
+    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "reply", {
+      discussionMode: "candidate",
+      message: "Generate the final candidate."
+    });
+    await waitForRunStatus(store, run.id, "waiting_approval");
+    const approvalReplies = await store.listApprovalReplies({ approvalRequestId: approvalRequest.id });
+    const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: waitingNode.id });
+    const unavailable = sessions.find((session) => session.status === "unavailable");
+    const fallback = sessions.find((session) => session.status === "fallback");
+    if (!unavailable) throw new Error("Expected unavailable execution session.");
+    if (!fallback) throw new Error("Expected fallback execution session.");
+    const binding = await store.getApprovalDiscussionBinding(approvalRequest.id);
+    const unavailableEvents = await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id });
+    const fallbackEvents = await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id });
+
+    expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
+      undefined,
+      "native-candidate-original",
+      undefined
+    ]);
+    expect(approvalReplies.map((reply) => [reply.actor, reply.purpose, reply.body])).toEqual([
+      ["agent", "candidate", "fallback candidate reply"]
+    ]);
+    expect(approvalReplies.map((reply) => reply.body)).not.toContain("discarded candidate reply");
+    expect(unavailable).toMatchObject({
+      status: "unavailable",
+      statusReason: expect.stringContaining("provider_started_new_session")
+    });
+    expect(fallback).toMatchObject({
+      status: "fallback",
+      nativeSessionId: "native-candidate-fallback",
+      fallbackOfSessionId: unavailable.id
+    });
+    expect(binding).toMatchObject({
+      mode: "executor",
+      executorSessionId: fallback.id
+    });
+    expect(unavailableEvents.filter((event) => event.kind === "assistant_message").map((event) => event.content)).toEqual([
+      "draft answer"
+    ]);
+    expect(unavailableEvents.map((event) => event.content)).not.toContain("discarded candidate reply");
+    expect(fallbackEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        role: "user",
+        kind: "user_message",
+        content: "Generate the final candidate."
+      }),
+      expect.objectContaining({
+        role: "assistant",
+        kind: "assistant_message",
+        content: "fallback candidate reply"
+      })
+    ]));
+  });
+
   it("keeps Agent approval rejection from rerunning or continuing the run", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
