@@ -972,9 +972,15 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ message: "Return through the canonical route." })
         });
+        const returnForRevisionAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/return_for_revision`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message: "Return through the deleted underscore alias." })
+        });
         expect(dashedAlias.status).toBe(404);
         expect(underscoredAlias.status).toBe(404);
         expect(reviseAlias.status).toBe(404);
+        expect(returnForRevisionAlias.status).toBe(404);
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect(calls).toEqual([

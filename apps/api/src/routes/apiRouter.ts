@@ -863,7 +863,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post(["/api/approval-requests/:approvalRequestId/return-for-revision", "/api/approval-requests/:approvalRequestId/return_for_revision"], async (req, res, next) => {
+  router.post("/api/approval-requests/:approvalRequestId/return-for-revision", async (req, res, next) => {
     try {
       res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
     } catch (error) {

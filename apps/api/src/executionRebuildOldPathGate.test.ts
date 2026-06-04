@@ -112,7 +112,9 @@ describe("execution rebuild old-path exclusion gate", () => {
     const styleSource = readSource("apps/web/src/styles.css");
     expect(styleSource).not.toContain(".history-");
     const lifecycleSource = readSource("packages/shared/src/lifecycle.ts");
+    const apiRouterSource = readSource("apps/api/src/routes/apiRouter.ts");
     expect(lifecycleSource).not.toMatch(/\brequest_changes\b/);
+    expect(apiRouterSource).not.toContain("/api/approval-requests/:approvalRequestId/return_for_revision");
     expect(productionSource).not.toMatch(/request-changes/);
     expect(productionSource).not.toMatch(/\/api\/blueprint-runs\/:runId\/(?:approve|reject|reply|select-approval-reply)/);
     expect(productionSource).not.toMatch(/\/api\/approval-requests\/[^"`']*\/(?:request-changes|request_changes|revise)/);
@@ -293,7 +295,8 @@ describe("execution rebuild old-path exclusion gate", () => {
       "routes only canonical return_for_revision approval request actions",
       "expect(dashedAlias.status).toBe(404)",
       "expect(underscoredAlias.status).toBe(404)",
-      "expect(reviseAlias.status).toBe(404)"
+      "expect(reviseAlias.status).toBe(404)",
+      "expect(returnForRevisionAlias.status).toBe(404)"
     ]);
     expectSourceToContainAll(lifecycleTests, [
       "does not expose approval selection or persist selected reply facts",
