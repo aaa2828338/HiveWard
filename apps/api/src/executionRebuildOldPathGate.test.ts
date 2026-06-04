@@ -76,7 +76,10 @@ describe("execution rebuild old-path exclusion gate", () => {
       "preflightModeFromNodeRunId",
       "buildRunExecutionTimelineFallback",
       "buildRunTimelineTraceItems",
-      "timelineFallback"
+      "timelineFallback",
+      "listBlueprintKanbanCards",
+      "projectBlueprintKanbanCards",
+      "projectBlueprintKanbanCardsFromRunRooms"
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });

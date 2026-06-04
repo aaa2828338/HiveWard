@@ -6,7 +6,6 @@ import { nanoid } from "nanoid";
 import type {
   AgentOutputEvent,
   AgentRuntimeId,
-  BlueprintKanbanCard,
   CatalogSnapshot,
   CompanyOverview,
   CompanyProfile,
@@ -72,7 +71,6 @@ import {
   assertRunInterjection,
   assertRunRoom,
   assertWorkerTask,
-  blueprintKanbanLaneFromRunRoomStatus,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultCompanies,
@@ -1323,18 +1321,6 @@ export class FileHivewardStore implements HivewardStore {
           (!filter.sourceContextType || projection.sourceContextType === filter.sourceContextType) &&
           (!filter.responseIntent || projection.responseIntent === filter.responseIntent) &&
           (!filter.status || projection.status === filter.status)
-        );
-    });
-  }
-
-  async listBlueprintKanbanCards(filter: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] } = {}): Promise<BlueprintKanbanCard[]> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      return projectBlueprintKanbanCards(index.runRooms)
-        .filter((card) =>
-          (!filter.companyId || card.companyId === filter.companyId) &&
-          (!filter.blueprintId || card.blueprintId === filter.blueprintId) &&
-          (!filter.lane || card.lane === filter.lane)
         );
     });
   }
@@ -2901,28 +2887,6 @@ function projectInboxProjections(
       createdAt: request.createdAt,
       updatedAt: request.updatedAt,
       latestResponseAt: latestResponseByRequestId.get(request.id)
-    }))
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
-}
-
-function projectBlueprintKanbanCards(runRooms: RunRoom[]): BlueprintKanbanCard[] {
-  return runRooms
-    .map((runRoom) => ({
-      id: `blueprint-kanban-${runRoom.id}`,
-      runRoomId: runRoom.id,
-      companyId: runRoom.companyId,
-      blueprintId: runRoom.blueprintId,
-      runId: runRoom.runId,
-      lane: blueprintKanbanLaneFromRunRoomStatus(runRoom.status),
-      title: runRoom.title ?? runRoom.id,
-      summary: runRoom.summary,
-      updatedAt: runRoom.updatedAt,
-      targetRef: {
-        type: "run_room" as const,
-        runRoomId: runRoom.id,
-        runId: runRoom.runId,
-        blueprintId: runRoom.blueprintId
-      }
     }))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }

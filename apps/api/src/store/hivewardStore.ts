@@ -12,7 +12,6 @@
   Artifact,
   BlueprintDefinition,
   BlueprintImportDefaults,
-  BlueprintKanbanCard,
   BlueprintNodeEvent,
   BlueprintNodeRun,
   BlueprintRun,
@@ -237,7 +236,6 @@ export interface HivewardStore {
     responseIntent?: InboxProjection["responseIntent"];
     status?: InboxProjection["status"];
   }): Promise<InboxProjection[]>;
-  listBlueprintKanbanCards(filter?: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] }): Promise<BlueprintKanbanCard[]>;
   appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent>;
   listAgentOutputEvents(filter?: { ownerType?: AgentOutputEvent["ownerType"]; ownerId?: string }): Promise<AgentOutputEvent[]>;
   createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }>;

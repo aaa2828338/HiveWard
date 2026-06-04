@@ -469,17 +469,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         })
       ]);
       expect(typeof (store as unknown as { createInboxProjection?: unknown }).createInboxProjection).toBe("undefined");
-      await expect(store.listBlueprintKanbanCards({ companyId })).resolves.toEqual([
-        expect.objectContaining({
-          id: `blueprint-kanban-${runRoom.id}`,
-          runRoomId: runRoom.id,
-          lane: "running",
-          targetRef: expect.objectContaining({
-            type: "run_room",
-            runRoomId: runRoom.id
-          })
-        })
-      ]);
+      expect(typeof (store as unknown as { listBlueprintKanbanCards?: unknown }).listBlueprintKanbanCards).toBe("undefined");
 
       const event: AgentOutputEvent = {
         id: "agent-output-event-contract",

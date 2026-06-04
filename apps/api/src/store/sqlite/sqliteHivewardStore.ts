@@ -25,7 +25,6 @@ import type {
   BlueprintRunArchive,
   BlueprintRunSummary,
   BlueprintRunView,
-  BlueprintKanbanCard,
   CatalogSnapshot,
   ChatAttachment,
   ChatRoleScope,
@@ -72,7 +71,6 @@ import {
   assertRunInterjection,
   assertRunRoom,
   assertWorkerTask,
-  blueprintKanbanLaneFromRunRoomStatus,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultBlueprints,
@@ -1078,12 +1076,6 @@ export class SqliteHivewardStore implements HivewardStore {
       this.readHumanActionRequests(filter),
       await this.listHumanActionResponses()
     );
-  }
-
-  async listBlueprintKanbanCards(filter: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] } = {}): Promise<BlueprintKanbanCard[]> {
-    return projectBlueprintKanbanCardsFromRunRooms(
-      this.readRunRooms({ companyId: filter.companyId, blueprintId: filter.blueprintId })
-    ).filter((card) => !filter.lane || card.lane === filter.lane);
   }
 
   async appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent> {
@@ -4056,28 +4048,6 @@ function projectInboxProjectionsFromFacts(
       createdAt: request.createdAt,
       updatedAt: request.updatedAt,
       latestResponseAt: latestResponseByRequestId.get(request.id)
-    }))
-    .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
-}
-
-function projectBlueprintKanbanCardsFromRunRooms(runRooms: RunRoom[]): BlueprintKanbanCard[] {
-  return runRooms
-    .map((runRoom) => ({
-      id: `blueprint-kanban-${runRoom.id}`,
-      runRoomId: runRoom.id,
-      companyId: runRoom.companyId,
-      blueprintId: runRoom.blueprintId,
-      runId: runRoom.runId,
-      lane: blueprintKanbanLaneFromRunRoomStatus(runRoom.status),
-      title: runRoom.title ?? runRoom.id,
-      summary: runRoom.summary,
-      updatedAt: runRoom.updatedAt,
-      targetRef: {
-        type: "run_room" as const,
-        runRoomId: runRoom.id,
-        runId: runRoom.runId,
-        blueprintId: runRoom.blueprintId
-      }
     }))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }
