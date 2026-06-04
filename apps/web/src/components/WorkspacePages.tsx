@@ -606,8 +606,8 @@ export function RunsPage({
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : defaultActiveIssue;
   const activeRunRoomId = activeRun?.runRoomFeed?.runRoomId;
   const runRoomFeedRows = useMemo(
-    () => buildRunRoomFeedRowsForDisplay(activeRun, language),
-    [activeRun?.run.id, activeRun?.runRoomFeed, language]
+    () => buildRunRoomFeedRowsForDisplay(activeRun),
+    [activeRun?.run.id, activeRun?.runRoomFeed]
   );
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run records";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));

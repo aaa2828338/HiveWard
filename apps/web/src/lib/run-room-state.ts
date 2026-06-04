@@ -1,16 +1,10 @@
 import type { BlueprintRunView, RunRoomFeedRow } from "@hiveward/shared";
 import type { Language } from "./i18n";
 
-export const runRoomFeedHistoricalFactOnlyMarker = "保留为历史事实，不参与决策";
-
-export function buildRunRoomFeedRowsForDisplay(
-  runView: BlueprintRunView | undefined,
-  language: Language = "en"
-): RunRoomFeedRow[] {
+export function buildRunRoomFeedRowsForDisplay(runView: BlueprintRunView | undefined): RunRoomFeedRow[] {
   if (!runView) return [];
   const rows = runView.runRoomFeed?.rows ?? [];
-  if (rows.length > 0) return sortRunRoomFeedRows(rows).map(normalizeRunRoomFeedRowForDisplay);
-  return [createMissingRunRoomFeedSystemRow(runView, language)];
+  return sortRunRoomFeedRows(rows).map(normalizeRunRoomFeedRowForDisplay);
 }
 
 export function canOpenRunRoomFeedWorkerDetails(row: RunRoomFeedRow): boolean {
@@ -44,24 +38,6 @@ function normalizeRunRoomFeedRowForDisplay(row: RunRoomFeedRow): RunRoomFeedRow 
     };
   }
   return row;
-}
-
-function createMissingRunRoomFeedSystemRow(runView: BlueprintRunView, language: Language): RunRoomFeedRow {
-  const zh = language === "zh-CN";
-  return {
-    id: `run-room-feed-missing:${runView.run.id}`,
-    runRoomId: `historical-run:${runView.run.id}`,
-    sourceType: "system",
-    displayMode: "formal_message",
-    bodyMarkdown: [
-      zh ? "RunRoomFeed 尚未为本次运行记录。" : "RunRoomFeed has not been recorded for this run.",
-      "",
-      zh
-        ? `旧运行记录${runRoomFeedHistoricalFactOnlyMarker}，不会投影成正常 RunRoomFeed 消息。`
-        : `Older run records are ${runRoomFeedHistoricalFactOnlyMarker} and are not projected as normal RunRoomFeed messages.`
-    ].join("\n"),
-    createdAt: runView.run.startedAt
-  };
 }
 
 function readRuntimeStateText(value: unknown): string | undefined {

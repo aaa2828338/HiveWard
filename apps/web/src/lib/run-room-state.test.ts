@@ -3,8 +3,7 @@ import type { BlueprintRunView, RunRoomFeedRow } from "@hiveward/shared";
 import {
   buildRunRoomFeedRowsForDisplay,
   canOpenRunRoomFeedWorkerDetails,
-  formatRunRoomFeedRuntimeState,
-  runRoomFeedHistoricalFactOnlyMarker
+  formatRunRoomFeedRuntimeState
 } from "./run-room-state";
 
 describe("run-room-state", () => {
@@ -90,12 +89,18 @@ describe("run-room-state", () => {
 
     const rows = buildRunRoomFeedRowsForDisplay(runView);
 
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.sourceType).toBe("system");
-    expect(rows[0]?.bodyMarkdown).toContain(runRoomFeedHistoricalFactOnlyMarker);
-    expect(rows[0]?.bodyMarkdown).not.toContain("Residual transcript content");
-    expect(rows[0]?.bodyMarkdown).not.toContain("Residual timeline content");
-    expect(rows[0]?.bodyMarkdown).not.toContain("Residual node output");
+    expect(rows).toEqual([]);
+    expect(rows.some(canOpenRunRoomFeedWorkerDetails)).toBe(false);
+  });
+
+  it("keeps missing or empty canonical feed separate from feed rows", () => {
+    expect(buildRunRoomFeedRowsForDisplay(createRunView())).toEqual([]);
+    expect(buildRunRoomFeedRowsForDisplay(createRunView({
+      runRoomFeed: {
+        runRoomId: "run-room-empty",
+        rows: []
+      }
+    }))).toEqual([]);
   });
 });
 

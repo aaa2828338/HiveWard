@@ -88,7 +88,7 @@ describe("DashboardPage old run widgets", () => {
     const dashboard: WorkspaceDashboard = {
       dashboardWidgets: [
         {
-          id: "widget-historical-runs",
+          id: "widget-saved-run-records",
           type: "recent_runs" as WorkspaceDashboard["dashboardWidgets"][number]["type"],
           title: "Saved run records",
           layout: { x: 0, y: 0, w: 6, h: 4 }
@@ -1142,7 +1142,7 @@ describe("RunsPage", () => {
     const html = renderRunsPageForRun(runView);
 
     expect(html).toContain("Execution facts missing");
-    expect(html).toContain("保留为历史事实，不参与决策");
+    expect(html).toContain("No RunRoomFeed rows yet.");
     expect(html).not.toContain("Legacy run summary");
     expect(html).not.toContain("Legacy read-only");
     expect(html).not.toContain("Legacy timeline fallback body");
@@ -1211,6 +1211,8 @@ describe("RunsPage", () => {
 
     expect(html).toContain("Running");
     expect(html).toContain("RunRoom office feed");
+    expect(html).toContain("No RunRoomFeed rows yet.");
+    expect(html).not.toContain("Execution details");
     expect(html).toContain("Research Agent / Node execution");
     expect(html).not.toContain("Execution ledger");
     expect(html).not.toContain("Ledger version");
@@ -1718,7 +1720,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
-    expect(html).toContain("保留为历史事实，不参与决策");
+    expect(html).toContain("\u8fd8\u6ca1\u6709 RunRoomFeed \u884c\u3002");
     expect(html).not.toContain("\u51b3\u7b56摘要");
     expect(html).not.toContain("\u6458\u8981");
     expect(html).not.toContain("\u9a8c\u8bc1");
