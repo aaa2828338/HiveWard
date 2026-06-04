@@ -73,6 +73,7 @@ import {
   assertRunInterjection,
   assertRunRoom,
   assertWorkerTask,
+  blueprintKanbanLaneFromRunRoomStatus,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultCompanies,
@@ -2943,10 +2944,16 @@ function projectBlueprintKanbanCards(runRooms: RunRoom[]): BlueprintKanbanCard[]
       companyId: runRoom.companyId,
       blueprintId: runRoom.blueprintId,
       runId: runRoom.runId,
-      lane: runRoom.status,
+      lane: blueprintKanbanLaneFromRunRoomStatus(runRoom.status),
       title: runRoom.title ?? runRoom.id,
       summary: runRoom.summary,
-      updatedAt: runRoom.updatedAt
+      updatedAt: runRoom.updatedAt,
+      targetRef: {
+        type: "run_room" as const,
+        runRoomId: runRoom.id,
+        runId: runRoom.runId,
+        blueprintId: runRoom.blueprintId
+      }
     }))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }

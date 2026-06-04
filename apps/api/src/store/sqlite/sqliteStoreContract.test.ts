@@ -486,7 +486,11 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expect.objectContaining({
           id: `blueprint-kanban-${runRoom.id}`,
           runRoomId: runRoom.id,
-          lane: "open"
+          lane: "running",
+          targetRef: expect.objectContaining({
+            type: "run_room",
+            runRoomId: runRoom.id
+          })
         })
       ]);
 

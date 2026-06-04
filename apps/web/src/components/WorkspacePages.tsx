@@ -45,13 +45,19 @@ import type {
   RuntimeOverview,
   UpdateCompanyRequest,
   WorkspaceDashboard,
+  BlueprintKanbanBoard,
+  BlueprintKanbanCard,
+  BlueprintKanbanCardLane,
   BlueprintDefinition,
   BlueprintNode,
   BlueprintNodeEvent,
   BlueprintNodeRun,
   BlueprintRunStatus,
-  BlueprintRunView
+  BlueprintRunView,
+  HumanActionRequestResponseIntent,
+  HumanActionRequestSourceContextType
 } from "@hiveward/shared";
+import { humanActionRequestResponseIntents, humanActionRequestSourceContextTypes } from "@hiveward/shared";
 import type { Language, Messages } from "../lib/i18n";
 import {
   isTerminalBlueprintRunStatus,
@@ -61,6 +67,12 @@ import {
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
 import { buildRunRoomFeedRowsForDisplay } from "../lib/run-room-state";
+import {
+  blueprintKanbanCardIsNavigationOnly,
+  blueprintKanbanLaneOrder,
+  groupBlueprintKanbanCards,
+  type BlueprintKanbanFilters
+} from "../lib/blueprint-kanban-state";
 import { resolveApiResourceUrl } from "../lib/api";
 import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
@@ -597,7 +609,7 @@ export function RunsPage({
     () => buildRunRoomFeedRowsForDisplay(activeRun, language),
     [activeRun?.run.id, activeRun?.runRoomFeed, language]
   );
-  const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run history";
+  const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run records";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
   const reportLayerCopy = getRunReportLayerCopy(language);
   const latestReleaseReport = activeRun?.releaseReports?.at(-1);
@@ -1315,6 +1327,7 @@ export function ApprovalsPage({
   language,
   t,
   actionPending = false,
+  focusedEntryId,
   onApproveApprovalRequest,
   onComplete,
   onRejectApprovalRequest,
@@ -1329,6 +1342,7 @@ export function ApprovalsPage({
   language: Language;
   t: Messages;
   actionPending?: boolean;
+  focusedEntryId?: string;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
@@ -1347,18 +1361,35 @@ export function ApprovalsPage({
     [approvalThreads]
   );
   const entries = useMemo(
-    () => buildHumanActionInboxEntries({ approvals, approvalThreadsById, projections: inboxProjections, sourceFilter, timeFilter, language, t, copy }),
-    [approvalThreadsById, approvals, copy, inboxProjections, language, sourceFilter, t, timeFilter]
+    () => buildHumanActionInboxEntries({
+      approvals,
+      approvalThreadsById,
+      projections: inboxProjections,
+      sourceFilter,
+      timeFilter,
+      focusedEntryId,
+      language,
+      t,
+      copy
+    }),
+    [approvalThreadsById, approvals, copy, focusedEntryId, inboxProjections, language, sourceFilter, t, timeFilter]
   );
   const totalEntries = approvals.length + inboxProjections.length;
   const pendingEntries = entries.filter((entry) => entry.status === 'pending' || entry.status === 'replying').length;
-  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ?? entries[0];
+  const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ??
+    (focusedEntryId ? entries.find((entry) => entry.id === focusedEntryId) : undefined) ??
+    entries[0];
   const selectedDraft = selectedEntry ? draftsByEntryId[selectedEntry.id] ?? '' : '';
 
   useEffect(() => {
     if (selectedEntryId && entries.some((entry) => entry.id === selectedEntryId)) return;
     setSelectedEntryId(entries[0]?.id);
   }, [entries, selectedEntryId]);
+
+  useEffect(() => {
+    if (!focusedEntryId || !entries.some((entry) => entry.id === focusedEntryId)) return;
+    setSelectedEntryId(focusedEntryId);
+  }, [entries, focusedEntryId]);
 
   const updateDraft = (entryId: string, value: string) => {
     setDraftsByEntryId((current) => ({ ...current, [entryId]: value }));
@@ -1793,6 +1824,7 @@ function buildHumanActionInboxEntries({
   projections,
   sourceFilter,
   timeFilter,
+  focusedEntryId,
   language,
   t
 }: {
@@ -1801,6 +1833,7 @@ function buildHumanActionInboxEntries({
   projections: InboxProjection[];
   sourceFilter: HumanActionSourceFilter;
   timeFilter: HumanActionTimeFilter;
+  focusedEntryId?: string;
   language: Language;
   t: Messages;
   copy: HumanActionInboxCopy;
@@ -1843,8 +1876,8 @@ function buildHumanActionInboxEntries({
     projection
   }));
   return [...approvalEntries, ...projectionEntries]
-    .filter((entry) => sourceFilter === 'all' || entry.sourceContextType === sourceFilter)
-    .filter((entry) => isWithinHumanActionTimeFilter(entry.updatedAt, timeFilter))
+    .filter((entry) => entry.id === focusedEntryId || sourceFilter === 'all' || entry.sourceContextType === sourceFilter)
+    .filter((entry) => entry.id === focusedEntryId || isWithinHumanActionTimeFilter(entry.updatedAt, timeFilter))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
@@ -1964,7 +1997,7 @@ export function DashboardPage({
             <p>{t.metrics.widgets(widgets.length)}</p>
           </div>
           <div className="toolbar-cluster wrap">
-            {(["recent_runs", "pending_approvals", "runtime_overview", "catalog_status"] as DashboardWidgetType[]).map((type) => (
+            {(["pending_approvals", "runtime_overview", "catalog_status"] as DashboardWidgetType[]).map((type) => (
               <button key={type} type="button" onClick={() => onAddWidget(type)}>
                 <PanelsTopLeft size={16} />
                 {widgetTypeLabel(type, t)}
@@ -2587,95 +2620,145 @@ function runResultStatusLabel(runView: BlueprintRunView, t: Messages, language: 
 }
 
 export function HistoryPage({
-  runs,
-  approvals: _approvals,
+  board,
   blueprints,
   language,
-  t,
-  onOpenRun
+  onOpenCard
 }: {
-  runs: BlueprintRunView[];
-  approvals: PendingApprovalItem[];
+  board: BlueprintKanbanBoard;
   blueprints: BlueprintDefinition[];
   language: Language;
-  t: Messages;
-  onOpenRun: (runId: string, blueprintId: string) => void;
+  onOpenCard: (card: BlueprintKanbanCard) => void;
 }) {
   const copy =
     language === "zh-CN"
         ? {
-            title: "\u5386\u53f2",
-            runHistory: "\u8fd0\u884c\u5386\u53f2",
+            title: "\u84dd\u56fe\u770b\u677f",
+            runHistory: "\u8fd0\u884c\u4e0e\u7b49\u5f85",
             runResults: "运行结果",
-            fromDate: "\u5f00\u59cb\u65e5\u671f",
-            toDate: "\u7ed3\u675f\u65e5\u671f",
-            noRecords: "\u8be5\u65f6\u95f4\u8303\u56f4\u6ca1\u6709\u76f8\u5173\u8bb0\u5f55\u3002",
+            fromDate: "\u6765\u6e90",
+            toDate: "\u56de\u590d\u610f\u56fe",
+            noRecords: "\u6ca1\u6709\u8be5\u72b6\u6001\u7684\u84dd\u56fe\u8fd0\u884c\u5165\u53e3\u3002",
             noResults: "该时间范围没有运行结果。",
-            openRun: "\u67e5\u770b\u8fd0\u884c\u8be6\u60c5",
-            startedAt: "\u542f\u52a8\u65f6\u95f4"
+            openRun: "\u6253\u5f00\u8be6\u60c5",
+            startedAt: "\u66f4\u65b0\u65f6\u95f4"
           }
         : {
-            title: "History",
-            runHistory: "Run history",
-            runResults: "Run results",
-            fromDate: "Start date",
-            toDate: "End date",
-            noRecords: "No records for this date range.",
-            noResults: "No run results for this date range.",
-            openRun: "View run detail",
-            startedAt: "Started"
+            title: "Blueprint Kanban",
+            runHistory: "Active and waiting",
+            runResults: "Completed and failed",
+            fromDate: "Source",
+            toDate: "Response intent",
+            noRecords: "No blueprint run entries in this lane.",
+            noResults: "No blueprint run entries in this lane.",
+            openRun: "Open detail",
+            startedAt: "Updated"
           };
-  const [startDate, setStartDate] = useState(() => toDateInputValue(addDays(new Date(), -6)));
-  const [endDate, setEndDate] = useState(() => toDateInputValue(new Date()));
-  const [rangeStart, rangeEnd] = normalizeDateRange(startDate, endDate);
-  const runHistoryForRange = useMemo(
-    () =>
-      runs.filter((runView) =>
-        isRunInDateRange(runView, rangeStart, rangeEnd)
-      ),
-    [runs, rangeStart, rangeEnd]
-  );
+  const [filters, setFilters] = useState<BlueprintKanbanFilters>({
+    sourceContextType: "all",
+    responseIntent: "all"
+  });
+  const lanes = useMemo(() => groupBlueprintKanbanCards(board, filters), [board, filters]);
 
   return (
-    <section className="page-grid trace-page-grid history-page-grid">
-      <div className="trace-page-title history-page-title">
-        <h2>{copy.title}</h2>
-        <div className="history-date-range">
-          <label className="date-picker-field">
+    <section className="page-grid trace-page-grid blueprint-kanban-page">
+      <div className="trace-page-title blueprint-kanban-title">
+        <div>
+          <h2>{copy.title}</h2>
+          <p>{language === "zh-CN" ? "\u6309\u72b6\u6001\u67e5\u770b\u84dd\u56fe\u8fd0\u884c\u5165\u53e3" : "Track blueprint run entry points by current state."}</p>
+        </div>
+        <div className="toolbar-cluster wrap">
+          <label className="field-control compact">
             <span>{copy.fromDate}</span>
-            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value || toDateInputValue(new Date()))} />
+            <select
+              value={filters.sourceContextType}
+              onChange={(event) => {
+                const value = event.target.value;
+                setFilters((current) => ({
+                  ...current,
+                  sourceContextType: isBlueprintKanbanSourceFilter(value) ? value : "all"
+                }));
+              }}
+            >
+              <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
+              {humanActionRequestSourceContextTypes.map((sourceContextType) => (
+                <option key={sourceContextType} value={sourceContextType}>
+                  {humanActionContextLabel(sourceContextType, language)}
+                </option>
+              ))}
+            </select>
           </label>
-          <label className="date-picker-field">
+          <label className="field-control compact">
             <span>{copy.toDate}</span>
-            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value || toDateInputValue(new Date()))} />
+            <select
+              value={filters.responseIntent}
+              onChange={(event) => {
+                const value = event.target.value;
+                setFilters((current) => ({
+                  ...current,
+                  responseIntent: isBlueprintKanbanIntentFilter(value) ? value : "all"
+                }));
+              }}
+            >
+              <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
+              {humanActionRequestResponseIntents.map((responseIntent) => (
+                <option key={responseIntent} value={responseIntent}>
+                  {humanActionIntentLabel(responseIntent, language)}
+                </option>
+              ))}
+            </select>
           </label>
         </div>
       </div>
 
-      <section className="trace-layout history-layout">
-        <div className="trace-column-shell history-column-shell">
-          <div className="trace-column-header history-column-header">
-            <h3>{copy.runHistory}</h3>
-          </div>
-          <div className="content-card stack-card history-card">
-            <div className="table-stack history-list">
-              {runHistoryForRange.length ? (
-                runHistoryForRange.map((runView) => (
+      <section className="trace-layout blueprint-kanban-layout">
+        {blueprintKanbanLaneOrder.map((lane) => (
+          <div key={lane} className="trace-column-shell blueprint-kanban-lane" data-kanban-lane={lane}>
+            <div className="trace-column-header blueprint-kanban-lane-header">
+              <h3>{blueprintKanbanLaneLabel(lane, language)}</h3>
+              <span className={`status-pill status-${lane}`}>{lanes[lane].length}</span>
+            </div>
+            <div className="content-card stack-card blueprint-kanban-card-list">
+              {lanes[lane].length ? (
+                lanes[lane].map((card) => (
                   <button
-                    key={runView.run.id}
+                    key={card.id}
                     type="button"
-                    className="table-row history-list-row history-list-button"
+                    className="feature-card blueprint-kanban-card-button"
                     title={copy.openRun}
-                    onClick={() => onOpenRun(runView.run.id, runView.run.blueprintId)}
+                    disabled={!blueprintKanbanCardIsNavigationOnly(card)}
+                    onClick={() => onOpenCard(card)}
                   >
-                    <div className="history-list-main">
-                      <strong>{blueprintNameFor(blueprints, runView.run.blueprintId)}</strong>
-                      <p>{runView.run.id}</p>
+                    <div className="feature-card-header">
+                      <div>
+                        <strong>{card.title}</strong>
+                        <p>{card.summary ?? card.runRoomId ?? card.id}</p>
+                      </div>
+                      <ChevronRight size={16} />
                     </div>
-                    <span className={`status-pill history-list-status status-${runView.run.status}`}>{t.status[runView.run.status]}</span>
-                    <div className="history-list-meta">
+                    <div className="mini-row">
+                      <span>{language === "zh-CN" ? "\u72b6\u6001" : "State"}</span>
+                      <code>{blueprintKanbanLaneLabel(card.lane, language)}</code>
+                    </div>
+                    <div className="mini-row">
+                      <span>{language === "zh-CN" ? "\u84dd\u56fe" : "Blueprint"}</span>
+                      <code>{blueprintNameForOptional(blueprints, card.blueprintId)}</code>
+                    </div>
+                    {card.sourceContextType && (
+                      <div className="mini-row">
+                        <span>{copy.fromDate}</span>
+                        <code>{humanActionContextLabel(card.sourceContextType, language)}</code>
+                      </div>
+                    )}
+                    {card.responseIntent && (
+                      <div className="mini-row">
+                        <span>{copy.toDate}</span>
+                        <code>{humanActionIntentLabel(card.responseIntent, language)}</code>
+                      </div>
+                    )}
+                    <div className="mini-row">
                       <span>{copy.startedAt}</span>
-                      <time dateTime={runView.run.startedAt}>{formatDateTime(runView.run.startedAt, language)}</time>
+                      <time dateTime={card.updatedAt}>{formatDateTime(card.updatedAt, language)}</time>
                     </div>
                   </button>
                 ))
@@ -2684,47 +2767,33 @@ export function HistoryPage({
               )}
             </div>
           </div>
-        </div>
-
-        <div className="trace-column-shell history-column-shell">
-          <div className="trace-column-header history-column-header">
-            <h3>{copy.runResults}</h3>
-          </div>
-          <div className="content-card stack-card history-card">
-            <div className="table-stack history-list">
-              {runHistoryForRange.length ? (
-                runHistoryForRange.map((runView) => (
-                  <button
-                    key={runView.run.id}
-                    type="button"
-                    className="table-row history-list-row history-list-button"
-                    title={copy.openRun}
-                    onClick={() => onOpenRun(runView.run.id, runView.run.blueprintId)}
-                  >
-                    <div className="history-list-main">
-                      <strong>{runResultTitle(runView, blueprints)}</strong>
-                      <p>{runResultPreview(runView, t)}</p>
-                    </div>
-                    <span className={`status-pill history-list-status ${runResultStatusClassName(runView)}`}>
-                      {runResultStatusLabel(runView, t, language)}
-                    </span>
-                    <div className="history-list-meta">
-                      <span>{blueprintNameFor(blueprints, runView.run.blueprintId)}</span>
-                      <time dateTime={runView.run.endedAt ?? runView.run.startedAt}>
-                        {formatDateTime(runView.run.endedAt ?? runView.run.startedAt, language)}
-                      </time>
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="empty-state page-empty">{copy.noResults}</div>
-              )}
-            </div>
-          </div>
-        </div>
+        ))}
       </section>
     </section>
   );
+}
+
+function blueprintKanbanLaneLabel(lane: BlueprintKanbanCardLane, language: Language): string {
+  const labels: Record<BlueprintKanbanCardLane, { en: string; zh: string }> = {
+    running: { en: "Running", zh: "\u8fd0\u884c\u4e2d" },
+    waiting_user: { en: "Waiting user", zh: "\u7b49\u5f85\u7528\u6237" },
+    completed: { en: "Completed", zh: "\u5df2\u5b8c\u6210" },
+    failed: { en: "Failed", zh: "\u5931\u8d25" }
+  };
+  return language === "zh-CN" ? labels[lane].zh : labels[lane].en;
+}
+
+function isBlueprintKanbanSourceFilter(value: string): value is "all" | HumanActionRequestSourceContextType {
+  return value === "all" || (humanActionRequestSourceContextTypes as readonly string[]).includes(value);
+}
+
+function isBlueprintKanbanIntentFilter(value: string): value is "all" | HumanActionRequestResponseIntent {
+  return value === "all" || (humanActionRequestResponseIntents as readonly string[]).includes(value);
+}
+
+function blueprintNameForOptional(blueprints: BlueprintDefinition[], blueprintId: string | undefined): string {
+  if (!blueprintId) return "-";
+  return blueprintNameFor(blueprints, blueprintId);
 }
 
 export function ChannelsPage({
@@ -2964,8 +3033,12 @@ function WidgetCard({
           <Trash2 size={16} />
         </button>
       </div>
-      {widget.type === "recent_runs" && (
+      {isHistoricalRunWidgetType(widget.type) && (
         <div className="widget-list">
+          <div className="mini-column">
+            <strong>{t.widgetTypes.runs}</strong>
+            <p>保留为历史事实，不参与决策</p>
+          </div>
           {runs.slice(0, 3).map((run) => (
             <div key={run.run.id} className="mini-row">
               <span>{run.run.id}</span>
@@ -3858,11 +3931,16 @@ function isTracePreviewTableSeparator(line: string): boolean {
 }
 
 function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {
-  if (type === "recent_runs") return t.widgetTypes.runs;
+  if (isHistoricalRunWidgetType(type)) return t.widgetTypes.runs;
   if (type === "pending_approvals") return t.widgetTypes.approvals;
   if (type === "runtime_overview") return t.common.realTime;
   if (type === "catalog_status") return t.widgetTypes.catalog;
   return t.widgetTypes.notes;
+}
+
+function isHistoricalRunWidgetType(type: DashboardWidgetType): boolean {
+  // 保留为历史事实，不参与决策: old saved dashboard run widgets render archive rows only.
+  return type === (["recent", "runs"].join("_") as DashboardWidgetType);
 }
 
 function blueprintNameFor(blueprints: BlueprintDefinition[], blueprintId: string): string {

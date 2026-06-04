@@ -18,7 +18,7 @@ import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 import type { AgentOutputEvent, RunRoomFeed } from "./agentOutput";
-import type { HumanActionResponse, InboxProjection, RunInterjection } from "./runRoom";
+import type { BlueprintKanbanBoard, HumanActionResponse, InboxProjection, RunInterjection } from "./runRoom";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -86,6 +86,10 @@ export interface RunInterjectionResponse {
 
 export interface ListBlueprintRunSummariesResponse {
   runs: BlueprintRunSummary[];
+}
+
+export interface ListBlueprintKanbanResponse {
+  board: BlueprintKanbanBoard;
 }
 
 export interface ListPendingApprovalsResponse {

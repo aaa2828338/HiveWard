@@ -91,9 +91,18 @@ import type {
   ApprovalRequestResponse,
   ApprovalThreadRepliesResponse,
   ApprovalThreadResponse,
+  ListBlueprintKanbanResponse,
   ListApprovalThreadsResponse
 } from "@hiveward/shared";
-import { approvalThreadIdForRequest, claudeCodeModelPresets, createPortableBlueprintPackage, isAgentBlueprintNode, readPortableBlueprintPackage } from "@hiveward/shared";
+import {
+  approvalThreadIdForRequest,
+  claudeCodeModelPresets,
+  createPortableBlueprintPackage,
+  humanActionRequestResponseIntents,
+  humanActionRequestSourceContextTypes,
+  isAgentBlueprintNode,
+  readPortableBlueprintPackage
+} from "@hiveward/shared";
 import { buildHivewardRoleSkillPrompt, parseExecutiveCommand } from "@hiveward/shared";
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
@@ -101,6 +110,7 @@ import { HumanActionRequestService } from "../services/humanActionRequestService
 import { InboxProjectionService } from "../services/inboxProjectionService";
 import { AgentOutputService } from "../services/agentOutputService";
 import { RunRoomService } from "../services/runRoomService";
+import { BlueprintKanbanService } from "../services/blueprintKanbanService";
 import { ManagerMailProjector } from "../services/managerMailProjector";
 import { isRuntimeAdapterError, type RuntimeAdapter } from "@hiveward/adapter";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -245,6 +255,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const inboxProjectionService = new InboxProjectionService(store);
   const agentOutputService = new AgentOutputService(store);
   const runRoomService = new RunRoomService(store);
+  const blueprintKanbanService = new BlueprintKanbanService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
   const attachRunRoomFeed = async (view: BlueprintRunView | undefined): Promise<BlueprintRunView | undefined> => {
     if (!view) return undefined;
@@ -578,6 +589,30 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  router.get("/api/blueprints/kanban", async (req, res, next) => {
+    try {
+      const response: ListBlueprintKanbanResponse = {
+        board: await blueprintKanbanService.buildBoard({
+          companyId: readOptionalString(req.query.companyId),
+          blueprintId: readOptionalString(req.query.blueprintId),
+          sourceContextType: readOptionalAllowed(
+            req.query.sourceContextType,
+            humanActionRequestSourceContextTypes,
+            "sourceContextType"
+          ),
+          responseIntent: readOptionalAllowed(
+            req.query.responseIntent,
+            humanActionRequestResponseIntents,
+            "responseIntent"
+          )
+        })
+      };
+      res.json(response);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get("/api/blueprints/:blueprintId", async (req, res, next) => {
     try {
       const blueprintId = readRouteParam(req.params.blueprintId, "blueprintId");
@@ -701,6 +736,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
+  // 保留为历史事实，不参与决策: BlueprintKanban owns the primary status projection.
   router.get("/api/blueprint-runs", async (_req, res, next) => {
     try {
       res.json({ runs: await store.listRunSummaries() });
@@ -1369,6 +1405,13 @@ function readApprovalThreadStatus(value: unknown): ApprovalThread["status"] | un
   if (!status) return undefined;
   if (status === "open" || status === "closed") return status;
   throw new Error("Approval thread status must be open or closed.");
+}
+
+function readOptionalAllowed<T extends readonly string[]>(value: unknown, allowed: T, fieldName: string): T[number] | undefined {
+  const text = readOptionalString(value);
+  if (!text) return undefined;
+  if ((allowed as readonly string[]).includes(text)) return text as T[number];
+  throw new ApiBadRequestError("invalid_query", `${fieldName} must be one of ${allowed.join(", ")}.`);
 }
 
 function normalizeSaveArchitectureBlueprintLayoutRequest(value: unknown): SaveArchitectureBlueprintLayoutRequest {

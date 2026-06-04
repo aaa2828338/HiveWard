@@ -73,6 +73,7 @@ import {
   assertRunInterjection,
   assertRunRoom,
   assertWorkerTask,
+  blueprintKanbanLaneFromRunRoomStatus,
   blueprintRunArchiveSchema,
   createBlankBlueprint,
   createDefaultBlueprints,
@@ -1067,8 +1068,8 @@ export class SqliteHivewardStore implements HivewardStore {
 
   async listBlueprintKanbanCards(filter: { companyId?: string; blueprintId?: string; lane?: BlueprintKanbanCard["lane"] } = {}): Promise<BlueprintKanbanCard[]> {
     return projectBlueprintKanbanCardsFromRunRooms(
-      this.readRunRooms({ companyId: filter.companyId, blueprintId: filter.blueprintId, status: filter.lane })
-    );
+      this.readRunRooms({ companyId: filter.companyId, blueprintId: filter.blueprintId })
+    ).filter((card) => !filter.lane || card.lane === filter.lane);
   }
 
   async appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent> {
@@ -4124,10 +4125,16 @@ function projectBlueprintKanbanCardsFromRunRooms(runRooms: RunRoom[]): Blueprint
       companyId: runRoom.companyId,
       blueprintId: runRoom.blueprintId,
       runId: runRoom.runId,
-      lane: runRoom.status,
+      lane: blueprintKanbanLaneFromRunRoomStatus(runRoom.status),
       title: runRoom.title ?? runRoom.id,
       summary: runRoom.summary,
-      updatedAt: runRoom.updatedAt
+      updatedAt: runRoom.updatedAt,
+      targetRef: {
+        type: "run_room" as const,
+        runRoomId: runRoom.id,
+        runId: runRoom.runId,
+        blueprintId: runRoom.blueprintId
+      }
     }))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
 }

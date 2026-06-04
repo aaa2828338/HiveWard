@@ -66,11 +66,15 @@
   UpdateClaudeCodeModelConfigRequest,
   SendChatSessionMessageRequest,
   AgentOutputEvent,
+  BlueprintKanbanBoard,
   HumanActionResponse,
+  HumanActionRequestResponseIntent,
+  HumanActionRequestSourceContextType,
   HivewardChatSession,
   HivewardChatSessionResponse,
   InboxProjection,
   ListHumanActionResponsesResponse,
+  ListBlueprintKanbanResponse,
   ListInboxProjectionsResponse,
   ListChatSessionsResponse,
   StartBlueprintRunResponse,
@@ -451,6 +455,23 @@ export const api = {
     return response.blueprint;
   },
 
+  async listBlueprintKanban(filter: {
+    companyId?: string;
+    blueprintId?: string;
+    sourceContextType?: HumanActionRequestSourceContextType;
+    responseIntent?: HumanActionRequestResponseIntent;
+  } = {}): Promise<BlueprintKanbanBoard> {
+    const params = new URLSearchParams();
+    if (filter.companyId) params.set("companyId", filter.companyId);
+    if (filter.blueprintId) params.set("blueprintId", filter.blueprintId);
+    if (filter.sourceContextType) params.set("sourceContextType", filter.sourceContextType);
+    if (filter.responseIntent) params.set("responseIntent", filter.responseIntent);
+    const query = params.toString();
+    const response = await request<ListBlueprintKanbanResponse>(`/api/blueprints/kanban${query ? `?${query}` : ""}`);
+    return response.board;
+  },
+
+  // 保留为历史事实，不参与决策: BlueprintKanban owns the primary status projection.
   async listBlueprintRuns(): Promise<ListBlueprintRunSummariesResponse["runs"]> {
     const response = await request<ListBlueprintRunSummariesResponse>("/api/blueprint-runs");
     return response.runs;

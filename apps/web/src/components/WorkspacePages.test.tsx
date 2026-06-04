@@ -1,9 +1,25 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { ApprovalThread, BlueprintDefinition, BlueprintRunView, HumanActionResponse, InboxProjection, PendingApprovalItem } from "@hiveward/shared";
+import type {
+  ApprovalThread,
+  BlueprintDefinition,
+  BlueprintKanbanBoard,
+  BlueprintRunView,
+  HumanActionResponse,
+  InboxProjection,
+  PendingApprovalItem,
+  WorkspaceDashboard
+} from "@hiveward/shared";
 import { messages } from "../lib/i18n";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { ApprovalsPage, buildCurrentOutputDisplayBody, CompanyDirectoryPage, RunsPage } from "./WorkspacePages";
+import {
+  ApprovalsPage,
+  buildCurrentOutputDisplayBody,
+  CompanyDirectoryPage,
+  DashboardPage,
+  HistoryPage,
+  RunsPage
+} from "./WorkspacePages";
 
 describe("CompanyDirectoryPage", () => {
   it("renders the add-company action without the external Plus icon component", () => {
@@ -21,6 +37,84 @@ describe("CompanyDirectoryPage", () => {
 
     expect(html).toContain("Add company");
     expect(html).toContain("local-add-icon");
+  });
+});
+
+describe("HistoryPage Blueprint Kanban", () => {
+  it("renders Blueprint Kanban lanes from canonical board cards", () => {
+    const html = renderToStaticMarkup(
+      <HistoryPage
+        board={createKanbanBoard()}
+        blueprints={[createBlueprintDefinition()]}
+        language="en"
+        onOpenCard={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Blueprint Kanban");
+    expect(html).toContain("Running");
+    expect(html).toContain("Waiting user");
+    expect(html).toContain("Completed");
+    expect(html).toContain("Failed");
+    expect(html).toContain("Pending decision");
+    expect(html).toContain("Launch Blueprint");
+  });
+
+  it("does not render old history primary rows or Kanban mutation actions", () => {
+    const html = renderToStaticMarkup(
+      <HistoryPage
+        board={createKanbanBoard()}
+        blueprints={[createBlueprintDefinition()]}
+        language="en"
+        onOpenCard={() => undefined}
+      />
+    );
+
+    expect(html).not.toContain("history-page-grid");
+    expect(html).not.toContain("history-list-row");
+    expect(html).not.toContain("history-list-button");
+    expect(html).not.toContain("Run history");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
+    expect(html).not.toContain("Send message");
+    expect(html).not.toContain("Dispatch worker");
+    expect(html).not.toContain("Mutate state");
+    expect(html).not.toContain("Use this option");
+  });
+});
+
+describe("DashboardPage historical widgets", () => {
+  it("renders saved run widgets as historical read-only facts instead of notes", () => {
+    const dashboard: WorkspaceDashboard = {
+      dashboardWidgets: [
+        {
+          id: "widget-historical-runs",
+          type: ["recent", "runs"].join("_") as WorkspaceDashboard["dashboardWidgets"][number]["type"],
+          title: "Saved run records",
+          layout: { x: 0, y: 0, w: 6, h: 4 }
+        }
+      ],
+      savedViews: [],
+      tags: [],
+      notes: [],
+      updatedAt: "2026-06-04T00:00:00.000Z"
+    };
+    const html = renderToStaticMarkup(
+      <DashboardPage
+        dashboard={dashboard}
+        blueprints={[]}
+        runs={[createRunPageRunView({}, { id: "run-historical-widget" })]}
+        approvals={[]}
+        language="en"
+        t={messages.en}
+        onAddWidget={() => undefined}
+        onRemoveWidget={() => undefined}
+      />
+    );
+
+    expect(html).toContain("保留为历史事实，不参与决策");
+    expect(html).toContain("run-historical-widget");
+    expect(html).not.toContain(messages.en.widgetTypes.notes);
   });
 });
 
@@ -54,18 +148,124 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
   };
 }
 
+function createKanbanBoard(): BlueprintKanbanBoard {
+  const updatedAt = "2026-06-04T00:00:00.000Z";
+  const cards: BlueprintKanbanBoard["cards"] = [
+    {
+      id: "running-card",
+      runRoomId: "run-room-running",
+      companyId: "company-1",
+      blueprintId: "blueprint-1",
+      runId: "run-running",
+      lane: "running" as const,
+      sourceContextType: "run_room" as const,
+      title: "Running task",
+      updatedAt,
+      targetRef: {
+        type: "run_room" as const,
+        runRoomId: "run-room-running",
+        runId: "run-running",
+        blueprintId: "blueprint-1"
+      }
+    },
+    {
+      id: "waiting-card",
+      runRoomId: "run-room-waiting",
+      companyId: "company-1",
+      blueprintId: "blueprint-1",
+      runId: "run-waiting",
+      humanActionRequestId: "human-action-request-1",
+      inboxProjectionId: "inbox-projection-human-action-request-1",
+      lane: "waiting_user" as const,
+      sourceContextType: "run_room" as const,
+      responseIntent: "decision_required" as const,
+      title: "Pending decision",
+      updatedAt,
+      targetRef: {
+        type: "inbox_projection" as const,
+        inboxProjectionId: "inbox-projection-human-action-request-1",
+        humanActionRequestId: "human-action-request-1",
+        runRoomId: "run-room-waiting"
+      }
+    },
+    {
+      id: "completed-card",
+      runRoomId: "run-room-completed",
+      companyId: "company-1",
+      blueprintId: "blueprint-1",
+      runId: "run-completed",
+      lane: "completed" as const,
+      sourceContextType: "run_room" as const,
+      title: "Completed task",
+      updatedAt,
+      targetRef: {
+        type: "run_room" as const,
+        runRoomId: "run-room-completed",
+        runId: "run-completed",
+        blueprintId: "blueprint-1"
+      }
+    },
+    {
+      id: "failed-card",
+      runRoomId: "run-room-failed",
+      companyId: "company-1",
+      blueprintId: "blueprint-1",
+      runId: "run-failed",
+      lane: "failed" as const,
+      sourceContextType: "run_room" as const,
+      title: "Failed task",
+      updatedAt,
+      targetRef: {
+        type: "run_room" as const,
+        runRoomId: "run-room-failed",
+        runId: "run-failed",
+        blueprintId: "blueprint-1"
+      }
+    }
+  ];
+
+  return {
+    cards,
+    lanes: {
+      running: [cards[0]!],
+      waiting_user: [cards[1]!],
+      completed: [cards[2]!],
+      failed: [cards[3]!]
+    },
+    updatedAt
+  };
+}
+
+function createBlueprintDefinition(overrides: Partial<BlueprintDefinition> = {}): BlueprintDefinition {
+  return {
+    id: "blueprint-1",
+    companyId: "company-1",
+    name: "Launch Blueprint",
+    version: 1,
+    nodes: [],
+    edges: [],
+    variables: {},
+    display: {},
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+    ...overrides
+  };
+}
+
 function renderApprovalsPage({
   approvals,
   approvalThreads = [],
   inboxProjections = [],
   inboxResponsesByRequestId = {},
-  actionPending = false
+  actionPending = false,
+  focusedEntryId
 }: {
   approvals: PendingApprovalItem[];
   approvalThreads?: ApprovalThread[];
   inboxProjections?: InboxProjection[];
   inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
   actionPending?: boolean;
+  focusedEntryId?: string;
 }): string {
   return renderToStaticMarkup(
     <ApprovalsPage
@@ -76,6 +276,7 @@ function renderApprovalsPage({
       language="en"
       t={messages.en}
       actionPending={actionPending}
+      focusedEntryId={focusedEntryId}
       onApproveApprovalRequest={() => undefined}
       onComplete={() => undefined}
       onRejectApprovalRequest={() => undefined}
@@ -295,6 +496,40 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Decline");
     expect(html).not.toContain("Generate candidate");
     expect(html).not.toContain("Use this option");
+  });
+
+  it("opens the focused human action projection detail without adding approval actions", () => {
+    const firstProjection: InboxProjection = {
+      id: "projection-first",
+      humanActionRequestId: "human-action-first",
+      sourceContextType: "run_room",
+      sourceContextId: "run-room-1",
+      responseIntent: "reply_required",
+      status: "pending",
+      title: "First response",
+      bodyMarkdown: "First body.",
+      createdAt: "2026-05-21T01:02:00.000Z",
+      updatedAt: "2026-05-21T01:02:00.000Z"
+    };
+    const focusedProjection: InboxProjection = {
+      ...firstProjection,
+      id: "projection-focused",
+      humanActionRequestId: "human-action-focused",
+      title: "Focused response",
+      bodyMarkdown: "Focused body.",
+      updatedAt: "2026-05-21T01:01:00.000Z"
+    };
+
+    const html = renderApprovalsPage({
+      approvals: [],
+      inboxProjections: [firstProjection, focusedProjection],
+      focusedEntryId: "human:human-action-focused"
+    });
+
+    expect(html).toContain("Focused body.");
+    expect(html).not.toContain("First body.");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
   });
 
   it("disables approval and human response actions while a request action is pending", () => {

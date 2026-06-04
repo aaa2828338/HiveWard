@@ -62,6 +62,8 @@ import type {
   UpdateClaudeCodeModelConfigRequest,
   UpdateCompanyRequest,
   WorkspaceDashboard,
+  BlueprintKanbanBoard,
+  BlueprintKanbanCard,
   CanvasPosition,
   BlueprintDefinition,
   BlueprintRunSummary,
@@ -86,6 +88,7 @@ import {
 } from "./lib/blueprint-edit-state";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
+import { emptyBlueprintKanbanBoard } from "./lib/blueprint-kanban-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { HarnessLabel } from "./components/HarnessLabel";
 import hivewardPackage from "../../../package.json";
@@ -243,10 +246,12 @@ export function App() {
   const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
   const [inboxProjections, setInboxProjections] = useState<InboxProjection[]>([]);
   const [inboxResponsesByRequestId, setInboxResponsesByRequestId] = useState<Record<string, HumanActionResponse[]>>({});
+  const [blueprintKanbanBoard, setBlueprintKanbanBoard] = useState<BlueprintKanbanBoard>(() => emptyBlueprintKanbanBoard());
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
   const [runPageBlueprintId, setRunPageBlueprintId] = useState<string | undefined>();
+  const [focusedInboxEntryId, setFocusedInboxEntryId] = useState<string | undefined>();
   const [busyAction, setBusyAction] = useState<string | undefined>();
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -382,6 +387,7 @@ export function App() {
         nextApprovalThreads,
         nextRoles,
         nextInboxProjections,
+        nextBlueprintKanbanBoard,
         nextDashboard,
         nextRuntime
       ] = await Promise.all([
@@ -400,6 +406,7 @@ export function App() {
         api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.getRoleDirectory().catch(() => undefined),
         api.listInboxProjections().catch(() => []),
+        api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard()),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
       ]);
@@ -434,6 +441,7 @@ export function App() {
       setRoleDirectory(nextRoles?.roles);
       setArchitecture(nextRoles?.architecture);
       setInboxProjections(nextInboxProjections);
+      setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
       setDashboardDirty(false);
@@ -665,7 +673,7 @@ export function App() {
     () => approvals.filter(isActionableApproval).length,
     [approvals]
   );
-  const pendingInboxCount = useMemo(() => inboxProjections.filter((item) => item.status === "pending").length, [inboxProjections]);
+  const waitingUserKanbanCount = blueprintKanbanBoard.lanes.waiting_user.length;
   const pollingRunId = useMemo(
     () =>
       selectRunPollingTarget({
@@ -699,23 +707,56 @@ export function App() {
     [selectBlueprint]
   );
 
-  const openRunFromHistory = useCallback((runId: string, blueprintId: string) => {
-    const nextBlueprint = blueprintsRef.current.find((item) => item.id === blueprintId);
-    if (nextBlueprint) {
-      setBlueprint(nextBlueprint);
+  const openBlueprintKanbanCard = useCallback((card: BlueprintKanbanCard) => {
+    if (card.targetRef.type === "inbox_projection") {
+      const focusedEntryId = `human:${card.targetRef.humanActionRequestId}`;
+      void (async () => {
+        try {
+          const [nextApprovals, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
+            api.listPendingApprovals(),
+            api.listApprovalThreads({ status: "open" }).catch(() => []),
+            api.listInboxProjections(),
+            api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
+          ]);
+          setApprovals(nextApprovals);
+          setApprovalThreads(nextApprovalThreads);
+          setInboxProjections(nextInboxProjections);
+          setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
+        } catch (navigationError) {
+          setError(navigationError instanceof Error ? navigationError.message : messageRef.current.errors.load);
+        } finally {
+          setFocusedInboxEntryId(focusedEntryId);
+          setSelectedNodeId(undefined);
+          setSection("approvals");
+        }
+      })();
+      return;
     }
-    setRunPageBlueprintId(blueprintId);
-    setSelectedRunId(runId);
+    setFocusedInboxEntryId(undefined);
+    const blueprintId = card.targetRef.type === "blueprint" ? card.targetRef.blueprintId : card.targetRef.blueprintId;
+    if (blueprintId) {
+      const nextBlueprint = blueprintsRef.current.find((item) => item.id === blueprintId);
+      if (nextBlueprint) {
+        setBlueprint(nextBlueprint);
+      }
+      setRunPageBlueprintId(blueprintId);
+    }
+    if (card.targetRef.type === "run_room" && card.targetRef.runId) {
+      setSelectedRunId(card.targetRef.runId);
+      setSelectedNodeId(undefined);
+      setSection("runs");
+      return;
+    }
     setSelectedNodeId(undefined);
-    setSection("runs");
+    setSection("blueprint");
   }, []);
 
   const sidebarActivityMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
     () => ({
       blueprint: activeCountOrUndefined(dirtyBlueprintIds.size),
       runs: activeCountOrUndefined(activeTaskCount),
-      approvals: activeCountOrUndefined(pendingApprovalCount + pendingInboxCount),
-      schedule: activeCountOrUndefined(activeTaskCount + pendingApprovalCount + pendingInboxCount),
+      approvals: activeCountOrUndefined(pendingApprovalCount + waitingUserKanbanCount),
+      schedule: activeCountOrUndefined(activeTaskCount + pendingApprovalCount + waitingUserKanbanCount),
       openclaw: activeCountOrUndefined(countHarnessStatusActivity(openClawHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.openclaw)),
       claudeCodeConfig: activeCountOrUndefined(countHarnessStatusActivity(claudeCodeHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.claudeCode)),
       codexConfig: activeCountOrUndefined(countHarnessStatusActivity(codexHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.codex)),
@@ -729,7 +770,7 @@ export function App() {
     [
       dirtyBlueprintIds.size,
       pendingApprovalCount,
-      pendingInboxCount,
+      waitingUserKanbanCount,
       activeTaskCount,
       openClawHarnessStatus,
       claudeCodeHarnessStatus,
@@ -791,6 +832,10 @@ export function App() {
     setRunSummaries((current) => upsertRunSummary(current, runView.run));
     setApprovals((current) => syncApprovalsForRun(current, runView));
     setApprovalThreads((current) => syncApprovalThreadsForRun(current, runView));
+  }, []);
+
+  const refreshBlueprintKanban = useCallback(async () => {
+    setBlueprintKanbanBoard(await api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard()));
   }, []);
 
   const loadOpenClawVersion = useCallback(async () => {
@@ -1264,10 +1309,11 @@ export function App() {
       });
       const runView = await api.startBlueprintRun(saved.id);
       applyRunView(runView);
+      await refreshBlueprintKanban();
       setRunPageBlueprintId(saved.id);
       setSelectedRunId(runView.run.id);
     });
-  }, [applyRunView, withBusy, blueprint, chatPermissionModes]);
+  }, [applyRunView, refreshBlueprintKanban, withBusy, blueprint, chatPermissionModes]);
 
   const cancelBlueprintRun = useCallback(() => {
     const targetRunId = latestRunForBlueprint?.run.id;
@@ -1275,19 +1321,21 @@ export function App() {
     void withBusy("cancelBlueprintRun", async () => {
       const updated = await api.cancelBlueprintRun(targetRunId);
       applyRunView(updated);
+      await refreshBlueprintKanban();
       setSelectedRunId(updated.run.id);
     });
-  }, [applyRunView, latestRunForBlueprint?.run.id, withBusy]);
+  }, [applyRunView, latestRunForBlueprint?.run.id, refreshBlueprintKanban, withBusy]);
 
   const sendRunInterjection = useCallback((runRoomId: string, messageMarkdown: string) => {
     void withBusy("sendRunInterjection", async () => {
       const response = await api.sendRunInterjection(runRoomId, { messageMarkdown });
       if (response.run) {
         applyRunView(response.run);
+        await refreshBlueprintKanban();
         setSelectedRunId(response.run.run.id);
       }
     });
-  }, [applyRunView, withBusy]);
+  }, [applyRunView, refreshBlueprintKanban, withBusy]);
 
   const applyApprovalRequestResponse = useCallback(
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
@@ -1355,7 +1403,9 @@ export function App() {
     (requestId: string, messageMarkdown: string) => {
       void withBusy("sendHumanActionResponse", async () => {
         const result = await api.sendHumanActionResponse(requestId, { messageMarkdown });
+        const nextBlueprintKanbanBoard = await api.listBlueprintKanban().catch(() => undefined);
         setInboxProjections(result.projections);
+        if (nextBlueprintKanbanBoard) setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
         setInboxResponsesByRequestId((current) => ({
           ...current,
           [requestId]: [...(current[requestId] ?? []), result.response]
@@ -1367,14 +1417,16 @@ export function App() {
 
   const refreshInboxAndApprovals = useCallback(async () => {
     try {
-      const [nextApprovals, nextApprovalThreads, nextInboxProjections] = await Promise.all([
+      const [nextApprovals, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
         api.listPendingApprovals(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
-        api.listInboxProjections()
+        api.listInboxProjections(),
+        api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
       ]);
       setApprovals(nextApprovals);
       setApprovalThreads(nextApprovalThreads);
       setInboxProjections(nextInboxProjections);
+      setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
     }
@@ -1672,6 +1724,7 @@ export function App() {
           language={language}
           t={t}
           actionPending={isApprovalInboxActionBusy(busyAction)}
+          focusedEntryId={focusedInboxEntryId}
           onApproveApprovalRequest={approveApprovalRequest}
           onComplete={completeRunApproval}
           onRejectApprovalRequest={rejectApprovalRequest}
@@ -1904,12 +1957,10 @@ export function App() {
     if (section === "schedule") {
       return (
         <HistoryPage
-          runs={runs}
-          approvals={approvals}
+          board={blueprintKanbanBoard}
           blueprints={blueprints}
           language={language}
-          t={t}
-          onOpenRun={openRunFromHistory}
+          onOpenCard={openBlueprintKanbanCard}
         />
       );
     }
@@ -3546,7 +3597,7 @@ function hivewardHomeCopy(language: Language): HivewardHomeCopy {
           "Blueprint orchestration with visual nodes.",
           "Manager dispatch across Slots and agents.",
           "Human governance through the inbox.",
-          "Run history that turns execution into reviewable evidence."
+          "Blueprint Kanban that turns execution state into reviewable entry points."
         ]
       },
       {
@@ -3888,11 +3939,16 @@ function isActionableApproval(approval: PendingApprovalItem): boolean {
 }
 
 function defaultWidgetTitle(type: DashboardWidgetType, t: Messages): string {
-  if (type === "recent_runs") return t.widgetTypes.runs;
+  if (isHistoricalRunWidgetType(type)) return t.widgetTypes.runs;
   if (type === "pending_approvals") return t.widgetTypes.approvals;
   if (type === "runtime_overview") return t.common.realTime;
   if (type === "catalog_status") return t.widgetTypes.catalog;
   return t.widgetTypes.notes;
+}
+
+function isHistoricalRunWidgetType(type: DashboardWidgetType): boolean {
+  // 保留为历史事实，不参与决策: old saved dashboard run widget title only.
+  return type === (["recent", "runs"].join("_") as DashboardWidgetType);
 }
 
 function defaultWidgetLayout(index: number) {

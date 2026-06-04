@@ -28,7 +28,12 @@ import type {
   RunRoomFeed,
   StartAgentTaskInput,
   WorkspaceDashboard,
-  ApprovalRequest
+  ApprovalRequest,
+  BlueprintKanbanBoard,
+  HumanActionRequest,
+  ManagerCommand,
+  RunRoom,
+  WorkerTask
 } from "@hiveward/shared";
 import { resolveApprovalCapabilities } from "@hiveward/shared";
 import { createApiRouter } from "./apiRouter";
@@ -2987,6 +2992,105 @@ describe("apiRouter", () => {
     }
   });
 
+  it("projects Blueprint Kanban lanes from run rooms, worker tasks, and pending human actions without mutating state", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const now = "2026-06-04T00:00:00.000Z";
+      const runRooms: RunRoom[] = [
+        createRunRoomFact({ id: "run-room-running", status: "open", runId: "run-running", updatedAt: "2026-06-04T00:04:00.000Z" }),
+        createRunRoomFact({ id: "run-room-completed", status: "completed", runId: "run-completed", updatedAt: "2026-06-04T00:03:00.000Z" }),
+        createRunRoomFact({ id: "run-room-failed", status: "failed", runId: "run-failed", updatedAt: "2026-06-04T00:02:00.000Z" }),
+        createRunRoomFact({ id: "run-room-waiting", status: "open", runId: "run-waiting", updatedAt: "2026-06-04T00:01:00.000Z" })
+      ];
+      for (const runRoom of runRooms) {
+        await fixture.store.createRunRoom(runRoom);
+      }
+      const command: ManagerCommand = {
+        id: "manager-command-kanban",
+        runRoomId: "run-room-running",
+        action: "dispatch_worker_task",
+        status: "running",
+        createdAt: now,
+        updatedAt: now
+      };
+      await fixture.store.appendManagerCommand(command);
+      const workerTask: WorkerTask = {
+        id: "worker-task-kanban",
+        runRoomId: "run-room-running",
+        managerCommandId: command.id,
+        status: "running",
+        title: "Worker is active",
+        createdAt: now,
+        updatedAt: "2026-06-04T00:05:00.000Z"
+      };
+      await fixture.store.createWorkerTask(workerTask);
+      const request: HumanActionRequest = {
+        id: "human-action-request-kanban",
+        runRoomId: "run-room-waiting",
+        sourceContextType: "run_room",
+        sourceContextId: "run-room-waiting",
+        responseIntent: "decision_required",
+        status: "pending",
+        title: "Pending decision",
+        bodyMarkdown: "Choose the next run-room action.",
+        createdAt: now,
+        updatedAt: "2026-06-04T00:06:00.000Z"
+      };
+      await fixture.store.appendHumanActionRequest(request);
+
+      const beforeCommands = await fixture.store.listManagerCommands();
+      const beforeTasks = await fixture.store.listWorkerTasks();
+      const beforeResponses = await fixture.store.listHumanActionResponses();
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/blueprints/kanban`);
+        const { board } = await readOkJson<{ board: BlueprintKanbanBoard }>(response);
+
+        expect(board.lanes.running.map((card) => card.id)).toEqual([
+          "blueprint-kanban-worker-task-worker-task-kanban",
+          "blueprint-kanban-run-room-run-room-running",
+          "blueprint-kanban-run-room-run-room-waiting"
+        ]);
+        expect(board.lanes.waiting_user).toEqual([
+          expect.objectContaining({
+            humanActionRequestId: request.id,
+            inboxProjectionId: `inbox-projection-${request.id}`,
+            lane: "waiting_user",
+            responseIntent: "decision_required",
+            targetRef: expect.objectContaining({
+              type: "inbox_projection",
+              humanActionRequestId: request.id
+            })
+          })
+        ]);
+        expect(board.lanes.completed.map((card) => card.runRoomId)).toEqual(["run-room-completed"]);
+        expect(board.lanes.failed.map((card) => card.runRoomId)).toEqual(["run-room-failed"]);
+        const waitingCard = board.lanes.waiting_user[0] as BlueprintKanbanBoard["cards"][number] & {
+          approve?: unknown;
+          reject?: unknown;
+          reply?: unknown;
+          dispatch?: unknown;
+          mutateState?: unknown;
+        };
+        expect(waitingCard.approve).toBeUndefined();
+        expect(waitingCard.reject).toBeUndefined();
+        expect(waitingCard.reply).toBeUndefined();
+        expect(waitingCard.dispatch).toBeUndefined();
+        expect(waitingCard.mutateState).toBeUndefined();
+
+        const filteredResponse = await fetch(`${baseUrl}/api/blueprints/kanban?responseIntent=reply_required`);
+        const filtered = await readOkJson<{ board: BlueprintKanbanBoard }>(filteredResponse);
+        expect(filtered.board.cards).toEqual([]);
+      });
+
+      expect(await fixture.store.listManagerCommands()).toEqual(beforeCommands);
+      expect(await fixture.store.listWorkerTasks()).toEqual(beforeTasks);
+      expect(await fixture.store.listHumanActionResponses()).toEqual(beforeResponses);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("stores Run page sends only as manager-targeted RunInterjection facts", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -4067,6 +4171,18 @@ describe("apiRouter", () => {
     }
   });
 });
+
+function createRunRoomFact(overrides: Partial<RunRoom> = {}): RunRoom {
+  return {
+    id: "run-room-test",
+    companyId: "company-1",
+    blueprintId: "blueprint-1",
+    status: "open",
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+    ...overrides
+  };
+}
 
 async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardStore }> {
   const dir = mkdtempSync(join(tmpdir(), "hiveward-api-"));

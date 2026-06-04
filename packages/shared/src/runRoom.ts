@@ -122,18 +122,42 @@ export interface InboxProjection {
   latestResponseAt?: string;
 }
 
-export type BlueprintKanbanCardLane = RunRoomStatus;
+export const blueprintKanbanCardLanes = ["running", "waiting_user", "completed", "failed"] as const;
+export type BlueprintKanbanCardLane = typeof blueprintKanbanCardLanes[number];
+
+export type BlueprintKanbanCardTargetRef =
+  | { type: "run_room"; runRoomId: string; runId?: string; blueprintId?: string }
+  | { type: "inbox_projection"; inboxProjectionId: string; humanActionRequestId: string; runRoomId?: string }
+  | { type: "blueprint"; blueprintId: string };
 
 export interface BlueprintKanbanCard {
   id: string;
-  runRoomId: string;
-  companyId: string;
+  runRoomId?: string;
+  companyId?: string;
   blueprintId?: string;
   runId?: string;
+  workerTaskId?: string;
+  humanActionRequestId?: string;
+  inboxProjectionId?: string;
   lane: BlueprintKanbanCardLane;
+  sourceContextType?: HumanActionRequestSourceContextType;
+  responseIntent?: HumanActionRequestResponseIntent;
   title: string;
   summary?: string;
   updatedAt: string;
+  targetRef: BlueprintKanbanCardTargetRef;
+}
+
+export interface BlueprintKanbanBoard {
+  lanes: Record<BlueprintKanbanCardLane, BlueprintKanbanCard[]>;
+  cards: BlueprintKanbanCard[];
+  updatedAt: string;
+}
+
+export function blueprintKanbanLaneFromRunRoomStatus(status: RunRoomStatus): BlueprintKanbanCardLane {
+  if (status === "open") return "running";
+  if (status === "completed") return "completed";
+  return "failed";
 }
 
 export function isActiveWorkerTaskStatus(status: WorkerTaskStatus): boolean {
