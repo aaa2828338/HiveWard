@@ -203,17 +203,32 @@ export class ApprovalService {
 
   async markSupersededByRevision(id: string, supersededByRequestId: string): Promise<ApprovalRequest> {
     const current = await this.requireRequest(id);
-    if (current.status !== "pending") {
-      throw new ApprovalConflictError("Approval request is already closed.");
-    }
+    const now = new Date().toISOString();
+    const resultingStatus = current.status === "pending" ? "superseded" : current.status;
+    const decision = {
+      ...await this.requireReturnForRevisionDecision(id),
+      resultingStatus
+    };
     const superseded: ApprovalRequest = {
       ...current,
-      status: "superseded",
-      supersededByRequestId,
+      status: resultingStatus,
+      supersededByRequestId: current.status === "pending" ? supersededByRequestId : current.supersededByRequestId,
       capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: new Date().toISOString()
+      updatedAt: now
     };
-    return this.store.upsertApprovalRequest(superseded);
+    const result = await this.applyDecisionOrThrow({ approvalRequest: superseded, decision });
+    return result.approvalRequest;
+  }
+
+  private async requireReturnForRevisionDecision(approvalRequestId: string): Promise<ApprovalDecision> {
+    const decision = (await this.store.listApprovalDecisions(approvalRequestId))
+      .slice()
+      .reverse()
+      .find((candidate) => candidate.action === "return_for_revision");
+    if (!decision) {
+      throw new Error(`Approval request ${approvalRequestId} has no return_for_revision decision to supersede.`);
+    }
+    return decision;
   }
 
   private async createSupersedingRevision(
@@ -340,25 +355,30 @@ export class ApprovalService {
     resultingStatus: ApprovalRequestStatus,
     options: { actor?: ApprovalDecision["actor"]; comment?: string } = {}
   ): Promise<ApprovalActionResult> {
-    const current = await this.requirePendingRequest(id, action);
-    if (action === "complete" && current.kind !== "manager_release_report") {
-      throw new Error("Only manager release reports can be completed.");
-    }
-    if (action === "terminate" && current.kind === "manager_release_report") {
-      throw new Error("Manager release reports cannot be terminated.");
+    const current = await this.requireRequest(id);
+    if (current.status === "pending") {
+      if (!capabilitiesAllow(current.capabilities, action)) {
+        throw new Error(`Approval request does not allow ${action}.`);
+      }
+      if (action === "complete" && current.kind !== "manager_release_report") {
+        throw new Error("Only manager release reports can be completed.");
+      }
+      if (action === "terminate" && current.kind === "manager_release_report") {
+        throw new Error("Manager release reports cannot be terminated.");
+      }
     }
     const now = new Date().toISOString();
     const decision = this.buildDecision(
       current.id,
       action,
-      resultingStatus,
+      current.status === "pending" ? resultingStatus : current.status,
       options.actor ?? "user",
       options.comment,
       now
     );
     const next: ApprovalRequest = {
       ...current,
-      status: resultingStatus,
+      status: current.status === "pending" ? resultingStatus : current.status,
       capabilities: { ...emptyApprovalCapabilities },
       updatedAt: now
     };
@@ -442,27 +462,9 @@ export class ApprovalService {
         : undefined
     });
     if (result.status === "conflict") {
-      throw new ApprovalConflictError();
-    }
-    if (input.decision.resultingStatus !== "pending") {
-      await this.closeBoundDecisionHumanActions(input.decision.approvalRequestId, input.decision.createdAt);
+      throw new ApprovalConflictError(result.approvalRequest ? "Approval request is already closed." : undefined);
     }
     return result;
-  }
-
-  private async closeBoundDecisionHumanActions(approvalRequestId: string, updatedAt: string): Promise<void> {
-    const requests = await this.store.listHumanActionRequests({
-      approvalRequestId,
-      responseIntent: "decision_required",
-      status: "pending"
-    });
-    for (const request of requests) {
-      await this.store.updateHumanActionRequest({
-        id: request.id,
-        status: "closed",
-        updatedAt
-      });
-    }
   }
 
   private appendDecisionTimeline(request: ApprovalRequest, decision: ApprovalDecision): Promise<unknown> {

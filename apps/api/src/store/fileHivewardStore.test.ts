@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { ApprovalDecision, ApprovalRequest, BlueprintDefinition, BlueprintNode, BlueprintNodeRun } from "@hiveward/shared";
-import { createBlankBlueprint } from "@hiveward/shared";
+import type { ApprovalDecision, ApprovalRequest, BlueprintDefinition, BlueprintNode, BlueprintNodeRun, HumanActionRequest } from "@hiveward/shared";
+import { createBlankBlueprint, resolveApprovalCapabilities } from "@hiveward/shared";
 import { FileHivewardStore } from "./fileHivewardStore";
 
 describe("FileHivewardStore blueprint node sanitization", () => {
@@ -509,6 +509,64 @@ describe("FileHivewardStore blueprint workspaces", () => {
   });
 });
 
+describe("FileHivewardStore approval-owned human actions", () => {
+  it("closes bound decision actions during approval apply and conflict repair", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+
+    const approval = await store.upsertApprovalRequest(createApprovalRequest("approval-file-human-action"));
+    await store.appendHumanActionRequest(createHumanActionRequest("human-action-file-decision", approval.id));
+    const decision: ApprovalDecision = {
+      id: "decision-file-human-action",
+      approvalRequestId: approval.id,
+      action: "approve",
+      actor: "user",
+      comment: "Approve.",
+      resultingStatus: "approved",
+      createdAt: "2026-06-04T00:01:00.000Z"
+    };
+    const approvedRequest: ApprovalRequest = {
+      ...approval,
+      status: "approved",
+      capabilities: resolveApprovalCapabilities(approval.kind, "approved"),
+      updatedAt: decision.createdAt
+    };
+
+    await expect(store.applyApprovalDecision({
+      approvalRequestId: approval.id,
+      expectedStatus: "pending",
+      nextRequest: approvedRequest,
+      decision
+    })).resolves.toMatchObject({ status: "applied" });
+    await expect(store.getHumanActionRequest("human-action-file-decision")).resolves.toMatchObject({
+      status: "closed",
+      updatedAt: decision.createdAt
+    });
+
+    await store.updateHumanActionRequest({
+      id: "human-action-file-decision",
+      status: "pending",
+      updatedAt: "2026-06-04T00:02:00.000Z"
+    });
+    await expect(store.applyApprovalDecision({
+      approvalRequestId: approval.id,
+      expectedStatus: "pending",
+      nextRequest: approvedRequest,
+      decision: {
+        ...decision,
+        id: "decision-file-human-action-duplicate",
+        createdAt: "2026-06-04T00:03:00.000Z"
+      }
+    })).resolves.toMatchObject({ status: "conflict" });
+    await expect(store.getHumanActionRequest("human-action-file-decision")).resolves.toMatchObject({
+      status: "closed",
+      updatedAt: "2026-06-04T00:03:00.000Z"
+    });
+    await expect(store.listApprovalDecisions(approval.id)).resolves.toHaveLength(1);
+  });
+});
+
 describe("FileHivewardStore chat storage isolation", () => {
   it("migrates legacy chat fields into a dedicated chat store and cleans the main store", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hiveward-store-"));
@@ -833,6 +891,40 @@ function createDirtyBlueprint(now: string): BlueprintDefinition {
       { id: "edge-approval-send", source: "approval", target: "send" },
       { id: "edge-send-parallel", source: "send", target: "parallel" }
     ]
+  };
+}
+
+function createApprovalRequest(id: string): ApprovalRequest {
+  return {
+    id,
+    kind: "leader_delegation",
+    status: "pending",
+    title: "File store approval",
+    body: "Approve the file-store request.",
+    revision: 1,
+    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
+    requestedBy: {
+      type: "role",
+      label: "CEO",
+      roleId: "ceo"
+    },
+    requestedAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z"
+  };
+}
+
+function createHumanActionRequest(id: string, approvalRequestId: string): HumanActionRequest {
+  return {
+    id,
+    sourceContextType: "blueprint_governance",
+    sourceContextId: "blueprint-file-human-action",
+    responseIntent: "decision_required",
+    approvalRequestId,
+    status: "pending",
+    title: "Decision needed",
+    bodyMarkdown: "Approve through the approval owner.",
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z"
   };
 }
 

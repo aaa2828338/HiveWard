@@ -3019,12 +3019,14 @@ describe("apiRouter", () => {
         updatedAt: "2026-06-04T00:05:00.000Z"
       };
       await fixture.store.createWorkerTask(workerTask);
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "approval-kanban-decision");
       const request: HumanActionRequest = {
         id: "human-action-request-kanban",
         runRoomId: "run-room-waiting",
         sourceContextType: "run_room",
         sourceContextId: "run-room-waiting",
         responseIntent: "decision_required",
+        approvalRequestId: approval.id,
         status: "pending",
         title: "Pending decision",
         bodyMarkdown: "Choose the next run-room action.",
@@ -3905,6 +3907,74 @@ describe("apiRouter", () => {
         expect(closedDecisionRequest?.status).toBe("closed");
         expect(await fixture.store.listHumanActionRequests({ status: "pending" })).toEqual([]);
         expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+
+        await fixture.store.updateHumanActionRequest({
+          id: "human-action-decision",
+          status: "pending",
+          updatedAt: "2026-06-04T00:10:00.000Z"
+        });
+        const retryApprovalResponse = await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Duplicate click after terminal approval." })
+        });
+        const retryBody = await retryApprovalResponse.json() as { error?: { code?: string } };
+        expect(retryApprovalResponse.status, JSON.stringify(retryBody)).toBe(409);
+        expect(retryBody.error?.code).toBe("approval_conflict");
+        expect(await fixture.store.getHumanActionRequest("human-action-decision")).toMatchObject({
+          status: "closed"
+        });
+        expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
+        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("closes approval-owned decision human actions for every terminal approval route", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        for (const routeCase of [
+          { action: "approve", resultingStatus: "approved", kind: "leader_delegation" },
+          { action: "reject", resultingStatus: "rejected", kind: "leader_delegation" },
+          { action: "complete", resultingStatus: "completed", kind: "manager_release_report" },
+          { action: "terminate", resultingStatus: "terminated", kind: "run_request" }
+        ] as const) {
+          const approval = await seedStandaloneApprovalRequest(
+            fixture.store,
+            `terminal-route-${routeCase.action}`,
+            {
+              kind: routeCase.kind,
+              capabilities: resolveApprovalCapabilities(routeCase.kind, "pending")
+            }
+          );
+          const humanActionId = `human-action-terminal-route-${routeCase.action}`;
+          await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
+            id: humanActionId,
+            responseIntent: "decision_required",
+            title: `${routeCase.action} decision needed`,
+            approvalRequestId: approval.id
+          }));
+
+          const response = await fetch(`${baseUrl}/api/approval-requests/${approval.id}/${routeCase.action}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ comment: `Run ${routeCase.action}.` })
+          });
+          await readOkJson(response);
+
+          expect(await fixture.store.getApprovalRequest(approval.id)).toMatchObject({
+            status: routeCase.resultingStatus
+          });
+          expect(await fixture.store.getHumanActionRequest(humanActionId)).toMatchObject({
+            status: "closed"
+          });
+          expect(await fixture.store.listInboxProjections({ status: "pending" })).not.toEqual(
+            expect.arrayContaining([expect.objectContaining({ humanActionRequestId: humanActionId })])
+          );
+        }
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -4345,7 +4415,11 @@ async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, n
   return store.upsertApprovalRequest(request);
 }
 
-async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: string): Promise<ApprovalRequest> {
+async function seedStandaloneApprovalRequest(
+  store: FileHivewardStore,
+  id: string,
+  overrides: Partial<ApprovalRequest> = {}
+): Promise<ApprovalRequest> {
   const now = new Date().toISOString();
   const request: ApprovalRequest = {
     id,
@@ -4364,7 +4438,8 @@ async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: strin
       roleId: "ceo"
     },
     requestedAt: now,
-    updatedAt: now
+    updatedAt: now,
+    ...overrides
   };
   return store.upsertApprovalRequest(request);
 }

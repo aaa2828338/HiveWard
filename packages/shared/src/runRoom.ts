@@ -206,7 +206,11 @@ export function assertHumanActionRequest(request: HumanActionRequest): void {
   assertString(request.sourceContextId, "HumanActionRequest.sourceContextId");
   assertAllowed(request.responseIntent, humanActionRequestResponseIntents, "HumanActionRequest.responseIntent");
   assertAllowed(request.status, humanActionRequestStatuses, "HumanActionRequest.status");
-  if (request.approvalRequestId !== undefined) assertString(request.approvalRequestId, "HumanActionRequest.approvalRequestId");
+  if (request.responseIntent === "decision_required") {
+    assertString(request.approvalRequestId, "HumanActionRequest.approvalRequestId");
+  } else if (request.approvalRequestId !== undefined) {
+    throw new Error("HumanActionRequest.approvalRequestId can only bind decision_required requests.");
+  }
   assertString(request.title, "HumanActionRequest.title");
   assertString(request.bodyMarkdown, "HumanActionRequest.bodyMarkdown");
   assertString(request.createdAt, "HumanActionRequest.createdAt");

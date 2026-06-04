@@ -34,7 +34,7 @@ export class HumanActionRequestService {
 
   async createRequest(input: CreateHumanActionRequestInput): Promise<HumanActionRequest> {
     this.assertProducerCanCreate(input.producer, input.sourceContextType);
-    this.assertDecisionRequestHasApprovalOwner(input);
+    const approvalRequestId = await this.resolveApprovalRequestId(input);
     const now = new Date().toISOString();
     const request: HumanActionRequest = {
       id: `human-action-request-${nanoid(10)}`,
@@ -47,7 +47,7 @@ export class HumanActionRequestService {
       createdAt: now,
       updatedAt: now,
       ...(input.runRoomId ? { runRoomId: input.runRoomId } : {}),
-      ...(input.approvalRequestId !== undefined ? { approvalRequestId: this.requireApprovalRequestId(input) } : {}),
+      ...(approvalRequestId ? { approvalRequestId } : {}),
       ...(input.createdByRoleId ? { createdByRoleId: input.createdByRoleId } : {}),
       ...(input.metadata ? { metadata: input.metadata } : {})
     };
@@ -55,28 +55,15 @@ export class HumanActionRequestService {
   }
 
   async appendResponse(input: AppendHumanActionResponseInput): Promise<HumanActionResponse> {
-    const request = await this.store.getHumanActionRequest(input.requestId);
-    if (!request) throw new Error(`HumanActionRequest not found: ${input.requestId}`);
-    if (request.status !== "pending") {
-      throw new Error(`HumanActionRequest is not pending: ${input.requestId}`);
-    }
     const response: HumanActionResponse = {
       id: `human-action-response-${nanoid(10)}`,
-      requestId: request.id,
+      requestId: requireText(input.requestId, "HumanActionResponse.requestId"),
       messageMarkdown: requireText(input.messageMarkdown, "HumanActionResponse.messageMarkdown"),
       createdAt: new Date().toISOString(),
       ...(input.createdByRoleId ? { createdByRoleId: input.createdByRoleId } : {}),
       ...(input.metadata ? { metadata: input.metadata } : {})
     };
-    const appended = await this.store.appendHumanActionResponse(response);
-    if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
-      await this.store.updateHumanActionRequest({
-        id: request.id,
-        status: "responded",
-        updatedAt: appended.createdAt
-      });
-    }
-    return appended;
+    return this.store.appendHumanActionResponse(response);
   }
 
   private assertProducerCanCreate(
@@ -98,17 +85,20 @@ export class HumanActionRequestService {
     throw new Error(`${producer} cannot create HumanActionRequest facts.`);
   }
 
-  private requireApprovalRequestId(input: CreateHumanActionRequestInput): string {
+  private async resolveApprovalRequestId(input: CreateHumanActionRequestInput): Promise<string | undefined> {
     if (input.responseIntent !== "decision_required") {
+      if (input.approvalRequestId === undefined) return undefined;
       throw new Error("HumanActionRequest.approvalRequestId can only bind decision_required requests.");
     }
-    return requireText(input.approvalRequestId ?? "", "HumanActionRequest.approvalRequestId");
-  }
-
-  private assertDecisionRequestHasApprovalOwner(input: CreateHumanActionRequestInput): void {
-    if (input.responseIntent === "decision_required" && input.approvalRequestId === undefined) {
-      throw new Error("HumanActionRequest.approvalRequestId is required for decision_required requests.");
+    const approvalRequestId = requireText(input.approvalRequestId ?? "", "HumanActionRequest.approvalRequestId");
+    const approvalRequest = await this.store.getApprovalRequest(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`ApprovalRequest not found: ${approvalRequestId}`);
     }
+    if (approvalRequest.status !== "pending") {
+      throw new Error(`ApprovalRequest is not pending: ${approvalRequestId}`);
+    }
+    return approvalRequestId;
   }
 }
 

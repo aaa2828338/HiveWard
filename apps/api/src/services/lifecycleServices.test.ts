@@ -23,6 +23,7 @@ import { ArtifactService } from "./artifactService";
 import { IterationService } from "./iterationLifecycleService";
 import { ManagerMailProjector } from "./managerMailProjector";
 import { MigrationService, RuntimeAccessPolicyService } from "./runtimeAccessPolicyService";
+import { HumanActionRequestService } from "./humanActionRequestService";
 
 describe("ApprovalService", () => {
   it("keeps lifecycleServices as a compatibility barrel over split service implementations", () => {
@@ -95,6 +96,162 @@ describe("ApprovalService", () => {
     });
     expect(result.nextApprovalRequest).toBeUndefined();
     expect((await store.listApprovalRequests({ runId: "run-1" }))).toHaveLength(1);
+  });
+
+  it("validates human action approval ownership before creating decision requests", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-human-action-owner-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const approvalService = new ApprovalService(store);
+    const humanActionService = new HumanActionRequestService(store);
+
+    const approval = await approvalService.createRequest({
+      kind: "leader_delegation",
+      title: "Govern blueprint",
+      body: "Approve the blueprint governance step.",
+      requestedBy: {
+        type: "role",
+        label: "CEO",
+        roleId: "ceo"
+      }
+    });
+
+    const decisionRequest = await humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-owner",
+      responseIntent: "decision_required",
+      approvalRequestId: approval.id,
+      title: "Decision needed",
+      bodyMarkdown: "Approve this governance step."
+    });
+    expect(decisionRequest).toMatchObject({
+      responseIntent: "decision_required",
+      status: "pending",
+      approvalRequestId: approval.id
+    });
+
+    await expect(humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-reply",
+      responseIntent: "reply_required",
+      title: "Reply needed",
+      bodyMarkdown: "Please reply."
+    })).resolves.toMatchObject({
+      responseIntent: "reply_required",
+      status: "pending"
+    });
+    await expect(humanActionService.createRequest({
+      producer: "leader",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-review",
+      responseIntent: "review_required",
+      title: "Review needed",
+      bodyMarkdown: "Please review."
+    })).resolves.toMatchObject({
+      responseIntent: "review_required",
+      status: "pending"
+    });
+
+    await expect(humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-missing-owner",
+      responseIntent: "decision_required",
+      title: "Decision without owner",
+      bodyMarkdown: "This must be rejected."
+    })).rejects.toThrow(/HumanActionRequest\.approvalRequestId/);
+
+    await expect(humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-orphan-owner",
+      responseIntent: "decision_required",
+      approvalRequestId: "approval-does-not-exist",
+      title: "Decision with missing owner",
+      bodyMarkdown: "This must be rejected."
+    })).rejects.toThrow(/ApprovalRequest not found/);
+
+    await approvalService.approve(approval.id);
+    await expect(humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-terminal-owner",
+      responseIntent: "decision_required",
+      approvalRequestId: approval.id,
+      title: "Decision with terminal owner",
+      bodyMarkdown: "This must be rejected."
+    })).rejects.toThrow(/ApprovalRequest is not pending/);
+
+    await expect(humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-reply-with-owner",
+      responseIntent: "reply_required",
+      approvalRequestId: approval.id,
+      title: "Reply with approval owner",
+      bodyMarkdown: "This must be rejected."
+    })).rejects.toThrow(/can only bind decision_required/);
+  });
+
+  it("closes approval-owned decision human actions when a request is superseded by revision", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hiveward-human-action-supersede-"));
+    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
+    await store.init();
+    const approvalService = new ApprovalService(store);
+    const humanActionService = new HumanActionRequestService(store);
+
+    const approval = await approvalService.createRequest({
+      kind: "agent_proposal",
+      title: "Superseded request",
+      body: "This request will be superseded.",
+      requestedBy: {
+        type: "role",
+        label: "CEO",
+        roleId: "ceo"
+      }
+    });
+    const request = await humanActionService.createRequest({
+      producer: "ceo",
+      sourceContextType: "blueprint_governance",
+      sourceContextId: "blueprint-service-supersede",
+      responseIntent: "decision_required",
+      approvalRequestId: approval.id,
+      title: "Decision needed",
+      bodyMarkdown: "Approve this request before replacement."
+    });
+    await approvalService.returnForRevision(approval.id, "Regenerate with sources.", { mode: "keep_current_request" });
+    expect(await store.getHumanActionRequest(request.id)).toMatchObject({
+      status: "pending"
+    });
+
+    await expect(approvalService.markSupersededByRevision(approval.id, "approval-next-revision")).resolves.toMatchObject({
+      id: approval.id,
+      status: "superseded",
+      supersededByRequestId: "approval-next-revision"
+    });
+    expect(await store.getHumanActionRequest(request.id)).toMatchObject({
+      status: "closed"
+    });
+    expect(await store.listApprovalDecisions(approval.id)).toEqual([
+      expect.objectContaining({
+        action: "return_for_revision",
+        resultingStatus: "superseded"
+      })
+    ]);
+
+    await store.updateHumanActionRequest({
+      id: request.id,
+      status: "pending",
+      updatedAt: "2026-06-04T00:10:00.000Z"
+    });
+    await expect(approvalService.markSupersededByRevision(approval.id, "approval-duplicate-revision"))
+      .rejects.toThrow("Approval request is already closed.");
+    expect(await store.getHumanActionRequest(request.id)).toMatchObject({
+      status: "closed"
+    });
+    expect(await store.listApprovalDecisions(approval.id)).toHaveLength(1);
   });
 
   it("creates a superseding revision through return_for_revision when the request kind requires it", async () => {

@@ -434,6 +434,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         sourceContextType: "run_room",
         sourceContextId: runRoom.id,
         responseIntent: "decision_required",
+        approvalRequestId: "approval-human-action-contract",
         status: "pending",
         title: "Decision needed",
         bodyMarkdown: "Choose the next step.",
@@ -441,10 +442,17 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         createdAt: contractNow,
         updatedAt: contractNow
       };
+      await store.upsertApprovalRequest({
+        ...createContractApproval(runRoom.id, "node-run-human-action-contract"),
+        id: "approval-human-action-contract",
+        runId: undefined,
+        nodeRunId: undefined
+      });
       await expect(store.appendHumanActionRequest(request)).resolves.toMatchObject({
         id: request.id,
         sourceContextType: "run_room",
-        responseIntent: "decision_required"
+        responseIntent: "decision_required",
+        approvalRequestId: "approval-human-action-contract"
       });
       await expect(store.appendHumanActionRequest({ ...request, id: "human-action-request-inbox", sourceContextType: "inbox" as HumanActionRequest["sourceContextType"] }))
         .rejects.toThrow(/HumanActionRequest\.sourceContextType/);
@@ -674,6 +682,211 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       })).resolves.toMatchObject({ status: "conflict" });
       await expect(store.listApprovalDecisions(approval.id)).resolves.toHaveLength(1);
       expect("applyInboxDecision" in store).toBe(false);
+    } finally {
+      close?.();
+    }
+  });
+
+  it("rejects invalid human action approval ownership in direct store writes", async () => {
+    const { store, close } = await createHarness();
+    try {
+      await store.upsertApprovalRequest({
+        ...createContractApproval("run-human-action-owner", "node-run-human-action-owner"),
+        id: "approval-human-action-owner",
+        runId: undefined,
+        nodeRunId: undefined
+      });
+      await store.upsertApprovalRequest({
+        ...createContractApproval("run-human-action-terminal", "node-run-human-action-terminal", "approved"),
+        id: "approval-human-action-terminal",
+        runId: undefined,
+        nodeRunId: undefined,
+        capabilities: resolveClosedCapabilities()
+      });
+
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-owned",
+        responseIntent: "decision_required",
+        approvalRequestId: "approval-human-action-owner"
+      }))).resolves.toMatchObject({
+        id: "human-action-decision-owned",
+        approvalRequestId: "approval-human-action-owner"
+      });
+
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-missing-owner",
+        responseIntent: "decision_required",
+        approvalRequestId: undefined
+      }))).rejects.toThrow(/HumanActionRequest\.approvalRequestId/);
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-orphan-owner",
+        responseIntent: "decision_required",
+        approvalRequestId: "approval-missing"
+      }))).rejects.toThrow(/ApprovalRequest not found/);
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-terminal-owner",
+        responseIntent: "decision_required",
+        approvalRequestId: "approval-human-action-terminal"
+      }))).rejects.toThrow(/ApprovalRequest is not pending/);
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-reply-claims-owner",
+        responseIntent: "reply_required",
+        approvalRequestId: "approval-human-action-owner"
+      }))).rejects.toThrow(/can only bind decision_required/);
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-review-claims-owner",
+        responseIntent: "review_required",
+        approvalRequestId: "approval-human-action-owner"
+      }))).rejects.toThrow(/can only bind decision_required/);
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-reply-normal",
+        responseIntent: "reply_required"
+      }))).resolves.toMatchObject({
+        responseIntent: "reply_required"
+      });
+      await expect(store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-review-normal",
+        responseIntent: "review_required"
+      }))).resolves.toMatchObject({
+        responseIntent: "review_required"
+      });
+    } finally {
+      close?.();
+    }
+  });
+
+  it("atomically responds to reply and review human actions and rejects later responses", async () => {
+    const { store, close } = await createHarness();
+    try {
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-reply-atomic",
+        responseIntent: "reply_required"
+      }));
+      await expect(store.appendHumanActionResponse(createHumanActionResponse({
+        id: "human-action-response-reply-atomic",
+        requestId: "human-action-reply-atomic"
+      }))).resolves.toMatchObject({
+        requestId: "human-action-reply-atomic"
+      });
+      await expect(store.getHumanActionRequest("human-action-reply-atomic")).resolves.toMatchObject({
+        status: "responded",
+        updatedAt: contractNow
+      });
+      await expect(store.appendHumanActionResponse(createHumanActionResponse({
+        id: "human-action-response-reply-late",
+        requestId: "human-action-reply-atomic"
+      }))).rejects.toThrow(/not pending/);
+
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-review-atomic",
+        responseIntent: "review_required"
+      }));
+      const concurrentResponses = await Promise.allSettled([
+        store.appendHumanActionResponse(createHumanActionResponse({
+          id: "human-action-response-review-first",
+          requestId: "human-action-review-atomic"
+        })),
+        store.appendHumanActionResponse(createHumanActionResponse({
+          id: "human-action-response-review-second",
+          requestId: "human-action-review-atomic"
+        }))
+      ]);
+      expect(concurrentResponses.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+      expect(concurrentResponses.filter((result) => result.status === "rejected")).toHaveLength(1);
+      await expect(store.getHumanActionRequest("human-action-review-atomic")).resolves.toMatchObject({ status: "responded" });
+      await expect(store.listHumanActionResponses({ requestId: "human-action-review-atomic" })).resolves.toHaveLength(1);
+
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-closed-response",
+        responseIntent: "reply_required"
+      }));
+      await store.updateHumanActionRequest({ id: "human-action-closed-response", status: "closed", updatedAt: contractNow });
+      await expect(store.appendHumanActionResponse(createHumanActionResponse({
+        id: "human-action-response-closed",
+        requestId: "human-action-closed-response"
+      }))).rejects.toThrow(/not pending/);
+
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-cancelled-response",
+        responseIntent: "reply_required"
+      }));
+      await store.updateHumanActionRequest({ id: "human-action-cancelled-response", status: "cancelled", updatedAt: contractNow });
+      await expect(store.appendHumanActionResponse(createHumanActionResponse({
+        id: "human-action-response-cancelled",
+        requestId: "human-action-cancelled-response"
+      }))).rejects.toThrow(/not pending/);
+    } finally {
+      close?.();
+    }
+  });
+
+  it("closes approval-bound decision human actions and repairs terminal conflicts without duplicate decisions", async () => {
+    const { store, close } = await createHarness();
+    try {
+      const approval = await store.upsertApprovalRequest({
+        ...createContractApproval("run-approval-owner", "node-run-approval-owner"),
+        id: "approval-human-action-close",
+        runId: undefined,
+        nodeRunId: undefined
+      });
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-close",
+        responseIntent: "decision_required",
+        approvalRequestId: approval.id
+      }));
+      const approvedRequest = {
+        ...approval,
+        status: "approved" as const,
+        capabilities: resolveClosedCapabilities(),
+        updatedAt: contractNow
+      };
+      const decision = createDecision("decision-human-action-close", approval.id, "approve", "approved");
+      await expect(store.applyApprovalDecision({
+        approvalRequestId: approval.id,
+        expectedStatus: "pending",
+        nextRequest: approvedRequest,
+        decision
+      })).resolves.toMatchObject({ status: "applied" });
+      await expect(store.getHumanActionRequest("human-action-decision-close")).resolves.toMatchObject({
+        status: "closed",
+        updatedAt: contractNow
+      });
+
+      await store.updateHumanActionRequest({
+        id: "human-action-decision-close",
+        status: "pending",
+        updatedAt: "2026-05-29T00:01:00.000Z"
+      });
+      await expect(store.applyApprovalDecision({
+        approvalRequestId: approval.id,
+        expectedStatus: "pending",
+        nextRequest: approvedRequest,
+        decision: createDecision("decision-human-action-duplicate", approval.id, "approve", "approved")
+      })).resolves.toMatchObject({ status: "conflict" });
+      await expect(store.getHumanActionRequest("human-action-decision-close")).resolves.toMatchObject({
+        status: "closed",
+        updatedAt: contractNow
+      });
+      await expect(store.listApprovalDecisions(approval.id)).resolves.toHaveLength(1);
+
+      const discussionApproval = await store.upsertApprovalRequest({
+        ...createContractApproval("run-approval-discussion", "node-run-approval-discussion"),
+        id: "approval-human-action-discussion",
+        runId: undefined,
+        nodeRunId: undefined
+      });
+      await store.appendHumanActionRequest(createHumanActionRequest({
+        id: "human-action-decision-discussion",
+        responseIntent: "decision_required",
+        approvalRequestId: discussionApproval.id
+      }));
+      await store.appendHumanActionResponse(createHumanActionResponse({
+        id: "human-action-response-decision-discussion",
+        requestId: "human-action-decision-discussion"
+      }));
+      await expect(store.getHumanActionRequest("human-action-decision-discussion")).resolves.toMatchObject({
+        status: "pending"
+      });
     } finally {
       close?.();
     }
@@ -1130,5 +1343,30 @@ function createDecisionTimeline(id: string, runId: string, decision: ReturnType<
     title: `Decision ${decision.action}`,
     body: decision.comment,
     payloadRef: decision.approvalRequestId
+  };
+}
+
+function createHumanActionRequest(overrides: Partial<HumanActionRequest> = {}): HumanActionRequest {
+  return {
+    id: "human-action-request-contract-test",
+    sourceContextType: "run_room",
+    sourceContextId: "run-room-contract-test",
+    responseIntent: "reply_required",
+    status: "pending",
+    title: "Human action required",
+    bodyMarkdown: "Please respond.",
+    createdAt: contractNow,
+    updatedAt: contractNow,
+    ...overrides
+  };
+}
+
+function createHumanActionResponse(overrides: Partial<HumanActionResponse> = {}): HumanActionResponse {
+  return {
+    id: "human-action-response-contract-test",
+    requestId: "human-action-request-contract-test",
+    messageMarkdown: "Human response.",
+    createdAt: contractNow,
+    ...overrides
   };
 }

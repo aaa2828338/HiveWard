@@ -90,7 +90,8 @@ describe("execution rebuild old-path exclusion gate", () => {
       "history-list-row",
       "history-list-button",
       "selectInbox",
-      "completeInbox"
+      "completeInbox",
+      "closeBoundDecisionHumanActions"
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });
@@ -115,6 +116,11 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(productionSource).not.toMatch(/request-changes/);
     expect(productionSource).not.toMatch(/\/api\/blueprint-runs\/:runId\/(?:approve|reject|reply|select-approval-reply)/);
     expect(productionSource).not.toMatch(/\/api\/approval-requests\/[^"`']*\/(?:request-changes|request_changes|revise)/);
+    const lifecycleApprovalSource = readSource("apps/api/src/services/lifecycleApprovalService.ts");
+    const humanActionRequestSource = readSource("apps/api/src/services/humanActionRequestService.ts");
+    expect(lifecycleApprovalSource).not.toContain("store.updateHumanActionRequest");
+    expect(lifecycleApprovalSource).not.toContain("store.upsertApprovalRequest");
+    expect(humanActionRequestSource).not.toContain("store.updateHumanActionRequest");
   });
 
   it("keeps the run page main trace owned by execution facts without legacy inference", () => {

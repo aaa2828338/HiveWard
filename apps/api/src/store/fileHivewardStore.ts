@@ -1156,6 +1156,7 @@ export class FileHivewardStore implements HivewardStore {
       assertHumanActionRequest(request);
       const index = await this.readIndexUnlocked();
       if (request.runRoomId) requireRunRoomFromIndex(index, request.runRoomId);
+      requirePendingApprovalOwnerFromIndex(index, request);
       if (index.humanActionRequests.some((item) => item.id === request.id)) {
         throw new Error(`HumanActionRequest already exists: ${request.id}`);
       }
@@ -1216,13 +1217,25 @@ export class FileHivewardStore implements HivewardStore {
     return this.enqueue(async () => {
       assertHumanActionResponse(response);
       const index = await this.readIndexUnlocked();
-      if (!index.humanActionRequests.some((item) => item.id === response.requestId)) {
+      const requestIndex = index.humanActionRequests.findIndex((item) => item.id === response.requestId);
+      if (requestIndex < 0) {
         throw new Error(`HumanActionRequest not found: ${response.requestId}`);
+      }
+      const request = index.humanActionRequests[requestIndex]!;
+      if (request.status !== "pending") {
+        throw new Error(`HumanActionRequest is not pending: ${response.requestId}`);
       }
       if (index.humanActionResponses.some((item) => item.id === response.id)) {
         throw new Error(`HumanActionResponse already exists: ${response.id}`);
       }
       index.humanActionResponses.push(response);
+      if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
+        index.humanActionRequests[requestIndex] = {
+          ...request,
+          status: "responded",
+          updatedAt: response.createdAt
+        };
+      }
       await this.writeIndexUnlocked(index);
       return response;
     });
@@ -1556,6 +1569,10 @@ export class FileHivewardStore implements HivewardStore {
       const requestIndex = index.approvalRequests.findIndex((request) => request.id === input.approvalRequestId);
       const current = requestIndex >= 0 ? index.approvalRequests[requestIndex]! : undefined;
       if (!current || current.status !== input.expectedStatus) {
+        if (current && current.status !== "pending") {
+          const closed = closePendingBoundDecisionHumanActionsFromIndex(index, input.approvalRequestId, input.decision.createdAt);
+          if (closed > 0) await this.writeIndexUnlocked(index);
+        }
         return { status: "conflict", approvalRequest: current };
       }
       index.approvalRequests[requestIndex] = input.nextRequest;
@@ -1578,6 +1595,9 @@ export class FileHivewardStore implements HivewardStore {
           ...input.timelineItem,
           sequence: input.timelineItem.sequence ?? nextTimelineSequence(index.runTimeline, input.timelineItem.runId)
         });
+      }
+      if (input.nextRequest.status !== "pending") {
+        closePendingBoundDecisionHumanActionsFromIndex(index, input.approvalRequestId, input.decision.createdAt);
       }
       await this.writeIndexUnlocked(index);
       return {
@@ -2793,6 +2813,45 @@ function requireRunRoomFromIndex(index: HivewardStoreIndex, runRoomId: string): 
   const runRoom = index.runRooms.find((item) => item.id === runRoomId);
   if (!runRoom) throw new Error(`RunRoom not found: ${runRoomId}`);
   return runRoom;
+}
+
+function requirePendingApprovalOwnerFromIndex(index: HivewardStoreIndex, request: HumanActionRequest): void {
+  if (request.responseIntent !== "decision_required") return;
+  const approvalRequestId = request.approvalRequestId;
+  if (!approvalRequestId) {
+    throw new Error("HumanActionRequest.approvalRequestId is required.");
+  }
+  const approvalRequest = index.approvalRequests.find((candidate) => candidate.id === approvalRequestId);
+  if (!approvalRequest) {
+    throw new Error(`ApprovalRequest not found: ${approvalRequestId}`);
+  }
+  if (approvalRequest.status !== "pending") {
+    throw new Error(`ApprovalRequest is not pending: ${approvalRequestId}`);
+  }
+}
+
+function closePendingBoundDecisionHumanActionsFromIndex(
+  index: HivewardStoreIndex,
+  approvalRequestId: string,
+  updatedAt: string
+): number {
+  let closed = 0;
+  for (let itemIndex = 0; itemIndex < index.humanActionRequests.length; itemIndex += 1) {
+    const request = index.humanActionRequests[itemIndex]!;
+    if (
+      request.approvalRequestId === approvalRequestId &&
+      request.responseIntent === "decision_required" &&
+      request.status === "pending"
+    ) {
+      index.humanActionRequests[itemIndex] = {
+        ...request,
+        status: "closed",
+        updatedAt
+      };
+      closed += 1;
+    }
+  }
+  return closed;
 }
 
 function projectInboxProjections(

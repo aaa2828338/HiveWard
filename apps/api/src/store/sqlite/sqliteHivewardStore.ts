@@ -914,6 +914,7 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.driver.transaction(() => {
       assertHumanActionRequest(request);
       if (request.runRoomId) this.requireRunRoomById(request.runRoomId);
+      this.requirePendingApprovalOwnerForHumanActionRequest(request);
       this.insertHumanActionRequest(request);
       return request;
     });
@@ -953,10 +954,21 @@ export class SqliteHivewardStore implements HivewardStore {
   async appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse> {
     return this.driver.transaction(() => {
       assertHumanActionResponse(response);
-      if (!this.getHumanActionRequestByIdSync(response.requestId)) {
+      const request = this.getHumanActionRequestByIdSync(response.requestId);
+      if (!request) {
         throw new Error(`HumanActionRequest not found: ${response.requestId}`);
       }
+      if (request.status !== "pending") {
+        throw new Error(`HumanActionRequest is not pending: ${response.requestId}`);
+      }
       this.insertHumanActionResponse(response);
+      if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
+        this.upsertHumanActionRequest({
+          ...request,
+          status: "responded",
+          updatedAt: response.createdAt
+        });
+      }
       return response;
     });
   }
@@ -1480,6 +1492,9 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.driver.transaction(() => {
       const current = this.getApprovalRequestSync(input.approvalRequestId);
       if (!current || current.status !== input.expectedStatus) {
+        if (current && current.status !== "pending") {
+          this.closePendingBoundDecisionHumanActionsSync(input.approvalRequestId, input.decision.createdAt);
+        }
         return { status: "conflict", approvalRequest: current };
       }
       const result = this.driver.db.prepare(
@@ -1514,6 +1529,9 @@ export class SqliteHivewardStore implements HivewardStore {
       }
       if (input.releaseReport) this.upsertReleaseReportSync(input.releaseReport);
       if (input.timelineItem) this.appendRunTimelineItemSync(input.timelineItem);
+      if (input.nextRequest.status !== "pending") {
+        this.closePendingBoundDecisionHumanActionsSync(input.approvalRequestId, input.decision.createdAt);
+      }
       return {
         status: "applied",
         approvalRequest: input.nextRequest,
@@ -2970,6 +2988,32 @@ export class SqliteHivewardStore implements HivewardStore {
   private getHumanActionRequestByIdSync(id: string): HumanActionRequest | undefined {
     const row = this.driver.db.prepare("SELECT * FROM human_action_requests WHERE id = ?").get(id) as Row | undefined;
     return row ? humanActionRequestFromRow(row) : undefined;
+  }
+
+  private requirePendingApprovalOwnerForHumanActionRequest(request: HumanActionRequest): void {
+    if (request.responseIntent !== "decision_required") return;
+    const approvalRequestId = request.approvalRequestId;
+    if (!approvalRequestId) {
+      throw new Error("HumanActionRequest.approvalRequestId is required.");
+    }
+    const approvalRequest = this.getApprovalRequestSync(approvalRequestId);
+    if (!approvalRequest) {
+      throw new Error(`ApprovalRequest not found: ${approvalRequestId}`);
+    }
+    if (approvalRequest.status !== "pending") {
+      throw new Error(`ApprovalRequest is not pending: ${approvalRequestId}`);
+    }
+  }
+
+  private closePendingBoundDecisionHumanActionsSync(approvalRequestId: string, updatedAt: string): void {
+    this.driver.db.prepare(
+      `UPDATE human_action_requests
+       SET status = 'closed',
+           updated_at = ?
+       WHERE approval_request_id = ?
+         AND response_intent = 'decision_required'
+         AND status = 'pending'`
+    ).run(updatedAt, approvalRequestId);
   }
 
   private readHumanActionRequests(filter: {
