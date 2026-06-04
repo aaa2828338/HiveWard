@@ -99,7 +99,7 @@ import {
   CompanyDirectoryPage,
   CompanyPage,
   ConfiguredModelCard,
-  HistoryPage,
+  BlueprintKanbanPage,
   IdentityTitle,
   ModelsPage,
   RunsPage,
@@ -1956,7 +1956,7 @@ export function App() {
     }
     if (section === "schedule") {
       return (
-        <HistoryPage
+        <BlueprintKanbanPage
           board={blueprintKanbanBoard}
           blueprints={blueprints}
           language={language}
@@ -3939,16 +3939,10 @@ function isActionableApproval(approval: PendingApprovalItem): boolean {
 }
 
 function defaultWidgetTitle(type: DashboardWidgetType, t: Messages): string {
-  if (isHistoricalRunWidgetType(type)) return t.widgetTypes.runs;
   if (type === "pending_approvals") return t.widgetTypes.approvals;
   if (type === "runtime_overview") return t.common.realTime;
   if (type === "catalog_status") return t.widgetTypes.catalog;
   return t.widgetTypes.notes;
-}
-
-function isHistoricalRunWidgetType(type: DashboardWidgetType): boolean {
-  // 保留为历史事实，不参与决策: old saved dashboard run widget title only.
-  return type === (["recent", "runs"].join("_") as DashboardWidgetType);
 }
 
 function defaultWidgetLayout(index: number) {

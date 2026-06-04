@@ -14,10 +14,10 @@ import { messages } from "../lib/i18n";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import {
   ApprovalsPage,
+  BlueprintKanbanPage,
   buildCurrentOutputDisplayBody,
   CompanyDirectoryPage,
   DashboardPage,
-  HistoryPage,
   RunsPage
 } from "./WorkspacePages";
 
@@ -40,10 +40,10 @@ describe("CompanyDirectoryPage", () => {
   });
 });
 
-describe("HistoryPage Blueprint Kanban", () => {
+describe("BlueprintKanbanPage Blueprint Kanban", () => {
   it("renders Blueprint Kanban lanes from canonical board cards", () => {
     const html = renderToStaticMarkup(
-      <HistoryPage
+      <BlueprintKanbanPage
         board={createKanbanBoard()}
         blueprints={[createBlueprintDefinition()]}
         language="en"
@@ -62,7 +62,7 @@ describe("HistoryPage Blueprint Kanban", () => {
 
   it("does not render old history primary rows or Kanban mutation actions", () => {
     const html = renderToStaticMarkup(
-      <HistoryPage
+      <BlueprintKanbanPage
         board={createKanbanBoard()}
         blueprints={[createBlueprintDefinition()]}
         language="en"
@@ -83,13 +83,13 @@ describe("HistoryPage Blueprint Kanban", () => {
   });
 });
 
-describe("DashboardPage historical widgets", () => {
-  it("renders saved run widgets as historical read-only facts instead of notes", () => {
+describe("DashboardPage old run widgets", () => {
+  it("ignores saved old run widgets instead of projecting normal dashboard UI", () => {
     const dashboard: WorkspaceDashboard = {
       dashboardWidgets: [
         {
           id: "widget-historical-runs",
-          type: ["recent", "runs"].join("_") as WorkspaceDashboard["dashboardWidgets"][number]["type"],
+          type: "recent_runs" as WorkspaceDashboard["dashboardWidgets"][number]["type"],
           title: "Saved run records",
           layout: { x: 0, y: 0, w: 6, h: 4 }
         }
@@ -112,9 +112,10 @@ describe("DashboardPage historical widgets", () => {
       />
     );
 
-    expect(html).toContain("保留为历史事实，不参与决策");
-    expect(html).toContain("run-historical-widget");
-    expect(html).not.toContain(messages.en.widgetTypes.notes);
+    expect(html).toContain(messages.en.empty.noWidgets);
+    expect(html).not.toContain("Saved run records");
+    expect(html).not.toContain("run-historical-widget");
+    expect(html).not.toContain("保留为历史事实，不参与决策");
   });
 });
 

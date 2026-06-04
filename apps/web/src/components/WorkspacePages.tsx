@@ -1966,7 +1966,10 @@ export function DashboardPage({
   onAddWidget: (type: DashboardWidgetType) => void;
   onRemoveWidget: (widgetId: string) => void;
 }) {
-  const widgets = (dashboard?.dashboardWidgets ?? []).filter((widget) => widget.type !== "notes");
+  const widgets = (dashboard?.dashboardWidgets ?? []).filter(
+    (widget): widget is DashboardWidget & { type: "pending_approvals" | "runtime_overview" | "catalog_status" } =>
+      isRenderableDashboardWidgetType(widget.type)
+  );
   const summary = [
     { icon: FolderKanban, label: t.metrics.blueprints(blueprints.length) },
     { icon: Activity, label: t.metrics.runs(runs.length) },
@@ -2014,7 +2017,6 @@ export function DashboardPage({
                 key={widget.id}
                 widget={widget}
                 dashboard={dashboard}
-                runs={runs}
                 approvals={approvals}
                 catalog={catalog}
                 runtime={runtime}
@@ -2619,7 +2621,7 @@ function runResultStatusLabel(runView: BlueprintRunView, t: Messages, language: 
   return t.status[runView.run.status];
 }
 
-export function HistoryPage({
+export function BlueprintKanbanPage({
   board,
   blueprints,
   language,
@@ -3004,7 +3006,6 @@ export function ChannelsPage({
 function WidgetCard({
   widget,
   dashboard,
-  runs,
   approvals,
   catalog,
   runtime,
@@ -3014,7 +3015,6 @@ function WidgetCard({
 }: {
   widget: DashboardWidget;
   dashboard?: WorkspaceDashboard;
-  runs: BlueprintRunView[];
   approvals: PendingApprovalItem[];
   catalog?: CatalogSnapshot;
   runtime?: RuntimeOverview;
@@ -3033,20 +3033,6 @@ function WidgetCard({
           <Trash2 size={16} />
         </button>
       </div>
-      {isHistoricalRunWidgetType(widget.type) && (
-        <div className="widget-list">
-          <div className="mini-column">
-            <strong>{t.widgetTypes.runs}</strong>
-            <p>保留为历史事实，不参与决策</p>
-          </div>
-          {runs.slice(0, 3).map((run) => (
-            <div key={run.run.id} className="mini-row">
-              <span>{run.run.id}</span>
-              <code>{t.status[run.run.status]}</code>
-            </div>
-          ))}
-        </div>
-      )}
       {widget.type === "pending_approvals" && (
         <div className="widget-list">
           <div className="metric-chip emphasize">
@@ -3931,16 +3917,14 @@ function isTracePreviewTableSeparator(line: string): boolean {
 }
 
 function widgetTypeLabel(type: DashboardWidgetType, t: Messages): string {
-  if (isHistoricalRunWidgetType(type)) return t.widgetTypes.runs;
   if (type === "pending_approvals") return t.widgetTypes.approvals;
   if (type === "runtime_overview") return t.common.realTime;
   if (type === "catalog_status") return t.widgetTypes.catalog;
   return t.widgetTypes.notes;
 }
 
-function isHistoricalRunWidgetType(type: DashboardWidgetType): boolean {
-  // 保留为历史事实，不参与决策: old saved dashboard run widgets render archive rows only.
-  return type === (["recent", "runs"].join("_") as DashboardWidgetType);
+function isRenderableDashboardWidgetType(type: string): type is "pending_approvals" | "runtime_overview" | "catalog_status" {
+  return type === "pending_approvals" || type === "runtime_overview" || type === "catalog_status";
 }
 
 function blueprintNameFor(blueprints: BlueprintDefinition[], blueprintId: string): string {

@@ -79,10 +79,18 @@ describe("execution rebuild old-path exclusion gate", () => {
       "timelineFallback",
       "listBlueprintKanbanCards",
       "projectBlueprintKanbanCards",
-      "projectBlueprintKanbanCardsFromRunRooms"
+      "projectBlueprintKanbanCardsFromRunRooms",
+      "recent_runs",
+      "[\"recent\", \"runs\"].join(\"_\")",
+      "HistoryPage",
+      "history-page-grid",
+      "history-list-row",
+      "history-list-button"
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });
+    const styleSource = readSource("apps/web/src/styles.css");
+    expect(styleSource).not.toContain(".history-");
     const lifecycleSource = readSource("packages/shared/src/lifecycle.ts");
     expect(lifecycleSource).not.toMatch(/\brequest_changes\b/);
     expect(productionSource).not.toMatch(/request-changes/);
@@ -302,7 +310,10 @@ describe("execution rebuild old-path exclusion gate", () => {
       "renders explicit missing execution facts when canonical trace facts are absent",
       "does not project preflight approval fallback without execution facts",
       "does not infer manager report rounds without execution facts",
-      "does not guess missing manager report rounds from text or ids"
+      "does not guess missing manager report rounds from text or ids",
+      "BlueprintKanbanPage Blueprint Kanban",
+      "ignores saved old run widgets instead of projecting normal dashboard UI",
+      "expect(html).not.toContain(\"Saved run records\")"
     ]);
     expectSourceToContainAll(adapterTests, [
       "does not mark Codex resume proven when the provider starts a new thread",
