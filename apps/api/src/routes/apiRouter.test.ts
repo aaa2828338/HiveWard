@@ -826,12 +826,7 @@ describe("apiRouter", () => {
     const fixture = await createStoreFixture();
     try {
       const approval = await seedStandaloneApprovalRequest(fixture.store, "external-approval");
-      const roles = await fixture.store.getRoleDirectory();
-      const item = await fixture.store.createLeaderDelegationRequest({
-        leaderId: roles.roles.leaders[0]!.id,
-        title: "Delegate to leader"
-      });
-      await seedInboxApprovalRequest(fixture.store, item.id);
+      const historicalInboxItemId = "historical-inbox-item";
 
       await withApiServer(fixture.store, async (baseUrl) => {
         await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
@@ -848,10 +843,11 @@ describe("apiRouter", () => {
         expect(secondApproval.status, JSON.stringify(secondApprovalBody)).toBe(409);
         expect(secondApprovalBody.error?.code).toBe("approval_conflict");
         expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
+        expectOldInboxNormalStoreSurfaceDeleted(fixture.store);
 
-        const oldApprove = await fetch(`${baseUrl}/api/inbox/${item.id}/approve`, { method: "POST" });
-        const oldReject = await fetch(`${baseUrl}/api/inbox/${item.id}/reject`, { method: "POST" });
-        const oldReply = await fetch(`${baseUrl}/api/inbox/${item.id}/reply`, {
+        const oldApprove = await fetch(`${baseUrl}/api/inbox/${historicalInboxItemId}/approve`, { method: "POST" });
+        const oldReject = await fetch(`${baseUrl}/api/inbox/${historicalInboxItemId}/reject`, { method: "POST" });
+        const oldReply = await fetch(`${baseUrl}/api/inbox/${historicalInboxItemId}/reply`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ message: "old inbox reply" })
@@ -859,8 +855,7 @@ describe("apiRouter", () => {
         expect(oldApprove.status).toBe(404);
         expect(oldReject.status).toBe(404);
         expect(oldReply.status).toBe(404);
-        const inboxRequest = (await fixture.store.listApprovalRequests({ runId: item.id }))[0]!;
-        expect(await fixture.store.listApprovalDecisions(inboxRequest.id)).toHaveLength(0);
+        expect(await fixture.store.listApprovalRequests({ runId: historicalInboxItemId })).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -3638,7 +3633,7 @@ describe("apiRouter", () => {
         const events = await fixture.store.listAgentOutputEvents({ ownerType: "chat_session", ownerId: session.id });
         const assistant = events.find((event) => event.kind === "message_completed" && event.metadata?.role === "assistant");
         expect(assistant?.bodyMarkdown).toContain("hiveward-inbox");
-        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expectOldInboxNormalStoreSurfaceDeleted(fixture.store);
         expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
@@ -3686,7 +3681,7 @@ describe("apiRouter", () => {
         expect(text).toContain("hiveward-inbox");
         expect(text).not.toContain("Inbox submission failed");
         expect(text).not.toContain(`event: ${oldInboxCreatedChatOutputEventName}`);
-        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expectOldInboxNormalStoreSurfaceDeleted(fixture.store);
         expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
@@ -3811,6 +3806,7 @@ describe("apiRouter", () => {
   it("closes reply human actions through request status without closing decision requests by ordinary text", async () => {
     const fixture = await createStoreFixture();
     try {
+      const approval = await seedStandaloneApprovalRequest(fixture.store, "decision-human-action-approval");
       await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
         id: "human-action-reply",
         responseIntent: "reply_required",
@@ -3819,7 +3815,8 @@ describe("apiRouter", () => {
       await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
         id: "human-action-decision",
         responseIntent: "decision_required",
-        title: "Decision needed"
+        title: "Decision needed",
+        approvalRequestId: approval.id
       }));
 
       await withApiServer(fixture.store, async (baseUrl) => {
@@ -3857,6 +3854,16 @@ describe("apiRouter", () => {
         expect(decisionBody.projections).toEqual([
           expect.objectContaining({ humanActionRequestId: "human-action-decision", status: "pending" })
         ]);
+
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${approval.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Approved through canonical approval owner." })
+        }));
+        const closedDecisionRequest = await fixture.store.getHumanActionRequest("human-action-decision");
+        expect(closedDecisionRequest?.status).toBe("closed");
+        expect(await fixture.store.listHumanActionRequests({ status: "pending" })).toEqual([]);
+        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -4003,7 +4010,7 @@ describe("apiRouter", () => {
         expect(body.messages[1]?.content).toContain("I prepared the package for approval.");
         expect(body.messages[1]?.content).toContain("hiveward-inbox");
         expect(body.inboxItems).toBeUndefined();
-        expect(await fixture.store.listInboxItems()).toEqual([]);
+        expectOldInboxNormalStoreSurfaceDeleted(fixture.store);
         expect(await fixture.store.listApprovalRequests()).toEqual([]);
       }, adapter);
     } finally {
@@ -4261,6 +4268,17 @@ async function createStoreFixture(): Promise<{ dir: string; store: FileHivewardS
   return { dir, store };
 }
 
+function expectOldInboxNormalStoreSurfaceDeleted(store: FileHivewardStore): void {
+  const oldSurface = store as unknown as {
+    listInboxItems?: unknown;
+    createLeaderDelegationRequest?: unknown;
+    createBlueprintProposal?: unknown;
+  };
+  expect(oldSurface.listInboxItems).toBeUndefined();
+  expect(oldSurface.createLeaderDelegationRequest).toBeUndefined();
+  expect(oldSurface.createBlueprintProposal).toBeUndefined();
+}
+
 async function seedRunApprovalRequest(store: FileHivewardStore, runId: string, nodeRunId: string): Promise<ApprovalRequest> {
   const now = new Date().toISOString();
   const request: ApprovalRequest = {
@@ -4295,33 +4313,8 @@ async function seedStandaloneApprovalRequest(store: FileHivewardStore, id: strin
     status: "pending",
     title: "Standalone approval",
     body: "Approve the standalone request.",
-    sourceRef: { type: "inbox_item", id },
+    sourceRef: { type: "system", id },
     threadId: `thread-${id}`,
-    revision: 1,
-    capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
-    requestedBy: {
-      type: "role",
-      label: "ceo",
-      roleId: "ceo"
-    },
-    requestedAt: now,
-    updatedAt: now
-  };
-  return store.upsertApprovalRequest(request);
-}
-
-async function seedInboxApprovalRequest(store: FileHivewardStore, itemId: string): Promise<ApprovalRequest> {
-  const now = new Date().toISOString();
-  const request: ApprovalRequest = {
-    id: `approval-${itemId}`,
-    runId: itemId,
-    kind: "leader_delegation",
-    status: "pending",
-    title: "Inbox approval",
-    body: "Approve the inbox item.",
-    payloadRef: itemId,
-    sourceRef: { type: "inbox_item", id: itemId },
-    threadId: `thread-${itemId}`,
     revision: 1,
     capabilities: resolveApprovalCapabilities("leader_delegation", "pending"),
     requestedBy: {

@@ -89,6 +89,20 @@ describe("execution rebuild old-path exclusion gate", () => {
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });
+    [
+      "InboxItem",
+      "InboxItemStatus",
+      "InboxItemType",
+      "CreateLeaderDelegationRequest",
+      "CreateBlueprintProposalRequest",
+      "InboxSubmissionService",
+      "listInboxItems",
+      "createLeaderDelegationRequest",
+      "createBlueprintProposal",
+      "submit_inbox"
+    ].forEach((forbiddenIdentifier) => {
+      expect(productionSource).not.toMatch(new RegExp(`\\b${escapeRegExp(forbiddenIdentifier)}\\b`));
+    });
     const styleSource = readSource("apps/web/src/styles.css");
     expect(styleSource).not.toContain(".history-");
     const lifecycleSource = readSource("packages/shared/src/lifecycle.ts");
@@ -256,8 +270,11 @@ describe("execution rebuild old-path exclusion gate", () => {
       "expect(oldApprove.status).toBe(404)",
       "expect(oldReject.status).toBe(404)",
       "expect(oldReply.status).toBe(404)",
+      "expectOldInboxNormalStoreSurfaceDeleted(fixture.store)",
       "streams hiveward-inbox markdown as ordinary chat output without creating inbox items",
       "does not repair malformed hiveward-inbox markdown into an inbox item",
+      "approvalRequestId: approval.id",
+      "expect(closedDecisionRequest?.status).toBe(\"closed\")",
       "routes only canonical return_for_revision approval request actions",
       "expect(dashedAlias.status).toBe(404)",
       "expect(underscoredAlias.status).toBe(404)",

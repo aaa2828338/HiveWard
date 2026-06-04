@@ -444,7 +444,25 @@ export class ApprovalService {
     if (result.status === "conflict") {
       throw new ApprovalConflictError();
     }
+    if (input.decision.resultingStatus !== "pending") {
+      await this.closeBoundDecisionHumanActions(input.decision.approvalRequestId, input.decision.createdAt);
+    }
     return result;
+  }
+
+  private async closeBoundDecisionHumanActions(approvalRequestId: string, updatedAt: string): Promise<void> {
+    const requests = await this.store.listHumanActionRequests({
+      approvalRequestId,
+      responseIntent: "decision_required",
+      status: "pending"
+    });
+    for (const request of requests) {
+      await this.store.updateHumanActionRequest({
+        id: request.id,
+        status: "closed",
+        updatedAt
+      });
+    }
   }
 
   private appendDecisionTimeline(request: ApprovalRequest, decision: ApprovalDecision): Promise<unknown> {

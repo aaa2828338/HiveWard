@@ -13,7 +13,7 @@ import type {
   RuntimeTaskSummary,
   RuntimeUsageFact
 } from "./runtime";
-import type { AgentRuntimeId, PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
+import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary, BlueprintRunView } from "./blueprint";
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
@@ -151,26 +151,6 @@ export interface SaveArchitectureBlueprintLayoutRequest {
 
 export interface ListInboxProjectionsResponse {
   projections: InboxProjection[];
-}
-
-export interface CreateLeaderDelegationRequest {
-  leaderId: string;
-  blueprintId?: string;
-  title?: string;
-  summary?: string;
-  createdByRoleId?: string;
-}
-
-export interface CreateBlueprintProposalRequest {
-  title: string;
-  summary: string;
-  blueprintId?: string;
-  blueprintPackage: PortableBlueprintPackage;
-  preview?: Record<string, unknown>;
-  diffSummary?: string;
-  createdByRoleId?: string;
-  targetRoleId?: string;
-  runtimeId?: AgentRuntimeId;
 }
 
 export interface CreateHumanActionResponseRequest {

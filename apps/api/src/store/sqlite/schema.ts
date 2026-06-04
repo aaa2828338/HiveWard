@@ -879,6 +879,13 @@ const sqliteRunRoomFoundationStatements = [
   `CREATE INDEX IF NOT EXISTS idx_agent_output_events_owner_sequence ON agent_output_events(owner_type, owner_id, sequence)`
 ];
 
+const sqliteHumanActionApprovalOwnerStatements = [
+  `ALTER TABLE human_action_requests
+    ADD COLUMN approval_request_id TEXT REFERENCES approval_requests(id) ON DELETE SET NULL`,
+  `CREATE INDEX IF NOT EXISTS idx_human_action_requests_approval_request
+    ON human_action_requests(approval_request_id, status, updated_at DESC)`
+];
+
 function checksumStatements(statements: string[]): string {
   return createHash("sha256").update(statements.join("\n")).digest("hex");
 }
@@ -937,6 +944,12 @@ export const sqliteMigrations: SqliteMigration[] = [
     name: "run_room_foundation",
     checksum: checksumStatements(sqliteRunRoomFoundationStatements),
     up: sqliteRunRoomFoundationStatements
+  },
+  {
+    version: 10,
+    name: "human_action_approval_owner",
+    checksum: checksumStatements(sqliteHumanActionApprovalOwnerStatements),
+    up: sqliteHumanActionApprovalOwnerStatements
   }
 ];
 
@@ -956,7 +969,7 @@ export const sqliteRequiredSchema = {
   run_interjections: ["id", "run_room_id", "target", "message_markdown", "created_at"],
   manager_commands: ["id", "run_room_id", "action", "status", "created_at", "updated_at"],
   worker_tasks: ["id", "run_room_id", "manager_command_id", "status", "created_at", "updated_at"],
-  human_action_requests: ["id", "source_context_type", "source_context_id", "response_intent", "status", "title", "body_markdown", "created_at", "updated_at"],
+  human_action_requests: ["id", "source_context_type", "source_context_id", "response_intent", "status", "approval_request_id", "title", "body_markdown", "created_at", "updated_at"],
   human_action_responses: ["id", "request_id", "message_markdown", "created_at"],
   agent_output_events: ["id", "owner_type", "owner_id", "actor_type", "kind", "sequence", "created_at"],
   node_execution_sessions: ["id", "run_id", "node_run_id", "node_id", "harness_id", "policy", "status", "created_at", "updated_at"],
@@ -987,7 +1000,7 @@ export const sqliteRequiredIndexes = {
   run_interjections: ["idx_run_interjections_run_room_created"],
   manager_commands: ["idx_manager_commands_run_room_status"],
   worker_tasks: ["idx_worker_tasks_run_room_status", "idx_worker_tasks_manager_command", "idx_worker_tasks_one_active_per_run_room"],
-  human_action_requests: ["idx_human_action_requests_context_status", "idx_human_action_requests_run_room"],
+  human_action_requests: ["idx_human_action_requests_context_status", "idx_human_action_requests_run_room", "idx_human_action_requests_approval_request"],
   human_action_responses: ["idx_human_action_responses_request_created"],
   agent_output_events: ["idx_agent_output_events_owner_sequence"],
   node_execution_sessions: ["idx_node_execution_sessions_run_node", "idx_node_execution_sessions_native"],
@@ -1024,6 +1037,7 @@ export const sqliteRequiredForeignKeys = [
   { table: "worker_tasks", from: "run_room_id", targetTable: "run_rooms", to: "id" },
   { table: "worker_tasks", from: "manager_command_id", targetTable: "manager_commands", to: "id" },
   { table: "human_action_requests", from: "run_room_id", targetTable: "run_rooms", to: "id" },
+  { table: "human_action_requests", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
   { table: "human_action_responses", from: "request_id", targetTable: "human_action_requests", to: "id" },
   { table: "node_execution_sessions", from: "run_id", targetTable: "runs", to: "id" },
   { table: "node_execution_sessions", from: "node_run_id", targetTable: "node_runs", to: "id" },

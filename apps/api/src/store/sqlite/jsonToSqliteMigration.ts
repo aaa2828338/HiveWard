@@ -20,7 +20,6 @@ import type {
   HumanActionResponse,
   HistoricalChatMessageFact,
   HivewardChatSession,
-  InboxItem,
   ManagerCommand,
   NodeExecutionSession,
   ReleaseReport,
@@ -275,7 +274,6 @@ type VerificationSnapshot = {
   approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "reason">>;
   pendingApprovals: Array<Pick<ApprovalRequest, "id" | "kind" | "status" | "runId" | "roundId" | "revision">>;
   approvalDecisions: Array<Pick<ApprovalDecision, "id" | "approvalRequestId" | "action" | "actor" | "resultingStatus">>;
-  inboxPending: Array<Pick<InboxItem, "id" | "status" | "type" | "blueprintId"> & { payloadHash: string }>;
   agentHumanReports: Array<Pick<AgentHumanReport, "id" | "nodeRunId" | "runId" | "roundId" | "source"> & { bodyHash: string }>;
   agentHandoffs: Array<Pick<AgentHandoff, "id" | "nodeRunId" | "runId" | "roundId"> & { payloadHash: string }>;
   artifacts: Array<Pick<Artifact, "id" | "runId" | "roundId" | "nodeRunId" | "kind" | "format" | "storagePath" | "downloadUrl" | "sha256" | "bytes" | "relativePath">>;
@@ -304,7 +302,6 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
     approvalDiscussionBindings: [],
     pendingApprovals: [],
     approvalDecisions: [],
-    inboxPending: [],
     agentHumanReports: [],
     agentHandoffs: [],
     artifacts: [],
@@ -362,15 +359,6 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
       version: report.version,
       artifactRefsHash: hashJson(report.artifactRefs)
     })));
-    snapshot.inboxPending.push(...(await store.listInboxItems())
-      .filter((item) => item.status === "pending")
-      .map((item) => ({
-        id: item.id,
-        type: item.type,
-        status: item.status,
-        blueprintId: item.blueprintId,
-        payloadHash: hashJson(item.payload)
-      })));
     const sessions = await store.listChatSessions();
     snapshot.chatSessions.push(...sessions.map((session) => ({
       id: session.id,
@@ -607,7 +595,6 @@ function collectSnapshotCounts(snapshot: VerificationSnapshot): Record<string, n
     agentHumanReports: snapshot.agentHumanReports.length,
     agentHandoffs: snapshot.agentHandoffs.length,
     releaseReports: snapshot.releaseReports.length,
-    inboxPending: snapshot.inboxPending.length,
     chatSessions: snapshot.chatSessions.length,
     chatMessages: snapshot.chatMessages.length
   };
@@ -637,7 +624,6 @@ function compareIdentitySets(source: VerificationSnapshot, sqlite: VerificationS
     "agentHumanReports",
     "agentHandoffs",
     "releaseReports",
-    "inboxPending",
     "chatSessions",
     "chatMessages"
   ] as const) {
@@ -740,7 +726,6 @@ function sortSnapshot(snapshot: VerificationSnapshot): void {
   snapshot.approvalDiscussionBindings.sort(compareByApprovalRequestId);
   snapshot.pendingApprovals.sort(compareById);
   snapshot.approvalDecisions.sort(compareById);
-  snapshot.inboxPending.sort(compareById);
   snapshot.agentHumanReports.sort(compareById);
   snapshot.agentHandoffs.sort(compareById);
   snapshot.artifacts.sort(compareById);

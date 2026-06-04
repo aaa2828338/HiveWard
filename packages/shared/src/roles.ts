@@ -9,8 +9,7 @@ export type RoleCapability =
   | "read_blueprint"
   | "discuss"
   | "delegate_leader"
-  | "create_blueprint_proposal"
-  | "submit_inbox";
+  | "create_blueprint_proposal";
 
 export interface CompanyRoleProfile {
   id: string;

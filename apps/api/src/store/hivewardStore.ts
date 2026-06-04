@@ -2,7 +2,6 @@
   AgentHandoff,
   AgentHumanReport,
   AgentOutputEvent,
-  AgentRuntimeId,
   ArchitectureBlueprintView,
   ApprovalDiscussionBinding,
   ApprovalDecision,
@@ -28,7 +27,6 @@
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
-  InboxItem,
   InboxProjection,
   IterationRound,
   IterationSession,
@@ -201,25 +199,6 @@ export interface HivewardStore {
   createWorkerTask(task: WorkerTask): Promise<WorkerTask>;
   getWorkerTask(id: string): Promise<WorkerTask | undefined>;
   listWorkerTasks(filter?: { runRoomId?: string; managerCommandId?: string; statuses?: WorkerTask["status"][] }): Promise<WorkerTask[]>;
-  listInboxItems(): Promise<InboxItem[]>;
-  createLeaderDelegationRequest(input: {
-    leaderId: string;
-    blueprintId?: string;
-    title?: string;
-    summary?: string;
-    createdByRoleId?: string;
-  }): Promise<InboxItem>;
-  createBlueprintProposal(input: {
-    title: string;
-    summary: string;
-    blueprintId?: string;
-    blueprintPackage?: PortableBlueprintPackage;
-    preview?: Record<string, unknown>;
-    diffSummary?: string;
-    createdByRoleId?: string;
-    targetRoleId?: string;
-    runtimeId?: AgentRuntimeId;
-  }): Promise<InboxItem>;
   appendHumanActionRequest(request: HumanActionRequest): Promise<HumanActionRequest>;
   getHumanActionRequest(id: string): Promise<HumanActionRequest | undefined>;
   listHumanActionRequests(filter?: {
@@ -227,6 +206,7 @@ export interface HivewardStore {
     sourceContextType?: HumanActionRequest["sourceContextType"];
     responseIntent?: HumanActionRequest["responseIntent"];
     status?: HumanActionRequest["status"];
+    approvalRequestId?: string;
   }): Promise<HumanActionRequest[]>;
   updateHumanActionRequest(input: { id: string } & Partial<HumanActionRequest>): Promise<HumanActionRequest>;
   appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse>;

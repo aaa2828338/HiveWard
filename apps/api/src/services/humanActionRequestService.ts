@@ -7,7 +7,7 @@ import type {
 } from "@hiveward/shared";
 import type { HivewardStore } from "../store/hivewardStore";
 
-export type HumanActionRequestProducer = "manager" | "ceo" | "leader" | "worker" | "inbox" | "ui";
+export type HumanActionRequestProducer = "manager" | "ceo" | "leader" | "worker" | "ui";
 
 export interface CreateHumanActionRequestInput {
   producer: HumanActionRequestProducer;
@@ -17,6 +17,7 @@ export interface CreateHumanActionRequestInput {
   title: string;
   bodyMarkdown: string;
   runRoomId?: string;
+  approvalRequestId?: string;
   createdByRoleId?: string;
   metadata?: Record<string, unknown>;
 }
@@ -45,6 +46,7 @@ export class HumanActionRequestService {
       createdAt: now,
       updatedAt: now,
       ...(input.runRoomId ? { runRoomId: input.runRoomId } : {}),
+      ...(input.approvalRequestId !== undefined ? { approvalRequestId: this.requireApprovalRequestId(input) } : {}),
       ...(input.createdByRoleId ? { createdByRoleId: input.createdByRoleId } : {}),
       ...(input.metadata ? { metadata: input.metadata } : {})
     };
@@ -93,6 +95,13 @@ export class HumanActionRequestService {
       return;
     }
     throw new Error(`${producer} cannot create HumanActionRequest facts.`);
+  }
+
+  private requireApprovalRequestId(input: CreateHumanActionRequestInput): string {
+    if (input.responseIntent !== "decision_required") {
+      throw new Error("HumanActionRequest.approvalRequestId can only bind decision_required requests.");
+    }
+    return requireText(input.approvalRequestId ?? "", "HumanActionRequest.approvalRequestId");
   }
 }
 

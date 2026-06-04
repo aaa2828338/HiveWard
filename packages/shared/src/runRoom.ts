@@ -91,6 +91,7 @@ export interface HumanActionRequest {
   sourceContextId: string;
   responseIntent: HumanActionRequestResponseIntent;
   status: HumanActionRequestStatus;
+  approvalRequestId?: string;
   title: string;
   bodyMarkdown: string;
   createdByRoleId?: string;
@@ -115,6 +116,7 @@ export interface InboxProjection {
   sourceContextId: string;
   responseIntent: HumanActionRequestResponseIntent;
   status: HumanActionRequestStatus;
+  approvalRequestId?: string;
   title: string;
   bodyMarkdown: string;
   createdAt: string;
@@ -204,6 +206,7 @@ export function assertHumanActionRequest(request: HumanActionRequest): void {
   assertString(request.sourceContextId, "HumanActionRequest.sourceContextId");
   assertAllowed(request.responseIntent, humanActionRequestResponseIntents, "HumanActionRequest.responseIntent");
   assertAllowed(request.status, humanActionRequestStatuses, "HumanActionRequest.status");
+  if (request.approvalRequestId !== undefined) assertString(request.approvalRequestId, "HumanActionRequest.approvalRequestId");
   assertString(request.title, "HumanActionRequest.title");
   assertString(request.bodyMarkdown, "HumanActionRequest.bodyMarkdown");
   assertString(request.createdAt, "HumanActionRequest.createdAt");

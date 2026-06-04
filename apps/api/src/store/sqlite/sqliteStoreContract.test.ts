@@ -342,6 +342,9 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       expect("replyToInboxItem" in store).toBe(false);
       expect("approveInboxItem" in store).toBe(false);
       expect("rejectInboxItem" in store).toBe(false);
+      expect("listInboxItems" in store).toBe(false);
+      expect("createLeaderDelegationRequest" in store).toBe(false);
+      expect("createBlueprintProposal" in store).toBe(false);
 
       const sessionRecord = await store.createChatSession({ harnessId: "codex", title: "Contract chat" });
       await expect(store.appendChatMessage({
@@ -470,6 +473,9 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       ]);
       expect(typeof (store as unknown as { createInboxProjection?: unknown }).createInboxProjection).toBe("undefined");
       expect(typeof (store as unknown as { listBlueprintKanbanCards?: unknown }).listBlueprintKanbanCards).toBe("undefined");
+      expect(typeof (store as unknown as { listInboxItems?: unknown }).listInboxItems).toBe("undefined");
+      expect(typeof (store as unknown as { createLeaderDelegationRequest?: unknown }).createLeaderDelegationRequest).toBe("undefined");
+      expect(typeof (store as unknown as { createBlueprintProposal?: unknown }).createBlueprintProposal).toBe("undefined");
 
       const event: AgentOutputEvent = {
         id: "agent-output-event-contract",
@@ -497,6 +503,86 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         actions: { canReply: true },
         createdAt: contractNow
       })).toThrow(/execution_output/);
+    } finally {
+      close?.();
+    }
+  });
+
+  it("counts active approvals from approval and human-action facts only", async () => {
+    const { store, close } = await createHarness();
+    try {
+      const companyState = await store.createCompany({ name: "Canonical Count Company" });
+      const companyId = companyState.selectedCompanyId;
+      if (!companyId) throw new Error("Expected selected company.");
+
+      const blueprint = await store.saveBlueprint(createContractBlueprint(companyId));
+      const run = await store.createBlueprintRun(blueprint, "contract-user");
+      const runRoom: RunRoom = {
+        id: "run-room-canonical-count",
+        companyId,
+        blueprintId: blueprint.id,
+        runId: run.id,
+        status: "open",
+        title: "Canonical count room",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await store.createRunRoom(runRoom);
+
+      await expect(store.listCompanies()).resolves.toMatchObject({
+        companies: expect.arrayContaining([
+          expect.objectContaining({ id: companyId, activeApprovalCount: 0 })
+        ])
+      });
+      const approval = await store.upsertApprovalRequest({
+        ...createContractApproval(run.id, "node-run-canonical-count"),
+        id: "approval-canonical-count"
+      });
+      const request: HumanActionRequest = {
+        id: "human-action-request-canonical-count",
+        runRoomId: runRoom.id,
+        sourceContextType: "run_room",
+        sourceContextId: runRoom.id,
+        responseIntent: "decision_required",
+        approvalRequestId: approval.id,
+        status: "pending",
+        title: "Decision needed",
+        bodyMarkdown: "Approve the canonical request.",
+        createdAt: contractNow,
+        updatedAt: contractNow
+      };
+      await store.appendHumanActionRequest(request);
+      await expect(store.listCompanies()).resolves.toMatchObject({
+        companies: expect.arrayContaining([
+          expect.objectContaining({ id: companyId, activeApprovalCount: 2 })
+        ])
+      });
+      await expect(store.listHumanActionRequests({ approvalRequestId: approval.id })).resolves.toEqual([
+        expect.objectContaining({ id: request.id, approvalRequestId: approval.id })
+      ]);
+
+      await store.upsertApprovalRequest({
+        ...approval,
+        status: "approved",
+        capabilities: resolveClosedCapabilities(),
+        updatedAt: contractNow
+      });
+      await expect(store.listCompanies()).resolves.toMatchObject({
+        companies: expect.arrayContaining([
+          expect.objectContaining({ id: companyId, activeApprovalCount: 1 })
+        ])
+      });
+
+      await store.updateHumanActionRequest({
+        id: request.id,
+        status: "closed",
+        updatedAt: contractNow
+      });
+      await expect(store.listCompanies()).resolves.toMatchObject({
+        companies: expect.arrayContaining([
+          expect.objectContaining({ id: companyId, activeApprovalCount: 0 })
+        ])
+      });
     } finally {
       close?.();
     }

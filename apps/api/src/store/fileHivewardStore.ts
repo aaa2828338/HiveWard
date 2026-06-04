@@ -14,9 +14,7 @@ import type {
   CompanyRoleProfile,
   HumanActionRequest,
   HumanActionResponse,
-  InboxItem,
   InboxProjection,
-  InboxItemType,
   PendingApprovalItem,
   PortableBlueprintPackage,
   WorkspaceDashboard,
@@ -124,6 +122,31 @@ type RunArchiveWithLegacyRuntimeRefs = Omit<BlueprintRunArchive, "run" | "nodeRu
   events: Array<BlueprintNodeEvent & LegacyRuntimeRefFields>;
 };
 
+type HistoricalInboxRecord = {
+  retentionNote: "保留为历史事实，不参与决策";
+  id: string;
+  companyId: string;
+  type: string;
+  status: "pending" | "approved" | "rejected";
+  title: string;
+  summary: string;
+  createdByRoleId: string;
+  targetRoleId?: string;
+  blueprintId?: string;
+  blueprintName?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
+  decisionComment?: string;
+  replies?: Array<{
+    id: string;
+    role: "user";
+    body: string;
+    createdAt: string;
+  }>;
+};
+
 export interface BlueprintIndexEntry {
   id: string;
   companyId: string;
@@ -143,7 +166,7 @@ export interface HivewardStoreIndex {
   catalogSnapshot?: CatalogSnapshot;
   companyDashboards: Record<string, WorkspaceDashboard>;
   roleDirectories: Record<string, CompanyRoleDirectory>;
-  inboxItems: Record<string, InboxItem[]>;
+  inboxItems: Record<string, HistoricalInboxRecord[]>;
   iterationSessions: IterationSession[];
   iterationRounds: IterationRound[];
   runCommands: RunCommand[];
@@ -173,7 +196,7 @@ export interface HivewardStoreIndex {
 type RawHivewardStoreIndex = Partial<HivewardStoreIndex> & {
   companyDashboards?: Record<string, Partial<WorkspaceDashboard>>;
   roleDirectories?: Record<string, Partial<CompanyRoleDirectory>>;
-  inboxItems?: Record<string, InboxItem[]>;
+  inboxItems?: Record<string, HistoricalInboxRecord[]>;
   chatSessions?: unknown;
   chatMessages?: unknown;
 };
@@ -622,102 +645,6 @@ export class FileHivewardStore implements HivewardStore {
         roles: nextRoles,
         architecture: buildArchitectureBlueprintView(index, companyId, nextRoles)
       };
-    });
-  }
-
-  async listInboxItems(): Promise<InboxItem[]> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.getCurrentCompanyId(index);
-      if (!companyId) return [];
-      return [...(index.inboxItems[companyId] ?? [])].sort(
-        (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
-      );
-    });
-  }
-
-  async createLeaderDelegationRequest(input: {
-    leaderId: string;
-    blueprintId?: string;
-    title?: string;
-    summary?: string;
-    createdByRoleId?: string;
-  }): Promise<InboxItem> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const now = new Date().toISOString();
-      const roles = buildRoleDirectory(index, companyId, now);
-      const leader = roles.leaders.find((candidate) => candidate.id === input.leaderId);
-      if (!leader) {
-        throw new Error(`Leader not found: ${input.leaderId}`);
-      }
-      const blueprint = index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === (input.blueprintId ?? leader.blueprintId));
-      const item = createInboxItem({
-        companyId,
-        type: "leader_delegation",
-        title: input.title ?? `Call ${leader.label}`,
-        summary: input.summary ?? `Request approval to bring ${leader.label} into this conversation.`,
-        createdByRoleId: input.createdByRoleId ?? roles.ceo.id,
-        targetRoleId: leader.id,
-        blueprintId: blueprint?.id ?? leader.blueprintId,
-        blueprintName: blueprint?.name,
-        payload: {
-          leaderId: leader.id,
-          blueprintId: blueprint?.id ?? leader.blueprintId
-        },
-        now
-      });
-      index.roleDirectories[companyId] = roles;
-      index.inboxItems[companyId] = [item, ...(index.inboxItems[companyId] ?? [])];
-      await this.writeIndexUnlocked(index);
-      return item;
-    });
-  }
-
-  async createBlueprintProposal(input: {
-    title: string;
-    summary: string;
-    blueprintId?: string;
-    blueprintPackage?: PortableBlueprintPackage;
-    preview?: Record<string, unknown>;
-    diffSummary?: string;
-    createdByRoleId?: string;
-    targetRoleId?: string;
-    runtimeId?: AgentRuntimeId;
-  }): Promise<InboxItem> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const companyId = this.requireSelectedCompanyId(index);
-      const now = new Date().toISOString();
-      const roles = buildRoleDirectory(index, companyId, now);
-      if (!input.blueprintPackage) {
-        throw new Error("Blueprint proposal requires an importable blueprintPackage.");
-      }
-      const blueprint = input.blueprintId
-        ? index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === input.blueprintId)
-        : undefined;
-      const item = createInboxItem({
-        companyId,
-        type: "blueprint_proposal",
-        title: readOptionalString(input.title) ?? "Blueprint proposal",
-        summary: readOptionalString(input.summary) ?? "A leader generated importable blueprint package for approval.",
-        createdByRoleId: input.createdByRoleId ?? inferLeaderRoleId(roles, input.blueprintId) ?? roles.ceo.id,
-        targetRoleId: input.targetRoleId,
-        blueprintId: blueprint?.id ?? input.blueprintId,
-        blueprintName: blueprint?.name,
-        payload: {
-          blueprintPackage: input.blueprintPackage,
-          preview: input.preview,
-          diffSummary: input.diffSummary,
-          runtimeId: input.runtimeId
-        },
-        now
-      });
-      index.roleDirectories[companyId] = roles;
-      index.inboxItems[companyId] = [item, ...(index.inboxItems[companyId] ?? [])];
-      await this.writeIndexUnlocked(index);
-      return item;
     });
   }
 
@@ -1250,6 +1177,7 @@ export class FileHivewardStore implements HivewardStore {
     sourceContextType?: HumanActionRequest["sourceContextType"];
     responseIntent?: HumanActionRequest["responseIntent"];
     status?: HumanActionRequest["status"];
+    approvalRequestId?: string;
   } = {}): Promise<HumanActionRequest[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -1258,7 +1186,8 @@ export class FileHivewardStore implements HivewardStore {
           (!filter.runRoomId || request.runRoomId === filter.runRoomId) &&
           (!filter.sourceContextType || request.sourceContextType === filter.sourceContextType) &&
           (!filter.responseIntent || request.responseIntent === filter.responseIntent) &&
-          (!filter.status || request.status === filter.status)
+          (!filter.status || request.status === filter.status) &&
+          (!filter.approvalRequestId || request.approvalRequestId === filter.approvalRequestId)
         )
         .slice()
         .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime() || left.id.localeCompare(right.id));
@@ -2471,7 +2400,7 @@ export class FileHivewardStore implements HivewardStore {
       catalogSnapshot: rawIndex.catalogSnapshot,
       companyDashboards,
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(rawIndex.inboxItems, companies, now),
+      inboxItems: normalizeHistoricalInboxRecords(rawIndex.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(rawIndex.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(rawIndex.iterationRounds),
       runCommands: normalizeArray<RunCommand>(rawIndex.runCommands),
@@ -2540,7 +2469,7 @@ export class FileHivewardStore implements HivewardStore {
       catalogSnapshot: state.catalogSnapshot,
       companyDashboards: normalizeCompanyDashboards(state.companyDashboards, companies, now),
       roleDirectories: {},
-      inboxItems: normalizeInboxItems(state.inboxItems, companies, now),
+      inboxItems: normalizeHistoricalInboxRecords(state.inboxItems, companies, now),
       iterationSessions: normalizeArray<IterationSession>(state.iterationSessions),
       iterationRounds: normalizeArray<IterationRound>(state.iterationRounds),
       runCommands: normalizeArray<RunCommand>(state.runCommands),
@@ -2633,8 +2562,10 @@ export class FileHivewardStore implements HivewardStore {
     return index.companies.map((company) => {
       const blueprints = index.blueprintIndex.filter((blueprint) => blueprint.companyId === company.id);
       const runs = index.runIndex.filter((run) => run.companyId === company.id);
-      const pendingInboxCount = (index.inboxItems[company.id] ?? []).filter((item) => item.status === "pending").length;
       const dashboard = index.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
+      const activeApprovalCount =
+        countPendingApprovalRequestsForCompany(index, company.id) +
+        countPendingHumanActionRequestsForCompany(index, company.id);
       return {
         ...company,
         blueprintCount: blueprints.length,
@@ -2644,7 +2575,7 @@ export class FileHivewardStore implements HivewardStore {
         dashboardWidgetCount: dashboard.dashboardWidgets.length,
         savedViewCount: dashboard.savedViews.length,
         noteCount: dashboard.notes.length,
-        activeApprovalCount: runs.filter((run) => run.status === "waiting_approval").length + pendingInboxCount,
+        activeApprovalCount,
         latestRunAt: maxTimestamp(runs.map((run) => run.endedAt ?? run.startedAt))
       };
     });
@@ -2792,19 +2723,20 @@ function normalizeCompanyDashboards(
   return companyDashboards;
 }
 
-function normalizeInboxItems(value: unknown, companies: CompanyProfile[], now: string): Record<string, InboxItem[]> {
-  const inboxItems: Record<string, InboxItem[]> = {};
+function normalizeHistoricalInboxRecords(value: unknown, companies: CompanyProfile[], now: string): Record<string, HistoricalInboxRecord[]> {
+  const inboxItems: Record<string, HistoricalInboxRecord[]> = {};
   for (const company of companies) {
     const companyItems = isRecord(value) ? value[company.id] : undefined;
     const rawItems: unknown[] = Array.isArray(companyItems) ? companyItems : [];
     inboxItems[company.id] = rawItems.flatMap((item) => {
       if (!isRecord(item)) return [];
       const id = readString(item.id) ?? `inbox-${nanoid(8)}`;
-      const type = normalizeInboxItemType(item.type);
+      const type = normalizeHistoricalInboxRecordType(item.type);
       const status = item.status === "approved" || item.status === "rejected" ? item.status : "pending";
       const title = readString(item.title) ?? "Inbox item";
       const summary = readString(item.summary) ?? "";
       return [{
+        retentionNote: "保留为历史事实，不参与决策",
         id,
         companyId: company.id,
         type,
@@ -2820,14 +2752,14 @@ function normalizeInboxItems(value: unknown, companies: CompanyProfile[], now: s
         updatedAt: readString(item.updatedAt) ?? now,
         decidedAt: readString(item.decidedAt),
         decisionComment: readString(item.decisionComment),
-        replies: normalizeInboxItemReplies(item.replies)
+        replies: normalizeHistoricalInboxRecordReplies(item.replies)
       }];
     });
   }
   return inboxItems;
 }
 
-function normalizeInboxItemReplies(value: unknown): InboxItem["replies"] {
+function normalizeHistoricalInboxRecordReplies(value: unknown): HistoricalInboxRecord["replies"] {
   if (!Array.isArray(value)) return undefined;
   const replies = value.flatMap((item) => {
     if (!isRecord(item)) return [];
@@ -2840,7 +2772,7 @@ function normalizeInboxItemReplies(value: unknown): InboxItem["replies"] {
   return replies.length ? replies : undefined;
 }
 
-function normalizeInboxItemType(value: unknown): InboxItemType {
+function normalizeHistoricalInboxRecordType(value: unknown): string {
   if (
     value === "leader_delegation" ||
     value === "blueprint_proposal" ||
@@ -2882,6 +2814,7 @@ function projectInboxProjections(
       sourceContextId: request.sourceContextId,
       responseIntent: request.responseIntent,
       status: request.status,
+      approvalRequestId: request.approvalRequestId,
       title: request.title,
       bodyMarkdown: request.bodyMarkdown,
       createdAt: request.createdAt,
@@ -3184,7 +3117,7 @@ export function buildRoleDirectory(
     label: ceoLabel,
     description: existingCeo?.description || `Company-level command role for ${company?.name ?? companyId}.`,
     defaultDriverBindingId: ceoDriverBinding.id,
-    capabilities: ["read_company", "discuss", "delegate_leader", "submit_inbox"],
+    capabilities: ["read_company", "discuss", "delegate_leader"],
     instructions: existingCeo?.instructions,
     createdAt: existingCeo?.createdAt || now,
     updatedAt: now
@@ -3217,7 +3150,7 @@ export function buildRoleDirectory(
       description: existing?.description || `Leader role bound to ${blueprint.name}.`,
       blueprintId: blueprint.id,
       defaultDriverBindingId: leaderDriverBinding.id,
-      capabilities: ["read_blueprint", "discuss", "create_blueprint_proposal", "submit_inbox"],
+      capabilities: ["read_blueprint", "discuss", "create_blueprint_proposal"],
       instructions: existing?.instructions,
       createdAt: existing?.createdAt || now,
       updatedAt: now
@@ -3271,20 +3204,56 @@ function normalizeRoleDriverHarnessId(value: unknown): RoleDriverBinding["harnes
     : "openclaw";
 }
 
+function countPendingApprovalRequestsForCompany(
+  index: HivewardStoreIndex,
+  companyId: string,
+  blueprintId?: string
+): number {
+  const companyRuns = index.runIndex.filter((run) =>
+    run.companyId === companyId && (!blueprintId || run.blueprintId === blueprintId)
+  );
+  const runIds = new Set(companyRuns.map((run) => run.id));
+  return index.approvalRequests.filter((request) =>
+    request.status === "pending" &&
+    request.runId !== undefined &&
+    runIds.has(request.runId)
+  ).length;
+}
+
+function countPendingHumanActionRequestsForCompany(
+  index: HivewardStoreIndex,
+  companyId: string,
+  blueprintId?: string
+): number {
+  const runRoomIds = new Set(index.runRooms
+    .filter((runRoom) => runRoom.companyId === companyId && (!blueprintId || runRoom.blueprintId === blueprintId))
+    .map((runRoom) => runRoom.id));
+  const blueprintIds = new Set(index.blueprintIndex
+    .filter((blueprint) => blueprint.companyId === companyId && (!blueprintId || blueprint.id === blueprintId))
+    .map((blueprint) => blueprint.id));
+  return index.humanActionRequests.filter((request) =>
+    request.status === "pending" &&
+    (
+      (request.runRoomId !== undefined && runRoomIds.has(request.runRoomId)) ||
+      (request.sourceContextType === "blueprint_governance" && blueprintIds.has(request.sourceContextId))
+    )
+  ).length;
+}
+
 export function buildArchitectureBlueprintView(
   index: HivewardStoreIndex,
   companyId: string,
   roles: CompanyRoleDirectory
 ): ArchitectureBlueprintView {
   const companyRuns = index.runIndex.filter((run) => run.companyId === companyId);
-  const companyInbox = index.inboxItems[companyId] ?? [];
-  const pendingInboxCount = companyInbox.filter((item) => item.status === "pending").length;
   const ceoNode = {
     id: roles.ceo.id,
     roleId: roles.ceo.id,
     kind: "ceo" as const,
     label: roles.ceo.label,
-    pendingApprovalCount: pendingInboxCount + companyRuns.filter((run) => run.status === "waiting_approval").length,
+    pendingApprovalCount:
+      countPendingApprovalRequestsForCompany(index, companyId) +
+      countPendingHumanActionRequestsForCompany(index, companyId),
     latestRunStatus: latestRun(companyRuns)?.status,
     latestRunAt: latestRun(companyRuns)?.startedAt,
     position: roles.architecturePositions?.[roles.ceo.id] ?? { x: 0, y: 0 }
@@ -3304,8 +3273,8 @@ export function buildArchitectureBlueprintView(
       blueprintId: leader.blueprintId,
       blueprintName: blueprint?.name,
       pendingApprovalCount:
-        runs.filter((run) => run.status === "waiting_approval").length +
-        companyInbox.filter((item) => item.status === "pending" && item.blueprintId === leader.blueprintId).length,
+        countPendingApprovalRequestsForCompany(index, companyId, leader.blueprintId) +
+        countPendingHumanActionRequestsForCompany(index, companyId, leader.blueprintId),
       latestRunStatus: latest?.status,
       latestRunAt: latest?.startedAt,
       lastImportAt: blueprint?.updatedAt,
@@ -3362,35 +3331,6 @@ function latestRun(runs: BlueprintRunSummary[]): BlueprintRunSummary | undefined
     .sort((left, right) => new Date(right.startedAt).getTime() - new Date(left.startedAt).getTime())[0];
 }
 
-function createInboxItem(input: {
-  companyId: string;
-  type: InboxItemType;
-  title: string;
-  summary: string;
-  createdByRoleId: string;
-  targetRoleId?: string;
-  blueprintId?: string;
-  blueprintName?: string;
-  payload?: Record<string, unknown>;
-  now: string;
-}): InboxItem {
-  return {
-    id: `inbox-${nanoid(10)}`,
-    companyId: input.companyId,
-    type: input.type,
-    status: "pending",
-    title: input.title,
-    summary: input.summary,
-    createdByRoleId: input.createdByRoleId,
-    targetRoleId: input.targetRoleId,
-    blueprintId: input.blueprintId,
-    blueprintName: input.blueprintName,
-    payload: input.payload,
-    createdAt: input.now,
-    updatedAt: input.now
-  };
-}
-
 function readBlueprintPackagePayload(value: unknown): PortableBlueprintPackage | undefined {
   if (!value) return undefined;
   try {
@@ -3398,11 +3338,6 @@ function readBlueprintPackagePayload(value: unknown): PortableBlueprintPackage |
   } catch {
     return undefined;
   }
-}
-
-function inferLeaderRoleId(roles: CompanyRoleDirectory, blueprintId: string | undefined): string | undefined {
-  if (!blueprintId) return undefined;
-  return roles.leaders.find((leader) => leader.blueprintId === blueprintId)?.id;
 }
 
 function safeRoleIdSegment(value: string): string {

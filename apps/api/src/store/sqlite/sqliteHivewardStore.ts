@@ -37,9 +37,7 @@ import type {
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
-  InboxItem,
   InboxProjection,
-  InboxItemType,
   IterationRound,
   IterationSession,
   ManagerCommand,
@@ -200,7 +198,6 @@ export class SqliteHivewardStore implements HivewardStore {
     artifacts: number;
     agentHumanReports: number;
     agentHandoffs: number;
-    inboxItems: number;
     runRooms: number;
     runInterjections: number;
     managerCommands: number;
@@ -221,7 +218,6 @@ export class SqliteHivewardStore implements HivewardStore {
       artifacts: 0,
       agentHumanReports: 0,
       agentHandoffs: 0,
-      inboxItems: 0,
       runRooms: 0,
       runInterjections: 0,
       managerCommands: 0,
@@ -238,7 +234,6 @@ export class SqliteHivewardStore implements HivewardStore {
       const dashboard = await source.getDashboardState();
       const { roles } = await source.getRoleDirectory();
       const blueprints = await source.listBlueprints();
-      const inboxItems = await source.listInboxItems();
       const archives = await source.listRunArchives();
       const chatSessions = await source.listChatSessions();
 
@@ -260,11 +255,6 @@ export class SqliteHivewardStore implements HivewardStore {
         for (const blueprint of blueprints) {
           this.upsertBlueprint(blueprint);
           counts.blueprints += 1;
-        }
-        for (const item of inboxItems) {
-          this.upsertInboxItem(item);
-          this.replaceInboxReplies(item);
-          counts.inboxItems += 1;
         }
         for (const archive of archives) {
           this.importArchive(archive);
@@ -654,91 +644,6 @@ export class SqliteHivewardStore implements HivewardStore {
     });
   }
 
-  async listInboxItems(): Promise<InboxItem[]> {
-    const companyId = this.getSelectedCompanyId();
-    if (!companyId) return [];
-    return this.readInboxItems("WHERE company_id = ?", [companyId])
-      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
-  }
-
-  async createLeaderDelegationRequest(input: {
-    leaderId: string;
-    blueprintId?: string;
-    title?: string;
-    summary?: string;
-    createdByRoleId?: string;
-  }): Promise<InboxItem> {
-    return this.driver.transaction(() => {
-      const companyId = this.requireSelectedCompanyId();
-      const now = new Date().toISOString();
-      const index = this.readIndexSnapshot();
-      const roles = buildRoleDirectory(index, companyId, now, index.roleDirectories[companyId]);
-      const leader = roles.leaders.find((candidate) => candidate.id === input.leaderId);
-      if (!leader) throw new Error(`Leader not found: ${input.leaderId}`);
-      const blueprint = index.blueprintIndex.find((candidate) =>
-        candidate.companyId === companyId && candidate.id === (input.blueprintId ?? leader.blueprintId)
-      );
-      const item = createInboxItem({
-        companyId,
-        type: "leader_delegation",
-        title: input.title ?? `Call ${leader.label}`,
-        summary: input.summary ?? `Request approval to bring ${leader.label} into this conversation.`,
-        createdByRoleId: input.createdByRoleId ?? roles.ceo.id,
-        targetRoleId: leader.id,
-        blueprintId: blueprint?.id ?? leader.blueprintId,
-        blueprintName: blueprint?.name,
-        payload: { leaderId: leader.id, blueprintId: blueprint?.id ?? leader.blueprintId },
-        now
-      });
-      this.upsertRoleDirectory(roles);
-      this.upsertInboxItem(item);
-      return item;
-    });
-  }
-
-  async createBlueprintProposal(input: {
-    title: string;
-    summary: string;
-    blueprintId?: string;
-    blueprintPackage?: PortableBlueprintPackage;
-    preview?: Record<string, unknown>;
-    diffSummary?: string;
-    createdByRoleId?: string;
-    targetRoleId?: string;
-    runtimeId?: AgentRuntimeId;
-  }): Promise<InboxItem> {
-    return this.driver.transaction(() => {
-      const companyId = this.requireSelectedCompanyId();
-      if (!input.blueprintPackage) throw new Error("Blueprint proposal requires an importable blueprintPackage.");
-      const now = new Date().toISOString();
-      const index = this.readIndexSnapshot();
-      const roles = buildRoleDirectory(index, companyId, now, index.roleDirectories[companyId]);
-      const blueprint = input.blueprintId
-        ? index.blueprintIndex.find((candidate) => candidate.companyId === companyId && candidate.id === input.blueprintId)
-        : undefined;
-      const item = createInboxItem({
-        companyId,
-        type: "blueprint_proposal",
-        title: readOptionalString(input.title) ?? "Blueprint proposal",
-        summary: readOptionalString(input.summary) ?? "A leader generated importable blueprint package for approval.",
-        createdByRoleId: input.createdByRoleId ?? inferLeaderRoleId(roles, input.blueprintId) ?? roles.ceo.id,
-        targetRoleId: input.targetRoleId,
-        blueprintId: blueprint?.id ?? input.blueprintId,
-        blueprintName: blueprint?.name,
-        payload: {
-          blueprintPackage: input.blueprintPackage,
-          preview: input.preview,
-          diffSummary: input.diffSummary,
-          runtimeId: input.runtimeId
-        },
-        now
-      });
-      this.upsertRoleDirectory(roles);
-      this.upsertInboxItem(item);
-      return item;
-    });
-  }
-
   async createBlueprintRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
     return this.driver.transaction(() => {
       const runnableBlueprint = stripRemovedBlueprintNodes(blueprint);
@@ -1024,6 +929,7 @@ export class SqliteHivewardStore implements HivewardStore {
     sourceContextType?: HumanActionRequest["sourceContextType"];
     responseIntent?: HumanActionRequest["responseIntent"];
     status?: HumanActionRequest["status"];
+    approvalRequestId?: string;
   } = {}): Promise<HumanActionRequest[]> {
     return this.readHumanActionRequests(filter);
   }
@@ -2357,9 +2263,10 @@ export class SqliteHivewardStore implements HivewardStore {
       const directory = this.getStoredRoleDirectory(company.id);
       if (directory) roleDirectories[company.id] = directory;
     }
-    const inboxItems: Record<string, InboxItem[]> = {};
+    const inboxItems: HivewardStoreIndex["inboxItems"] = {};
     for (const company of companies) {
-      inboxItems[company.id] = this.readInboxItems("WHERE company_id = ?", [company.id]);
+      // 保留为历史事实，不参与决策: sqlite old inbox_items rows are not read into normal product projections.
+      inboxItems[company.id] = [];
     }
     return {
       schema: "hiveward.store-index/v1",
@@ -2402,8 +2309,10 @@ export class SqliteHivewardStore implements HivewardStore {
     return index.companies.map((company) => {
       const blueprints = index.blueprintIndex.filter((blueprint) => blueprint.companyId === company.id);
       const runs = index.runIndex.filter((run) => run.companyId === company.id);
-      const pendingInboxCount = (index.inboxItems[company.id] ?? []).filter((item) => item.status === "pending").length;
       const dashboard = index.companyDashboards[company.id] ?? createDefaultWorkspaceDashboard(new Date().toISOString());
+      const activeApprovalCount =
+        countPendingApprovalRequestsForCompany(index, company.id) +
+        countPendingHumanActionRequestsForCompany(index, company.id);
       return {
         ...company,
         blueprintCount: blueprints.length,
@@ -2413,7 +2322,7 @@ export class SqliteHivewardStore implements HivewardStore {
         dashboardWidgetCount: dashboard.dashboardWidgets.length,
         savedViewCount: dashboard.savedViews.length,
         noteCount: dashboard.notes.length,
-        activeApprovalCount: runs.filter((run) => run.status === "waiting_approval").length + pendingInboxCount,
+        activeApprovalCount,
         latestRunAt: maxTimestamp(runs.map((run) => run.endedAt ?? run.startedAt))
       };
     });
@@ -2617,87 +2526,6 @@ export class SqliteHivewardStore implements HivewardStore {
       writeJson(join(workspacePath, "manifest.json"), buildBlueprintWorkspaceManifest(blueprint)),
       writeJson(join(workspacePath, "blueprints", `${blueprint.id}.json`), blueprint)
     ]);
-  }
-
-  private upsertInboxItem(item: InboxItem): void {
-    this.driver.db.prepare(
-      `INSERT INTO inbox_items (
-        id, company_id, type, status, title, summary, created_by_role_id,
-        target_role_id, blueprint_id, blueprint_name, payload_json, created_at,
-        updated_at, decided_at, decision_comment
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        status = excluded.status,
-        title = excluded.title,
-        summary = excluded.summary,
-        payload_json = excluded.payload_json,
-        updated_at = excluded.updated_at,
-        decided_at = excluded.decided_at,
-        decision_comment = excluded.decision_comment`
-    ).run(
-      item.id,
-      item.companyId,
-      item.type,
-      item.status,
-      item.title,
-      item.summary,
-      item.createdByRoleId,
-      item.targetRoleId,
-      item.blueprintId,
-      item.blueprintName,
-      optionalJson(item.payload),
-      item.createdAt,
-      item.updatedAt,
-      item.decidedAt,
-      item.decisionComment
-    );
-  }
-
-  private readInboxItems(where = "", values: unknown[] = []): InboxItem[] {
-    return (this.driver.db.prepare(`SELECT * FROM inbox_items ${where}`).all(...values) as Row[]).map((row) => ({
-      id: requireString(row.id),
-      companyId: requireString(row.company_id),
-      type: normalizeInboxItemType(row.type),
-      status: row.status === "approved" || row.status === "rejected" ? row.status : "pending",
-      title: requireString(row.title),
-      summary: requireString(row.summary),
-      createdByRoleId: requireString(row.created_by_role_id),
-      targetRoleId: readString(row.target_role_id),
-      blueprintId: readString(row.blueprint_id),
-      blueprintName: readString(row.blueprint_name),
-      payload: parseOptionalJson(row.payload_json) as Record<string, unknown> | undefined,
-      createdAt: requireString(row.created_at),
-      updatedAt: requireString(row.updated_at),
-      decidedAt: readString(row.decided_at),
-      decisionComment: readString(row.decision_comment),
-      replies: this.readInboxReplies(requireString(row.id))
-    }));
-  }
-
-  private readInboxReplies(itemId: string): InboxItem["replies"] {
-    const replies = (this.driver.db.prepare("SELECT * FROM inbox_replies WHERE inbox_item_id = ? ORDER BY created_at").all(itemId) as Row[])
-      .map((row) => ({
-        id: requireString(row.id),
-        role: "user" as const,
-        body: requireString(row.message),
-        createdAt: requireString(row.created_at)
-      }));
-    return replies.length ? replies : undefined;
-  }
-
-  private replaceInboxReplies(item: InboxItem): void {
-    this.driver.db.prepare("DELETE FROM inbox_replies WHERE inbox_item_id = ?").run(item.id);
-    for (const reply of item.replies ?? []) {
-      this.driver.db.prepare(
-        `INSERT INTO inbox_replies (id, inbox_item_id, message, created_at) VALUES (?, ?, ?, ?)`
-      ).run(reply.id, item.id, reply.body, reply.createdAt);
-    }
-  }
-
-  private requireInboxItem(itemId: string): InboxItem {
-    const item = this.readInboxItems("WHERE id = ?", [itemId])[0];
-    if (!item) throw new Error(`Inbox item not found: ${itemId}`);
-    return item;
   }
 
   private upsertRun(run: BlueprintRunSummary): void {
@@ -3149,6 +2977,7 @@ export class SqliteHivewardStore implements HivewardStore {
     sourceContextType?: HumanActionRequest["sourceContextType"];
     responseIntent?: HumanActionRequest["responseIntent"];
     status?: HumanActionRequest["status"];
+    approvalRequestId?: string;
   } = {}): HumanActionRequest[] {
     const clauses: string[] = [];
     const values: unknown[] = [];
@@ -3168,6 +2997,10 @@ export class SqliteHivewardStore implements HivewardStore {
       clauses.push("status = ?");
       values.push(filter.status);
     }
+    if (filter.approvalRequestId) {
+      clauses.push("approval_request_id = ?");
+      values.push(filter.approvalRequestId);
+    }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return (this.driver.db.prepare(`SELECT * FROM human_action_requests ${where} ORDER BY updated_at DESC, id`).all(...values) as Row[])
       .map(humanActionRequestFromRow);
@@ -3177,8 +3010,8 @@ export class SqliteHivewardStore implements HivewardStore {
     this.driver.db.prepare(
       `INSERT INTO human_action_requests (
         id, run_room_id, source_context_type, source_context_id, response_intent, status,
-        title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        approval_request_id, title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       request.id,
       request.runRoomId,
@@ -3186,6 +3019,7 @@ export class SqliteHivewardStore implements HivewardStore {
       request.sourceContextId,
       request.responseIntent,
       request.status,
+      request.approvalRequestId,
       request.title,
       request.bodyMarkdown,
       request.createdByRoleId,
@@ -3199,14 +3033,15 @@ export class SqliteHivewardStore implements HivewardStore {
     this.driver.db.prepare(
       `INSERT INTO human_action_requests (
         id, run_room_id, source_context_type, source_context_id, response_intent, status,
-        title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        approval_request_id, title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         run_room_id = excluded.run_room_id,
         source_context_type = excluded.source_context_type,
         source_context_id = excluded.source_context_id,
         response_intent = excluded.response_intent,
         status = excluded.status,
+        approval_request_id = excluded.approval_request_id,
         title = excluded.title,
         body_markdown = excluded.body_markdown,
         created_by_role_id = excluded.created_by_role_id,
@@ -3219,6 +3054,7 @@ export class SqliteHivewardStore implements HivewardStore {
       request.sourceContextId,
       request.responseIntent,
       request.status,
+      request.approvalRequestId,
       request.title,
       request.bodyMarkdown,
       request.createdByRoleId,
@@ -3845,6 +3681,41 @@ export class SqliteHivewardStore implements HivewardStore {
   }
 }
 
+function countPendingApprovalRequestsForCompany(
+  index: HivewardStoreIndex,
+  companyId: string,
+  blueprintId?: string
+): number {
+  const runIds = new Set(index.runIndex
+    .filter((run) => run.companyId === companyId && (!blueprintId || run.blueprintId === blueprintId))
+    .map((run) => run.id));
+  return index.approvalRequests.filter((request) =>
+    request.status === "pending" &&
+    request.runId !== undefined &&
+    runIds.has(request.runId)
+  ).length;
+}
+
+function countPendingHumanActionRequestsForCompany(
+  index: HivewardStoreIndex,
+  companyId: string,
+  blueprintId?: string
+): number {
+  const runRoomIds = new Set(index.runRooms
+    .filter((runRoom) => runRoom.companyId === companyId && (!blueprintId || runRoom.blueprintId === blueprintId))
+    .map((runRoom) => runRoom.id));
+  const blueprintIds = new Set(index.blueprintIndex
+    .filter((blueprint) => blueprint.companyId === companyId && (!blueprintId || blueprint.id === blueprintId))
+    .map((blueprint) => blueprint.id));
+  return index.humanActionRequests.filter((request) =>
+    request.status === "pending" &&
+    (
+      (request.runRoomId !== undefined && runRoomIds.has(request.runRoomId)) ||
+      (request.sourceContextType === "blueprint_governance" && blueprintIds.has(request.sourceContextId))
+    )
+  ).length;
+}
+
 function companyFromRow(row: Row): CompanyProfile {
   return {
     id: requireString(row.id),
@@ -3986,6 +3857,7 @@ function humanActionRequestFromRow(row: Row): HumanActionRequest {
     sourceContextId: requireString(row.source_context_id),
     responseIntent: requireString(row.response_intent) as HumanActionRequest["responseIntent"],
     status: requireString(row.status) as HumanActionRequest["status"],
+    approvalRequestId: readString(row.approval_request_id),
     title: requireString(row.title),
     bodyMarkdown: requireString(row.body_markdown),
     createdByRoleId: readString(row.created_by_role_id),
@@ -4043,6 +3915,7 @@ function projectInboxProjectionsFromFacts(
       sourceContextId: request.sourceContextId,
       responseIntent: request.responseIntent,
       status: request.status,
+      approvalRequestId: request.approvalRequestId,
       title: request.title,
       bodyMarkdown: request.bodyMarkdown,
       createdAt: request.createdAt,
@@ -4426,35 +4299,6 @@ function createArchivePlaceholderBlueprint(run: BlueprintRunSummary, now: string
   };
 }
 
-function createInboxItem(input: {
-  companyId: string;
-  type: InboxItemType;
-  title: string;
-  summary: string;
-  createdByRoleId: string;
-  targetRoleId?: string;
-  blueprintId?: string;
-  blueprintName?: string;
-  payload?: Record<string, unknown>;
-  now: string;
-}): InboxItem {
-  return {
-    id: `inbox-${nanoid(10)}`,
-    companyId: input.companyId,
-    type: input.type,
-    status: "pending",
-    title: input.title,
-    summary: input.summary,
-    createdByRoleId: input.createdByRoleId,
-    targetRoleId: input.targetRoleId,
-    blueprintId: input.blueprintId,
-    blueprintName: input.blueprintName,
-    payload: input.payload,
-    createdAt: input.now,
-    updatedAt: input.now
-  };
-}
-
 function readBlueprintPackagePayload(value: unknown): PortableBlueprintPackage | undefined {
   if (!value) return undefined;
   try {
@@ -4462,11 +4306,6 @@ function readBlueprintPackagePayload(value: unknown): PortableBlueprintPackage |
   } catch {
     return undefined;
   }
-}
-
-function inferLeaderRoleId(roles: CompanyRoleDirectory, blueprintId: string | undefined): string | undefined {
-  if (!blueprintId) return undefined;
-  return roles.leaders.find((leader) => leader.blueprintId === blueprintId)?.id;
 }
 
 function normalizeChatRoleScopeForSelectedCompany(
@@ -4741,12 +4580,6 @@ function normalizeNodeRunStatus(value: unknown): BlueprintNodeRun["status"] {
   return value === "queued" || value === "running" || value === "succeeded" || value === "failed" || value === "cancelled" || value === "skipped" || value === "waiting_approval"
     ? value
     : "queued";
-}
-
-function normalizeInboxItemType(value: unknown): InboxItemType {
-  return value === "leader_delegation" || value === "blueprint_proposal" || value === "run_request" || value === "report" || value === "company_config"
-    ? value
-    : "report";
 }
 
 function approvalKindBackfillsMessageOnly(kind: ApprovalRequest["kind"]): boolean {
