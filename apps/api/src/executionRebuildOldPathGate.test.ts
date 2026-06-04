@@ -83,9 +83,14 @@ describe("execution rebuild old-path exclusion gate", () => {
       "recent_runs",
       "[\"recent\", \"runs\"].join(\"_\")",
       "HistoryPage",
+      "historical-run",
+      "createMissingRunRoomFeedSystemRow",
+      "runRoomFeedHistoricalFactOnlyMarker",
       "history-page-grid",
       "history-list-row",
-      "history-list-button"
+      "history-list-button",
+      "selectInbox",
+      "completeInbox"
     ].forEach((forbiddenFragment) => {
       expect(productionSource).not.toContain(forbiddenFragment);
     });
@@ -250,6 +255,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     const workerTests = readSource("apps/api/src/worker/blueprintWorker.test.ts");
     const workspacePageTests = readSource("apps/web/src/components/WorkspacePages.test.tsx");
     const runStateTests = readSource("apps/web/src/lib/run-state.test.ts");
+    const runRoomStateTests = readSource("apps/web/src/lib/run-room-state.test.ts");
     const adapterTests = readSource("packages/adapter/src/sdk-runtime/sdk-runtime.test.ts");
     const lifecycleContractTests = readSource("packages/shared/src/lifecycle.test.ts");
 
@@ -323,6 +329,13 @@ describe("execution rebuild old-path exclusion gate", () => {
       "marks missing approval discussion projection unavailable instead of synthesizing message-only",
       "does not synthesize pending approvals from legacy node output"
     ]);
+    expectSourceToContainAll(runRoomStateTests, [
+      "does not project residual historical run records as normal feed rows",
+      "expect(rows).toEqual([])",
+      "expect(rows.some(canOpenRunRoomFeedWorkerDetails)).toBe(false)",
+      "keeps missing or empty canonical feed separate from feed rows",
+      "expect(buildRunRoomFeedRowsForDisplay(createRunView())).toEqual([])"
+    ]);
     expectSourceToContainAll(workspacePageTests, [
       "renders RunRoomFeed rows instead of residual transcript and timeline facts",
       "derives preflight display mode from command step facts instead of node-run id prefixes",
@@ -333,7 +346,9 @@ describe("execution rebuild old-path exclusion gate", () => {
       "does not guess missing manager report rounds from text or ids",
       "BlueprintKanbanPage Blueprint Kanban",
       "ignores saved old run widgets instead of projecting normal dashboard UI",
-      "expect(html).not.toContain(\"Saved run records\")"
+      "expect(html).not.toContain(\"Saved run records\")",
+      "expect(html).toContain(\"No RunRoomFeed rows yet.\")",
+      "expect(html).not.toContain(\"Execution details\")"
     ]);
     expectSourceToContainAll(adapterTests, [
       "does not mark Codex resume proven when the provider starts a new thread",
