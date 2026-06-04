@@ -10,7 +10,6 @@ import type {
   HumanActionResponse,
   ManagerCommand,
   NodeExecutionSession,
-  NodeSessionTranscriptEvent,
   RunInterjection,
   RunRoom,
   RunCommand,
@@ -173,32 +172,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       };
       await expect(store.createNodeExecutionSession(executionSession)).resolves.toMatchObject({ id: executionSession.id });
 
-      const transcriptEvent: NodeSessionTranscriptEvent = {
-        id: "node-session-transcript-contract-1",
-        sessionId: executionSession.id,
-        sequence: 1,
-        runId: run.id,
-        nodeRunId: nodeRun.id,
-        role: "user",
-        kind: "user_message",
-        content: "Run the contract task.",
-        metadata: { source: "contract" },
-        createdAt: contractNow
-      };
-      await expect(store.appendNodeSessionTranscriptEvent(transcriptEvent)).resolves.toMatchObject({ id: transcriptEvent.id });
-      await expect(store.appendNodeSessionTranscriptEvent({ ...transcriptEvent, id: "node-session-transcript-duplicate" }))
-        .rejects.toThrow(/Transcript sequence 1 already exists/);
-      await expect(store.appendNodeSessionTranscriptEvent({
-        id: "node-session-transcript-contract-2",
-        sessionId: executionSession.id,
-        runId: run.id,
-        nodeRunId: nodeRun.id,
-        role: "runtime",
-        kind: "runtime_done",
-        content: "Runtime completed.",
-        createdAt: contractNow
-      })).resolves.toMatchObject({ id: "node-session-transcript-contract-2", sequence: 2 });
-
       const approval = await store.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
       await store.appendApprovalReply({
         id: "approval-reply-discussion-contract",
@@ -250,10 +223,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         runCommands: [expect.objectContaining({ id: command.id, commandKey: command.commandKey })],
         runCommandSteps: [expect.objectContaining({ id: commandStep.id, stepKey: commandStep.stepKey })],
         nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id, nativeSessionId: "native-session-contract" })],
-        nodeSessionTranscriptEvents: expect.arrayContaining([
-          expect.objectContaining({ id: transcriptEvent.id, sequence: 1 }),
-          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
-        ]),
         approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id, mode: "executor" })],
         approvalRequestDiscussions: [expect.objectContaining({
           approvalRequestId: approval.id,
@@ -284,17 +253,18 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         managerContextSnapshots: [expect.objectContaining({ id: "manager-context-contract" })],
         runTimeline: [expect.objectContaining({ id: "timeline-contract", sequence: 1 })]
       });
+      expect("appendNodeSessionTranscriptEvent" in store).toBe(false);
+      expect("listNodeSessionTranscriptEvents" in store).toBe(false);
+      expect("nodeSessionTranscriptEvents" in (view ?? {})).toBe(false);
       expect(view?.events.map((event) => event.id)).toEqual(["event-contract-1", "event-contract-2"]);
-      await expect(store.getRunArchive(run.id)).resolves.toMatchObject({
+      const archive = await store.getRunArchive(run.id);
+      expect(archive).toMatchObject({
         runCommands: [expect.objectContaining({ id: command.id })],
         runCommandSteps: [expect.objectContaining({ id: commandStep.id })],
         nodeExecutionSessions: [expect.objectContaining({ id: executionSession.id })],
-        nodeSessionTranscriptEvents: expect.arrayContaining([
-          expect.objectContaining({ id: transcriptEvent.id }),
-          expect.objectContaining({ id: "node-session-transcript-contract-2", sequence: 2 })
-        ]),
         approvalDiscussionBindings: [expect.objectContaining({ approvalRequestId: approval.id })]
       });
+      expect("nodeSessionTranscriptEvents" in (archive ?? {})).toBe(false);
 
       await expect(store.listRunSummaries()).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: run.id })]));
       await expect(store.listPendingApprovals()).resolves.toEqual([]);

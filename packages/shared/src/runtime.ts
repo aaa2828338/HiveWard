@@ -47,35 +47,6 @@ export interface NodeExecutionSession {
   lastUsedAt?: string;
 }
 
-export type NodeSessionTranscriptEventRole =
-  | "user"
-  | "assistant"
-  | "system"
-  | "runtime";
-
-export type NodeSessionTranscriptEventKind =
-  | "user_message"
-  | "assistant_delta"
-  | "assistant_message"
-  | "runtime_started"
-  | "runtime_state"
-  | "runtime_done"
-  | "system_note";
-
-export interface NodeSessionTranscriptEvent {
-  id: string;
-  sessionId: string;
-  sequence: number;
-  runId: string;
-  nodeRunId: string;
-  role: NodeSessionTranscriptEventRole;
-  kind: NodeSessionTranscriptEventKind;
-  content?: string;
-  runtimeRef?: RuntimeObjectRef;
-  metadata?: Record<string, unknown>;
-  createdAt: string;
-}
-
 export type RuntimeResumeMode =
   | "started"
   | "resumed"

@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   ApprovalDiscussionBinding,
   NodeExecutionSession,
-  NodeSessionTranscriptEvent,
   RunCommand,
   RunCommandStep
 } from "@hiveward/shared";
@@ -68,14 +67,12 @@ describe("JSON to SQLite migration", () => {
         runCommands: 1,
         runCommandSteps: 1,
         nodeExecutionSessions: 1,
-        nodeSessionTranscriptEvents: 1,
         approvalDiscussionBindings: 1
       }),
       sqlite: expect.objectContaining({
         runCommands: 1,
         runCommandSteps: 1,
         nodeExecutionSessions: 1,
-        nodeSessionTranscriptEvents: 1,
         approvalDiscussionBindings: 1
       })
     });
@@ -354,7 +351,6 @@ async function seedMigrationExecutionFacts(
   command: RunCommand;
   step: RunCommandStep;
   session: NodeExecutionSession;
-  transcriptEvent: NodeSessionTranscriptEvent;
   binding: ApprovalDiscussionBinding;
 }> {
   const command: RunCommand = {
@@ -399,16 +395,6 @@ async function seedMigrationExecutionFacts(
     lastUsedAt: contractNow
   };
   await source.createNodeExecutionSession(session);
-  const transcriptEvent = await source.appendNodeSessionTranscriptEvent({
-    id: "node-session-transcript-migration",
-    sessionId: session.id,
-    runId,
-    nodeRunId: nodeRun.id,
-    role: "runtime",
-    kind: "runtime_done",
-    content: "Runtime completed.",
-    createdAt: contractNow
-  });
   const binding: ApprovalDiscussionBinding = {
     approvalRequestId,
     threadId: approvalRequestId,
@@ -426,5 +412,5 @@ async function seedMigrationExecutionFacts(
     updatedAt: contractNow
   };
   await source.createApprovalDiscussionBinding(binding);
-  return { command, step, session, transcriptEvent, binding };
+  return { command, step, session, binding };
 }

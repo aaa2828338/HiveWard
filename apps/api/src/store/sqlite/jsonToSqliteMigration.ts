@@ -23,7 +23,6 @@ import type {
   InboxItem,
   ManagerCommand,
   NodeExecutionSession,
-  NodeSessionTranscriptEvent,
   ReleaseReport,
   RunInterjection,
   RunRoom,
@@ -273,7 +272,6 @@ type VerificationSnapshot = {
   humanActionResponses: Array<Pick<HumanActionResponse, "id" | "requestId" | "messageMarkdown" | "createdAt">>;
   agentOutputEvents: Array<Pick<AgentOutputEvent, "id" | "ownerType" | "ownerId" | "actorType" | "kind" | "sequence" | "bodyMarkdown" | "createdAt">>;
   nodeExecutionSessions: Array<Pick<NodeExecutionSession, "id" | "runId" | "nodeRunId" | "nodeId" | "harnessId" | "nativeSessionId" | "policy" | "status" | "fallbackOfSessionId" | "resumedFromSessionId">>;
-  nodeSessionTranscriptEvents: Array<Pick<NodeSessionTranscriptEvent, "id" | "sessionId" | "sequence" | "runId" | "nodeRunId" | "role" | "kind" | "content">>;
   approvalDiscussionBindings: Array<Pick<ApprovalDiscussionBinding, "approvalRequestId" | "threadId" | "mode" | "route" | "executorActor" | "executorKind" | "executorNodeRunId" | "executorSessionId" | "runtimeId" | "canStreamReply" | "reason">>;
   pendingApprovals: Array<Pick<ApprovalRequest, "id" | "kind" | "status" | "runId" | "roundId" | "revision">>;
   approvalDecisions: Array<Pick<ApprovalDecision, "id" | "approvalRequestId" | "action" | "actor" | "resultingStatus">>;
@@ -303,7 +301,6 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
     humanActionResponses: [],
     agentOutputEvents: [],
     nodeExecutionSessions: [],
-    nodeSessionTranscriptEvents: [],
     approvalDiscussionBindings: [],
     pendingApprovals: [],
     approvalDecisions: [],
@@ -519,16 +516,6 @@ function collectArchiveSnapshot(snapshot: VerificationSnapshot, archive: Bluepri
     fallbackOfSessionId: session.fallbackOfSessionId,
     resumedFromSessionId: session.resumedFromSessionId
   })));
-  snapshot.nodeSessionTranscriptEvents.push(...(archive.nodeSessionTranscriptEvents ?? []).map((event) => ({
-    id: event.id,
-    sessionId: event.sessionId,
-    sequence: event.sequence,
-    runId: event.runId,
-    nodeRunId: event.nodeRunId,
-    role: event.role,
-    kind: event.kind,
-    content: event.content
-  })));
   snapshot.approvalDiscussionBindings.push(...(archive.approvalDiscussionBindings ?? []).map((binding) => ({
     approvalRequestId: binding.approvalRequestId,
     threadId: binding.threadId,
@@ -613,7 +600,6 @@ function collectSnapshotCounts(snapshot: VerificationSnapshot): Record<string, n
     humanActionResponses: snapshot.humanActionResponses.length,
     agentOutputEvents: snapshot.agentOutputEvents.length,
     nodeExecutionSessions: snapshot.nodeExecutionSessions.length,
-    nodeSessionTranscriptEvents: snapshot.nodeSessionTranscriptEvents.length,
     approvalDiscussionBindings: snapshot.approvalDiscussionBindings.length,
     pendingApprovals: snapshot.pendingApprovals.length,
     approvalDecisions: snapshot.approvalDecisions.length,
@@ -645,7 +631,6 @@ function compareIdentitySets(source: VerificationSnapshot, sqlite: VerificationS
     "humanActionResponses",
     "agentOutputEvents",
     "nodeExecutionSessions",
-    "nodeSessionTranscriptEvents",
     "pendingApprovals",
     "approvalDecisions",
     "artifacts",
@@ -752,7 +737,6 @@ function sortSnapshot(snapshot: VerificationSnapshot): void {
   snapshot.humanActionResponses.sort(compareById);
   snapshot.agentOutputEvents.sort(compareByOwnerSequenceId);
   snapshot.nodeExecutionSessions.sort(compareById);
-  snapshot.nodeSessionTranscriptEvents.sort(compareBySessionSequenceId);
   snapshot.approvalDiscussionBindings.sort(compareByApprovalRequestId);
   snapshot.pendingApprovals.sort(compareById);
   snapshot.approvalDecisions.sort(compareById);
@@ -771,10 +755,6 @@ function compareById(left: { id: string }, right: { id: string }): number {
 
 function compareByRunSequenceId(left: { blueprintRunId: string; sequence: number; id: string }, right: { blueprintRunId: string; sequence: number; id: string }): number {
   return left.blueprintRunId.localeCompare(right.blueprintRunId) || left.sequence - right.sequence || left.id.localeCompare(right.id);
-}
-
-function compareBySessionSequenceId(left: { sessionId: string; sequence: number; id: string }, right: { sessionId: string; sequence: number; id: string }): number {
-  return left.sessionId.localeCompare(right.sessionId) || left.sequence - right.sequence || left.id.localeCompare(right.id);
 }
 
 function compareByOwnerSequenceId(left: { ownerType: string; ownerId: string; sequence: number; id: string }, right: { ownerType: string; ownerId: string; sequence: number; id: string }): number {

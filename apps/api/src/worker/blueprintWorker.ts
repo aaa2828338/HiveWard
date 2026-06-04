@@ -33,9 +33,6 @@ import {
   type NodeExecutionSession,
   type NodeExecutionSessionPolicy,
   type NodeExecutionSessionStatus,
-  type NodeSessionTranscriptEvent,
-  type NodeSessionTranscriptEventKind,
-  type NodeSessionTranscriptEventRole,
   type RunCommand,
   type RunCommandKind,
   type RunCommandStatus,
@@ -1769,12 +1766,6 @@ export class BlueprintWorker {
     if (!session.nativeSessionId) throw new Error("Approval discussion executor session cannot be resumed.");
     if (!nodeRun) throw new Error("Approval discussion executor node run is missing.");
 
-    await this.appendExecutionTranscriptEvent(session, "user", "user_message", input.message, {
-      approvalRequestId: input.request.id,
-      approvalDiscussionMode: "reply",
-      route: input.resolution.route
-    });
-
     const taskInput = this.buildApprovalDiscussionTaskInput(input.request, replies, input.message);
     const startInput = this.buildApprovalDiscussionStartInput(input.blueprint, nodeRun, session, input.resolution, taskInput);
     const sessionContext: ResolvedNodeExecutionSession = {
@@ -1782,18 +1773,7 @@ export class BlueprintWorker {
       nodeRun,
       resumeNativeSessionId: session.nativeSessionId
     };
-    return this.runAgentTaskWithResolvedSession(
-      startInput,
-      sessionContext,
-      undefined,
-      async (fallbackContext) => {
-        await this.appendExecutionTranscriptEvent(fallbackContext.session, "user", "user_message", input.message, {
-          approvalRequestId: input.request.id,
-          approvalDiscussionMode: "reply",
-          route: input.resolution.route
-        });
-      }
-    );
+    return this.runAgentTaskWithResolvedSession(startInput, sessionContext);
   }
 
   private buildApprovalDiscussionTaskInput(
@@ -2837,7 +2817,7 @@ export class BlueprintWorker {
     if (hasRunningChild) return false;
 
     const command = await this.ensureExecutionRunCommand(blueprint, run);
-    await this.executeManagerSlotNode(blueprint, run, slotNode, slotRun, command, context, scopeStartIndex);
+    await this.runManagerSlotCommandStep(blueprint, run, slotNode, slotRun, command, context, scopeStartIndex);
     return true;
   }
 
@@ -3066,7 +3046,7 @@ export class BlueprintWorker {
         await this.syncRunCommandStepFromNodeRun(step);
         return this.nodeRunToAgentTaskResult(nodeRun);
       }
-      const result = await this.executeManagerSlotNode(blueprint, run, assignment.target, nodeRun, command, context);
+      const result = await this.runManagerSlotCommandStep(blueprint, run, assignment.target, nodeRun, command, context);
       await this.syncRunCommandStepFromNodeRun(step);
       return result;
     }
@@ -4039,7 +4019,7 @@ export class BlueprintWorker {
         participantNodeRun = started.nodeRun;
         participantStep = started.step;
         result = started.shouldExecute
-          ? await this.executeManagerSlotNode(blueprint, run, assignment.target, started.nodeRun, command, managerContext)
+          ? await this.runManagerSlotCommandStep(blueprint, run, assignment.target, started.nodeRun, command, managerContext)
           : this.nodeRunToAgentTaskResult(started.nodeRun);
       } else if (assignment.target.type === "manager") {
         const managerUpstreamInput: UpstreamOutput = [
@@ -4129,7 +4109,7 @@ export class BlueprintWorker {
     return this.syntheticAgentResult(nodeRun.id, "failed", undefined, error);
   }
 
-  private async executeManagerSlotNode(
+  private async runManagerSlotCommandStep(
     blueprint: BlueprintDefinition,
     run: BlueprintRun,
     slotNode: BlueprintNode,
@@ -5833,13 +5813,6 @@ export class BlueprintWorker {
       statusReason,
       updatedAt: now
     });
-    await this.appendExecutionTranscriptEvent(
-      unavailable,
-      "system",
-      "system_note",
-      "Native session could not be resumed; a fallback session was started.",
-      { reason: statusReason }
-    );
     const fallback: NodeExecutionSession = {
       id: deterministicFactId("node-session", `${context.session.id}:fallback`),
       runId: context.session.runId,
@@ -5965,28 +5938,6 @@ export class BlueprintWorker {
           : result.error,
       lastUsedAt: now,
       updatedAt: now
-    });
-  }
-
-  private async appendExecutionTranscriptEvent(
-    session: NodeExecutionSession,
-    role: NodeSessionTranscriptEventRole,
-    kind: NodeSessionTranscriptEventKind,
-    content?: string,
-    metadata?: Record<string, unknown>,
-    runtimeRef?: RuntimeObjectRef
-  ): Promise<NodeSessionTranscriptEvent> {
-    return this.store.appendNodeSessionTranscriptEvent({
-      id: `node-transcript-${nanoid(10)}`,
-      sessionId: session.id,
-      runId: session.runId,
-      nodeRunId: session.nodeRunId,
-      role,
-      kind,
-      content,
-      runtimeRef,
-      metadata,
-      createdAt: new Date().toISOString()
     });
   }
 

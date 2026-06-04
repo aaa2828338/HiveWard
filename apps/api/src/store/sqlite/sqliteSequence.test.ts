@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { BlueprintRun, NodeExecutionSession } from "@hiveward/shared";
+import type { BlueprintRun } from "@hiveward/shared";
 import { contractNow, createContractBlueprint, createContractNodeRun } from "../storeContractFixtures";
 import { SqliteDriver } from "./sqliteDriver";
 import { SqliteHivewardStore } from "./sqliteHivewardStore";
@@ -51,50 +51,6 @@ describe("SqliteHivewardStore run sequence counters", () => {
       expect(new Set(timeline.map((item) => item.sequence)).size).toBe(100);
       expect(timeline.map((item) => item.sequence)).toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
       expect(timeline.map((item) => item.id)).toEqual(Array.from({ length: 100 }, (_, index) => `timeline-concurrent-${index}`));
-    } finally {
-      closeStores(stores);
-    }
-  });
-
-  it("claims unique stable transcript sequences across multiple SQLite connections", async () => {
-    const sqlitePath = join(mkdtempSync(join(tmpdir(), "hiveward-transcript-sequence-")), "hiveward.sqlite");
-    const { run, stores } = await createSequenceStores(sqlitePath);
-    try {
-      const nodeRun = createContractNodeRun(run, { ok: true });
-      await stores[0]!.upsertNodeRun(nodeRun);
-      const executionSession: NodeExecutionSession = {
-        id: "node-execution-session-sequence",
-        runId: run.id,
-        nodeRunId: nodeRun.id,
-        nodeId: nodeRun.nodeId,
-        agentSeatId: "sequence-agent",
-        harnessId: "codex",
-        nativeSessionId: "native-sequence",
-        policy: "preserve_across_rounds",
-        status: "active",
-        createdAt: contractNow,
-        updatedAt: contractNow,
-        lastUsedAt: contractNow
-      };
-      await stores[0]!.createNodeExecutionSession(executionSession);
-
-      await Promise.all(Array.from({ length: 100 }, (_, index) =>
-        stores[index % stores.length]!.appendNodeSessionTranscriptEvent({
-          id: `transcript-concurrent-${index}`,
-          sessionId: executionSession.id,
-          runId: run.id,
-          nodeRunId: nodeRun.id,
-          role: "runtime",
-          kind: "runtime_state",
-          content: `Concurrent transcript ${index}`,
-          createdAt: new Date(Date.parse(contractNow) + index).toISOString()
-        })
-      ));
-
-      const sequences = readTranscriptSequences(sqlitePath, executionSession.id);
-      expect(sequences).toHaveLength(100);
-      expect(new Set(sequences).size).toBe(100);
-      expect(sequences).toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
     } finally {
       closeStores(stores);
     }
@@ -163,16 +119,6 @@ function readSequences(sqlitePath: string, table: "run_events" | "run_timeline_i
   const driver = new SqliteDriver(sqlitePath);
   try {
     const rows = driver.db.prepare(`SELECT sequence FROM ${table} WHERE run_id = ? ORDER BY sequence`).all(runId) as Array<{ sequence: number }>;
-    return rows.map((row) => row.sequence);
-  } finally {
-    driver.close();
-  }
-}
-
-function readTranscriptSequences(sqlitePath: string, sessionId: string): number[] {
-  const driver = new SqliteDriver(sqlitePath);
-  try {
-    const rows = driver.db.prepare("SELECT sequence FROM node_session_transcript_events WHERE session_id = ? ORDER BY sequence").all(sessionId) as Array<{ sequence: number }>;
     return rows.map((row) => row.sequence);
   } finally {
     driver.close();

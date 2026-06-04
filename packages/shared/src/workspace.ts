@@ -1,5 +1,4 @@
 export type DashboardWidgetType =
-  | "recent_runs"
   | "pending_approvals"
   | "runtime_overview"
   | "catalog_status"

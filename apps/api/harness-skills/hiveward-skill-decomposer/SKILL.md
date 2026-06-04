@@ -56,7 +56,7 @@ Use current HiveWard node types: `agent`, `manager`, `manager_slot`, `condition`
 - Standard Manager/slot handles are `manager-out-N` -> `manager-slot-in`, `manager-slot-out` -> `manager-in-N`, `manager-slot-inner-out` from slot to first child, and `manager-slot-inner-in` from last child back to slot.
 - Use `resultRole: "final"` for the intended deliverable, `resultRole: "ignore"` for internal Manager-slot workers, and omitted/`auto` for normal terminal outputs.
 - Use `summary.config.mode: "structured_merge"` for deterministic aggregation and `harness_summary` only when a runtime summary agent is genuinely needed.
-- A formal proposal must end with exactly one strict `hiveward-inbox` JSON block using schema `hiveward.inbox-submission/v1`; its `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`.
+- A formal proposal must be returned as ordinary assistant text plus a complete blueprint package proposal; its `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`.
 
 ## References
 

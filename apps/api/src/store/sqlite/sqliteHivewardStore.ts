@@ -48,7 +48,6 @@ import type {
   ManagerMail,
   NodeExecutionSession,
   NodeExecutionSessionStatus,
-  NodeSessionTranscriptEvent,
   PendingApprovalItem,
   PortableBlueprintPackage,
   ReleaseReport,
@@ -288,7 +287,6 @@ export class SqliteHivewardStore implements HivewardStore {
           for (const command of view.runCommands ?? []) this.upsertRunCommand(command);
           for (const step of view.runCommandSteps ?? []) this.upsertRunCommandStep(step);
           for (const executionSession of view.nodeExecutionSessions ?? []) this.upsertNodeExecutionSession(executionSession);
-          for (const event of view.nodeSessionTranscriptEvents ?? []) this.upsertNodeSessionTranscriptEvent(event);
           for (const request of view.approvalRequests ?? []) {
             this.upsertApprovalRequestSync(request);
             counts.approvals += 1;
@@ -1209,43 +1207,6 @@ export class SqliteHivewardStore implements HivewardStore {
       this.upsertNodeExecutionSession(updated);
       return updated;
     });
-  }
-
-  async appendNodeSessionTranscriptEvent(
-    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
-  ): Promise<NodeSessionTranscriptEvent> {
-    const explicitSequence = event.sequence !== undefined;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      try {
-        return this.driver.transaction(() => {
-          const transcriptEvent: NodeSessionTranscriptEvent = {
-            ...event,
-            sequence: event.sequence ?? this.nextNodeSessionTranscriptSequence(event.sessionId)
-          };
-          const duplicate = this.driver.db.prepare(
-            "SELECT id FROM node_session_transcript_events WHERE session_id = ? AND sequence = ? AND id <> ?"
-          ).get(transcriptEvent.sessionId, transcriptEvent.sequence, transcriptEvent.id) as Row | undefined;
-          if (duplicate) {
-            throw new Error(`Transcript sequence ${transcriptEvent.sequence} already exists for session ${transcriptEvent.sessionId}.`);
-          }
-          this.upsertNodeSessionTranscriptEvent(transcriptEvent);
-          return transcriptEvent;
-        });
-      } catch (error) {
-        if (explicitSequence || !isSqliteUniqueConstraintError(error)) {
-          throw error;
-        }
-      }
-    }
-    throw new Error(`Transcript sequence allocation failed for session ${event.sessionId}.`);
-  }
-
-  async listNodeSessionTranscriptEvents(filter: {
-    sessionId?: string;
-    runId?: string;
-    nodeRunId?: string;
-  } = {}): Promise<NodeSessionTranscriptEvent[]> {
-    return this.readNodeSessionTranscriptEvents(filter);
   }
 
   async createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding> {
@@ -2414,7 +2375,6 @@ export class SqliteHivewardStore implements HivewardStore {
       humanActionResponses: (this.driver.db.prepare("SELECT * FROM human_action_responses ORDER BY created_at, id").all() as Row[]).map(humanActionResponseFromRow),
       agentOutputEvents: (this.driver.db.prepare("SELECT * FROM agent_output_events ORDER BY owner_type, owner_id, sequence").all() as Row[]).map(agentOutputEventFromRow),
       nodeExecutionSessions: this.readNodeExecutionSessions(),
-      nodeSessionTranscriptEvents: this.readNodeSessionTranscriptEvents(),
       approvalDiscussionBindings: this.readApprovalDiscussionBindings(),
       approvalThreads: (this.driver.db.prepare("SELECT * FROM approval_threads").all() as Row[]).map(approvalThreadFromRow),
       approvalReplies: (this.driver.db.prepare("SELECT * FROM approval_replies").all() as Row[]).map(approvalReplyFromRow),
@@ -2801,7 +2761,6 @@ export class SqliteHivewardStore implements HivewardStore {
       runCommands: this.readRunCommands({ runId: run.id }),
       runCommandSteps: this.readRunCommandSteps({ runId: run.id }),
       nodeExecutionSessions: this.readNodeExecutionSessions({ runId: run.id }),
-      nodeSessionTranscriptEvents: this.readNodeSessionTranscriptEvents({ runId: run.id }),
       approvalDiscussionBindings: this.readApprovalDiscussionBindings({ runId: run.id }),
       finalResult: resolveFinalRunResult(blueprintSnapshot, nodeRuns, run.status)
     });
@@ -2890,7 +2849,6 @@ export class SqliteHivewardStore implements HivewardStore {
     for (const command of sanitized.runCommands ?? []) this.upsertRunCommand(command);
     for (const step of sanitized.runCommandSteps ?? []) this.upsertRunCommandStep(step);
     for (const session of sanitized.nodeExecutionSessions ?? []) this.upsertNodeExecutionSession(session);
-    for (const event of sanitized.nodeSessionTranscriptEvents ?? []) this.upsertNodeSessionTranscriptEvent(event);
   }
 
   private runViewFromRunRow(row: Row): BlueprintRunView {
@@ -2913,7 +2871,6 @@ export class SqliteHivewardStore implements HivewardStore {
       runCommands: archive.runCommands,
       runCommandSteps: archive.runCommandSteps,
       nodeExecutionSessions,
-      nodeSessionTranscriptEvents: archive.nodeSessionTranscriptEvents,
       approvalDiscussionBindings,
       approvalRequestDiscussions: this.projectApprovalRequestDiscussions({
         requests: approvalRequests,
@@ -3504,62 +3461,6 @@ export class SqliteHivewardStore implements HivewardStore {
     );
   }
 
-  private readNodeSessionTranscriptEvents(filter: {
-    sessionId?: string;
-    runId?: string;
-    nodeRunId?: string;
-  } = {}): NodeSessionTranscriptEvent[] {
-    const clauses: string[] = [];
-    const values: unknown[] = [];
-    if (filter.sessionId) {
-      clauses.push("session_id = ?");
-      values.push(filter.sessionId);
-    }
-    if (filter.runId) {
-      clauses.push("run_id = ?");
-      values.push(filter.runId);
-    }
-    if (filter.nodeRunId) {
-      clauses.push("node_run_id = ?");
-      values.push(filter.nodeRunId);
-    }
-    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    return (this.driver.db.prepare(`SELECT * FROM node_session_transcript_events ${where} ORDER BY session_id, sequence, created_at, id`).all(...values) as Row[])
-      .map(nodeSessionTranscriptEventFromRow);
-  }
-
-  private upsertNodeSessionTranscriptEvent(event: NodeSessionTranscriptEvent): void {
-    this.driver.db.prepare(
-      `INSERT INTO node_session_transcript_events (
-        id, session_id, sequence, run_id, node_run_id, role, kind, content,
-        runtime_ref_json, metadata_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        session_id = excluded.session_id,
-        sequence = excluded.sequence,
-        run_id = excluded.run_id,
-        node_run_id = excluded.node_run_id,
-        role = excluded.role,
-        kind = excluded.kind,
-        content = excluded.content,
-        runtime_ref_json = excluded.runtime_ref_json,
-        metadata_json = excluded.metadata_json,
-        created_at = excluded.created_at`
-    ).run(
-      event.id,
-      event.sessionId,
-      event.sequence,
-      event.runId,
-      event.nodeRunId,
-      event.role,
-      event.kind,
-      event.content,
-      optionalJson(event.runtimeRef),
-      optionalJson(event.metadata),
-      event.createdAt
-    );
-  }
-
   private getApprovalDiscussionBindingSync(approvalRequestId: string): ApprovalDiscussionBinding | undefined {
     const row = this.driver.db.prepare(
       "SELECT * FROM approval_discussion_bindings WHERE approval_request_id = ?"
@@ -3668,13 +3569,6 @@ export class SqliteHivewardStore implements HivewardStore {
 
   private nextTimelineSequence(runId: string): number {
     return this.claimRunSequence(runId, "timeline");
-  }
-
-  private nextNodeSessionTranscriptSequence(sessionId: string): number {
-    const row = this.driver.db.prepare(
-      "SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM node_session_transcript_events WHERE session_id = ?"
-    ).get(sessionId) as Row;
-    return readNumber(row.sequence, 1);
   }
 
   private claimRunSequence(runId: string, scope: "event" | "timeline"): number {
@@ -4199,22 +4093,6 @@ function nodeExecutionSessionFromRow(row: Row): NodeExecutionSession {
     createdAt: requireString(row.created_at),
     updatedAt: requireString(row.updated_at),
     lastUsedAt: readString(row.last_used_at)
-  };
-}
-
-function nodeSessionTranscriptEventFromRow(row: Row): NodeSessionTranscriptEvent {
-  return {
-    id: requireString(row.id),
-    sessionId: requireString(row.session_id),
-    sequence: readNumber(row.sequence, 0),
-    runId: requireString(row.run_id),
-    nodeRunId: requireString(row.node_run_id),
-    role: requireString(row.role) as NodeSessionTranscriptEvent["role"],
-    kind: requireString(row.kind) as NodeSessionTranscriptEvent["kind"],
-    content: readString(row.content),
-    runtimeRef: parseOptionalJson(row.runtime_ref_json) as NodeSessionTranscriptEvent["runtimeRef"],
-    metadata: parseOptionalJson(row.metadata_json) as NodeSessionTranscriptEvent["metadata"],
-    createdAt: requireString(row.created_at)
   };
 }
 
@@ -4899,13 +4777,6 @@ function readAgentRuntimeId(value: unknown): AgentRuntimeId | undefined {
   return value === "openclaw" || value === "codex" || value === "claude" || value === "google" || value === "cursor" || value === "opencode" || value === "hermes"
     ? value
     : undefined;
-}
-
-function isSqliteUniqueConstraintError(error: unknown): boolean {
-  if (!isRecord(error)) return false;
-  const code = readString(error.code);
-  const message = readString(error.message) ?? "";
-  return code === "SQLITE_CONSTRAINT_UNIQUE" || message.includes("UNIQUE constraint failed");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

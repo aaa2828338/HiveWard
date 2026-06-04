@@ -581,6 +581,7 @@ const sqliteExecutionFactsStatements = [
     updated_at TEXT NOT NULL,
     last_used_at TEXT
   )`,
+  // 保留为历史事实，不参与决策: store APIs no longer read, write, or project this table.
   `CREATE TABLE IF NOT EXISTS node_session_transcript_events (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES node_execution_sessions(id) ON DELETE CASCADE,
@@ -708,6 +709,7 @@ const sqliteExecutionFactConstraintStatements = [
      runtime_ref_json, policy, status, status_reason, fallback_of_session_id,
      resumed_from_session_id, created_at, updated_at, last_used_at
    FROM node_execution_sessions`,
+  // 保留为历史事实，不参与决策: this rebuild only preserves old rows while session FK constraints are rebuilt.
   `CREATE TABLE IF NOT EXISTS node_session_transcript_events_next (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES node_execution_sessions_next(id) ON DELETE CASCADE,
@@ -958,7 +960,6 @@ export const sqliteRequiredSchema = {
   human_action_responses: ["id", "request_id", "message_markdown", "created_at"],
   agent_output_events: ["id", "owner_type", "owner_id", "actor_type", "kind", "sequence", "created_at"],
   node_execution_sessions: ["id", "run_id", "node_run_id", "node_id", "harness_id", "policy", "status", "created_at", "updated_at"],
-  node_session_transcript_events: ["id", "session_id", "sequence", "run_id", "node_run_id", "role", "kind", "created_at"],
   approval_discussion_bindings: ["approval_request_id", "mode", "route", "can_stream_reply", "resolver_version", "created_at", "updated_at"],
   run_events: ["id", "run_id", "node_run_id", "sequence", "type", "message", "created_at"],
   approval_threads: ["id", "kind", "status", "title", "current_revision", "capabilities_json", "created_at", "updated_at"],
@@ -990,7 +991,6 @@ export const sqliteRequiredIndexes = {
   human_action_responses: ["idx_human_action_responses_request_created"],
   agent_output_events: ["idx_agent_output_events_owner_sequence"],
   node_execution_sessions: ["idx_node_execution_sessions_run_node", "idx_node_execution_sessions_native"],
-  node_session_transcript_events: ["idx_node_transcript_session_seq"],
   approval_discussion_bindings: ["idx_approval_discussion_bindings_mode"],
   run_events: ["idx_run_events_run_created"],
   run_timeline_items: ["idx_run_timeline_run_created"],
@@ -1005,7 +1005,6 @@ export const sqliteRequiredUniqueConstraints = [
   { table: "run_events", columns: ["run_id", "sequence"] },
   { table: "run_commands", columns: ["command_key"] },
   { table: "run_command_steps", columns: ["step_key"] },
-  { table: "node_session_transcript_events", columns: ["session_id", "sequence"] },
   { table: "run_timeline_items", columns: ["run_id", "sequence"] },
   { table: "agent_outputs", columns: ["node_run_id"] },
   { table: "agent_output_events", columns: ["owner_type", "owner_id", "sequence"] }
@@ -1030,9 +1029,6 @@ export const sqliteRequiredForeignKeys = [
   { table: "node_execution_sessions", from: "node_run_id", targetTable: "node_runs", to: "id" },
   { table: "node_execution_sessions", from: "fallback_of_session_id", targetTable: "node_execution_sessions", to: "id" },
   { table: "node_execution_sessions", from: "resumed_from_session_id", targetTable: "node_execution_sessions", to: "id" },
-  { table: "node_session_transcript_events", from: "session_id", targetTable: "node_execution_sessions", to: "id" },
-  { table: "node_session_transcript_events", from: "run_id", targetTable: "runs", to: "id" },
-  { table: "node_session_transcript_events", from: "node_run_id", targetTable: "node_runs", to: "id" },
   { table: "approval_discussion_bindings", from: "approval_request_id", targetTable: "approval_requests", to: "id" },
   { table: "approval_discussion_bindings", from: "executor_node_run_id", targetTable: "node_runs", to: "id" },
   { table: "approval_discussion_bindings", from: "executor_session_id", targetTable: "node_execution_sessions", to: "id" },
@@ -1067,8 +1063,6 @@ export const sqliteRequiredChecks = [
   { table: "agent_output_events", contains: "sequence >= 1" },
   { table: "node_execution_sessions", contains: "policy IN ('refresh_per_run','refresh_per_round','preserve_across_rounds')" },
   { table: "node_execution_sessions", contains: "status IN ('active','paused','completed','failed','unavailable','fallback')" },
-  { table: "node_session_transcript_events", contains: "role IN ('user','assistant','system','runtime')" },
-  { table: "node_session_transcript_events", contains: "kind IN ('user_message','assistant_delta','assistant_message','runtime_started','runtime_state','runtime_done','system_note')" },
   { table: "approval_discussion_bindings", contains: "mode IN ('none','message_only','executor')" },
   { table: "approval_discussion_bindings", contains: "route IN ('none','message_only','agent_approval','requirement_agent','requirement_manager','release_report_manager','function_manager','function_summary')" },
   { table: "approval_discussion_bindings", contains: "executor_actor IS NULL OR executor_actor IN ('agent','manager','system')" },

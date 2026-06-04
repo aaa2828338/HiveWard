@@ -9,6 +9,7 @@ type SourceFile = {
 
 const sourceRoots = [
   "apps/api/src",
+  "apps/api/harness-skills",
   "apps/web/src",
   "packages/adapter/src",
   "packages/shared/src"
@@ -43,6 +44,32 @@ describe("execution rebuild old-path exclusion gate", () => {
       "applyInboxDecision",
       "Generate candidate",
       "Request changes",
+      "ManagerLifecycleMode",
+      "ManagerDispatchMode",
+      "self_iteration_prepare_round",
+      "self_iteration_execute_round",
+      "self_iteration_release_report",
+      "resolveSequentialManagerDecision",
+      "isAgentDrivenManager",
+      "run connected slots in ascending order",
+      "ManagerSlotExecutionMode",
+      "executeManagerSlotNode",
+      "dispatch_worker_tasks",
+      "ChatStreamEvent",
+      "HivewardChatMessage",
+      "NodeSessionTranscriptEvent",
+      "RunTranscriptEventRow",
+      "InboxConversationMessage",
+      "buildInboxConversationMessages",
+      "buildFormalInboxConversation",
+      "buildApprovalConversation",
+      "hiveward-inbox",
+      "hiveward.inbox-submission/v1",
+      "type `blueprint_proposal`",
+      "inbox_item_created",
+      "extractChatInboxSubmissionBlock",
+      "repairExtraJsonObjectClosers",
+      "stripHivewardInboxSubmissionBlocks",
       "legacyBootstrapCommands",
       "legacyBackfill",
       "legacyPreflightModeFromNodeRunId",
@@ -163,7 +190,6 @@ describe("execution rebuild old-path exclusion gate", () => {
     [
       "run_command_steps",
       "node_execution_sessions",
-      "node_session_transcript_events",
       "approval_discussion_bindings",
       "mode IN ('research_resolution','requirement_resolution','revise_plan','preflight_judgment','context_snapshot','release_report','node_execution')",
       "status IN ('queued','running','waiting_approval','succeeded','failed','cancelled')",
@@ -219,6 +245,8 @@ describe("execution rebuild old-path exclusion gate", () => {
       "expect(oldApprove.status).toBe(404)",
       "expect(oldReject.status).toBe(404)",
       "expect(oldReply.status).toBe(404)",
+      "streams hiveward-inbox markdown as ordinary chat output without creating inbox items",
+      "does not repair malformed hiveward-inbox markdown into an inbox item",
       "routes only canonical return_for_revision approval request actions",
       "expect(dashedAlias.status).toBe(404)",
       "expect(underscoredAlias.status).toBe(404)",
@@ -242,7 +270,9 @@ describe("execution rebuild old-path exclusion gate", () => {
       "expect(adapter.waitCalls[0]).toMatchObject",
       "treats provider-started native sessions as fallback boundaries instead of proven resume",
       "provider_started_new_session",
-      "marks unsupported native resume unavailable and starts an explicit fallback session"
+      "marks unsupported native resume unavailable and starts an explicit fallback session",
+      "expect(\"listNodeSessionTranscriptEvents\" in store).toBe(false)",
+      "expect(\"nodeSessionTranscriptEvents\" in (view ?? {})).toBe(false)"
     ]);
     expectSourceToContainAll(approvalDiscussionResolverTests, [
       "treats missing binding as missing canonical discussion facts",
@@ -303,7 +333,7 @@ function listSourceFiles(
     const childPath = join(absolutePath, entry);
     const stats = statSync(childPath);
     if (stats.isDirectory()) return listSourceFiles(childPath, options);
-    if (!/\.(ts|tsx)$/.test(entry)) return [];
+    if (!/\.(ts|tsx|css|md)$/.test(entry)) return [];
     if (options.includeTests === false && /\.test\.(ts|tsx)$/.test(entry)) return [];
     return [{
       path: relative(process.cwd(), childPath).replace(/\\/g, "/"),

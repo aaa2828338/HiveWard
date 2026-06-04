@@ -49,8 +49,7 @@ Map Skill IR to current HiveWard blueprint contracts, not to imagined node types
 
 ## Portable Proposal Shape
 
-- Formal proposals use schema `hiveward.inbox-submission/v1` and type `blueprint_proposal`.
-- The final response must end with exactly one fenced `hiveward-inbox` JSON block when formal approval is requested.
+- Formal proposals are ordinary assistant text plus the complete blueprint package proposal when approval is requested.
 - `blueprintPackage.schema` must be `hiveward.blueprint-package/v1`.
 - Each blueprint must include `id`, `name`, `version`, `nodes`, `edges`, `variables`, and `display.viewport`.
 - Edges use `source` and `target`, not `from` and `to`.

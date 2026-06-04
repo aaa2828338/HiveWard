@@ -50,7 +50,6 @@ import type {
   ManagerMail,
   NodeExecutionSession,
   NodeExecutionSessionStatus,
-  NodeSessionTranscriptEvent,
   ReleaseReport,
   RunCommand,
   RunCommandKind,
@@ -159,7 +158,6 @@ export interface HivewardStoreIndex {
   humanActionResponses: HumanActionResponse[];
   agentOutputEvents: AgentOutputEvent[];
   nodeExecutionSessions: NodeExecutionSession[];
-  nodeSessionTranscriptEvents: NodeSessionTranscriptEvent[];
   approvalDiscussionBindings: ApprovalDiscussionBinding[];
   approvalThreads: ApprovalThread[];
   approvalReplies: ApprovalReply[];
@@ -287,7 +285,6 @@ export class FileHivewardStore implements HivewardStore {
           humanActionResponses: [],
           agentOutputEvents: [],
           nodeExecutionSessions: [],
-          nodeSessionTranscriptEvents: [],
           approvalDiscussionBindings: [],
           approvalThreads: [],
           approvalReplies: [],
@@ -1002,7 +999,6 @@ export class FileHivewardStore implements HivewardStore {
         runCommands: index.runCommands.filter((item) => item.runId === blueprintRunId),
         runCommandSteps: index.runCommandSteps.filter((item) => item.runId === blueprintRunId),
         nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === blueprintRunId),
-        nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === blueprintRunId),
         approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, blueprintRunId)
       };
     });
@@ -1064,7 +1060,6 @@ export class FileHivewardStore implements HivewardStore {
         runCommands: index.runCommands.filter((item) => item.runId === archive.run.id),
         runCommandSteps: index.runCommandSteps.filter((item) => item.runId === archive.run.id),
         nodeExecutionSessions: index.nodeExecutionSessions.filter((item) => item.runId === archive.run.id),
-        nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === archive.run.id),
         approvalDiscussionBindings: filterApprovalDiscussionBindingsForRun(index, archive.run.id)
       }));
     });
@@ -1760,45 +1755,6 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async appendNodeSessionTranscriptEvent(
-    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
-  ): Promise<NodeSessionTranscriptEvent> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      const transcriptEvent: NodeSessionTranscriptEvent = {
-        ...event,
-        sequence: event.sequence ?? nextNodeSessionTranscriptSequence(index.nodeSessionTranscriptEvents, event.sessionId)
-      };
-      const duplicate = index.nodeSessionTranscriptEvents.find(
-        (candidate) => candidate.sessionId === transcriptEvent.sessionId && candidate.sequence === transcriptEvent.sequence && candidate.id !== transcriptEvent.id
-      );
-      if (duplicate) {
-        throw new Error(`Transcript sequence ${transcriptEvent.sequence} already exists for session ${transcriptEvent.sessionId}.`);
-      }
-      upsertById(index.nodeSessionTranscriptEvents, transcriptEvent);
-      await this.writeIndexUnlocked(index);
-      return transcriptEvent;
-    });
-  }
-
-  async listNodeSessionTranscriptEvents(filter: {
-    sessionId?: string;
-    runId?: string;
-    nodeRunId?: string;
-  } = {}): Promise<NodeSessionTranscriptEvent[]> {
-    return this.enqueue(async () => {
-      const index = await this.readIndexUnlocked();
-      return index.nodeSessionTranscriptEvents
-        .filter((event) =>
-          (!filter.sessionId || event.sessionId === filter.sessionId) &&
-          (!filter.runId || event.runId === filter.runId) &&
-          (!filter.nodeRunId || event.nodeRunId === filter.nodeRunId)
-        )
-        .slice()
-        .sort(compareNodeSessionTranscriptEvent);
-    });
-  }
-
   async createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
@@ -2198,7 +2154,6 @@ export class FileHivewardStore implements HivewardStore {
       humanActionResponses: [],
       agentOutputEvents: [],
       nodeExecutionSessions: [],
-      nodeSessionTranscriptEvents: [],
       approvalDiscussionBindings: [],
       approvalThreads: [],
       approvalReplies: [],
@@ -2236,7 +2191,6 @@ export class FileHivewardStore implements HivewardStore {
       runCommands: Array.isArray(archive.runCommands) ? archive.runCommands : [],
       runCommandSteps: Array.isArray(archive.runCommandSteps) ? archive.runCommandSteps : [],
       nodeExecutionSessions: Array.isArray(archive.nodeExecutionSessions) ? archive.nodeExecutionSessions : [],
-      nodeSessionTranscriptEvents: Array.isArray(archive.nodeSessionTranscriptEvents) ? archive.nodeSessionTranscriptEvents : [],
       approvalDiscussionBindings: Array.isArray(archive.approvalDiscussionBindings) ? archive.approvalDiscussionBindings : [],
       finalResult: archive.finalResult ?? null
     });
@@ -2526,7 +2480,6 @@ export class FileHivewardStore implements HivewardStore {
       humanActionResponses: normalizeArray<HumanActionResponse>(rawIndex.humanActionResponses),
       agentOutputEvents: normalizeArray<AgentOutputEvent>(rawIndex.agentOutputEvents),
       nodeExecutionSessions: normalizeArray<NodeExecutionSession>(rawIndex.nodeExecutionSessions),
-      nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(rawIndex.nodeSessionTranscriptEvents),
       approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(rawIndex.approvalDiscussionBindings),
       approvalThreads: normalizeArray<ApprovalThread>(rawIndex.approvalThreads),
       approvalReplies: normalizeArray<ApprovalReply>(rawIndex.approvalReplies),
@@ -2596,7 +2549,6 @@ export class FileHivewardStore implements HivewardStore {
       humanActionResponses: normalizeArray<HumanActionResponse>(state.humanActionResponses),
       agentOutputEvents: normalizeArray<AgentOutputEvent>(state.agentOutputEvents),
       nodeExecutionSessions: normalizeArray<NodeExecutionSession>(state.nodeExecutionSessions),
-      nodeSessionTranscriptEvents: normalizeArray<NodeSessionTranscriptEvent>(state.nodeSessionTranscriptEvents),
       approvalDiscussionBindings: normalizeArray<ApprovalDiscussionBinding>(state.approvalDiscussionBindings),
       approvalThreads: normalizeArray<ApprovalThread>(state.approvalThreads),
       approvalReplies: normalizeArray<ApprovalReply>(state.approvalReplies),
@@ -2647,7 +2599,6 @@ export class FileHivewardStore implements HivewardStore {
       runCommands: index.runCommands.filter((item) => item.runId === runId),
       runCommandSteps: index.runCommandSteps.filter((item) => item.runId === runId),
       nodeExecutionSessions,
-      nodeSessionTranscriptEvents: index.nodeSessionTranscriptEvents.filter((item) => item.runId === runId),
       approvalDiscussionBindings,
       approvalRequestDiscussions: projectApprovalRequestDiscussions({
         requests: approvalRequests,
@@ -3171,12 +3122,6 @@ function nextTimelineSequence(items: RunTimelineItem[], runId: string): number {
     .reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
 }
 
-function nextNodeSessionTranscriptSequence(items: NodeSessionTranscriptEvent[], sessionId: string): number {
-  return items
-    .filter((item) => item.sessionId === sessionId)
-    .reduce((max, item) => Math.max(max, item.sequence), 0) + 1;
-}
-
 function normalizeChatRoleScope(value: unknown): ChatRoleScope | undefined {
   if (!isRecord(value)) return undefined;
   const role = value.role === "leader" ? "leader" : value.role === "ceo" ? "ceo" : undefined;
@@ -3602,16 +3547,6 @@ function readPendingApprovalUpstream(input: unknown): PendingApprovalItem["upstr
 function compareNodeExecutionSession(left: NodeExecutionSession, right: NodeExecutionSession): number {
   return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() ||
     new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime() ||
-    left.id.localeCompare(right.id);
-}
-
-function compareNodeSessionTranscriptEvent(
-  left: NodeSessionTranscriptEvent,
-  right: NodeSessionTranscriptEvent
-): number {
-  return left.sessionId.localeCompare(right.sessionId) ||
-    left.sequence - right.sequence ||
-    new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime() ||
     left.id.localeCompare(right.id);
 }
 

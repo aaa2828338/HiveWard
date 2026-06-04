@@ -815,7 +815,8 @@ describe("RunsPage", () => {
         createdAt: "2026-05-28T00:01:00.000Z",
         updatedAt: "2026-05-28T00:02:00.000Z"
       }],
-      nodeSessionTranscriptEvents: [
+      ...({
+        nodeSessionTranscriptEvents: [
         {
           id: "event-assistant-final",
           sessionId: "session-agent-1",
@@ -838,7 +839,8 @@ describe("RunsPage", () => {
           content: "Fallback adapter was unavailable; a transcript note was persisted.",
           createdAt: "2026-05-28T00:01:30.000Z"
         }
-      ],
+        ]
+      } as Record<string, unknown>),
       runRoomFeed: {
         runRoomId: "run-room-transcript",
         rows: [

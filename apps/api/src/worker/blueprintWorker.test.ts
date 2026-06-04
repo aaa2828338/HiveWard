@@ -1120,8 +1120,6 @@ describe("BlueprintWorker", () => {
     if (!unavailable) throw new Error("Expected unavailable execution session.");
     if (!fallback) throw new Error("Expected fallback execution session.");
     const binding = await store.getApprovalDiscussionBinding(approvalRequest.id);
-    const unavailableEvents = await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id });
-    const fallbackEvents = await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id });
 
     expect(adapter.calls.map((call) => call.nativeSessionId)).toEqual([
       undefined,
@@ -1147,18 +1145,7 @@ describe("BlueprintWorker", () => {
       mode: "executor",
       executorSessionId: fallback.id
     });
-    expect(unavailableEvents.filter((event) => event.kind === "assistant_message")).toEqual([]);
-    expect(unavailableEvents.map((event) => event.content)).not.toContain("discarded approval reply");
-    expect(fallbackEvents.map((event) => event.kind)).toEqual([
-      "user_message"
-    ]);
-    expect(fallbackEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "user",
-        kind: "user_message",
-        content: "Use the final wording."
-      })
-    ]));
+    expect("listNodeSessionTranscriptEvents" in store).toBe(false);
   });
 
   it("keeps Agent approval rejection from rerunning or continuing the run", async () => {
@@ -2689,7 +2676,6 @@ describe("BlueprintWorker", () => {
     const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
     if (!nodeRun) throw new Error("Expected brief node run.");
     const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id });
-    const events = await store.listNodeSessionTranscriptEvents({ sessionId: sessions[0]?.id });
     const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -2707,7 +2693,8 @@ describe("BlueprintWorker", () => {
         sessionKey: "runtime-session"
       })
     });
-    expect(events).toEqual([]);
+    expect("listNodeSessionTranscriptEvents" in store).toBe(false);
+    expect("nodeSessionTranscriptEvents" in (view ?? {})).toBe(false);
     expect(outputEvents).toEqual([
       expect.objectContaining({
         ownerType: "run_room",
@@ -2895,12 +2882,6 @@ describe("BlueprintWorker", () => {
     const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
     const unavailable = sessions.find((session) => session.status === "unavailable");
     const fallback = sessions.find((session) => session.status === "fallback");
-    const unavailableEvents = unavailable
-      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
-      : [];
-    const fallbackEvents = fallback
-      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
-      : [];
     const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -2919,16 +2900,7 @@ describe("BlueprintWorker", () => {
       nativeSessionId: "native-fallback-after-provider-new",
       fallbackOfSessionId: unavailable?.id
     });
-    expect(unavailableEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "system",
-        kind: "system_note",
-        metadata: expect.objectContaining({
-          reason: expect.stringContaining("provider_started_new_session")
-        })
-      })
-    ]));
-    expect(fallbackEvents).toEqual([]);
+    expect("listNodeSessionTranscriptEvents" in store).toBe(false);
     expect(outputEvents.map((event) => event.bodyMarkdown)).toEqual([
       "first pass",
       "fallback after provider new session"
@@ -3011,12 +2983,6 @@ describe("BlueprintWorker", () => {
     const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeId: "brief" });
     const unavailable = sessions.find((session) => session.status === "unavailable");
     const fallback = sessions.find((session) => session.status === "fallback");
-    const unavailableEvents = unavailable
-      ? await store.listNodeSessionTranscriptEvents({ sessionId: unavailable.id })
-      : [];
-    const fallbackEvents = fallback
-      ? await store.listNodeSessionTranscriptEvents({ sessionId: fallback.id })
-      : [];
     const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
 
     expect(view?.run.status).toBe("succeeded");
@@ -3035,17 +3001,7 @@ describe("BlueprintWorker", () => {
       nativeSessionId: "native-fallback",
       fallbackOfSessionId: unavailable?.id
     });
-    expect(unavailableEvents).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "system",
-        kind: "system_note",
-        content: "Native session could not be resumed; a fallback session was started.",
-        metadata: expect.objectContaining({
-          reason: expect.stringContaining("native_resume_unsupported")
-        })
-      })
-    ]));
-    expect(fallbackEvents).toEqual([]);
+    expect("listNodeSessionTranscriptEvents" in store).toBe(false);
     expect(outputEvents.map((event) => event.bodyMarkdown)).toEqual([
       "first pass",
       "fallback pass"

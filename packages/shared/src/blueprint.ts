@@ -19,7 +19,7 @@ import type {
   RunTimelineItem,
   RuntimeAccessPolicy
 } from "./lifecycle";
-import type { NodeExecutionSession, NodeSessionTranscriptEvent } from "./runtime";
+import type { NodeExecutionSession } from "./runtime";
 
 export type AgentRuntimeId = "openclaw" | "codex" | "claude" | "google" | "cursor" | "opencode" | "hermes";
 
@@ -460,7 +460,6 @@ export interface BlueprintRunView {
   runCommands?: RunCommand[];
   runCommandSteps?: RunCommandStep[];
   nodeExecutionSessions?: NodeExecutionSession[];
-  nodeSessionTranscriptEvents?: NodeSessionTranscriptEvent[];
   approvalDiscussionBindings?: ApprovalDiscussionBinding[];
   approvalRequestDiscussions?: ApprovalRequestDiscussionProjection[];
   approvalRequests?: ApprovalRequest[];
@@ -495,7 +494,6 @@ export interface BlueprintRunArchive {
   runCommands?: RunCommand[];
   runCommandSteps?: RunCommandStep[];
   nodeExecutionSessions?: NodeExecutionSession[];
-  nodeSessionTranscriptEvents?: NodeSessionTranscriptEvent[];
   approvalDiscussionBindings?: ApprovalDiscussionBinding[];
   approvalRequests?: ApprovalRequest[];
   approvalDecisions?: ApprovalDecision[];

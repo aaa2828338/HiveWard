@@ -1296,14 +1296,6 @@ pre {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
-.history-page-grid {
-  height: calc(100vh - 32px);
-  max-height: calc(100vh - 32px);
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
-  overflow: hidden;
-}
-
 .history-header-card {
   min-height: 0;
 }
@@ -1343,19 +1335,6 @@ pre {
   overscroll-behavior: contain;
   padding: 0 16px 8px 0;
   scrollbar-gutter: stable;
-}
-
-.history-card .history-list-row {
-  min-height: 78px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
-  grid-template-areas:
-    "main status"
-    "meta meta";
-  align-items: start;
-  gap: 8px 14px;
-  padding: 12px 12px 10px;
-  overflow: hidden;
 }
 
 .history-list-main {
@@ -1406,14 +1385,6 @@ pre {
   .history-card-grid {
     grid-template-columns: 1fr;
     grid-template-rows: repeat(2, minmax(0, 1fr));
-  }
-
-  .history-card .history-list-row {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "status"
-      "main"
-      "meta";
   }
 
   .history-list-status {
@@ -9873,15 +9844,6 @@ h6,
   }
 }
 
-/* Cross-page structural alignment for history and OpenClaw/configuration surfaces. */
-.history-page-grid {
-  height: calc(100vh - 32px);
-  max-height: calc(100vh - 32px);
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
-  overflow: hidden;
-}
-
 .history-page-title {
   --blueprint-selector-width: clamp(200px, 22vw, 320px);
 }
@@ -9926,27 +9888,6 @@ h6,
   overscroll-behavior: contain;
   padding: 0 8px 4px 0;
   scrollbar-gutter: stable;
-}
-
-.history-card .history-list-row {
-  min-height: 96px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--paper-raised);
-}
-
-.history-card button.history-list-row {
-  width: 100%;
-  color: inherit;
-  text-align: left;
-  justify-content: stretch;
-  transform: none;
-}
-
-.history-card button.history-list-row:hover:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--paper-strong);
-  transform: none;
 }
 
 .content-card > .card-toolbar + .model-card-grid,

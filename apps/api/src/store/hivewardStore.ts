@@ -38,7 +38,6 @@
   ManagerMail,
   NodeExecutionSession,
   NodeExecutionSessionStatus,
-  NodeSessionTranscriptEvent,
   PortableBlueprintPackage,
   ReleaseReport,
   RoleDriverBinding,
@@ -290,14 +289,6 @@ export interface HivewardStore {
   }): Promise<NodeExecutionSession[]>;
   getNodeExecutionSession(id: string): Promise<NodeExecutionSession | undefined>;
   updateNodeExecutionSession(input: { id: string } & Partial<NodeExecutionSession>): Promise<NodeExecutionSession>;
-  appendNodeSessionTranscriptEvent(
-    event: Omit<NodeSessionTranscriptEvent, "sequence"> & { sequence?: number }
-  ): Promise<NodeSessionTranscriptEvent>;
-  listNodeSessionTranscriptEvents(filter?: {
-    sessionId?: string;
-    runId?: string;
-    nodeRunId?: string;
-  }): Promise<NodeSessionTranscriptEvent[]>;
   createApprovalDiscussionBinding(binding: ApprovalDiscussionBinding): Promise<ApprovalDiscussionBinding>;
   getApprovalDiscussionBinding(approvalRequestId: string): Promise<ApprovalDiscussionBinding | undefined>;
   listApprovalDiscussionBindings(filter?: { approvalRequestIds?: string[]; runId?: string }): Promise<ApprovalDiscussionBinding[]>;
