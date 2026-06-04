@@ -104,7 +104,7 @@ export function ChatPage({
   roleDirectory,
   language,
   harnessPermissionModes,
-  onInboxItemsRefreshNeeded
+  onInboxProjectionsRefreshNeeded
 }: {
   catalog?: CatalogSnapshot;
   openClawConfig?: OpenClawConfigState;
@@ -116,7 +116,7 @@ export function ChatPage({
   roleDirectory?: CompanyRoleDirectory;
   language: Language;
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
-  onInboxItemsRefreshNeeded?: () => void | Promise<void>;
+  onInboxProjectionsRefreshNeeded?: () => void | Promise<void>;
 }) {
   const copy = chatCopy(language);
   const openClawModelOptions = useMemo(() => buildOpenClawModelOptions(catalog, openClawConfig), [catalog, openClawConfig]);
@@ -857,7 +857,7 @@ export function ChatPage({
     } finally {
       if (progressTimer !== undefined) window.clearInterval(progressTimer);
       if (streamAbortRef.current === controller) streamAbortRef.current = null;
-      void onInboxItemsRefreshNeeded?.();
+      void onInboxProjectionsRefreshNeeded?.();
       setIsSending(false);
     }
   };

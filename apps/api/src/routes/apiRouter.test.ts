@@ -1001,6 +1001,40 @@ describe("apiRouter", () => {
       });
       const staleRequest = await seedRunApprovalRequest(fixture.store, run.id, "terminal-cleanup");
       const blockedRequest = await seedRunApprovalRequest(fixture.store, run.id, "terminal-approve");
+      const approvedRepairRequest = await seedRunApprovalRequest(fixture.store, run.id, "terminal-approved-repair");
+      const repairHumanActionId = "human-action-terminal-run-approve-repair";
+      await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
+        id: repairHumanActionId,
+        sourceContextType: "run_room",
+        sourceContextId: run.id,
+        responseIntent: "decision_required",
+        approvalRequestId: approvedRepairRequest.id,
+        title: "Terminal approve repair"
+      }));
+      const approvedAt = "2026-06-04T00:11:00.000Z";
+      await fixture.store.applyApprovalDecision({
+        approvalRequestId: approvedRepairRequest.id,
+        expectedStatus: "pending",
+        nextRequest: {
+          ...approvedRepairRequest,
+          status: "approved",
+          capabilities: resolveApprovalCapabilities(approvedRepairRequest.kind, "approved"),
+          updatedAt: approvedAt
+        },
+        decision: {
+          id: "decision-terminal-approve-repair",
+          approvalRequestId: approvedRepairRequest.id,
+          action: "approve",
+          actor: "user",
+          resultingStatus: "approved",
+          createdAt: approvedAt
+        }
+      });
+      await fixture.store.updateHumanActionRequest({
+        id: repairHumanActionId,
+        status: "pending",
+        updatedAt: "2026-06-04T00:12:00.000Z"
+      });
 
       await withApiServer(fixture.store, async (baseUrl) => {
         const replyBody = await readOkJson<{
@@ -1040,12 +1074,25 @@ describe("apiRouter", () => {
           code: "run_already_finished",
           message: "Run is already finished."
         });
+
+        const repairApproveResponse = await fetch(`${baseUrl}/api/approval-requests/${approvedRepairRequest.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Repair stale terminal approval action." })
+        });
+        const repairApproveBody = await repairApproveResponse.json() as { error?: { code?: string } };
+        expect(repairApproveResponse.status, JSON.stringify(repairApproveBody)).toBe(409);
+        expect(repairApproveBody.error?.code).toBe("approval_conflict");
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
       expect((await fixture.store.listApprovalDecisions(staleRequest.id)).map((decision) => decision.action)).toEqual([
         "reply",
         "reject"
       ]);
+      expect(await fixture.store.getHumanActionRequest(repairHumanActionId)).toMatchObject({
+        status: "closed"
+      });
+      expect(await fixture.store.listApprovalDecisions(approvedRepairRequest.id)).toHaveLength(1);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }

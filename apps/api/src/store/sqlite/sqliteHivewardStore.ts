@@ -339,6 +339,7 @@ export class SqliteHivewardStore implements HivewardStore {
         counts.workerTasks += 1;
       }
       for (const request of humanActionRequests) {
+        assertHumanActionRequest(request);
         this.insertHumanActionRequest(request);
         counts.humanActionRequests += 1;
       }

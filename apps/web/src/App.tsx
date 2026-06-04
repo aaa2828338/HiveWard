@@ -1637,7 +1637,7 @@ export function App() {
           roleDirectory={roleDirectory}
           language={language}
           harnessPermissionModes={chatPermissionModes}
-          onInboxItemsRefreshNeeded={refreshInboxAndApprovals}
+          onInboxProjectionsRefreshNeeded={refreshInboxAndApprovals}
         />
       );
     }

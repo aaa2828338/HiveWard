@@ -1284,7 +1284,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     const run = approvalRequest.runId ? await store.getBlueprintRun(approvalRequest.runId) : undefined;
     if (run) {
       if (isTerminalRunStatus(run.status)) {
-        if (!canApplyTerminalApprovalRequestAction(action)) {
+        if (!canApplyTerminalApprovalRequestAction(action, approvalRequest)) {
           throw new ApiConflictError("run_already_finished", "Run is already finished.");
         }
         await applyTerminalApprovalRequestAction(action, approvalRequestId, body);
@@ -1327,11 +1327,13 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   }
 
   async function applyTerminalApprovalRequestAction(
-    action: "reply" | "complete" | "terminate" | "reject",
+    action: "approve" | "reply" | "complete" | "terminate" | "reject",
     approvalRequestId: string,
     body: Record<string, unknown>
   ): Promise<void> {
-    if (action === "reply") {
+    if (action === "approve") {
+      await approvalService.approve(approvalRequestId, readOptionalString(body.comment));
+    } else if (action === "reply") {
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
     } else if (action === "complete") {
       await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
@@ -1349,8 +1351,10 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   }
 
   function canApplyTerminalApprovalRequestAction(
-    action: ApprovalRouteAction
-  ): action is "reply" | "complete" | "terminate" | "reject" {
+    action: ApprovalRouteAction,
+    request: ApprovalRequest
+  ): action is "approve" | "reply" | "complete" | "terminate" | "reject" {
+    if (action === "approve") return request.status !== "pending";
     return action === "reply" || action === "complete" || action === "terminate" || action === "reject";
   }
 

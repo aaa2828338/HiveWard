@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type {
   ApprovalDiscussionBinding,
+  HumanActionRequest,
   NodeExecutionSession,
   RunCommand,
   RunCommandStep
@@ -49,6 +50,7 @@ describe("JSON to SQLite migration", () => {
     await source.appendEvent(createContractEvent(run.id, nodeRun.id, 1));
     const approval = await source.upsertApprovalRequest(createContractApproval(run.id, nodeRun.id));
     await seedMigrationExecutionFacts(source, run.id, nodeRun, approval.id);
+    await source.appendHumanActionRequest(createMigrationDecisionHumanActionRequest(approval.id));
     await source.upsertArtifact(createContractArtifact(run.id, nodeRun.id));
     await source.upsertAgentHumanReport(createContractHumanReport(run.id, nodeRun.id));
     await source.upsertAgentHandoff(createContractHandoff(run.id, nodeRun.id));
@@ -67,15 +69,32 @@ describe("JSON to SQLite migration", () => {
         runCommands: 1,
         runCommandSteps: 1,
         nodeExecutionSessions: 1,
-        approvalDiscussionBindings: 1
+        approvalDiscussionBindings: 1,
+        humanActionRequests: 1
       }),
       sqlite: expect.objectContaining({
         runCommands: 1,
         runCommandSteps: 1,
         nodeExecutionSessions: 1,
-        approvalDiscussionBindings: 1
+        approvalDiscussionBindings: 1,
+        humanActionRequests: 1
       })
     });
+
+    const sqlite = new SqliteHivewardStore(sqlitePath, { seedDefaults: false });
+    await sqlite.init();
+    try {
+      await expect(sqlite.listHumanActionRequests({ approvalRequestId: approval.id })).resolves.toEqual([
+        expect.objectContaining({
+          id: "human-action-migration-decision",
+          responseIntent: "decision_required",
+          status: "pending",
+          approvalRequestId: approval.id
+        })
+      ]);
+    } finally {
+      sqlite.close();
+    }
   });
 
   it("backfills historical pending approvals with canonical unavailable discussion bindings", async () => {
@@ -341,6 +360,21 @@ describe("JSON to SQLite migration", () => {
     expect(existsSync(join(dataDir, "artifacts", "objects", "sha256", "aa", "referenced.md"))).toBe(true);
   });
 });
+
+function createMigrationDecisionHumanActionRequest(approvalRequestId: string): HumanActionRequest {
+  return {
+    id: "human-action-migration-decision",
+    sourceContextType: "executive_chat",
+    sourceContextId: "migration-chat",
+    responseIntent: "decision_required",
+    status: "pending",
+    approvalRequestId,
+    title: "Migration decision required",
+    bodyMarkdown: "Approve migration test.",
+    createdAt: contractNow,
+    updatedAt: contractNow
+  };
+}
 
 async function seedMigrationExecutionFacts(
   source: FileHivewardStore,

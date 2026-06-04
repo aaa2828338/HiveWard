@@ -267,7 +267,7 @@ type VerificationSnapshot = {
   runInterjections: Array<Pick<RunInterjection, "id" | "runRoomId" | "target" | "messageMarkdown" | "createdAt">>;
   managerCommands: Array<Pick<ManagerCommand, "id" | "runRoomId" | "action" | "status" | "createdAt">>;
   workerTasks: Array<Pick<WorkerTask, "id" | "runRoomId" | "managerCommandId" | "status" | "createdAt">>;
-  humanActionRequests: Array<Pick<HumanActionRequest, "id" | "runRoomId" | "sourceContextType" | "sourceContextId" | "responseIntent" | "status" | "title" | "updatedAt">>;
+  humanActionRequests: Array<Pick<HumanActionRequest, "id" | "runRoomId" | "sourceContextType" | "sourceContextId" | "responseIntent" | "status" | "approvalRequestId" | "title" | "updatedAt">>;
   humanActionResponses: Array<Pick<HumanActionResponse, "id" | "requestId" | "messageMarkdown" | "createdAt">>;
   agentOutputEvents: Array<Pick<AgentOutputEvent, "id" | "ownerType" | "ownerId" | "actorType" | "kind" | "sequence" | "bodyMarkdown" | "createdAt">>;
   nodeExecutionSessions: Array<Pick<NodeExecutionSession, "id" | "runId" | "nodeRunId" | "nodeId" | "harnessId" | "nativeSessionId" | "policy" | "status" | "fallbackOfSessionId" | "resumedFromSessionId">>;
@@ -414,6 +414,7 @@ async function collectStoreSnapshot(store: FileHivewardStore | SqliteHivewardSto
     sourceContextId: request.sourceContextId,
     responseIntent: request.responseIntent,
     status: request.status,
+    approvalRequestId: request.approvalRequestId,
     title: request.title,
     updatedAt: request.updatedAt
   })));
