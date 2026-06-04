@@ -34,6 +34,7 @@ export class HumanActionRequestService {
 
   async createRequest(input: CreateHumanActionRequestInput): Promise<HumanActionRequest> {
     this.assertProducerCanCreate(input.producer, input.sourceContextType);
+    this.assertDecisionRequestHasApprovalOwner(input);
     const now = new Date().toISOString();
     const request: HumanActionRequest = {
       id: `human-action-request-${nanoid(10)}`,
@@ -102,6 +103,12 @@ export class HumanActionRequestService {
       throw new Error("HumanActionRequest.approvalRequestId can only bind decision_required requests.");
     }
     return requireText(input.approvalRequestId ?? "", "HumanActionRequest.approvalRequestId");
+  }
+
+  private assertDecisionRequestHasApprovalOwner(input: CreateHumanActionRequestInput): void {
+    if (input.responseIntent === "decision_required" && input.approvalRequestId === undefined) {
+      throw new Error("HumanActionRequest.approvalRequestId is required for decision_required requests.");
+    }
   }
 }
 

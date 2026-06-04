@@ -1637,6 +1637,12 @@ async function createExecutiveHumanActionRequest(
   command: Extract<ExecutiveCommand, { action: "request_human_action" }>
 ): Promise<HumanActionRequest> {
   const payload = command.payload;
+  if (payload.responseIntent === "decision_required") {
+    throw new ApiBadRequestError(
+      "executive_decision_human_action_requires_approval_owner",
+      "Executive decision_required human action requests must be created by the canonical approval owner."
+    );
+  }
   const sourceContextId = payload.sourceContextType === "executive_chat"
     ? payload.sourceContextId ?? session.id
     : payload.sourceContextId ?? payload.blueprintId;

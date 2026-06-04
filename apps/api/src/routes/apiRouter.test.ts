@@ -3781,9 +3781,9 @@ describe("apiRouter", () => {
             payload: {
               sourceContextType: "blueprint_governance",
               blueprintId: blueprint.id,
-              responseIntent: "decision_required",
-              title: "Govern blueprint",
-              bodyMarkdown: "Approve this governance step."
+              responseIntent: "review_required",
+              title: "Review blueprint",
+              bodyMarkdown: "Review this governance step."
             }
           }
         ]) {
@@ -3797,6 +3797,47 @@ describe("apiRouter", () => {
 
         expect(await fixture.store.listHumanActionRequests({ sourceContextType: "executive_chat" })).toHaveLength(1);
         expect(await fixture.store.listHumanActionRequests({ sourceContextType: "blueprint_governance" })).toHaveLength(1);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects executive decision human actions without the canonical approval owner", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "request_human_action",
+              sourceRole: "ceo",
+              payload: {
+                sourceContextType: "blueprint_governance",
+                blueprintId: blueprint.id,
+                responseIntent: "decision_required",
+                title: "Govern blueprint",
+                bodyMarkdown: "Approve this governance step."
+              }
+            }
+          })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status, JSON.stringify(body)).toBe(400);
+        expect(body.error).toMatchObject({
+          code: "executive_decision_human_action_requires_approval_owner"
+        });
+        expect(body.error?.message).toContain("canonical approval owner");
+        expect(await fixture.store.listHumanActionRequests()).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
