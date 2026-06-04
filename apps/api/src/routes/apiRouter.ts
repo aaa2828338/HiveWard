@@ -79,6 +79,8 @@ import type {
   HivewardChatSession,
   HumanActionRequest,
   RunRoom,
+  RunRoomFeedRow,
+  RunRoomFeedStreamEvent,
   StartBlueprintRunRequest,
   ApplyHivewardUpdateResponse,
   ApplyHivewardUpdateRequest,
@@ -1152,6 +1154,98 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       }
       res.json({ feed: await agentOutputService.projectRunRoomFeed(runRoomId) });
     } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/run-rooms/:runRoomId/feed/stream", async (req, res, next) => {
+    let closed = false;
+    let pollTimer: NodeJS.Timeout | undefined;
+    let heartbeatTimer: NodeJS.Timeout | undefined;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+    };
+
+    try {
+      const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
+      const runRoom = await store.getRunRoom(runRoomId);
+      if (!runRoom) {
+        res.status(404).json({ error: { code: "run_room_not_found", message: "RunRoom not found." } });
+        return;
+      }
+
+      res.status(200);
+      res.setHeader("content-type", "text/event-stream; charset=utf-8");
+      res.setHeader("cache-control", "no-cache, no-transform");
+      res.setHeader("connection", "keep-alive");
+      res.flushHeaders?.();
+
+      const sentRowIds = new Set<string>();
+      const snapshot = await agentOutputService.projectRunRoomFeed(runRoomId);
+      for (const row of snapshot.rows) {
+        sentRowIds.add(row.id);
+      }
+      writeRunRoomFeedStreamEvent(res, "feed_snapshot", {
+        type: "feed_snapshot",
+        runRoomId,
+        feed: snapshot,
+        ...(snapshot.rows.length > 0 ? { cursor: runRoomFeedCursor(snapshot.rows.at(-1)!) } : {}),
+        emittedAt: new Date().toISOString()
+      });
+      writeRunRoomFeedStreamEvent(res, "heartbeat", {
+        type: "heartbeat",
+        runRoomId,
+        emittedAt: new Date().toISOString()
+      });
+
+      const poll = async () => {
+        if (closed) return;
+        try {
+          const feed = await agentOutputService.projectRunRoomFeed(runRoomId);
+          for (const row of feed.rows) {
+            if (closed) return;
+            if (sentRowIds.has(row.id)) continue;
+            sentRowIds.add(row.id);
+            writeRunRoomFeedStreamEvent(res, "feed_row", {
+              type: "feed_row",
+              runRoomId,
+              row,
+              cursor: runRoomFeedCursor(row),
+              emittedAt: new Date().toISOString()
+            });
+          }
+        } catch (error) {
+          if (closed) return;
+          writeRunRoomFeedStreamEvent(res, "feed_error", {
+            type: "feed_error",
+            runRoomId,
+            error: {
+              code: "run_room_feed_stream_failed",
+              message: error instanceof Error ? error.message : "RunRoom feed stream failed."
+            },
+            emittedAt: new Date().toISOString()
+          });
+        }
+      };
+
+      pollTimer = setInterval(() => {
+        void poll();
+      }, 250);
+      heartbeatTimer = setInterval(() => {
+        if (closed) return;
+        writeRunRoomFeedStreamEvent(res, "heartbeat", {
+          type: "heartbeat",
+          runRoomId,
+          emittedAt: new Date().toISOString()
+        });
+      }, 15000);
+      req.on("close", close);
+      res.on("close", close);
+    } catch (error) {
+      close();
       next(error);
     }
   });
@@ -4108,6 +4202,19 @@ function readRouteParam(value: string | string[] | undefined, name: string): str
   }
   if (typeof value === "string" && value) return value;
   throw new Error(`Missing route parameter: ${name}`);
+}
+
+function writeRunRoomFeedStreamEvent(
+  res: Response,
+  eventName: RunRoomFeedStreamEvent["type"],
+  event: RunRoomFeedStreamEvent
+): void {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function runRoomFeedCursor(row: RunRoomFeedRow): string {
+  return `${row.createdAt}:${row.id}`;
 }
 
 function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefaults): BlueprintDefinition {

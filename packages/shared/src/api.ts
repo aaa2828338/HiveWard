@@ -73,6 +73,36 @@ export interface RunRoomFeedResponse {
   feed: RunRoomFeed;
 }
 
+export type RunRoomFeedStreamEvent =
+  | {
+      type: "feed_snapshot";
+      runRoomId: string;
+      feed: RunRoomFeed;
+      cursor?: string;
+      emittedAt: string;
+    }
+  | {
+      type: "feed_row";
+      runRoomId: string;
+      row: RunRoomFeed["rows"][number];
+      cursor: string;
+      emittedAt: string;
+    }
+  | {
+      type: "heartbeat";
+      runRoomId: string;
+      emittedAt: string;
+    }
+  | {
+      type: "feed_error";
+      runRoomId: string;
+      error: {
+        code: string;
+        message: string;
+      };
+      emittedAt: string;
+    };
+
 export interface CreateRunInterjectionRequest {
   messageMarkdown: string;
   createdByRoleId?: string;

@@ -26,6 +26,7 @@ import type {
   OpenClawVersionInfo,
   RuntimeOverview,
   RunRoomFeed,
+  RunRoomFeedStreamEvent,
   StartAgentTaskInput,
   WorkspaceDashboard,
   ApprovalRequest,
@@ -3202,6 +3203,137 @@ describe("apiRouter", () => {
     }
   });
 
+  it("streams run room feed snapshots and newly appended canonical rows", async () => {
+    const fixture = await createStoreFixture();
+    const abort = new AbortController();
+    try {
+      const createdAt = "2026-06-03T00:00:00.000Z";
+      const runRoom = createRunRoomFact({ id: "run-room-feed-stream", runId: "run-feed-stream" });
+      await fixture.store.createRunRoom(runRoom);
+      await fixture.store.appendAgentOutputEvent({
+        id: "stream-initial-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "system",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Initial stream output.",
+        createdAt
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed/stream`, { signal: abort.signal });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("text/event-stream");
+        const reader = createSseReader(response);
+        try {
+          const snapshot = await readNextSseFrame(reader);
+          expect(snapshot.event).toBe("feed_snapshot");
+          expect(snapshot.data).toMatchObject({
+            type: "feed_snapshot",
+            runRoomId: runRoom.id,
+            feed: {
+              rows: [expect.objectContaining({ bodyMarkdown: "Initial stream output." })]
+            }
+          });
+
+          await fixture.store.appendAgentOutputEvent({
+            id: "stream-live-output",
+            ownerType: "run_room",
+            ownerId: runRoom.id,
+            actorType: "manager",
+            kind: "message_completed",
+            sequence: 2,
+            bodyMarkdown: "Live canonical output.",
+            createdAt: "2026-06-03T00:00:01.000Z"
+          });
+          const row = await readUntilSseEvent(reader, "feed_row");
+          if (row.data.type !== "feed_row") {
+            throw new Error(`Unexpected SSE event type: ${row.data.type}`);
+          }
+          expect(row.data).toMatchObject({
+            type: "feed_row",
+            runRoomId: runRoom.id,
+            row: {
+              bodyMarkdown: "Live canonical output.",
+              agentOutputEventId: "stream-live-output"
+            }
+          });
+          expect(row.data.cursor).toContain("run-room-feed-row-stream-live-output");
+        } finally {
+          abort.abort();
+          await reader.reader.cancel().catch(() => undefined);
+        }
+      });
+    } finally {
+      abort.abort();
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("streams empty snapshots and heartbeat without creating feed facts", async () => {
+    const fixture = await createStoreFixture();
+    const abort = new AbortController();
+    try {
+      const runRoom = createRunRoomFact({ id: "run-room-empty-stream", runId: "run-empty-stream" });
+      await fixture.store.createRunRoom(runRoom);
+      await fixture.store.appendAgentOutputEvent({
+        id: "stream-chat-bleed-output",
+        ownerType: "chat_session",
+        ownerId: "chat-session-stream",
+        actorType: "leader",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Chat event must not appear in stream.",
+        metadata: { runRoomId: runRoom.id },
+        createdAt: "2026-06-03T00:00:00.000Z"
+      });
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const beforeEvents = await fixture.store.listAgentOutputEvents();
+        const beforeInterjections = await fixture.store.listRunInterjections({ runRoomId: runRoom.id });
+        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed/stream`, { signal: abort.signal });
+        expect(response.status).toBe(200);
+        const reader = createSseReader(response);
+        try {
+          const snapshot = await readNextSseFrame(reader);
+          expect(snapshot.event).toBe("feed_snapshot");
+          expect(snapshot.data).toMatchObject({
+            type: "feed_snapshot",
+            runRoomId: runRoom.id,
+            feed: { rows: [] }
+          });
+          const heartbeat = await readUntilSseEvent(reader, "heartbeat");
+          expect(heartbeat.data).toMatchObject({ type: "heartbeat", runRoomId: runRoom.id });
+        } finally {
+          abort.abort();
+          await reader.reader.cancel().catch(() => undefined);
+        }
+        expect(await fixture.store.listAgentOutputEvents()).toEqual(beforeEvents);
+        expect(await fixture.store.listRunInterjections({ runRoomId: runRoom.id })).toEqual(beforeInterjections);
+      });
+    } finally {
+      abort.abort();
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns 404 for missing run room feed streams before SSE headers", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/feed/stream`);
+        const body = await response.json() as { error?: { code?: string } };
+
+        expect(response.status, JSON.stringify(body)).toBe(404);
+        expect(response.headers.get("content-type")).not.toContain("text/event-stream");
+        expect(body.error?.code).toBe("run_room_not_found");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("projects Blueprint Kanban lanes from run rooms, worker tasks, and pending human actions without mutating state", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -4957,6 +5089,82 @@ async function waitForRunsSettled(store: FileHivewardStore, runIds: string[]): P
   }
   const runs = await Promise.all(runIds.map((runId) => store.getBlueprintRun(runId)));
   throw new Error(`Runs did not settle before fixture cleanup: ${runs.map((run) => `${run?.id}:${run?.status}`).join(", ")}`);
+}
+
+type SseFrame = {
+  event: string;
+  data: RunRoomFeedStreamEvent;
+};
+
+type SseReader = {
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  decoder: TextDecoder;
+  buffer: string;
+};
+
+function createSseReader(response: Response): SseReader {
+  if (!response.body) {
+    throw new Error("SSE response did not include a body.");
+  }
+  return {
+    reader: response.body.getReader(),
+    decoder: new TextDecoder(),
+    buffer: ""
+  };
+}
+
+async function readUntilSseEvent(reader: SseReader, eventName: string): Promise<SseFrame> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const frame = await readNextSseFrame(reader);
+    if (frame.event === eventName) return frame;
+  }
+  throw new Error(`SSE event was not received: ${eventName}`);
+}
+
+async function readNextSseFrame(state: SseReader): Promise<SseFrame> {
+  for (;;) {
+    const separatorIndex = state.buffer.indexOf("\n\n");
+    if (separatorIndex >= 0) {
+      const rawFrame = state.buffer.slice(0, separatorIndex);
+      state.buffer = state.buffer.slice(separatorIndex + 2);
+      return parseSseFrame(rawFrame);
+    }
+    const chunk = await readStreamChunkWithTimeout(state.reader);
+    if (chunk.done) {
+      throw new Error("SSE stream closed before the next frame.");
+    }
+    state.buffer += state.decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+  }
+}
+
+async function readStreamChunkWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs = 3000
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      reader.read(),
+      new Promise<ReadableStreamReadResult<Uint8Array>>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("Timed out waiting for SSE frame.")), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function parseSseFrame(rawFrame: string): SseFrame {
+  const lines = rawFrame.split("\n");
+  const event = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+  const data = lines
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => line.slice("data: ".length))
+    .join("\n");
+  if (!event || !data) {
+    throw new Error(`Invalid SSE frame: ${rawFrame}`);
+  }
+  return { event, data: JSON.parse(data) as RunRoomFeedStreamEvent };
 }
 
 async function readOkJson<T = unknown>(response: Response): Promise<T> {
