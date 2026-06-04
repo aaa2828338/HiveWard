@@ -9,6 +9,8 @@ import {
 import type {
   AgentTaskResult,
   RuntimeChatEvent,
+  RuntimeTaskEvent,
+  RuntimeTaskEventHandler,
   RuntimeUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -152,7 +154,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
     const taskId = `claude-task-${nanoid(10)}`;
     const runId = `claude-run-${nanoid(10)}`;
@@ -178,6 +180,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         initialSessionKey: sessionKey,
         workingDirectory,
         abortController,
+        onEvent,
         isTimedOut: () => timedOut
       })
     );
@@ -225,6 +228,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     initialSessionKey,
     workingDirectory,
     abortController,
+    onEvent,
     isTimedOut
   }: {
     input: StartAgentTaskInput;
@@ -233,6 +237,7 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
     initialSessionKey: string;
     workingDirectory: string;
     abortController: AbortController;
+    onEvent?: RuntimeTaskEventHandler;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
     let sessionKey = initialSessionKey;
@@ -267,6 +272,15 @@ export class ClaudeAgentSdkRuntime implements AgentSdkRuntime {
         if (hasSessionId(message)) {
           providerSessionId = message.session_id;
           sessionKey = providerSessionId;
+        }
+        const deltaText = readClaudePartialDeltaText(message);
+        if (deltaText) {
+          onEvent?.({ type: "delta", text: deltaText });
+          continue;
+        }
+        if (shouldEmitClaudeRuntimeEvent(message)) {
+          onEvent?.(toClaudeTaskRuntimeState(message));
+          continue;
         }
         if (message.type === "result") {
           finalMessage = message;
@@ -396,6 +410,19 @@ function shouldEmitClaudeRuntimeEvent(message: SDKMessage): boolean {
 }
 
 function toClaudeRuntimeState(message: SDKMessage): RuntimeChatEvent {
+  const record = message as Record<string, unknown>;
+  return {
+    type: "runtime_state",
+    source: "claude",
+    phase: claudeRuntimePhaseForMessage(message),
+    label: claudeRuntimeLabelForMessage(message),
+    id: readRuntimeMessageId(record),
+    status: "updated",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function toClaudeTaskRuntimeState(message: SDKMessage): Extract<RuntimeTaskEvent, { type: "runtime_state" }> {
   const record = message as Record<string, unknown>;
   return {
     type: "runtime_state",

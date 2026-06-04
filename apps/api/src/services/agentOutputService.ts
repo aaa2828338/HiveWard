@@ -91,7 +91,12 @@ export function projectRunRoomFeed(
   const rows = [
     ...events
       .filter((event) => hasRunRoomFeedOwnerShape(runRoomId, event))
-      .filter((event) => event.kind === "message_completed" || event.kind === "message_failed" || event.kind === "runtime_state")
+      .filter((event) =>
+        event.kind === "message_delta" ||
+        event.kind === "message_completed" ||
+        event.kind === "message_failed" ||
+        event.kind === "runtime_state"
+      )
       .map((event) => projectRunRoomFeedRow(runRoomId, event))
       .filter((row): row is RunRoomFeedRow => Boolean(row)),
     ...interjections

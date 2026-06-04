@@ -1,6 +1,7 @@
 import type {
   AgentTaskResult,
   RuntimeChatEvent,
+  RuntimeTaskEventHandler,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
@@ -19,11 +20,11 @@ export class AgentSdkRuntimeRouter implements AgentSdkRuntime {
     return this.runtimes[input.source].streamChatMessage(input, onEvent);
   }
 
-  startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  startTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     if (!isAgentSdkProvider(input.source)) {
       throw new Error("SDK runtime requires claude or codex source.");
     }
-    return this.runtimes[input.source].startTask(input);
+    return this.runtimes[input.source].startTask(input, onEvent);
   }
 
   waitForTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {

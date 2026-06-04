@@ -5,6 +5,7 @@ import type {
   AgentTaskResult,
   ChatPermissionMode,
   RuntimeChatEvent,
+  RuntimeTaskEventHandler,
   StartAgentTaskInput,
   StartedAgentTaskResult,
   WaitForAgentTaskInput
@@ -164,7 +165,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
     const taskId = `${this.harnessId}-task-${nanoid(10)}`;
     const runId = `${this.harnessId}-run-${nanoid(10)}`;
@@ -189,6 +190,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         sessionKey,
         workingDirectory,
         abortController,
+        onEvent,
         isTimedOut: () => timedOut
       })
     );
@@ -236,6 +238,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     sessionKey,
     workingDirectory,
     abortController,
+    onEvent,
     isTimedOut
   }: {
     input: StartAgentTaskInput;
@@ -244,6 +247,7 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
     sessionKey: string;
     workingDirectory: string;
     abortController: AbortController;
+    onEvent?: RuntimeTaskEventHandler;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
     let providerSessionId: string | undefined;
@@ -265,6 +269,17 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         cwd: workingDirectory,
         signal: abortController.signal
       });
+      const commandActivityId = `${runId}:command`;
+      const streamParser = createCliStreamParser(this.harnessId);
+      onEvent?.({
+        type: "runtime_state",
+        source: this.harnessId,
+        phase: "command",
+        label: command,
+        id: commandActivityId,
+        status: "started",
+        updatedAt: new Date().toISOString()
+      });
       const result = await this.runCliCommand({
         command,
         args: buildCliTaskArgs(this.harnessId, {
@@ -279,7 +294,12 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
         }),
         cwd: workingDirectory,
         env: this.env,
-        signal: abortController.signal
+        signal: abortController.signal,
+        onStdout: (chunk) => {
+          for (const delta of streamParser.push(chunk)) {
+            onEvent?.({ type: "delta", text: delta });
+          }
+        }
       });
       if (result.exitCode !== 0) {
         return createTerminalTaskResult({
@@ -292,8 +312,17 @@ export class CliAgentSdkRuntime implements AgentSdkRuntime {
           error: formatAgentSdkProviderError(formatCliHarnessLabel(this.harnessId), formatCliFailure(result))
         });
       }
+      onEvent?.({
+        type: "runtime_state",
+        source: this.harnessId,
+        phase: "command",
+        label: command,
+        id: commandActivityId,
+        status: "completed",
+        updatedAt: new Date().toISOString()
+      });
 
-      const parsed = parseCliCommandOutput(this.harnessId, result.stdout);
+      const parsed = streamParser.finish(result.stdout);
       const output = parsed.output;
       providerSessionId = parsed.sessionKey;
       const finalSessionKey = providerSessionId ?? sessionKey;
@@ -642,12 +671,6 @@ function normalizeCliOutput(output: string): string {
 function createCliStreamParser(harnessId: CliHarnessId): CliStreamParser {
   if (harnessId === "cursor") return new CursorStreamParser();
   return new PlainTextStreamParser();
-}
-
-function parseCliCommandOutput(harnessId: CliHarnessId, stdout: string): { output: string; sessionKey?: string } {
-  const parser = createCliStreamParser(harnessId);
-  parser.push(stdout);
-  return parser.finish(stdout);
 }
 
 class PlainTextStreamParser implements CliStreamParser {

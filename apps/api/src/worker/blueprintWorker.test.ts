@@ -25,7 +25,9 @@ import {
   type BlueprintRunStatus,
   type ManagerNodeConfig,
   type RunCommand,
-  type RunRoomStatus
+  type RunRoomStatus,
+  type RuntimeTaskEvent,
+  type RuntimeTaskEventHandler
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -47,7 +49,8 @@ class ScriptedAdapter implements RuntimeAdapter {
 
   constructor(
     private readonly startResults: StartedAgentTaskResult[],
-    private readonly completionResults: Array<AgentTaskResult | Error | Promise<AgentTaskResult>>
+    private readonly completionResults: Array<AgentTaskResult | Error | Promise<AgentTaskResult>>,
+    private readonly taskEvents: RuntimeTaskEvent[][] = []
   ) {}
 
   async listModels() {
@@ -97,11 +100,14 @@ class ScriptedAdapter implements RuntimeAdapter {
     throw new Error("Chat stream is not used by blueprint worker tests.");
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startAgentTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     this.calls.push(input);
     const result = this.startResults.shift();
     if (!result) {
       throw new Error("No scripted agent start result available.");
+    }
+    for (const event of this.taskEvents.shift() ?? []) {
+      onEvent?.(event);
     }
     return result;
   }
@@ -197,7 +203,7 @@ class BlockingAdapter implements RuntimeAdapter {
     throw new Error("Chat stream is not used by blueprint worker tests.");
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startAgentTask(input: StartAgentTaskInput, _onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     this.calls.push(input);
     return this.startedResult;
   }
@@ -2693,6 +2699,7 @@ describe("BlueprintWorker", () => {
     if (!nodeRun) throw new Error("Expected brief node run.");
     const sessions = await store.listNodeExecutionSessions({ runId: run.id, nodeRunId: nodeRun.id });
     const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
+    const completedOutput = outputEvents.find((event) => event.kind === "message_completed");
 
     expect(view?.run.status).toBe("succeeded");
     expect(sessions).toHaveLength(1);
@@ -2711,7 +2718,12 @@ describe("BlueprintWorker", () => {
     });
     expect("listNodeSessionTranscriptEvents" in store).toBe(false);
     expect("nodeSessionTranscriptEvents" in (view ?? {})).toBe(false);
-    expect(outputEvents).toEqual([
+    expect(outputEvents.map((event) => event.kind)).toEqual(expect.arrayContaining([
+      "message_started",
+      "runtime_state",
+      "message_completed"
+    ]));
+    expect(completedOutput).toEqual(
       expect.objectContaining({
         ownerType: "run_room",
         actorType: "worker",
@@ -2719,6 +2731,10 @@ describe("BlueprintWorker", () => {
         bodyMarkdown: "brief ready",
         sourceType: "blueprint_node_run",
         sourceId: nodeRun.id,
+        runtimeState: expect.objectContaining({
+          taskId: "task-session",
+          sessionKey: "runtime-session"
+        }),
         metadata: expect.objectContaining({
           runRoomId: expect.any(String),
           blueprintRunId: run.id,
@@ -2727,10 +2743,157 @@ describe("BlueprintWorker", () => {
           nodeType: "agent"
         })
       })
+    );
+    expect(completedOutput?.ownerType).not.toBe("worker_task");
+    expect(completedOutput?.metadata?.workerTaskId).toBeUndefined();
+    expect(completedOutput?.metadata?.managerCommandId).toBeUndefined();
+  });
+
+  it("persists provider task deltas as canonical RunRoom output events", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const baseAgent = createAgentNode("brief", "Brief");
+    const codexAgent: BlueprintNode = {
+      ...baseAgent,
+      runtimeId: "codex",
+      config: {
+        ...baseAgent.config,
+        modelId: "test-codex-model"
+      }
+    };
+    const blueprint = createBlueprint([codexAgent], []);
+    const adapter = new ScriptedAdapter([
+      {
+        ...createStartedAgentTask("task-stream", "codex"),
+        sessionKey: "codex-provider-session",
+        nativeSessionId: "codex-provider-session"
+      }
+    ], [
+      {
+        ...createCompletedAgentTask("task-stream", "succeeded", "brief ready", undefined, "codex"),
+        sessionKey: "codex-provider-session",
+        nativeSessionId: "codex-provider-session"
+      }
+    ], [[
+      {
+        type: "runtime_state",
+        source: "codex",
+        phase: "thinking",
+        label: "provider planning",
+        status: "started",
+        updatedAt: "2026-06-04T00:00:01.000Z"
+      },
+      {
+        type: "delta",
+        text: "live provider chunk"
+      }
+    ]]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    const view = await waitForRunTerminal(store, run.id);
+    const nodeRun = view?.nodeRuns.find((candidate) => candidate.nodeId === "brief");
+    if (!nodeRun) throw new Error("Expected brief node run.");
+    const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
+    const delta = outputEvents.find((event) => event.kind === "message_delta");
+    const completed = outputEvents.filter((event) => event.kind === "message_completed");
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(outputEvents.map((event) => event.kind)).toEqual(expect.arrayContaining([
+      "message_started",
+      "runtime_state",
+      "message_delta",
+      "message_completed"
+    ]));
+    expect(delta).toMatchObject({
+      ownerType: "run_room",
+      actorType: "worker",
+      kind: "message_delta",
+      delta: "live provider chunk",
+      sourceType: "blueprint_node_run",
+      sourceId: nodeRun.id,
+      runtimeState: expect.objectContaining({
+        taskId: "task-stream",
+        sessionKey: "codex-provider-session"
+      }),
+      metadata: expect.objectContaining({
+        runRoomId: expect.any(String),
+        blueprintRunId: run.id,
+        nodeRunId: nodeRun.id,
+        source: "codex",
+        sessionKey: "codex-provider-session"
+      })
+    });
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({
+      bodyMarkdown: "brief ready",
+      runtimeState: expect.objectContaining({
+        sessionKey: "codex-provider-session"
+      })
+    });
+  });
+
+  it("does not synthesize message_delta rows for non-streaming task completions", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-non-streaming")
+    ], [
+      createCompletedAgentTask("task-non-streaming", "succeeded", "final text must not become a fake delta")
     ]);
-    expect(outputEvents[0]?.ownerType).not.toBe("worker_task");
-    expect(outputEvents[0]?.metadata?.workerTaskId).toBeUndefined();
-    expect(outputEvents[0]?.metadata?.managerCommandId).toBeUndefined();
+    const worker = new BlueprintWorker(store, adapter);
+
+    const run = await worker.startRun(blueprint, "test-user");
+    await waitForRunTerminal(store, run.id);
+    const outputEvents = await listRunRoomAgentOutputEvents(store, blueprint.id, run.id);
+
+    expect(outputEvents.some((event) => event.kind === "message_delta")).toBe(false);
+    expect(outputEvents.filter((event) => event.kind === "message_completed").map((event) => event.bodyMarkdown)).toEqual([
+      "final text must not become a fake delta"
+    ]);
+  });
+
+  it("does not publish RunRoom feed events or create a fake RunRoom when the RunRoom is missing", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
+    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
+    await store.init();
+
+    const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
+    const run = await store.createBlueprintRun(blueprint, "test-user");
+    const runningRun = { ...run, status: "running" as const };
+    await store.updateBlueprintRun(runningRun);
+    await store.createRunCommandIfAbsent({
+      id: "command-missing-run-room",
+      commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
+      blueprintId: blueprint.id,
+      runId: run.id,
+      kind: "regular_run",
+      status: "running",
+      currentRevision: 0,
+      currentStep: "node_execution",
+      createdAt: run.startedAt,
+      updatedAt: run.startedAt
+    });
+    const adapter = new ScriptedAdapter([
+      createStartedAgentTask("task-missing-run-room")
+    ], [
+      createCompletedAgentTask("task-missing-run-room", "succeeded", "completed without run room")
+    ], [[
+      { type: "delta", text: "unpublished provider chunk" }
+    ]]);
+    const worker = new BlueprintWorker(store, adapter);
+
+    await worker.resumeActiveRuns();
+    const view = await waitForRunTerminal(store, run.id);
+
+    expect(view?.run.status).toBe("succeeded");
+    expect(await store.listRunRooms({ blueprintId: blueprint.id })).toEqual([]);
+    expect(await store.listAgentOutputEvents()).toEqual([]);
   });
 
   it("creates a new preserved session row that resumes the previous native session", async () => {
@@ -2917,11 +3080,11 @@ describe("BlueprintWorker", () => {
       fallbackOfSessionId: unavailable?.id
     });
     expect("listNodeSessionTranscriptEvents" in store).toBe(false);
-    expect(outputEvents.map((event) => event.bodyMarkdown)).toEqual([
+    expect(outputEvents.filter((event) => event.kind === "message_completed").map((event) => event.bodyMarkdown)).toEqual([
       "first pass",
       "fallback after provider new session"
     ]);
-    expect(outputEvents.map((event) => event.bodyMarkdown)).not.toContain("discarded provider new session");
+    expect(outputEvents.filter((event) => event.kind === "message_completed").map((event) => event.bodyMarkdown)).not.toContain("discarded provider new session");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief" && nodeRun.output === "fallback after provider new session")).toBeTruthy();
   });
 
@@ -3018,7 +3181,7 @@ describe("BlueprintWorker", () => {
       fallbackOfSessionId: unavailable?.id
     });
     expect("listNodeSessionTranscriptEvents" in store).toBe(false);
-    expect(outputEvents.map((event) => event.bodyMarkdown)).toEqual([
+    expect(outputEvents.filter((event) => event.kind === "message_completed").map((event) => event.bodyMarkdown)).toEqual([
       "first pass",
       "fallback pass"
     ]);

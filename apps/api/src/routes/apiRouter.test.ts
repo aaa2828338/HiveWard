@@ -20,6 +20,7 @@ import type {
   BlueprintRun,
   ChatHistoryMessage,
   RuntimeChatEvent,
+  RuntimeTaskEventHandler,
   HivewardChatSession,
   ManagerNodeConfig,
   OpenClawConfigState,
@@ -54,9 +55,9 @@ class TrackingAdapter extends MockRuntimeAdapter {
   lastChatSessionTitleInput: RuntimeChatSessionTitleInput | undefined;
   lastChatStreamInput: RuntimeChatStreamInput | undefined;
 
-  override async startAgentTask(input: StartAgentTaskInput) {
+  override async startAgentTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler) {
     this.lastStartInput = input;
-    return super.startAgentTask(input);
+    return super.startAgentTask(input, onEvent);
   }
 
   override async streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void) {
@@ -3152,7 +3153,7 @@ describe("apiRouter", () => {
         actorType: "manager",
         kind: "message_delta",
         sequence: 2,
-        delta: "Streaming delta must stay out of GET feed.",
+        delta: "Streaming delta projects after PR19.",
         metadata: {
           runRoomId: runRoom.id
         },
@@ -3163,16 +3164,18 @@ describe("apiRouter", () => {
         const feedResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed`);
         const { feed } = await readOkJson<{ feed: RunRoomFeed }>(feedResponse);
 
-        expect(feed.rows).toHaveLength(5);
+        expect(feed.rows).toHaveLength(6);
         expect(feed.rows.map((row) => row.bodyMarkdown)).toEqual(expect.arrayContaining([
           "Run room system output.",
           "Worker execution output.",
           "Manager formal message.",
           "Human action reply.",
+          "Streaming delta projects after PR19.",
           "User interjection."
         ]));
         const workerRow = feed.rows.find((row) => row.sourceType === "worker");
-        const managerRow = feed.rows.find((row) => row.sourceType === "manager");
+        const managerRow = feed.rows.find((row) => row.managerCommandId === managerCommand.id);
+        const deltaRow = feed.rows.find((row) => row.agentOutputEventId === "message-delta-output");
         const humanActionRow = feed.rows.find((row) => row.humanActionRequestId === humanActionRequest.id);
         expect(workerRow).toMatchObject({
           sourceType: "worker",
@@ -3190,6 +3193,12 @@ describe("apiRouter", () => {
           displayMode: "formal_message",
           managerCommandId: managerCommand.id,
           actions: { canReply: true }
+        });
+        expect(deltaRow).toMatchObject({
+          sourceType: "manager",
+          displayMode: "formal_message",
+          bodyMarkdown: "Streaming delta projects after PR19.",
+          agentOutputEventId: "message-delta-output"
         });
         expect(humanActionRow).toMatchObject({
           sourceType: "user",
@@ -3242,9 +3251,9 @@ describe("apiRouter", () => {
             ownerType: "run_room",
             ownerId: runRoom.id,
             actorType: "manager",
-            kind: "message_completed",
+            kind: "message_delta",
             sequence: 2,
-            bodyMarkdown: "Live canonical output.",
+            delta: "Live canonical delta.",
             createdAt: "2026-06-03T00:00:01.000Z"
           });
           const row = await readUntilSseEvent(reader, "feed_row");
@@ -3255,7 +3264,7 @@ describe("apiRouter", () => {
             type: "feed_row",
             runRoomId: runRoom.id,
             row: {
-              bodyMarkdown: "Live canonical output.",
+              bodyMarkdown: "Live canonical delta.",
               agentOutputEventId: "stream-live-output"
             }
           });

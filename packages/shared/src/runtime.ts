@@ -167,6 +167,50 @@ export interface AgentTaskResult extends StartedAgentTaskResult {
   usage?: RuntimeUsageFact;
 }
 
+export type RuntimeTaskEvent =
+  | {
+      type: "started";
+      taskId: string;
+      runId: string;
+      sessionKey: string;
+      source: RuntimeObjectSource;
+      status: RuntimeExecutionStatus;
+      updatedAt: string;
+    }
+  | {
+      type: "delta";
+      text: string;
+      replace?: boolean;
+    }
+  | {
+      type: "runtime_state";
+      source: RuntimeObjectSource;
+      phase: "thinking" | "tool" | "command";
+      label: string;
+      id?: string;
+      status?: "started" | "updated" | "completed" | "failed" | "cancelled";
+      updatedAt?: string;
+    }
+  | {
+      type: "done";
+      taskId: string;
+      runId: string;
+      sessionKey: string;
+      source: RuntimeObjectSource;
+      status: RuntimeExecutionStatus;
+      output?: unknown;
+      error?: string;
+      usage?: RuntimeUsageFact;
+      updatedAt: string;
+    }
+  | {
+      type: "error";
+      code?: string;
+      message: string;
+    };
+
+export type RuntimeTaskEventHandler = (event: RuntimeTaskEvent) => void;
+
 export interface SendChannelInput {
   channelId: string;
   target: string;

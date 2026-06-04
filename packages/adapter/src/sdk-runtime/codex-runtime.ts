@@ -3,6 +3,8 @@ import { Codex, type ThreadEvent, type ThreadOptions, type TurnOptions, type Usa
 import type {
   AgentTaskResult,
   RuntimeChatEvent,
+  RuntimeTaskEvent,
+  RuntimeTaskEventHandler,
   RuntimeUsageFact,
   StartAgentTaskInput,
   StartedAgentTaskResult,
@@ -116,7 +118,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     }
   }
 
-  async startTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
     const taskId = `codex-task-${nanoid(10)}`;
     const runId = `codex-run-${nanoid(10)}`;
@@ -158,6 +160,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         initialSessionKey: sessionKey,
         workingDirectory,
         abortController,
+        onEvent,
         isTimedOut: () => timedOut
       })
     );
@@ -205,6 +208,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     initialSessionKey,
     workingDirectory,
     abortController,
+    onEvent,
     isTimedOut
   }: {
     input: StartAgentTaskInput;
@@ -213,6 +217,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     initialSessionKey: string;
     workingDirectory: string;
     abortController: AbortController;
+    onEvent?: RuntimeTaskEventHandler;
     isTimedOut: () => boolean;
   }): Promise<AgentTaskResult> {
     const runtimeAccessPolicy = normalizeTaskRuntimeAccessPolicy(input, "codex");
@@ -248,18 +253,22 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       const thread = input.nativeSessionId
         ? codex.resumeThread!(input.nativeSessionId, threadOptions)
         : codex.startThread(threadOptions);
-      const turn = await thread.run(buildPromptEnvelope({ ...input, outputSchema }), {
+      let providerSessionId: string | undefined;
+      const turn = await this.runTaskTurn(thread, buildPromptEnvelope({ ...input, outputSchema }), {
         outputSchema,
         signal: abortController.signal
+      }, onEvent, (nextSessionKey) => {
+        providerSessionId = nextSessionKey;
+        sessionKey = nextSessionKey;
       });
-      const providerSessionId = thread.id ?? undefined;
+      providerSessionId = thread.id ?? providerSessionId;
       sessionKey = providerSessionId ?? sessionKey;
       const proof = buildRuntimeResumeProof(input, providerSessionId, {
         resumeAttempted: Boolean(input.nativeSessionId),
         resumable: Boolean(providerSessionId)
       });
 
-      if (!validateOutputSchema(turn.finalResponse, input.outputSchema)) {
+      if (!validateOutputSchema(turn.text, input.outputSchema)) {
         return createTerminalTaskResult({
           taskId,
           runId,
@@ -279,7 +288,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
         ...proof,
         source: "codex",
         status: "succeeded",
-        output: turn.finalResponse,
+        output: turn.text,
         usage: mapCodexUsage(input, turn.usage),
         updatedAt: new Date().toISOString()
       };
@@ -403,9 +412,75 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
     }
     return { text: output, usage };
   }
+
+  private async runTaskTurn(
+    thread: CodexThreadLike,
+    prompt: string,
+    turnOptions: TurnOptions,
+    onEvent: RuntimeTaskEventHandler | undefined,
+    onSessionKey: (sessionKey: string) => void
+  ): Promise<{ text: string; usage: Usage | null }> {
+    if (!thread.runStreamed || !onEvent) {
+      const turn = await thread.run(prompt, turnOptions);
+      return { text: turn.finalResponse, usage: turn.usage };
+    }
+
+    const { events } = await thread.runStreamed(prompt, turnOptions);
+    let output = "";
+    let usage: Usage | null = null;
+    const agentMessageTexts = new Map<string, string>();
+    for await (const event of events) {
+      if (event.type === "thread.started") {
+        onSessionKey(event.thread_id);
+        continue;
+      }
+      if (event.type === "turn.completed") {
+        usage = event.usage;
+        continue;
+      }
+      if (event.type === "turn.failed") {
+        throw new Error(event.error.message);
+      }
+      if (event.type !== "item.started" && event.type !== "item.updated" && event.type !== "item.completed") {
+        continue;
+      }
+      if (event.item.type !== "agent_message") {
+        onEvent(toCodexTaskRuntimeState(event));
+        continue;
+      }
+      if (!event.item.text) {
+        continue;
+      }
+      agentMessageTexts.set(event.item.id, event.item.text);
+      const nextOutput = Array.from(agentMessageTexts.values()).filter(Boolean).join("\n");
+      if (nextOutput === output) {
+        continue;
+      }
+      if (nextOutput.startsWith(output)) {
+        onEvent({ type: "delta", text: nextOutput.slice(output.length) });
+      } else {
+        onEvent({ type: "delta", text: nextOutput, replace: true });
+      }
+      output = nextOutput;
+    }
+    return { text: output, usage };
+  }
 }
 
 function toCodexRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): RuntimeChatEvent {
+  const item = event.item as Record<string, unknown>;
+  return {
+    type: "runtime_state",
+    source: "codex",
+    phase: codexRuntimePhaseForItem(event.item.type),
+    label: runtimeLabelFromRecord(item, event.item.type),
+    id: typeof event.item.id === "string" && event.item.id.trim() ? event.item.id : undefined,
+    status: event.type === "item.started" ? "started" : event.type === "item.completed" ? "completed" : "updated",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function toCodexTaskRuntimeState(event: Extract<ThreadEvent, { type: "item.started" | "item.updated" | "item.completed" }>): Extract<RuntimeTaskEvent, { type: "runtime_state" }> {
   const item = event.item as Record<string, unknown>;
   return {
     type: "runtime_state",

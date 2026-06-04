@@ -10,6 +10,7 @@ import {
   isManagerSlotInnerOutHandle,
   resolveCrossRoundContextMode,
   resolveManagerSlotParallelLaneCount,
+  type AgentOutputEvent,
   type AgentHandoff,
   type AgentHumanReport,
   type AgentNodeConfig,
@@ -22,6 +23,8 @@ import {
   type ManagerNodeConfig,
   type ManagerSlotNodeConfig,
   type RuntimeObjectRef,
+  type RuntimeTaskEvent,
+  type RuntimeTaskEventHandler,
   type StartAgentTaskInput,
   type StartedAgentTaskResult,
   type Artifact,
@@ -424,6 +427,11 @@ interface BlueprintWorkerOptions {
   artifactRoot?: string;
   workerId?: string;
   nodeRunLeaseMs?: number;
+}
+
+interface RunRoomNodeOutputContext {
+  runRoom: RunRoom;
+  nodeRun: BlueprintNodeRun;
 }
 
 export class BlueprintWorker {
@@ -5165,35 +5173,154 @@ export class BlueprintWorker {
     createdAt: string
   ): Promise<void> {
     if (output === undefined) return;
-    if (nodeRun.nodeType !== "agent" && nodeRun.nodeType !== "summary" && nodeRun.nodeType !== "manager") return;
+    const context = await this.resolveRunRoomNodeOutputContext({ blueprintRunId: nodeRun.blueprintRunId, nodeRunId: nodeRun.id });
+    if (!context) return;
+    await this.appendRunRoomNodeOutputEvent(context, {
+      kind: "message_completed",
+      bodyMarkdown: formatTranscriptContent(output),
+      runtimeState: runtimeRefToOutputState(nodeRun.runtimeRef),
+      createdAt,
+      uniqueSourceKind: true
+    });
+  }
+
+  private async resolveRunRoomNodeOutputContext(
+    input: Pick<StartAgentTaskInput, "blueprintRunId" | "nodeRunId">
+  ): Promise<RunRoomNodeOutputContext | undefined> {
+    const nodeRun = await this.findNodeRunById(input.blueprintRunId, input.nodeRunId);
+    if (!nodeRun) return undefined;
+    if (nodeRun.nodeType !== "agent" && nodeRun.nodeType !== "summary" && nodeRun.nodeType !== "manager") return undefined;
     const run = await this.store.getBlueprintRun(nodeRun.blueprintRunId);
-    if (!run) return;
+    if (!run) return undefined;
     const runRoom = (await this.store.listRunRooms({ blueprintId: run.blueprintId }))
       .find((candidate) => candidate.runId === run.id);
-    if (!runRoom) return;
+    if (!runRoom) return undefined;
+    return { runRoom, nodeRun };
+  }
+
+  private async publishRunRoomTaskStartedEvent(
+    context: RunRoomNodeOutputContext | undefined,
+    input: StartAgentTaskInput,
+    started: StartedAgentTaskResult,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<void> {
+    if (!context) return;
+    const createdAt = started.updatedAt;
+    await this.appendRunRoomNodeOutputEvent(context, {
+      kind: "message_started",
+      bodyMarkdown: `${context.nodeRun.nodeLabel} started.`,
+      runtimeState: runtimeTaskStateFromResult(started, runtimeRef),
+      metadata: runtimeTaskMetadata(input, started, runtimeRef),
+      createdAt,
+      uniqueSourceKind: true
+    });
+    await this.appendRunRoomNodeOutputEvent(context, {
+      kind: "runtime_state",
+      bodyMarkdown: `${context.nodeRun.nodeLabel} task is ${started.status}.`,
+      runtimeState: runtimeTaskStateFromResult(started, runtimeRef),
+      metadata: runtimeTaskMetadata(input, started, runtimeRef),
+      createdAt
+    });
+  }
+
+  private async publishRunRoomTaskRuntimeEvent(
+    context: RunRoomNodeOutputContext,
+    input: StartAgentTaskInput,
+    event: RuntimeTaskEvent,
+    runtimeRef: RuntimeObjectRef
+  ): Promise<void> {
+    if (event.type === "delta") {
+      if (!event.text) return;
+      await this.appendRunRoomNodeOutputEvent(context, {
+        kind: "message_delta",
+        delta: event.text,
+        runtimeState: runtimeRefToOutputState(runtimeRef),
+        metadata: {
+          ...runtimeTaskMetadata(input, undefined, runtimeRef),
+          ...(event.replace ? { replace: true } : {})
+        },
+        createdAt: new Date().toISOString()
+      });
+      return;
+    }
+
+    if (event.type === "runtime_state") {
+      await this.appendRunRoomNodeOutputEvent(context, {
+        kind: "runtime_state",
+        bodyMarkdown: formatRuntimeTaskStateBody(context.nodeRun, event),
+        runtimeState: {
+          source: event.source,
+          phase: event.phase,
+          label: event.label,
+          ...(event.id ? { id: event.id } : {}),
+          ...(event.status ? { status: event.status } : {}),
+          ...(event.updatedAt ? { updatedAt: event.updatedAt } : {}),
+          ...runtimeRefToOutputState(runtimeRef)
+        },
+        metadata: runtimeTaskMetadata(input, undefined, runtimeRef),
+        createdAt: event.updatedAt ?? new Date().toISOString()
+      });
+      return;
+    }
+
+    if (event.type === "error") {
+      await this.appendRunRoomNodeOutputEvent(context, {
+        kind: "runtime_state",
+        bodyMarkdown: event.message,
+        runtimeState: {
+          code: event.code,
+          message: event.message,
+          ...runtimeRefToOutputState(runtimeRef)
+        },
+        metadata: runtimeTaskMetadata(input, undefined, runtimeRef),
+        createdAt: new Date().toISOString()
+      });
+    }
+  }
+
+  private async appendRunRoomNodeOutputEvent(
+    context: RunRoomNodeOutputContext,
+    input: {
+      kind: AgentOutputEvent["kind"];
+      bodyMarkdown?: string;
+      delta?: string;
+      runtimeState?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+      createdAt: string;
+      uniqueSourceKind?: boolean;
+    }
+  ): Promise<void> {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
-      const existing = await this.store.listAgentOutputEvents({ ownerType: "run_room", ownerId: runRoom.id });
-      if (existing.some((event) => event.sourceId === nodeRun.id)) return;
+      const existing = await this.store.listAgentOutputEvents({ ownerType: "run_room", ownerId: context.runRoom.id });
+      if (
+        input.uniqueSourceKind &&
+        existing.some((event) => event.sourceId === context.nodeRun.id && event.kind === input.kind)
+      ) {
+        return;
+      }
       const sequence = existing.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
       try {
         await this.store.appendAgentOutputEvent({
           id: `agent-output-${nanoid(10)}`,
           ownerType: "run_room",
-          ownerId: runRoom.id,
-          actorType: nodeRun.nodeType === "manager" ? "manager" : "worker",
-          kind: "message_completed",
+          ownerId: context.runRoom.id,
+          actorType: context.nodeRun.nodeType === "manager" ? "manager" : "worker",
+          kind: input.kind,
           sequence,
-          bodyMarkdown: formatTranscriptContent(output),
+          ...(input.bodyMarkdown !== undefined ? { bodyMarkdown: input.bodyMarkdown } : {}),
+          ...(input.delta !== undefined ? { delta: input.delta } : {}),
           sourceType: "blueprint_node_run",
-          sourceId: nodeRun.id,
+          sourceId: context.nodeRun.id,
+          ...(input.runtimeState ? { runtimeState: input.runtimeState } : {}),
           metadata: {
-            runRoomId: runRoom.id,
-            blueprintRunId: nodeRun.blueprintRunId,
-            nodeRunId: nodeRun.id,
-            nodeId: nodeRun.nodeId,
-            nodeType: nodeRun.nodeType
+            runRoomId: context.runRoom.id,
+            blueprintRunId: context.nodeRun.blueprintRunId,
+            nodeRunId: context.nodeRun.id,
+            nodeId: context.nodeRun.nodeId,
+            nodeType: context.nodeRun.nodeType,
+            ...input.metadata
           },
-          createdAt
+          createdAt: input.createdAt
         });
         return;
       } catch (error) {
@@ -5668,7 +5795,18 @@ export class BlueprintWorker {
     sessionContext: ResolvedNodeExecutionSession | undefined,
     onStarted?: (runtimeRef: RuntimeObjectRef) => Promise<void>
   ): Promise<{ result: AgentTaskResult; runtimeRef: RuntimeObjectRef }> {
-    const started = await this.adapter.startAgentTask(input);
+    const pendingTaskEvents: RuntimeTaskEvent[] = [];
+    let taskEventPublisher: ((event: RuntimeTaskEvent) => Promise<void>) | undefined;
+    let taskEventWriteQueue = Promise.resolve();
+    const onTaskEvent: RuntimeTaskEventHandler = (event) => {
+      if (!taskEventPublisher) {
+        pendingTaskEvents.push(event);
+        return;
+      }
+      taskEventWriteQueue = taskEventWriteQueue.then(() => taskEventPublisher?.(event)).then(() => undefined);
+    };
+
+    const started = await this.adapter.startAgentTask(input, onTaskEvent);
     const source = started.source;
     const runtimeRef: RuntimeObjectRef = {
       source,
@@ -5683,6 +5821,14 @@ export class BlueprintWorker {
       sessionContext.session = await this.markNodeExecutionSessionStarted(sessionContext.session, started, runtimeRef);
     }
     await onStarted?.(runtimeRef);
+    const outputContext = await this.resolveRunRoomNodeOutputContext(input);
+    taskEventPublisher = outputContext
+      ? (event) => this.publishRunRoomTaskRuntimeEvent(outputContext, input, event, runtimeRef)
+      : async () => undefined;
+    await this.publishRunRoomTaskStartedEvent(outputContext, input, started, runtimeRef);
+    for (const event of pendingTaskEvents.splice(0)) {
+      onTaskEvent(event);
+    }
 
     if (started.status === "failed" || started.status === "cancelled") {
       const result: AgentTaskResult = {
@@ -5690,6 +5836,7 @@ export class BlueprintWorker {
         output: undefined,
         usage: undefined
       };
+      await taskEventWriteQueue;
       if (sessionContext) {
         await this.markNodeExecutionSessionDone(sessionContext.session, result, runtimeRef);
       }
@@ -5699,15 +5846,22 @@ export class BlueprintWorker {
       };
     }
 
-    const result = await this.adapter.waitForAgentTask({
-      nodeRunId: input.nodeRunId,
-      taskId: started.taskId,
-      runId: started.runId,
-      sessionKey: started.sessionKey,
-      source,
-      agentId: input.agentId,
-      modelId: input.modelId
-    });
+    let result: AgentTaskResult;
+    try {
+      result = await this.adapter.waitForAgentTask({
+        nodeRunId: input.nodeRunId,
+        taskId: started.taskId,
+        runId: started.runId,
+        sessionKey: started.sessionKey,
+        source,
+        agentId: input.agentId,
+        modelId: input.modelId
+      });
+    } catch (error) {
+      await taskEventWriteQueue;
+      throw error;
+    }
+    await taskEventWriteQueue;
     const finalRuntimeRef: RuntimeObjectRef = {
       ...runtimeRef,
       sourceId: result.taskId,
@@ -6131,6 +6285,68 @@ function runtimeRefFromAgentTaskResult(result: AgentTaskResult, fallback?: Runti
     sessionKey: result.sessionKey,
     usageRef: result.usage?.id ?? fallback?.usageRef
   };
+}
+
+function runtimeRefToOutputState(runtimeRef: RuntimeObjectRef | undefined): Record<string, unknown> {
+  if (!runtimeRef) return {};
+  return compactRuntimeRecord({
+    source: runtimeRef.source,
+    sourceId: runtimeRef.sourceId,
+    sourceUpdatedAt: runtimeRef.sourceUpdatedAt,
+    taskId: runtimeRef.taskId,
+    runId: runtimeRef.runId,
+    sessionKey: runtimeRef.sessionKey,
+    messageId: runtimeRef.messageId,
+    usageRef: runtimeRef.usageRef
+  });
+}
+
+function runtimeTaskStateFromResult(
+  result: StartedAgentTaskResult | AgentTaskResult,
+  runtimeRef: RuntimeObjectRef
+): Record<string, unknown> {
+  return compactRuntimeRecord({
+    ...runtimeRefToOutputState(runtimeRef),
+    status: result.status,
+    resumeMode: result.resumeMode,
+    resumeRequested: result.resumeRequested,
+    resumeAttempted: result.resumeAttempted,
+    resumeProven: result.resumeProven,
+    providerSessionId: result.providerSessionId,
+    providerStartedNewSession: result.providerStartedNewSession,
+    resumable: result.resumable,
+    error: result.error
+  });
+}
+
+function runtimeTaskMetadata(
+  input: StartAgentTaskInput,
+  result: StartedAgentTaskResult | AgentTaskResult | undefined,
+  runtimeRef: RuntimeObjectRef
+): Record<string, unknown> {
+  return compactRuntimeRecord({
+    taskId: result?.taskId ?? runtimeRef.taskId,
+    runId: result?.runId ?? runtimeRef.runId,
+    sessionKey: result?.sessionKey ?? runtimeRef.sessionKey,
+    source: result?.source ?? runtimeRef.source,
+    modelId: input.modelId,
+    agentId: input.agentId,
+    profileId: input.profileId,
+    agentName: input.agentName
+  });
+}
+
+function formatRuntimeTaskStateBody(nodeRun: BlueprintNodeRun, event: Extract<RuntimeTaskEvent, { type: "runtime_state" }>): string {
+  const status = event.status ? ` ${event.status}` : "";
+  return `${nodeRun.nodeLabel}: ${event.label}${status}.`;
+}
+
+function compactRuntimeRecord(record: Record<string, unknown>): Record<string, unknown> {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== undefined) compacted[key] = value;
+  }
+  return compacted;
 }
 
 function formatTranscriptContent(output: unknown): string {

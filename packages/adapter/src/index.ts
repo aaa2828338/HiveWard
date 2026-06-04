@@ -20,6 +20,7 @@ import type {
   AgentTaskResult,
   StartAgentTaskInput,
   StartedAgentTaskResult,
+  RuntimeTaskEventHandler,
   WaitForAgentTaskInput
 } from "@hiveward/shared";
 import { GatewayOpenClawAdapter } from "./gateway-adapter";
@@ -39,7 +40,7 @@ export interface RuntimeAdapter {
   createChatSession(input: RuntimeChatSessionInput): Promise<RuntimeChatSessionResult>;
   updateChatSessionTitle(input: RuntimeChatSessionTitleInput): Promise<RuntimeChatSessionTitleResult>;
   streamChatMessage(input: RuntimeChatStreamInput, onEvent: (event: RuntimeChatEvent) => void): Promise<void>;
-  startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult>;
+  startAgentTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult>;
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult>;
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult>;
 }
@@ -236,7 +237,7 @@ export class MockRuntimeAdapter implements RuntimeAdapter {
     });
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startAgentTask(input: StartAgentTaskInput, _onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     const now = new Date().toISOString();
     const taskId = `oc-task-${nanoid(8)}`;
     const runId = `oc-run-${nanoid(8)}`;
@@ -353,7 +354,7 @@ export class UnavailableOpenClawAdapter implements RuntimeAdapter {
     throw createOpenClawGatewayNotConfiguredError();
   }
 
-  async startAgentTask(_input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startAgentTask(_input: StartAgentTaskInput, _onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     throw createOpenClawGatewayNotConfiguredError();
   }
 
@@ -422,8 +423,10 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
       : this.baseAdapter.streamChatMessage(input, onEvent);
   }
 
-  startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
-    return isAgentSdkProvider(input.source) ? this.sdkRuntime.startTask(input) : this.baseAdapter.startAgentTask(input);
+  startAgentTask(input: StartAgentTaskInput, onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
+    return isAgentSdkProvider(input.source)
+      ? this.sdkRuntime.startTask(input, onEvent)
+      : this.baseAdapter.startAgentTask(input, onEvent);
   }
 
   waitForAgentTask(input: WaitForAgentTaskInput): Promise<AgentTaskResult> {

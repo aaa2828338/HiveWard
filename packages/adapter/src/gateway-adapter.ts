@@ -10,6 +10,7 @@ import type {
   RuntimeOverview,
   ChatHistoryMessage,
   RuntimeChatEvent,
+  RuntimeTaskEventHandler,
   ChatThinkingEffort,
   SendChannelInput,
   SendChannelResult,
@@ -267,7 +268,7 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
     });
   }
 
-  async startAgentTask(input: StartAgentTaskInput): Promise<StartedAgentTaskResult> {
+  async startAgentTask(input: StartAgentTaskInput, _onEvent?: RuntimeTaskEventHandler): Promise<StartedAgentTaskResult> {
     const session = await this.getSession();
     try {
       const idempotencyKey = createGatewayId(input.nodeRunId);
