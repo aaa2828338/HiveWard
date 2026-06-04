@@ -38,6 +38,7 @@ import {
   type RunCommandStatus,
   type RunCommandStep,
   type RunCommandStepMode,
+  type RunRoomStatus,
   type SummaryNodeConfig,
   type BlueprintDefinition,
   type BlueprintEdge,
@@ -615,7 +616,7 @@ export class BlueprintWorker {
 
     if (lifecycle.completeRun) {
       const completed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "succeeded");
-      await this.store.updateBlueprintRun(completed);
+      await this.updateTerminalBlueprintRun(completed);
       return completed;
     }
     if (lifecycle.resumeExecution) {
@@ -2125,7 +2126,7 @@ export class BlueprintWorker {
       const latestRun = await this.store.getBlueprintRun(run.id);
       const startedAt = new Date((latestRun ?? run).startedAt).getTime();
       const normalized = await this.applyRunTotals(latestRun ?? run, startedAt, run.status);
-      await this.store.updateBlueprintRun(normalized);
+      await this.updateTerminalBlueprintRun(normalized);
       return normalized;
     }
 
@@ -2135,7 +2136,7 @@ export class BlueprintWorker {
     const latestRun = await this.store.getBlueprintRun(run.id);
     const startedAt = new Date((latestRun ?? run).startedAt).getTime();
     const cancelled = await this.applyRunTotals(latestRun ?? run, startedAt, "cancelled");
-    await this.store.updateBlueprintRun(cancelled);
+    await this.updateTerminalBlueprintRun(cancelled);
     await this.event(run.id, "blueprint.run.cancelled", `Blueprint ${run.blueprintName ?? run.blueprintId} stopped.`);
 
     if (!this.activeRuns.has(run.id)) {
@@ -2192,7 +2193,7 @@ export class BlueprintWorker {
     const latestRun = await this.store.getBlueprintRun(run.id);
     const failed = await this.applyRunTotals(latestRun ?? currentRun, new Date(currentRun.startedAt).getTime(), "failed");
     await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} crashed: ${message}`);
-    await this.store.updateBlueprintRun(failed);
+    await this.updateTerminalBlueprintRun(failed);
   }
 
   private async runUntilBlockedOrDone(blueprint: BlueprintDefinition, run: BlueprintRun, command: RunCommand): Promise<void> {
@@ -2219,7 +2220,7 @@ export class BlueprintWorker {
         const failed = await this.applyRunTotals(latestRun ?? run, startedAt, "failed");
         await this.markRunCommandFailed(runningCommand, `Node ${failedNodeRun.nodeLabel} ${failedNodeRun.status}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} failed at node ${failedNodeRun.nodeLabel}.`);
-        await this.store.updateBlueprintRun(failed);
+        await this.updateTerminalBlueprintRun(failed);
         return;
       }
 
@@ -2260,14 +2261,14 @@ export class BlueprintWorker {
           const completed = await this.applyRunTotals(run, startedAt, "succeeded");
           await this.markRunCommandSucceeded(runningCommand);
           await this.event(run.id, "blueprint.run.completed", `Blueprint ${blueprint.name} completed.`);
-          await this.store.updateBlueprintRun(completed);
+          await this.updateTerminalBlueprintRun(completed);
           return;
         }
 
         const failed = await this.applyRunTotals(run, startedAt, "failed");
         await this.markRunCommandFailed(runningCommand, `Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
         await this.event(run.id, "blueprint.run.failed", `Blueprint ${blueprint.name} could not continue. Pending nodes: ${pending.map((node) => node.id).join(", ")}.`);
-        await this.store.updateBlueprintRun(failed);
+        await this.updateTerminalBlueprintRun(failed);
         return;
       }
 
@@ -2620,7 +2621,7 @@ export class BlueprintWorker {
 
       if (lifecycle.completeRun) {
         const completed = await this.applyRunTotals(currentRun, new Date(currentRun.startedAt).getTime(), "succeeded");
-        await this.store.updateBlueprintRun(completed);
+        await this.updateTerminalBlueprintRun(completed);
         return { run: completed, changed, resumeExecution: false, completeRun: true };
       }
 
@@ -5358,6 +5359,28 @@ export class BlueprintWorker {
     };
   }
 
+  private async updateTerminalBlueprintRun(run: BlueprintRun): Promise<void> {
+    const runRoomStatus = runRoomTerminalStatusFromBlueprintRun(run.status);
+    if (!runRoomStatus) throw new Error(`BlueprintRun is not terminal: ${run.id}`);
+    await this.writeRunRoomTerminalStatus(run, runRoomStatus);
+    await this.store.updateBlueprintRun(run);
+  }
+
+  private async writeRunRoomTerminalStatus(run: BlueprintRun, status: RunRoomStatus): Promise<void> {
+    const runRoom = (await this.store.listRunRooms({ blueprintId: run.blueprintId }))
+      .find((candidate) => candidate.runId === run.id);
+    if (!runRoom) return;
+    if (runRoom.status === status) return;
+    if (runRoom.status !== "open") {
+      throw new Error(`RunRoom ${runRoom.id} already has terminal status ${runRoom.status}.`);
+    }
+    await this.store.updateRunRoom({
+      id: runRoom.id,
+      status,
+      updatedAt: run.endedAt ?? new Date().toISOString()
+    });
+  }
+
   private async keepRunActive(run: BlueprintRun, status: "running" | "waiting_approval"): Promise<void> {
     await this.store.updateBlueprintRun({
       ...run,
@@ -6287,6 +6310,13 @@ function readManagerRoundNumberFromManagerContext(value: unknown): number | unde
   const record = readOutputRecord(value);
   if (!isRecord(record?.manager)) return undefined;
   return readPositiveInteger(record.manager.roundNumber);
+}
+
+function runRoomTerminalStatusFromBlueprintRun(status: BlueprintRun["status"]): RunRoomStatus | undefined {
+  if (status === "succeeded") return "completed";
+  if (status === "failed") return "failed";
+  if (status === "cancelled") return "cancelled";
+  return undefined;
 }
 
 function readManagerRoundNumberFromDecisionOutput(output: unknown): number | undefined {

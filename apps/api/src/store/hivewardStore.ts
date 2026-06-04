@@ -229,6 +229,7 @@ export interface HivewardStore {
     responseIntent?: HumanActionRequest["responseIntent"];
     status?: HumanActionRequest["status"];
   }): Promise<HumanActionRequest[]>;
+  updateHumanActionRequest(input: { id: string } & Partial<HumanActionRequest>): Promise<HumanActionRequest>;
   appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse>;
   listHumanActionResponses(filter?: { requestId?: string }): Promise<HumanActionResponse[]>;
   listInboxProjections(filter?: {

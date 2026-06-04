@@ -322,6 +322,23 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
           latestResponseAt: contractNow
         })
       ]);
+      await expect(store.updateHumanActionRequest({
+        id: humanActionRequest.id,
+        status: "responded",
+        updatedAt: "2026-06-04T00:00:00.000Z"
+      })).resolves.toMatchObject({
+        id: humanActionRequest.id,
+        status: "responded",
+        updatedAt: "2026-06-04T00:00:00.000Z"
+      });
+      await expect(store.listHumanActionRequests({ status: "pending" })).resolves.not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: humanActionRequest.id })])
+      );
+      await expect(store.listInboxProjections({ status: "pending" })).resolves.toEqual([]);
+      await expect(store.updateHumanActionRequest({
+        id: humanActionRequest.id,
+        status: "waiting" as HumanActionRequest["status"]
+      })).rejects.toThrow(/HumanActionRequest\.status/);
       expect("replyToInboxItem" in store).toBe(false);
       expect("approveInboxItem" in store).toBe(false);
       expect("rejectInboxItem" in store).toBe(false);

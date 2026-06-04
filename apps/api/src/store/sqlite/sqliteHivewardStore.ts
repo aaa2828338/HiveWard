@@ -1030,6 +1030,22 @@ export class SqliteHivewardStore implements HivewardStore {
     return this.readHumanActionRequests(filter);
   }
 
+  async updateHumanActionRequest(input: { id: string } & Partial<HumanActionRequest>): Promise<HumanActionRequest> {
+    return this.driver.transaction(() => {
+      const current = this.getHumanActionRequestByIdSync(input.id);
+      if (!current) throw new Error(`HumanActionRequest not found: ${input.id}`);
+      const updated: HumanActionRequest = {
+        ...current,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      assertHumanActionRequest(updated);
+      if (updated.runRoomId) this.requireRunRoomById(updated.runRoomId);
+      this.upsertHumanActionRequest(updated);
+      return updated;
+    });
+  }
+
   async appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse> {
     return this.driver.transaction(() => {
       assertHumanActionResponse(response);
@@ -3171,6 +3187,39 @@ export class SqliteHivewardStore implements HivewardStore {
         id, run_room_id, source_context_type, source_context_id, response_intent, status,
         title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      request.id,
+      request.runRoomId,
+      request.sourceContextType,
+      request.sourceContextId,
+      request.responseIntent,
+      request.status,
+      request.title,
+      request.bodyMarkdown,
+      request.createdByRoleId,
+      optionalJson(request.metadata),
+      request.createdAt,
+      request.updatedAt
+    );
+  }
+
+  private upsertHumanActionRequest(request: HumanActionRequest): void {
+    this.driver.db.prepare(
+      `INSERT INTO human_action_requests (
+        id, run_room_id, source_context_type, source_context_id, response_intent, status,
+        title, body_markdown, created_by_role_id, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        run_room_id = excluded.run_room_id,
+        source_context_type = excluded.source_context_type,
+        source_context_id = excluded.source_context_id,
+        response_intent = excluded.response_intent,
+        status = excluded.status,
+        title = excluded.title,
+        body_markdown = excluded.body_markdown,
+        created_by_role_id = excluded.created_by_role_id,
+        metadata_json = excluded.metadata_json,
+        updated_at = excluded.updated_at`
     ).run(
       request.id,
       request.runRoomId,

@@ -1267,6 +1267,24 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
+  async updateHumanActionRequest(input: { id: string } & Partial<HumanActionRequest>): Promise<HumanActionRequest> {
+    return this.enqueue(async () => {
+      const index = await this.readIndexUnlocked();
+      const requestIndex = index.humanActionRequests.findIndex((item) => item.id === input.id);
+      if (requestIndex < 0) throw new Error(`HumanActionRequest not found: ${input.id}`);
+      const updated: HumanActionRequest = {
+        ...index.humanActionRequests[requestIndex]!,
+        ...input,
+        updatedAt: input.updatedAt ?? new Date().toISOString()
+      };
+      assertHumanActionRequest(updated);
+      if (updated.runRoomId) requireRunRoomFromIndex(index, updated.runRoomId);
+      index.humanActionRequests[requestIndex] = updated;
+      await this.writeIndexUnlocked(index);
+      return updated;
+    });
+  }
+
   async appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse> {
     return this.enqueue(async () => {
       assertHumanActionResponse(response);

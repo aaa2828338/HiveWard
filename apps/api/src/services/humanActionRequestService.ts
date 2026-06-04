@@ -54,6 +54,9 @@ export class HumanActionRequestService {
   async appendResponse(input: AppendHumanActionResponseInput): Promise<HumanActionResponse> {
     const request = await this.store.getHumanActionRequest(input.requestId);
     if (!request) throw new Error(`HumanActionRequest not found: ${input.requestId}`);
+    if (request.status !== "pending") {
+      throw new Error(`HumanActionRequest is not pending: ${input.requestId}`);
+    }
     const response: HumanActionResponse = {
       id: `human-action-response-${nanoid(10)}`,
       requestId: request.id,
@@ -62,7 +65,15 @@ export class HumanActionRequestService {
       ...(input.createdByRoleId ? { createdByRoleId: input.createdByRoleId } : {}),
       ...(input.metadata ? { metadata: input.metadata } : {})
     };
-    return this.store.appendHumanActionResponse(response);
+    const appended = await this.store.appendHumanActionResponse(response);
+    if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
+      await this.store.updateHumanActionRequest({
+        id: request.id,
+        status: "responded",
+        updatedAt: appended.createdAt
+      });
+    }
+    return appended;
   }
 
   private assertProducerCanCreate(

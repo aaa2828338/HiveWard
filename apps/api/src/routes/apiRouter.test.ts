@@ -3808,6 +3808,61 @@ describe("apiRouter", () => {
     }
   });
 
+  it("closes reply human actions through request status without closing decision requests by ordinary text", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
+        id: "human-action-reply",
+        responseIntent: "reply_required",
+        title: "Reply needed"
+      }));
+      await fixture.store.appendHumanActionRequest(createHumanActionRequestFact({
+        id: "human-action-decision",
+        responseIntent: "decision_required",
+        title: "Decision needed"
+      }));
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const replyResponse = await fetch(`${baseUrl}/api/human-action-requests/human-action-reply/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messageMarkdown: "Reply completed." })
+        });
+        const replyBody = await readOkJson<{
+          projections: Array<{ humanActionRequestId: string; status: string }>;
+        }>(replyResponse);
+        const replyRequest = await fixture.store.getHumanActionRequest("human-action-reply");
+        expect(replyRequest?.status).toBe("responded");
+        expect(replyBody.projections.some((projection) => projection.humanActionRequestId === "human-action-reply")).toBe(false);
+        expect(await fixture.store.listHumanActionRequests({ status: "pending" })).toEqual([
+          expect.objectContaining({ id: "human-action-decision" })
+        ]);
+
+        await expect(fetch(`${baseUrl}/api/human-action-requests/human-action-reply/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messageMarkdown: "Duplicate reply." })
+        })).resolves.toMatchObject({ status: 500 });
+
+        const decisionResponse = await fetch(`${baseUrl}/api/human-action-requests/human-action-decision/responses`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messageMarkdown: "I approve in text." })
+        });
+        const decisionBody = await readOkJson<{
+          projections: Array<{ humanActionRequestId: string; status: string }>;
+        }>(decisionResponse);
+        const decisionRequest = await fixture.store.getHumanActionRequest("human-action-decision");
+        expect(decisionRequest?.status).toBe("pending");
+        expect(decisionBody.projections).toEqual([
+          expect.objectContaining({ humanActionRequestId: "human-action-decision", status: "pending" })
+        ]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects executive human action requests that claim run_room context", async () => {
     const fixture = await createStoreFixture();
     try {
@@ -4178,6 +4233,21 @@ function createRunRoomFact(overrides: Partial<RunRoom> = {}): RunRoom {
     companyId: "company-1",
     blueprintId: "blueprint-1",
     status: "open",
+    createdAt: "2026-06-04T00:00:00.000Z",
+    updatedAt: "2026-06-04T00:00:00.000Z",
+    ...overrides
+  };
+}
+
+function createHumanActionRequestFact(overrides: Partial<HumanActionRequest> = {}): HumanActionRequest {
+  return {
+    id: "human-action-request-test",
+    sourceContextType: "executive_chat",
+    sourceContextId: "chat-session-test",
+    responseIntent: "reply_required",
+    status: "pending",
+    title: "Human action required",
+    bodyMarkdown: "Please respond.",
     createdAt: "2026-06-04T00:00:00.000Z",
     updatedAt: "2026-06-04T00:00:00.000Z",
     ...overrides

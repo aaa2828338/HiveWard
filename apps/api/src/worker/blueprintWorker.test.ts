@@ -24,7 +24,8 @@ import {
   type BlueprintNodeRun,
   type BlueprintRunStatus,
   type ManagerNodeConfig,
-  type RunCommand
+  type RunCommand,
+  type RunRoomStatus
 } from "@hiveward/shared";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
@@ -399,6 +400,7 @@ describe("BlueprintWorker", () => {
 
     expect(run.status).toBe("running");
     expect(view?.run.status).toBe("failed");
+    await expectRunRoomStatus(store, blueprint.id, run.id, "failed");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("succeeded");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.input).toMatchObject({
       upstream: [],
@@ -466,6 +468,7 @@ describe("BlueprintWorker", () => {
     const steps = await store.listRunCommandSteps({ commandId: command.id });
 
     expect(view?.run.status).toBe("succeeded");
+    await expectRunRoomStatus(store, blueprint.id, run.id, "completed");
     expect(command).toMatchObject({
       commandKey: buildRunCommandKey(run.id, undefined, "regular_run"),
       kind: "regular_run",
@@ -692,6 +695,7 @@ describe("BlueprintWorker", () => {
 
     const cancelledView = await store.getRunView(run.id);
     expect(cancelledView?.run.status).toBe("cancelled");
+    await expectRunRoomStatus(store, blueprint.id, run.id, "cancelled");
     expect(cancelledView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
     expect(cancelledView?.events.some((event) => event.type === "blueprint.run.cancelled")).toBe(true);
 
@@ -700,6 +704,7 @@ describe("BlueprintWorker", () => {
 
     const finalView = await store.getRunView(run.id);
     expect(finalView?.run.status).toBe("cancelled");
+    await expectRunRoomStatus(store, blueprint.id, run.id, "cancelled");
     expect(finalView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
     expect(finalView?.nodeRuns.some((nodeRun) => nodeRun.status === "succeeded")).toBe(false);
   });
@@ -711,6 +716,16 @@ describe("BlueprintWorker", () => {
 
     const blueprint = createBlueprint([createAgentNode("brief", "Brief")], []);
     const run = await store.createBlueprintRun(blueprint, "test-user");
+    await store.createRunRoom({
+      id: "run-room-terminal-failed",
+      companyId: blueprint.companyId,
+      blueprintId: blueprint.id,
+      runId: run.id,
+      status: "open",
+      title: blueprint.name,
+      createdAt: run.startedAt,
+      updatedAt: run.startedAt
+    });
     await store.upsertNodeRun({
       id: "node-run-stale",
       blueprintRunId: run.id,
@@ -736,6 +751,7 @@ describe("BlueprintWorker", () => {
 
     expect(normalized.status).toBe("failed");
     expect(view?.run.status).toBe("failed");
+    await expectRunRoomStatus(store, blueprint.id, run.id, "failed");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.status).toBe("cancelled");
     expect(view?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "brief")?.error).toContain("terminal state");
   });
@@ -3014,6 +3030,17 @@ async function listRunRoomAgentOutputEvents(store: FileHivewardStore, blueprintI
     .find((candidate) => candidate.runId === runId);
   if (!runRoom) return [];
   return store.listAgentOutputEvents({ ownerType: "run_room", ownerId: runRoom.id });
+}
+
+async function expectRunRoomStatus(
+  store: HivewardStore,
+  blueprintId: string,
+  runId: string,
+  status: RunRoomStatus
+): Promise<void> {
+  const runRoom = (await store.listRunRooms({ blueprintId }))
+    .find((candidate) => candidate.runId === runId);
+  expect(runRoom).toMatchObject({ runId, status });
 }
 
 function createStartedAgentTask(taskId: string, source: StartedAgentTaskResult["source"] = "openclaw"): StartedAgentTaskResult {

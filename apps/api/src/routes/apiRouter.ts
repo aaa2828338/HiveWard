@@ -938,7 +938,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       });
       res.status(201).json({
         response,
-        projections: await inboxProjectionService.rebuild()
+        projections: await inboxProjectionService.rebuild({ status: "pending" })
       });
     } catch (error) {
       next(error);
