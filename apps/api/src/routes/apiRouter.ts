@@ -1145,6 +1145,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.get("/api/run-rooms/:runRoomId/feed", async (req, res, next) => {
     try {
       const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
+      const runRoom = await store.getRunRoom(runRoomId);
+      if (!runRoom) {
+        res.status(404).json({ error: { code: "run_room_not_found", message: "RunRoom not found." } });
+        return;
+      }
       res.json({ feed: await agentOutputService.projectRunRoomFeed(runRoomId) });
     } catch (error) {
       next(error);

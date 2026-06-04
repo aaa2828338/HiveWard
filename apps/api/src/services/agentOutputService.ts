@@ -9,7 +9,15 @@ export type AppendAgentOutputEventInput =
 
 export class AgentOutputService {
   constructor(
-    private readonly store: Pick<HivewardStore, "appendAgentOutputEvent" | "listAgentOutputEvents" | "listRunInterjections">
+    private readonly store: Pick<
+      HivewardStore,
+      | "appendAgentOutputEvent"
+      | "listAgentOutputEvents"
+      | "listRunInterjections"
+      | "getWorkerTask"
+      | "getManagerCommand"
+      | "getHumanActionRequest"
+    >
   ) {}
 
   async appendEvent(input: AppendAgentOutputEventInput): Promise<AgentOutputEvent> {
@@ -34,12 +42,44 @@ export class AgentOutputService {
       this.store.listAgentOutputEvents(),
       this.store.listRunInterjections({ runRoomId })
     ]);
-    return projectRunRoomFeed(runRoomId, events, interjections);
+    const feedEvents = await this.filterRunRoomFeedEvents(runRoomId, events);
+    return projectRunRoomFeed(runRoomId, feedEvents, interjections);
   }
 
   private async nextSequence(ownerType: AgentOutputEvent["ownerType"], ownerId: string): Promise<number> {
     const existing = await this.store.listAgentOutputEvents({ ownerType, ownerId });
     return existing.reduce((max, event) => Math.max(max, event.sequence), 0) + 1;
+  }
+
+  private async filterRunRoomFeedEvents(runRoomId: string, events: readonly AgentOutputEvent[]): Promise<AgentOutputEvent[]> {
+    const feedEvents: AgentOutputEvent[] = [];
+    for (const event of events) {
+      if (!hasRunRoomFeedOwnerShape(runRoomId, event)) continue;
+      if (!await this.hasValidatedBackingObject(runRoomId, event)) continue;
+      feedEvents.push(event);
+    }
+    return feedEvents;
+  }
+
+  private async hasValidatedBackingObject(runRoomId: string, event: AgentOutputEvent): Promise<boolean> {
+    switch (event.ownerType) {
+      case "run_room":
+        return event.ownerId === runRoomId;
+      case "worker_task": {
+        const task = await this.store.getWorkerTask(event.ownerId);
+        return task?.runRoomId === runRoomId;
+      }
+      case "manager_thread": {
+        const command = await this.store.getManagerCommand(event.ownerId);
+        return command?.runRoomId === runRoomId;
+      }
+      case "human_action_request": {
+        const request = await this.store.getHumanActionRequest(event.ownerId);
+        return request?.runRoomId === runRoomId;
+      }
+      case "chat_session":
+        return false;
+    }
   }
 }
 
@@ -50,7 +90,7 @@ export function projectRunRoomFeed(
 ): RunRoomFeed {
   const rows = [
     ...events
-      .filter((event) => (event.ownerType === "run_room" && event.ownerId === runRoomId) || event.metadata?.runRoomId === runRoomId)
+      .filter((event) => hasRunRoomFeedOwnerShape(runRoomId, event))
       .filter((event) => event.kind === "message_completed" || event.kind === "message_failed" || event.kind === "runtime_state")
       .map((event) => projectRunRoomFeedRow(runRoomId, event))
       .filter((row): row is RunRoomFeedRow => Boolean(row)),
@@ -77,6 +117,16 @@ function projectRunInterjectionFeedRow(interjection: RunInterjection): RunRoomFe
   return row;
 }
 
+function hasRunRoomFeedOwnerShape(runRoomId: string, event: AgentOutputEvent): boolean {
+  if (event.ownerType === "run_room") {
+    return event.ownerId === runRoomId;
+  }
+  if (event.ownerType === "worker_task" || event.ownerType === "manager_thread" || event.ownerType === "human_action_request") {
+    return readMetadataString(event.metadata, "runRoomId") === runRoomId;
+  }
+  return false;
+}
+
 function projectRunRoomFeedRow(runRoomId: string, event: AgentOutputEvent): RunRoomFeedRow | undefined {
   const sourceType = runRoomSourceTypeForEvent(event);
   const displayMode = sourceType === "worker" ? "execution_output" : "formal_message";
@@ -90,7 +140,7 @@ function projectRunRoomFeedRow(runRoomId: string, event: AgentOutputEvent): RunR
     bodyMarkdown,
     agentOutputEventId: event.id,
     workerTaskId: event.ownerType === "worker_task" ? event.ownerId : readMetadataString(event.metadata, "workerTaskId"),
-    managerCommandId: readMetadataString(event.metadata, "managerCommandId"),
+    managerCommandId: event.ownerType === "manager_thread" ? event.ownerId : readMetadataString(event.metadata, "managerCommandId"),
     humanActionRequestId: event.ownerType === "human_action_request" ? event.ownerId : readMetadataString(event.metadata, "humanActionRequestId"),
     runtimeState: event.runtimeState,
     actions: sourceType === "worker" ? {} : { canReply: sourceType === "manager" || sourceType === "user" },

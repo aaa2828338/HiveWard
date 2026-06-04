@@ -2969,21 +2969,105 @@ describe("apiRouter", () => {
     }
   });
 
-  it("projects run room output feed rows without worker action capabilities", async () => {
+  it("returns 404 for missing run room feed resources", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/feed`);
+        const body = await feedResponse.json() as { error?: { code?: string } };
+
+        expect(feedResponse.status, JSON.stringify(body)).toBe(404);
+        expect(body.error?.code).toBe("run_room_not_found");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("projects run room feed rows only from validated owners", async () => {
     const fixture = await createStoreFixture();
     try {
       const createdAt = "2026-06-03T00:00:00.000Z";
+      const runRoom = createRunRoomFact({ id: "run-room-feed-owner", runId: "run-feed-owner" });
+      const otherRunRoom = createRunRoomFact({ id: "run-room-other", runId: "run-other" });
+      await fixture.store.createRunRoom(runRoom);
+      await fixture.store.createRunRoom(otherRunRoom);
+      const managerCommand: ManagerCommand = {
+        id: "manager-command-feed",
+        runRoomId: runRoom.id,
+        action: "dispatch_worker_task",
+        status: "running",
+        createdAt,
+        updatedAt: createdAt
+      };
+      await fixture.store.appendManagerCommand(managerCommand);
+      const otherManagerCommand: ManagerCommand = {
+        id: "manager-command-other-feed",
+        runRoomId: otherRunRoom.id,
+        action: "dispatch_worker_task",
+        status: "running",
+        createdAt,
+        updatedAt: createdAt
+      };
+      await fixture.store.appendManagerCommand(otherManagerCommand);
+      const workerTask: WorkerTask = {
+        id: "worker-task-feed",
+        runRoomId: runRoom.id,
+        managerCommandId: managerCommand.id,
+        status: "running",
+        createdAt,
+        updatedAt: createdAt
+      };
+      await fixture.store.createWorkerTask(workerTask);
+      await fixture.store.createWorkerTask({
+        id: "worker-task-other-feed",
+        runRoomId: otherRunRoom.id,
+        managerCommandId: otherManagerCommand.id,
+        status: "running",
+        createdAt,
+        updatedAt: createdAt
+      });
+      const humanActionRequest: HumanActionRequest = {
+        id: "human-action-request-feed",
+        runRoomId: runRoom.id,
+        sourceContextType: "run_room",
+        sourceContextId: runRoom.id,
+        responseIntent: "reply_required",
+        status: "pending",
+        title: "Human action",
+        bodyMarkdown: "Please respond.",
+        createdAt,
+        updatedAt: createdAt
+      };
+      await fixture.store.appendHumanActionRequest(humanActionRequest);
+      await fixture.store.appendRunInterjection({
+        id: "run-interjection-feed",
+        runRoomId: runRoom.id,
+        target: "manager",
+        messageMarkdown: "User interjection.",
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "run-room-output-1",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "system",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Run room system output.",
+        createdAt
+      });
       await fixture.store.appendAgentOutputEvent({
         id: "worker-output-1",
         ownerType: "worker_task",
-        ownerId: "worker-task-1",
+        ownerId: workerTask.id,
         actorType: "worker",
         kind: "message_completed",
         sequence: 1,
         bodyMarkdown: "Worker execution output.",
         metadata: {
-          runRoomId: "run-room-1",
-          workerTaskId: "worker-task-1"
+          runRoomId: runRoom.id,
+          workerTaskId: workerTask.id
         },
         runtimeState: {
           source: "codex",
@@ -2994,29 +3078,106 @@ describe("apiRouter", () => {
       await fixture.store.appendAgentOutputEvent({
         id: "manager-output-1",
         ownerType: "manager_thread",
-        ownerId: "manager-thread-1",
+        ownerId: managerCommand.id,
         actorType: "manager",
         kind: "message_completed",
         sequence: 1,
         bodyMarkdown: "Manager formal message.",
         metadata: {
-          runRoomId: "run-room-1",
-          managerCommandId: "manager-command-1"
+          runRoomId: runRoom.id,
+          managerCommandId: managerCommand.id
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "human-action-output-1",
+        ownerType: "human_action_request",
+        ownerId: humanActionRequest.id,
+        actorType: "user",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Human action reply.",
+        metadata: {
+          runRoomId: runRoom.id,
+          humanActionRequestId: humanActionRequest.id
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "chat-bleed-output",
+        ownerType: "chat_session",
+        ownerId: "chat-session-feed",
+        actorType: "leader",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Chat output must not bleed into run room feed.",
+        metadata: {
+          runRoomId: runRoom.id
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "metadata-mismatch-output",
+        ownerType: "worker_task",
+        ownerId: workerTask.id,
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 2,
+        bodyMarkdown: "Mismatched metadata must not project.",
+        metadata: {
+          runRoomId: otherRunRoom.id,
+          workerTaskId: workerTask.id
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "backing-object-mismatch-output",
+        ownerType: "worker_task",
+        ownerId: "worker-task-other-feed",
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 1,
+        bodyMarkdown: "Other run room worker task must not project.",
+        metadata: {
+          runRoomId: runRoom.id,
+          workerTaskId: "worker-task-other-feed"
+        },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "message-delta-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "manager",
+        kind: "message_delta",
+        sequence: 2,
+        delta: "Streaming delta must stay out of GET feed.",
+        metadata: {
+          runRoomId: runRoom.id
         },
         createdAt
       });
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/run-room-1/feed`);
+        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed`);
         const { feed } = await readOkJson<{ feed: RunRoomFeed }>(feedResponse);
 
-        expect(feed.rows).toHaveLength(2);
+        expect(feed.rows).toHaveLength(5);
+        expect(feed.rows.map((row) => row.bodyMarkdown)).toEqual(expect.arrayContaining([
+          "Run room system output.",
+          "Worker execution output.",
+          "Manager formal message.",
+          "Human action reply.",
+          "User interjection."
+        ]));
         const workerRow = feed.rows.find((row) => row.sourceType === "worker");
         const managerRow = feed.rows.find((row) => row.sourceType === "manager");
+        const humanActionRow = feed.rows.find((row) => row.humanActionRequestId === humanActionRequest.id);
         expect(workerRow).toMatchObject({
           sourceType: "worker",
           displayMode: "execution_output",
           bodyMarkdown: "Worker execution output.",
+          workerTaskId: workerTask.id,
           actions: {}
         });
         expect(workerRow?.actions?.canReply).not.toBe(true);
@@ -3026,6 +3187,13 @@ describe("apiRouter", () => {
         expect(managerRow).toMatchObject({
           sourceType: "manager",
           displayMode: "formal_message",
+          managerCommandId: managerCommand.id,
+          actions: { canReply: true }
+        });
+        expect(humanActionRow).toMatchObject({
+          sourceType: "user",
+          displayMode: "formal_message",
+          humanActionRequestId: humanActionRequest.id,
           actions: { canReply: true }
         });
       });
