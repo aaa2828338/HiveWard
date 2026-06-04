@@ -41,7 +41,7 @@ import { ArtifactService } from "../services/artifactService";
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import { ManagerCommandService } from "../services/managerCommandService";
 import type { OpenClawConfigStore } from "../store/openClawConfigStore";
-import type { BlueprintWorker } from "../worker/blueprintWorker";
+import { BlueprintWorker } from "../worker/blueprintWorker";
 
 const oldInboxCreatedChatOutputEventName = ["inbox", "item", "created"].join("_");
 const historicalInboxSubmissionSchema = "hiveward.inbox-submission/v1";
@@ -3769,15 +3769,100 @@ describe("apiRouter", () => {
     }
   });
 
-  it("starts a blueprint run through executive command without creating WorkerTask", async () => {
+  it("starts a CEO blueprint run through the worker-owned run command path", async () => {
     const fixture = await createStoreFixture();
-    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    const blueprint = await fixture.store.createBlueprint({ name: "Executive run command blueprint" });
+    const adapter = new TrackingAdapter();
+    const worker = new BlueprintWorker(fixture.store, adapter);
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ harnessId: "codex", title: "Leader", mode: "chat", roleScope: { role: "leader", leaderId: "leader-test", blueprintId: blueprint.id } })
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "start_blueprint_run",
+              sourceRole: "ceo",
+              payload: {
+                blueprintId: blueprint.id,
+                startedBy: "ceo-test",
+                title: "Executive run",
+                summary: "Started from CEO chat."
+              }
+            }
+          })
+        });
+        const body = await readOkJson<{
+          result: {
+            action: string;
+            run: { run: { id: string; blueprintId: string } };
+            runRoom: {
+              runId: string;
+              blueprintId: string;
+              status: string;
+              title?: string;
+              summary?: string;
+              metadata?: Record<string, unknown>;
+            };
+          };
+        }>(response);
+
+        expect(body.result.action).toBe("start_blueprint_run");
+        expect(body.result.run.run.blueprintId).toBe(blueprint.id);
+        expect(body.result.runRoom).toMatchObject({
+          blueprintId: blueprint.id,
+          runId: body.result.run.run.id,
+          status: "open",
+          title: "Executive run",
+          summary: "Started from CEO chat.",
+          metadata: {
+            sourceContextType: "executive_chat",
+            chatSessionId: created.session.id,
+            executiveCommandAction: "start_blueprint_run",
+            sourceRole: "ceo"
+          }
+        });
+        expect(await fixture.store.listRunCommands({ runId: body.result.run.run.id })).toEqual([
+          expect.objectContaining({
+            blueprintId: blueprint.id,
+            runId: body.result.run.run.id,
+            kind: "regular_run"
+          })
+        ]);
+        expect(await fixture.store.listRunRooms({ blueprintId: blueprint.id })).toHaveLength(1);
+        const runPage = await readOkJson<{ run: { run: { id: string; blueprintId: string }; runRoomFeed?: unknown } }>(
+          await fetch(`${baseUrl}/api/blueprint-runs/${body.result.run.run.id}`)
+        );
+        expect(runPage.run.run).toMatchObject({ id: body.result.run.run.id, blueprintId: blueprint.id });
+        expect(runPage.run.runRoomFeed).toBeDefined();
+        await waitForRunsSettled(fixture.store, [body.result.run.run.id]);
+      }, adapter, createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts a Leader blueprint run only for the session-scoped blueprint", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = await fixture.store.createBlueprint({ name: "Leader run command blueprint" });
+    const adapter = new TrackingAdapter();
+    const worker = new BlueprintWorker(fixture.store, adapter);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Leader",
+            mode: "chat",
+            roleScope: { role: "leader", leaderId: "leader-test", blueprintId: blueprint.id }
+          })
         }));
         const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
           method: "POST",
@@ -3786,18 +3871,178 @@ describe("apiRouter", () => {
             command: {
               action: "start_blueprint_run",
               sourceRole: "leader",
-              payload: { blueprintId: blueprint.id, startedBy: "leader-test", title: "Executive run" }
+              payload: { blueprintId: blueprint.id, startedBy: "leader-test", title: "Leader scoped run" }
             }
           })
         });
-        const body = await readOkJson<{ result: { action: string; run: { run: { blueprintId: string } }; runRoom: { runId: string; blueprintId: string; status: string } } }>(response);
+        const body = await readOkJson<{
+          result: {
+            run: { run: { id: string; blueprintId: string } };
+            runRoom: { managerRoleId?: string; metadata?: Record<string, unknown> };
+          };
+        }>(response);
 
-        expect(body.result.action).toBe("start_blueprint_run");
         expect(body.result.run.run.blueprintId).toBe(blueprint.id);
-        expect(body.result.runRoom).toMatchObject({ blueprintId: blueprint.id, status: "open" });
-        expect(await fixture.store.listWorkerTasks()).toEqual([]);
-        expect(await fixture.store.listRunRooms({ blueprintId: blueprint.id })).toHaveLength(1);
-      });
+        expect(body.result.runRoom).toMatchObject({
+          managerRoleId: created.session.roleScope?.leaderId,
+          metadata: {
+            chatSessionId: created.session.id,
+            sourceRole: "leader"
+          }
+        });
+        expect(await fixture.store.listRunCommands({ runId: body.result.run.run.id })).toEqual([
+          expect.objectContaining({ kind: "regular_run", runId: body.result.run.run.id })
+        ]);
+        await waitForRunsSettled(fixture.store, [body.result.run.run.id]);
+      }, adapter, createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("starts every CEO batch blueprint run through worker-owned run commands", async () => {
+    const fixture = await createStoreFixture();
+    const firstBlueprint = await fixture.store.createBlueprint({ name: "First executive batch blueprint" });
+    const secondBlueprint = await fixture.store.createBlueprint({ name: "Second executive batch blueprint" });
+    const adapter = new TrackingAdapter();
+    const worker = new BlueprintWorker(fixture.store, adapter);
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "batch_start_blueprint_runs",
+              sourceRole: "ceo",
+              payload: { blueprintIds: [firstBlueprint.id, secondBlueprint.id], startedBy: "ceo-test" }
+            }
+          })
+        });
+        const body = await readOkJson<{ result: { runs: Array<{ run: { id: string; blueprintId: string } }>; runRooms: RunRoom[] } }>(response);
+        expect(body.result.runs.map((runView) => runView.run.blueprintId)).toEqual([firstBlueprint.id, secondBlueprint.id]);
+        expect(body.result.runRooms.map((runRoom) => runRoom.blueprintId)).toEqual([firstBlueprint.id, secondBlueprint.id]);
+
+        for (const runView of body.result.runs) {
+          expect(await fixture.store.listRunCommands({ runId: runView.run.id })).toEqual([
+            expect.objectContaining({ kind: "regular_run", runId: runView.run.id })
+          ]);
+        }
+        await waitForRunsSettled(fixture.store, body.result.runs.map((runView) => runView.run.id));
+      }, adapter, createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects Leader executive commands that target another blueprint before side effects", async () => {
+    const fixture = await createStoreFixture();
+    const allowedBlueprint = (await fixture.store.listBlueprints())[0]!;
+    const forbiddenBlueprint = await fixture.store.createBlueprint({ name: "Forbidden leader blueprint" });
+    const worker = {
+      async startRun() {
+        throw new Error("Leader cross-blueprint command reached the worker.");
+      }
+    } as unknown as BlueprintWorker;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Leader",
+            mode: "chat",
+            roleScope: { role: "leader", leaderId: "leader-test", blueprintId: allowedBlueprint.id }
+          })
+        }));
+        const commands = [
+          { action: "inspect_blueprint", sourceRole: "leader", payload: { blueprintId: forbiddenBlueprint.id } },
+          { action: "summarize_blueprint", sourceRole: "leader", payload: { blueprintId: forbiddenBlueprint.id } },
+          { action: "start_blueprint_run", sourceRole: "leader", payload: { blueprintId: forbiddenBlueprint.id } },
+          { action: "batch_start_blueprint_runs", sourceRole: "leader", payload: { blueprintIds: [forbiddenBlueprint.id] } },
+          { action: "update_blueprint_draft", sourceRole: "leader", payload: { blueprintId: forbiddenBlueprint.id, title: "Forbidden" } },
+          {
+            action: "govern_blueprint_version",
+            sourceRole: "leader",
+            payload: { blueprintId: forbiddenBlueprint.id, decision: "approve" }
+          },
+          {
+            action: "request_human_action",
+            sourceRole: "leader",
+            payload: {
+              sourceContextType: "blueprint_governance",
+              blueprintId: forbiddenBlueprint.id,
+              responseIntent: "reply_required",
+              title: "Forbidden human action",
+              bodyMarkdown: "This must not be created."
+            }
+          }
+        ];
+
+        for (const command of commands) {
+          const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ command })
+          });
+          const body = await response.json() as { error?: { code?: string } };
+          expect(response.status, JSON.stringify({ action: command.action, body })).toBe(400);
+          expect(body.error?.code).toBe("executive_command_blueprint_scope_mismatch");
+        }
+        expect(await fixture.store.listRunSummaries()).toEqual([]);
+        expect(await fixture.store.listRunRooms()).toEqual([]);
+        expect(await fixture.store.listHumanActionRequests()).toEqual([]);
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a Leader batch with one unauthorized blueprint before starting any run", async () => {
+    const fixture = await createStoreFixture();
+    const allowedBlueprint = (await fixture.store.listBlueprints())[0]!;
+    const forbiddenBlueprint = await fixture.store.createBlueprint({ name: "Forbidden batch blueprint" });
+    const worker = {
+      async startRun() {
+        throw new Error("Unauthorized batch command reached the worker.");
+      }
+    } as unknown as BlueprintWorker;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Leader",
+            mode: "chat",
+            roleScope: { role: "leader", leaderId: "leader-test", blueprintId: allowedBlueprint.id }
+          })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "batch_start_blueprint_runs",
+              sourceRole: "leader",
+              payload: { blueprintIds: [allowedBlueprint.id, forbiddenBlueprint.id], startedBy: "leader-test" }
+            }
+          })
+        });
+        const body = await response.json() as { error?: { code?: string } };
+
+        expect(response.status, JSON.stringify(body)).toBe(400);
+        expect(body.error?.code).toBe("executive_command_blueprint_scope_mismatch");
+        expect(await fixture.store.listRunSummaries()).toEqual([]);
+        expect(await fixture.store.listRunRooms()).toEqual([]);
+      }, new TrackingAdapter(), createConfigStoreFixture(), worker);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -4531,6 +4776,19 @@ async function withApiServer(
       });
     });
   }
+}
+
+async function waitForRunsSettled(store: FileHivewardStore, runIds: string[]): Promise<void> {
+  const activeStatuses: BlueprintRun["status"][] = ["queued", "running", "waiting_approval"];
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const runs = await Promise.all(runIds.map((runId) => store.getBlueprintRun(runId)));
+    if (runs.every((run) => run && !activeStatuses.includes(run.status))) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  const runs = await Promise.all(runIds.map((runId) => store.getBlueprintRun(runId)));
+  throw new Error(`Runs did not settle before fixture cleanup: ${runs.map((run) => `${run?.id}:${run?.status}`).join(", ")}`);
 }
 
 async function readOkJson<T = unknown>(response: Response): Promise<T> {

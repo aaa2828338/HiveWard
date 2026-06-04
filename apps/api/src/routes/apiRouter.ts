@@ -1086,7 +1086,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
         return;
       }
-      const result = await executeExecutiveCommand(store, humanActionRequestService, session, command);
+      const result = await executeExecutiveCommand(store, humanActionRequestService, worker, session, command);
       const response: ExecuteExecutiveCommandResponse = { command, result };
       res.status(result.status === "completed" ? 201 : 202).json(response);
     } catch (error) {
@@ -1529,6 +1529,7 @@ function normalizeExecutiveCommandRequest(value: unknown): ExecutiveCommand {
 async function executeExecutiveCommand(
   store: HivewardStore,
   humanActionRequestService: HumanActionRequestService,
+  worker: BlueprintWorker,
   session: HivewardChatSession,
   command: ExecutiveCommand
 ): Promise<ExecutiveCommandResult> {
@@ -1552,13 +1553,23 @@ async function executeExecutiveCommand(
         }
       };
     }
-    case "start_blueprint_run":
-      return createExecutiveBlueprintRun(store, session, command, command.payload.blueprintId, command.payload.startedBy);
+    case "start_blueprint_run": {
+      const blueprint = await requireBlueprint(store, command.payload.blueprintId);
+      return startExecutiveBlueprintRunThroughWorker(store, worker, session, command, blueprint, command.payload.startedBy);
+    }
     case "batch_start_blueprint_runs": {
+      const blueprints = await Promise.all(command.payload.blueprintIds.map((blueprintId) => requireBlueprint(store, blueprintId)));
       const runs: BlueprintRunView[] = [];
       const runRooms: RunRoom[] = [];
-      for (const blueprintId of command.payload.blueprintIds) {
-        const result = await createExecutiveBlueprintRun(store, session, command, blueprintId, command.payload.startedBy);
+      for (const blueprint of blueprints) {
+        const result = await startExecutiveBlueprintRunThroughWorker(
+          store,
+          worker,
+          session,
+          command,
+          blueprint,
+          command.payload.startedBy
+        );
         runs.push(result.run);
         runRooms.push(result.runRoom);
       }
@@ -1590,6 +1601,51 @@ function assertExecutiveCommandRoleScope(session: HivewardChatSession, command: 
   if (role !== command.sourceRole) {
     throw new ApiBadRequestError("executive_command_role_mismatch", "Executive command sourceRole must match the chat session roleScope.");
   }
+  assertExecutiveCommandLeaderBlueprintScope(session, command);
+}
+
+function assertExecutiveCommandLeaderBlueprintScope(session: HivewardChatSession, command: ExecutiveCommand): void {
+  if (session.roleScope?.role !== "leader") return;
+  const allowedBlueprintId = session.roleScope.blueprintId;
+  if (!allowedBlueprintId) {
+    throw new ApiBadRequestError(
+      "executive_command_leader_blueprint_scope_required",
+      "Leader executive commands require a chat session roleScope.blueprintId."
+    );
+  }
+  const targetBlueprintIds = readExecutiveCommandTargetBlueprintIds(command);
+  for (const targetBlueprintId of targetBlueprintIds) {
+    if (targetBlueprintId !== allowedBlueprintId) {
+      throw new ApiBadRequestError(
+        "executive_command_blueprint_scope_mismatch",
+        "Leader executive command target blueprint must match the chat session roleScope.blueprintId."
+      );
+    }
+  }
+}
+
+function readExecutiveCommandTargetBlueprintIds(command: ExecutiveCommand): string[] {
+  switch (command.action) {
+    case "inspect_blueprint":
+    case "summarize_blueprint":
+    case "start_blueprint_run":
+    case "update_blueprint_draft":
+    case "govern_blueprint_version":
+      return [command.payload.blueprintId];
+    case "batch_start_blueprint_runs":
+      return command.payload.blueprintIds;
+    case "request_human_action":
+      if (command.payload.blueprintId) return [command.payload.blueprintId];
+      if (command.payload.sourceContextType === "blueprint_governance") {
+        throw new ApiBadRequestError(
+          "executive_command_blueprint_scope_required",
+          "Blueprint governance human action requests require payload.blueprintId for Leader scope validation."
+        );
+      }
+      return [];
+    case "create_blueprint_draft":
+      return [];
+  }
 }
 
 async function requireBlueprint(store: HivewardStore, blueprintId: string): Promise<BlueprintDefinition> {
@@ -1600,34 +1656,39 @@ async function requireBlueprint(store: HivewardStore, blueprintId: string): Prom
   return blueprint;
 }
 
-async function createExecutiveBlueprintRun(
+async function startExecutiveBlueprintRunThroughWorker(
   store: HivewardStore,
+  worker: BlueprintWorker,
   session: HivewardChatSession,
   command: Extract<ExecutiveCommand, { action: "start_blueprint_run" | "batch_start_blueprint_runs" }>,
-  blueprintId: string,
+  blueprint: BlueprintDefinition,
   startedBy: string | undefined
 ): Promise<Extract<ExecutiveCommandResult, { action: "start_blueprint_run" }>> {
-  const blueprint = await requireBlueprint(store, blueprintId);
-  const run = await store.createBlueprintRun(blueprint, startedBy ?? executiveRoleId(session, command));
-  const now = new Date().toISOString();
-  const runRoom: RunRoom = await store.createRunRoom({
-    id: `run-room-${nanoid(10)}`,
-    companyId: blueprint.companyId,
-    blueprintId: blueprint.id,
-    runId: run.id,
-    status: "open",
-    title: command.action === "start_blueprint_run" ? command.payload.title ?? `${blueprint.name} run` : `${blueprint.name} run`,
-    summary: command.action === "start_blueprint_run" ? command.payload.summary : undefined,
-    managerRoleId: session.roleScope?.role === "leader" ? session.roleScope.leaderId : undefined,
-    createdAt: now,
-    updatedAt: now,
-    metadata: {
-      sourceContextType: "executive_chat",
-      chatSessionId: session.id,
-      executiveCommandAction: command.action,
-      sourceRole: command.sourceRole
+  const run = await worker.startRun(
+    blueprint,
+    startedBy ?? executiveRoleId(session, command),
+    {
+      runRoom: {
+        title: command.action === "start_blueprint_run" ? command.payload.title ?? `${blueprint.name} run` : `${blueprint.name} run`,
+        ...(command.action === "start_blueprint_run" && command.payload.summary !== undefined
+          ? { summary: command.payload.summary }
+          : {}),
+        ...(session.roleScope?.role === "leader" && session.roleScope.leaderId !== undefined
+          ? { managerRoleId: session.roleScope.leaderId }
+          : {}),
+        metadata: {
+          sourceContextType: "executive_chat",
+          chatSessionId: session.id,
+          executiveCommandAction: command.action,
+          sourceRole: command.sourceRole
+        }
+      }
     }
-  });
+  );
+  const runRoom = (await store.listRunRooms({ blueprintId: blueprint.id })).find((candidate) => candidate.runId === run.id);
+  if (!runRoom) {
+    throw new Error(`Worker-owned RunRoom was not created for blueprint run: ${run.id}`);
+  }
   const view = await store.getRunView(run.id);
   if (!view) {
     throw new Error(`Blueprint run view was not created: ${run.id}`);

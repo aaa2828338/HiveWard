@@ -38,6 +38,7 @@ import {
   type RunCommandStatus,
   type RunCommandStep,
   type RunCommandStepMode,
+  type RunRoom,
   type RunRoomStatus,
   type SummaryNodeConfig,
   type BlueprintDefinition,
@@ -96,6 +97,10 @@ const defaultSummaryHarnessPrompt = [
   "Perform a structured merge of the upstream node outputs.",
   "Preserve each upstream node label and output, deduplicate overlapping facts, and return the merged result in a clear structured form."
 ].join("\n");
+
+interface StartRunOptions {
+  runRoom?: Pick<RunRoom, "title" | "summary" | "managerRoleId" | "metadata">;
+}
 const flexibleJsonObjectSchema: Record<string, unknown> = {
   type: ["object", "null"],
   properties: {
@@ -476,24 +481,39 @@ export class BlueprintWorker {
     }
   }
 
-  async startRun(blueprint: BlueprintDefinition, startedBy: string): Promise<BlueprintRun> {
+  async startRun(blueprint: BlueprintDefinition, startedBy: string, options: StartRunOptions = {}): Promise<BlueprintRun> {
     const run = await this.store.createBlueprintRun(blueprint, startedBy);
     const runningRun = {
       ...run,
       status: "running" as const
     };
     await this.store.updateBlueprintRun(runningRun);
-    await this.ensureRunRoomForRun(blueprint, runningRun);
+    await this.ensureRunRoomForRun(blueprint, runningRun, options.runRoom);
     await this.event(runningRun.id, "blueprint.run.started", `Blueprint ${blueprint.name} started.`);
     const command = await this.ensureRegularRunCommand(blueprint, runningRun);
     this.scheduleRun(blueprint, runningRun, command);
     return runningRun;
   }
 
-  private async ensureRunRoomForRun(blueprint: BlueprintDefinition, run: BlueprintRun): Promise<void> {
+  private async ensureRunRoomForRun(
+    blueprint: BlueprintDefinition,
+    run: BlueprintRun,
+    runRoomOptions: StartRunOptions["runRoom"] = {}
+  ): Promise<void> {
     const existing = (await this.store.listRunRooms({ blueprintId: blueprint.id }))
       .find((candidate) => candidate.runId === run.id);
-    if (existing) return;
+    if (existing) {
+      await this.store.updateRunRoom({
+        id: existing.id,
+        ...(runRoomOptions.title !== undefined ? { title: runRoomOptions.title } : {}),
+        ...(runRoomOptions.summary !== undefined ? { summary: runRoomOptions.summary } : {}),
+        ...(runRoomOptions.managerRoleId !== undefined ? { managerRoleId: runRoomOptions.managerRoleId } : {}),
+        ...(runRoomOptions.metadata !== undefined
+          ? { metadata: { ...(existing.metadata ?? {}), ...runRoomOptions.metadata } }
+          : {})
+      });
+      return;
+    }
     const now = new Date().toISOString();
     await this.store.createRunRoom({
       id: `run-room-${nanoid(10)}`,
@@ -501,9 +521,12 @@ export class BlueprintWorker {
       blueprintId: blueprint.id,
       runId: run.id,
       status: "open",
-      title: blueprint.name,
+      title: runRoomOptions.title ?? blueprint.name,
+      ...(runRoomOptions.summary !== undefined ? { summary: runRoomOptions.summary } : {}),
+      ...(runRoomOptions.managerRoleId !== undefined ? { managerRoleId: runRoomOptions.managerRoleId } : {}),
       createdAt: run.startedAt,
-      updatedAt: now
+      updatedAt: now,
+      ...(runRoomOptions.metadata !== undefined ? { metadata: runRoomOptions.metadata } : {})
     });
   }
 
