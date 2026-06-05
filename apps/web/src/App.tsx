@@ -48,6 +48,7 @@ import type {
   ApplyHivewardUpdateResponse,
   HivewardUpdateStatus,
   ArchitectureBlueprintView,
+  ApprovalRequest,
   ApprovalThread,
   CompanyRoleDirectory,
   HumanActionResponse,
@@ -88,6 +89,7 @@ import {
 } from "./lib/blueprint-edit-state";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
 import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
+import { applyRunRoomOutputStreamEventToRunView, type RunRoomOutputStreamState } from "./lib/run-room-output-state";
 import { emptyBlueprintKanbanBoard } from "./lib/blueprint-kanban-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { HarnessLabel } from "./components/HarnessLabel";
@@ -155,12 +157,33 @@ function syncApprovalThreadsForRun(current: ApprovalThread[], runView: Blueprint
   ]);
 }
 
+function syncApprovalRequestsForRun(current: ApprovalRequest[], runView: BlueprintRunView): ApprovalRequest[] {
+  const runRequests = runView.approvalRequests;
+  if (!runRequests) return current;
+  return sortApprovalRequests([
+    ...runRequests,
+    ...current.filter((request) => request.runId !== runView.run.id)
+  ]);
+}
+
 function upsertApprovalThread(current: ApprovalThread[], thread: ApprovalThread): ApprovalThread[] {
   return sortApprovalThreads([thread, ...current.filter((candidate) => candidate.id !== thread.id)]);
 }
 
+function upsertApprovalRequests(current: ApprovalRequest[], requests: ApprovalRequest[]): ApprovalRequest[] {
+  const nextById = new Map(current.map((request) => [request.id, request]));
+  for (const request of requests) {
+    nextById.set(request.id, request);
+  }
+  return sortApprovalRequests([...nextById.values()]);
+}
+
 function sortApprovalThreads(threads: ApprovalThread[]): ApprovalThread[] {
   return threads.slice().sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
+}
+
+function sortApprovalRequests(requests: ApprovalRequest[]): ApprovalRequest[] {
+  return requests.slice().sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
 }
 
 function AppSystemLabel({ systemId }: { systemId: AppSystemId }) {
@@ -240,7 +263,9 @@ export function App() {
   const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
   const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
   const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
+  const [runRoomOutputStreamStates, setRunRoomOutputStreamStates] = useState<Record<string, RunRoomOutputStreamState>>({});
   const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
+  const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
   const [approvalThreads, setApprovalThreads] = useState<ApprovalThread[]>([]);
   const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
   const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
@@ -384,6 +409,7 @@ export function App() {
         nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
+        nextApprovalRequests,
         nextApprovalThreads,
         nextRoles,
         nextInboxProjections,
@@ -403,6 +429,7 @@ export function App() {
         loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
+        api.listApprovalRequests(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.getRoleDirectory().catch(() => undefined),
         api.listInboxProjections().catch(() => []),
@@ -437,6 +464,7 @@ export function App() {
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
+      setApprovalRequests(nextApprovalRequests);
       setApprovalThreads(nextApprovalThreads);
       setRoleDirectory(nextRoles?.roles);
       setArchitecture(nextRoles?.architecture);
@@ -684,6 +712,8 @@ export function App() {
       }),
     [blueprint?.id, runPageBlueprint?.id, runs, section, selectedRunId]
   );
+  const selectedRunRoomId = selectedRunId ? runDetailsById[selectedRunId]?.runRoomOutput?.runRoomId : undefined;
+  const selectedRunRoomOutputStreamState = selectedRunRoomId ? runRoomOutputStreamStates[selectedRunRoomId] ?? "idle" : "idle";
 
   const selectBlueprint = useCallback(
     (blueprintId: string) => {
@@ -831,6 +861,7 @@ export function App() {
     setRunDetailsById((current) => ({ ...current, [runView.run.id]: runView }));
     setRunSummaries((current) => upsertRunSummary(current, runView.run));
     setApprovals((current) => syncApprovalsForRun(current, runView));
+    setApprovalRequests((current) => syncApprovalRequestsForRun(current, runView));
     setApprovalThreads((current) => syncApprovalThreadsForRun(current, runView));
   }, []);
 
@@ -1339,6 +1370,10 @@ export function App() {
 
   const applyApprovalRequestResponse = useCallback(
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
+      setApprovalRequests((current) => upsertApprovalRequests(
+        current,
+        [response.approvalRequest, response.nextApprovalRequest].filter((request): request is ApprovalRequest => Boolean(request))
+      ));
       if (response.approvalThread) {
         const thread = response.approvalThread;
         setApprovalThreads((current) => upsertApprovalThread(current, thread));
@@ -1346,9 +1381,8 @@ export function App() {
       if (response.run) {
         applyRunView(response.run);
         setSelectedRunId(response.run.run.id);
-        return;
       }
-      await hydrateWorkspace({ blueprintId: blueprint?.id });
+      await hydrateWorkspace({ blueprintId: blueprint?.id, runId: response.run?.run.id });
     },
     [applyRunView, blueprint?.id, hydrateWorkspace]
   );
@@ -1417,13 +1451,15 @@ export function App() {
 
   const refreshInboxAndApprovals = useCallback(async () => {
     try {
-      const [nextApprovals, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
+      const [nextApprovals, nextApprovalRequests, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
         api.listPendingApprovals(),
+        api.listApprovalRequests(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.listInboxProjections(),
         api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
       ]);
       setApprovals(nextApprovals);
+      setApprovalRequests(nextApprovalRequests);
       setApprovalThreads(nextApprovalThreads);
       setInboxProjections(nextInboxProjections);
       setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
@@ -1501,6 +1537,47 @@ export function App() {
       cancelled = true;
     };
   }, [applyRunView, runDetailsById, selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRunId || !selectedRunRoomId) return;
+
+    const controller = new AbortController();
+    setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "connecting" }));
+
+    void api.streamRunRoomOutputEvents(
+      selectedRunRoomId,
+      {
+        onEvent: (event) => {
+          if (event.runRoomId !== selectedRunRoomId) return;
+          if (event.type === "output_error") {
+            setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "error" }));
+            return;
+          }
+
+          setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "live" }));
+          if (event.type === "heartbeat") return;
+
+          setRunDetailsById((current) => {
+            const currentRunView = current[selectedRunId];
+            if (!currentRunView) return current;
+            if (currentRunView.runRoomOutput?.runRoomId && currentRunView.runRoomOutput.runRoomId !== selectedRunRoomId) return current;
+
+            const nextRunView = applyRunRoomOutputStreamEventToRunView(currentRunView, event);
+            if (nextRunView === currentRunView) return current;
+            return { ...current, [selectedRunId]: nextRunView };
+          });
+        }
+      },
+      controller.signal
+    ).catch((streamError) => {
+      if (isAbortError(streamError)) return;
+      setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "error" }));
+    });
+
+    return () => {
+      controller.abort();
+    };
+  }, [selectedRunId, selectedRunRoomId]);
 
   useEffect(() => {
     if (!pollingRunId) {
@@ -1706,6 +1783,7 @@ export function App() {
           blueprints={blueprints}
           blueprint={runPageBlueprint}
           selectedRunId={selectedRunId}
+          runRoomOutputStreamState={selectedRunRoomOutputStreamState}
           language={language}
           t={t}
           onSelectBlueprint={selectRunPageBlueprint}
@@ -1718,6 +1796,7 @@ export function App() {
       return (
         <ApprovalsPage
           approvals={approvals}
+          approvalRequests={approvalRequests}
           approvalThreads={approvalThreads}
           inboxProjections={inboxProjections}
           inboxResponsesByRequestId={inboxResponsesByRequestId}
@@ -3932,6 +4011,10 @@ function emptyRuntimeOverview(): RuntimeOverview {
     sessions: [],
     tasks: []
   };
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
 }
 
 function isActionableApproval(approval: PendingApprovalItem): boolean {

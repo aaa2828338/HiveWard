@@ -1,4 +1,6 @@
-﻿export const agentOutputOwnerTypes = [
+import type { RunInterjection } from "./runRoom";
+
+export const agentOutputOwnerTypes = [
   "chat_session",
   "run_room",
   "manager_thread",
@@ -36,40 +38,28 @@ export interface AgentOutputEvent {
   createdAt: string;
 }
 
-export const runRoomFeedRowDisplayModes = ["formal_message", "execution_output"] as const;
-export type RunRoomFeedRowDisplayMode = typeof runRoomFeedRowDisplayModes[number];
-
-export const runRoomFeedRowSourceTypes = ["user", "manager", "worker", "system"] as const;
-export type RunRoomFeedRowSourceType = typeof runRoomFeedRowSourceTypes[number];
-
-export interface RunRoomFeedRowActions {
-  canReply?: boolean;
-  canMention?: boolean;
-  canDirectMessage?: boolean;
-  canSelectSendTarget?: boolean;
-  canApprove?: boolean;
-  canReject?: boolean;
-  canOpenInbox?: boolean;
+export interface RunRoomOutputSnapshot {
+  runRoomId: string;
+  events: AgentOutputEvent[];
+  interjections: RunInterjection[];
 }
 
-export interface RunRoomFeedRow {
-  id: string;
-  runRoomId: string;
-  sourceType: RunRoomFeedRowSourceType;
-  displayMode: RunRoomFeedRowDisplayMode;
-  bodyMarkdown: string;
-  agentOutputEventId?: string;
-  workerTaskId?: string;
-  managerCommandId?: string;
-  humanActionRequestId?: string;
-  runtimeState?: Record<string, unknown>;
-  actions?: RunRoomFeedRowActions;
-  createdAt: string;
-}
+const runRoomOutputEventKinds = new Set<AgentOutputKind>([
+  "message_started",
+  "message_delta",
+  "message_completed",
+  "message_failed",
+  "runtime_state"
+]);
 
-export interface RunRoomFeed {
-  runRoomId: string;
-  rows: RunRoomFeedRow[];
+export function isCanonicalRunRoomOutputEvent(runRoomId: string, event: AgentOutputEvent): boolean {
+  return event.ownerType === "run_room" &&
+    event.ownerId === runRoomId &&
+    event.sourceType === "blueprint_node_run" &&
+    typeof event.sourceId === "string" &&
+    event.sourceId.length > 0 &&
+    runRoomOutputEventKinds.has(event.kind) &&
+    hasMatchingMetadataRunRoomId(runRoomId, event);
 }
 
 export function assertAgentOutputEvent(event: AgentOutputEvent): void {
@@ -93,32 +83,6 @@ export function isAgentOutputEvent(value: unknown): value is AgentOutputEvent {
   }
 }
 
-export function assertRunRoomFeedRow(row: RunRoomFeedRow): void {
-  assertString(row.id, "RunRoomFeedRow.id");
-  assertString(row.runRoomId, "RunRoomFeedRow.runRoomId");
-  assertAllowed(row.sourceType, runRoomFeedRowSourceTypes, "RunRoomFeedRow.sourceType");
-  assertAllowed(row.displayMode, runRoomFeedRowDisplayModes, "RunRoomFeedRow.displayMode");
-  assertString(row.bodyMarkdown, "RunRoomFeedRow.bodyMarkdown");
-  assertString(row.createdAt, "RunRoomFeedRow.createdAt");
-  if (row.sourceType === "worker" && row.displayMode !== "execution_output") {
-    throw new Error("RunRoomFeedRow.sourceType worker must use execution_output displayMode.");
-  }
-  if (
-    row.displayMode === "execution_output" &&
-    (
-      row.actions?.canReply === true ||
-      row.actions?.canMention === true ||
-      row.actions?.canDirectMessage === true ||
-      row.actions?.canSelectSendTarget === true ||
-      row.actions?.canApprove === true ||
-      row.actions?.canReject === true ||
-      row.actions?.canOpenInbox === true
-    )
-  ) {
-    throw new Error("RunRoomFeedRow.displayMode execution_output cannot expose reply, mention, direct message, send-target, approval, or inbox actions.");
-  }
-}
-
 function assertString(value: unknown, fieldName: string): asserts value is string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`${fieldName} is required.`);
@@ -129,4 +93,14 @@ function assertAllowed<T extends readonly string[]>(value: unknown, allowedValue
   if (typeof value !== "string" || !allowedValues.includes(value)) {
     throw new Error(`${fieldName} must be one of ${allowedValues.join(", ")}.`);
   }
+}
+
+function hasMatchingMetadataRunRoomId(runRoomId: string, event: AgentOutputEvent): boolean {
+  const metadataRunRoomId = readMetadataString(event.metadata, "runRoomId");
+  return metadataRunRoomId === undefined || metadataRunRoomId === runRoomId;
+}
+
+function readMetadataString(metadata: AgentOutputEvent["metadata"], key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" && value ? value : undefined;
 }

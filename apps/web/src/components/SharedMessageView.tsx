@@ -1,10 +1,10 @@
-﻿import { Bot, Brain, Loader2, Square, Wrench } from "lucide-react";
-import type { ChatRuntimeActivity, RunRoomFeedRow } from "@hiveward/shared";
+import { Bot, Brain, Loader2, Square, Wrench } from "lucide-react";
+import type { ChatRuntimeActivity } from "@hiveward/shared";
 import type { ModelOutputThreadMessage } from "../lib/model-output-thread";
 import { MarkdownRenderer } from "./MarkdownRenderer";
 
 export interface SharedMessageViewProps {
-  message: ModelOutputThreadMessage | RunRoomFeedRow;
+  message: ModelOutputThreadMessage;
   avatarLabel?: string;
   speakerLabel?: string;
   pendingLabel?: string;
@@ -24,12 +24,13 @@ export function SharedMessageView({
   formatRuntimeActivityTitle = (activity) => activity.phase,
   formatRuntimeActivityTime = () => ""
 }: SharedMessageViewProps) {
-  const role = "role" in message ? message.role : message.sourceType;
-  const bodyMarkdown = "content" in message ? message.content : message.bodyMarkdown;
-  const status = "status" in message ? message.status : undefined;
-  const runtimeActivities = "runtimeActivities" in message ? message.runtimeActivities ?? message.runtimeRef?.activity ?? [] : [];
+  const role = message.role;
+  const bodyMarkdown = message.content;
+  const status = message.status;
+  const runtimeActivities = (message.runtimeActivities ?? message.runtimeRef?.activity ?? []).filter((activity) => activity.status !== "completed");
   const isUser = role === "user";
   const rowClass = role ?? "system";
+  const runtimeStatus = status === "streaming" ? message.runtimeStatus : undefined;
 
   return (
     <article className={`shared-message-row shared-message-row-${rowClass} ${status ?? ""}`}>
@@ -39,10 +40,10 @@ export function SharedMessageView({
       <div className={`shared-message shared-message-${rowClass} ${status ?? ""}`}>
         {speakerLabel && <strong className="shared-message-speaker">{speakerLabel}</strong>}
         {bodyMarkdown ? <MarkdownRenderer value={bodyMarkdown} className="shared-message-body" /> : null}
-        {"runtimeStatus" in message && message.runtimeStatus ? (
+        {runtimeStatus ? (
           <div className="shared-message-runtime-status">
             <Loader2 className="spin" size={15} />
-            <span>{message.runtimeStatus.label}</span>
+            <span>{runtimeStatus.label}</span>
           </div>
         ) : null}
         {runtimeActivities.length > 0 ? (
@@ -52,7 +53,7 @@ export function SharedMessageView({
                 {activity.phase === "command" ? <Square size={12} /> : activity.phase === "tool" ? <Wrench size={12} /> : <Brain size={12} />}
                 <span className="shared-runtime-activity-time">{formatRuntimeActivityTime(activity.updatedAt)}</span>
                 <span className="shared-runtime-activity-title">{formatRuntimeActivityTitle(activity)}</span>
-                <span className="shared-runtime-activity-label">{activity.label}</span>
+                <span className="shared-runtime-activity-label" title={activity.label}>{activity.label}</span>
               </div>
             ))}
           </div>

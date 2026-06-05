@@ -84,8 +84,16 @@ describe("execution rebuild old-path exclusion gate", () => {
       "[\"recent\", \"runs\"].join(\"_\")",
       "HistoryPage",
       "historical-run",
+      // Historical old RunRoom feed terms are forbidden in product source; retained here as gate facts only:
+      // 保留为历史事实，不参与决策.
       "createMissingRunRoomFeedSystemRow",
       "runRoomFeedHistoricalFactOnlyMarker",
+      "RunRoomFeedView",
+      "RunRoomFeedRow",
+      "feed_snapshot",
+      "feed_row",
+      "runRoomFeed",
+      "run-room-feed",
       "history-page-grid",
       "history-list-row",
       "history-list-button",
@@ -263,7 +271,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     const workerTests = readSource("apps/api/src/worker/blueprintWorker.test.ts");
     const workspacePageTests = readSource("apps/web/src/components/WorkspacePages.test.tsx");
     const runStateTests = readSource("apps/web/src/lib/run-state.test.ts");
-    const runRoomStateTests = readSource("apps/web/src/lib/run-room-state.test.ts");
+    const runRoomOutputStateTests = readSource("apps/web/src/lib/run-room-output-state.test.ts");
     const adapterTests = readSource("packages/adapter/src/sdk-runtime/sdk-runtime.test.ts");
     const lifecycleContractTests = readSource("packages/shared/src/lifecycle.test.ts");
 
@@ -338,15 +346,16 @@ describe("execution rebuild old-path exclusion gate", () => {
       "marks missing approval discussion projection unavailable instead of synthesizing message-only",
       "does not synthesize pending approvals from legacy node output"
     ]);
-    expectSourceToContainAll(runRoomStateTests, [
-      "does not project residual historical run records as normal feed rows",
-      "expect(rows).toEqual([])",
-      "expect(rows.some(canOpenRunRoomFeedWorkerDetails)).toBe(false)",
-      "keeps missing or empty canonical feed separate from feed rows",
-      "expect(buildRunRoomFeedRowsForDisplay(createRunView())).toEqual([])"
+    expectSourceToContainAll(runRoomOutputStateTests, [
+      "does not render runtime_state alone as a standalone message",
+      "expect(messages).toEqual([])",
+      "filters old owners, mismatched run rooms, missing source ids, and tool_state events",
+      "expect(messages[0]?.content).toBe(\"valid output\")",
+      "hides raw invocation output after a release report exists while keeping user interjections"
     ]);
     expectSourceToContainAll(workspacePageTests, [
-      "renders RunRoomFeed rows instead of residual transcript and timeline facts",
+      "renders only the active RunRoom output invocation instead of residual transcript and timeline facts",
+      "keeps terminal RunRoom output text while hiding finished runtime records",
       "derives preflight display mode from command step facts instead of node-run id prefixes",
       "does not use legacy timeline fallback when command and step facts exist",
       "renders explicit missing execution facts when canonical trace facts are absent",
@@ -356,8 +365,9 @@ describe("execution rebuild old-path exclusion gate", () => {
       "BlueprintKanbanPage Blueprint Kanban",
       "ignores saved old run widgets instead of projecting normal dashboard UI",
       "expect(html).not.toContain(\"Saved run records\")",
-      "expect(html).toContain(\"No RunRoomFeed rows yet.\")",
-      "expect(html).not.toContain(\"Execution details\")"
+      "expect(html).toContain(\"No run output yet.\")",
+      "expect(html).not.toContain(\"Execution details\")",
+      "expect(html).not.toContain(\"humanReportMd\")"
     ]);
     expectSourceToContainAll(adapterTests, [
       "does not mark Codex resume proven when the provider starts a new thread",

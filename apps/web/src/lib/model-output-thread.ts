@@ -4,8 +4,7 @@
   ChatRuntimeActivity,
   ChatRuntimeRef,
   HarnessId,
-  RuntimeObjectSource,
-  RunRoomFeedRow
+  RuntimeObjectSource
 } from "@hiveward/shared";
 import { isAgentOutputEvent } from "@hiveward/shared";
 
@@ -21,8 +20,6 @@ export interface ModelOutputThreadMessage {
   id: string;
   sessionId?: string;
   role: ModelOutputMessageRole;
-  sourceType?: RunRoomFeedRow["sourceType"];
-  displayMode?: RunRoomFeedRow["displayMode"];
   content: string;
   attachments?: ChatAttachment[];
   harnessId?: HarnessId;

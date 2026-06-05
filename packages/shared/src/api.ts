@@ -17,7 +17,7 @@ import type { PortableBlueprintPackage, BlueprintDefinition, BlueprintRunSummary
 import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
-import type { AgentOutputEvent, RunRoomFeed } from "./agentOutput";
+import type { AgentOutputEvent, RunRoomOutputSnapshot } from "./agentOutput";
 import type { BlueprintKanbanBoard, HumanActionResponse, InboxProjection, RunInterjection } from "./runRoom";
 
 export interface ListBlueprintsResponse {
@@ -69,22 +69,29 @@ export interface BlueprintRunResponse {
   run: BlueprintRunView;
 }
 
-export interface RunRoomFeedResponse {
-  feed: RunRoomFeed;
+export interface RunRoomOutputEventsResponse {
+  output: RunRoomOutputSnapshot;
 }
 
-export type RunRoomFeedStreamEvent =
+export type RunRoomOutputStreamEvent =
   | {
-      type: "feed_snapshot";
+      type: "output_snapshot";
       runRoomId: string;
-      feed: RunRoomFeed;
+      output: RunRoomOutputSnapshot;
       cursor?: string;
       emittedAt: string;
     }
   | {
-      type: "feed_row";
+      type: "agent_output_event";
       runRoomId: string;
-      row: RunRoomFeed["rows"][number];
+      event: AgentOutputEvent;
+      cursor: string;
+      emittedAt: string;
+    }
+  | {
+      type: "run_interjection";
+      runRoomId: string;
+      interjection: RunInterjection;
       cursor: string;
       emittedAt: string;
     }
@@ -94,7 +101,7 @@ export type RunRoomFeedStreamEvent =
       emittedAt: string;
     }
   | {
-      type: "feed_error";
+      type: "output_error";
       runRoomId: string;
       error: {
         code: string;
@@ -111,7 +118,7 @@ export interface CreateRunInterjectionRequest {
 export interface RunInterjectionResponse {
   interjection: RunInterjection;
   run?: BlueprintRunView;
-  feed: RunRoomFeed;
+  output: RunRoomOutputSnapshot;
 }
 
 export interface ListBlueprintRunSummariesResponse {

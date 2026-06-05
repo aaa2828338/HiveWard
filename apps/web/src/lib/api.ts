@@ -90,7 +90,8 @@
   ExecutiveCommand,
   ExecuteExecutiveCommandResponse,
   RunInterjectionResponse,
-  RunRoomFeedResponse
+  RunRoomOutputEventsResponse,
+  RunRoomOutputStreamEvent
 } from "@hiveward/shared";
 
 const importMetaEnv = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {};
@@ -115,6 +116,10 @@ export function isClosedApprovalConflictError(error: unknown): boolean {
 
 export interface ChatStreamHandlers {
   onEvent: (event: AgentOutputEvent) => void;
+}
+
+export interface RunRoomOutputStreamHandlers {
+  onEvent: (event: RunRoomOutputStreamEvent) => void;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -189,6 +194,26 @@ async function consumeChatStreamResponse(response: Response, handlers: ChatStrea
 
   buffer += decoder.decode();
   consumeChatStreamBuffer(`${buffer}\n\n`, handlers);
+}
+
+async function consumeRunRoomOutputStreamResponse(response: Response, handlers: RunRoomOutputStreamHandlers): Promise<void> {
+  if (!response.body) {
+    throw new Error("RunRoom output stream response did not include a body.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = consumeRunRoomOutputStreamBuffer(buffer, handlers);
+  }
+
+  buffer += decoder.decode();
+  consumeRunRoomOutputStreamBuffer(`${buffer}\n\n`, handlers);
 }
 
 export const api = {
@@ -482,9 +507,25 @@ export const api = {
     return response.run;
   },
 
-  async getRunRoomFeed(runRoomId: string): Promise<RunRoomFeedResponse["feed"]> {
-    const response = await request<RunRoomFeedResponse>(`/api/run-rooms/${encodeURIComponent(runRoomId)}/feed`);
-    return response.feed;
+  async getRunRoomOutput(runRoomId: string): Promise<RunRoomOutputEventsResponse["output"]> {
+    const response = await request<RunRoomOutputEventsResponse>(`/api/run-rooms/${encodeURIComponent(runRoomId)}/output/events`);
+    return response.output;
+  },
+
+  async streamRunRoomOutputEvents(runRoomId: string, handlers: RunRoomOutputStreamHandlers, signal?: AbortSignal): Promise<void> {
+    const response = await fetchApi(`/api/run-rooms/${encodeURIComponent(runRoomId)}/output/events/stream`, {
+      method: "GET",
+      signal
+    });
+
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      const message = body?.error?.message ?? `Request failed: ${response.status}`;
+      const code = typeof body?.error?.code === "string" ? body.error.code : undefined;
+      throw new ApiRequestError(message, response.status, code);
+    }
+
+    await consumeRunRoomOutputStreamResponse(response, handlers);
   },
 
   async sendRunInterjection(runRoomId: string, input: CreateRunInterjectionRequest): Promise<RunInterjectionResponse> {
@@ -695,6 +736,16 @@ function consumeChatStreamBuffer(buffer: string, handlers: ChatStreamHandlers): 
   return remainder;
 }
 
+function consumeRunRoomOutputStreamBuffer(buffer: string, handlers: RunRoomOutputStreamHandlers): string {
+  const frames = buffer.split(/\n\n/);
+  const remainder = frames.pop() ?? "";
+  for (const frame of frames) {
+    const event = readRunRoomOutputStreamFrame(frame);
+    if (event) handlers.onEvent(event);
+  }
+  return remainder;
+}
+
 function readChatStreamFrame(frame: string): AgentOutputEvent | undefined {
   const data = frame
     .split(/\n/)
@@ -703,4 +754,14 @@ function readChatStreamFrame(frame: string): AgentOutputEvent | undefined {
     .join("\n");
   if (!data) return undefined;
   return JSON.parse(data) as AgentOutputEvent;
+}
+
+function readRunRoomOutputStreamFrame(frame: string): RunRoomOutputStreamEvent | undefined {
+  const data = frame
+    .split(/\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (!data) return undefined;
+  return JSON.parse(data) as RunRoomOutputStreamEvent;
 }

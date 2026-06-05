@@ -145,6 +145,8 @@ export function ChatPage({
   const [historyLoadingSessionKey, setHistoryLoadingSessionKey] = useState<string | undefined>();
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [rebuildFromHivewardHistory, setRebuildFromHivewardHistory] = useState(false);
+  const [proposalSubmittingMessageId, setProposalSubmittingMessageId] = useState<string | undefined>();
+  const [submittedBlueprintProposalMessageIds, setSubmittedBlueprintProposalMessageIds] = useState<Set<string>>(() => new Set());
   const threadRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
@@ -862,6 +864,38 @@ export function ChatPage({
     }
   };
 
+  const submitBlueprintProposal = async (message: ChatMessage) => {
+    if (!activeSessionView || !canSubmitBlueprintProposalMessage(message, activeSessionView)) return;
+    const sourceRole = executiveSourceRoleForSession(activeSessionView);
+    if (!sourceRole) return;
+    const blueprintId = activeSessionView.roleScope?.blueprintId ?? selectedBlueprintScopeId;
+    if (sourceRole === "leader" && !blueprintId) {
+      setError(copy.blueprintProposalSubmitFailed);
+      return;
+    }
+
+    setProposalSubmittingMessageId(message.id);
+    setError(undefined);
+    try {
+      await api.executeExecutiveCommand(activeSessionView.id, {
+        action: "submit_blueprint_proposal",
+        sourceRole,
+        payload: {
+          title: deriveBlueprintProposalTitle(message.content, titleBlueprint, copy),
+          bodyMarkdown: message.content,
+          ...(blueprintId ? { blueprintId } : {}),
+          sourceMessageId: message.id
+        }
+      });
+      setSubmittedBlueprintProposalMessageIds((current) => new Set(current).add(message.id));
+      void onInboxProjectionsRefreshNeeded?.();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : copy.blueprintProposalSubmitFailed);
+    } finally {
+      setProposalSubmittingMessageId((current) => (current === message.id ? undefined : current));
+    }
+  };
+
   const stopMessage = () => {
     streamAbortRef.current?.abort();
   };
@@ -1093,6 +1127,9 @@ export function ChatPage({
               ) : (
                 messages.map((message) => {
                   const runtimeActivities = message.runtimeActivities ?? message.runtimeRef?.activity ?? [];
+                  const canSubmitProposal = canSubmitBlueprintProposalMessage(message, activeSessionView);
+                  const proposalSubmitted = submittedBlueprintProposalMessageIds.has(message.id);
+                  const proposalSubmitting = proposalSubmittingMessageId === message.id;
                   return (
                     <article
                       key={message.id}
@@ -1141,6 +1178,19 @@ export function ChatPage({
                                 {attachment.name}
                               </span>
                             ))}
+                          </div>
+                        ) : null}
+                        {canSubmitProposal ? (
+                          <div className="chat-message-actions">
+                            <button
+                              type="button"
+                              className="chat-message-action"
+                              disabled={proposalSubmitted || proposalSubmitting}
+                              onClick={() => void submitBlueprintProposal(message)}
+                            >
+                              {proposalSubmitting ? <Loader2 className="spin" size={14} /> : proposalSubmitted ? <Check size={14} /> : <ShieldCheck size={14} />}
+                              {proposalSubmitted ? copy.blueprintProposalSubmitted : proposalSubmitting ? copy.submittingBlueprintProposal : copy.submitBlueprintProposal}
+                            </button>
                           </div>
                         ) : null}
                         {message.status === "failed" && <span className="chat-message-status">{copy.failed}</span>}
@@ -1912,6 +1962,34 @@ function deriveSessionViewTitle(sessionView: HivewardSessionView, messages: Chat
   return firstUserMessage.length > 24 ? `${firstUserMessage.slice(0, 24)}...` : firstUserMessage;
 }
 
+function canSubmitBlueprintProposalMessage(message: ChatMessage, sessionView: HivewardSessionView | undefined): boolean {
+  if (!sessionView || sessionView.mode !== "blueprint") return false;
+  if (message.role !== "assistant") return false;
+  if (message.status === "streaming" || message.status === "failed") return false;
+  if (!message.content.trim()) return false;
+  const sourceRole = executiveSourceRoleForSession(sessionView);
+  return sourceRole === "ceo" || sourceRole === "leader";
+}
+
+function executiveSourceRoleForSession(sessionView: HivewardSessionView | undefined): "ceo" | "leader" | undefined {
+  const role = sessionView?.roleScope?.role;
+  return role === "ceo" || role === "leader" ? role : undefined;
+}
+
+function deriveBlueprintProposalTitle(
+  content: string,
+  blueprint: BlueprintDefinition | undefined,
+  copy: ReturnType<typeof chatCopy>
+): string {
+  const line = content
+    .split(/\r?\n/)
+    .map((item) => item.replace(/^#+\s*/, "").replace(/\*\*/g, "").trim())
+    .find((item) => item && item !== "```json" && item !== "```" && !item.startsWith("{") && !item.startsWith("["));
+  const fallback = blueprint ? `${blueprint.name} ${copy.blueprintProposalTitle}` : copy.blueprintProposalTitle;
+  const title = line ?? fallback;
+  return title.length > 80 ? `${title.slice(0, 77)}...` : title;
+}
+
 function formatHarnessSpeaker(harnessId: string, agentId?: string): string {
   const harnessLabel = formatHarnessLabel(harnessId);
   return agentId ? `${harnessLabel} / ${agentId}` : harnessLabel;
@@ -2021,6 +2099,11 @@ function chatCopy(language: Language) {
       modeChat: "\u804a\u5929",
       modeBlueprint: "\u6784\u5efa\u84dd\u56fe",
       modeSkillSplit: "\u62c6\u5206 Skill",
+      blueprintProposalTitle: "\u84dd\u56fe\u63d0\u6848",
+      submitBlueprintProposal: "\u63d0\u4ea4\u5ba1\u6279",
+      submittingBlueprintProposal: "\u6b63\u5728\u63d0\u4ea4...",
+      blueprintProposalSubmitted: "\u5df2\u63d0\u4ea4\u5ba1\u6279",
+      blueprintProposalSubmitFailed: "\u63d0\u4ea4\u84dd\u56fe\u63d0\u6848\u5ba1\u6279\u5931\u8d25\u3002",
       emptyTitle: "\u7b49\u5f85\u6d88\u606f",
       emptyBody: "\u5f53\u524d\u89c6\u56fe\u8fd8\u6ca1\u6709\u6d88\u606f\u3002",
       you: "\u4f60",
@@ -2129,6 +2212,11 @@ function chatCopy(language: Language) {
     modeChat: "Chat",
     modeBlueprint: "Build blueprint",
     modeSkillSplit: "Split skill",
+    blueprintProposalTitle: "Blueprint proposal",
+    submitBlueprintProposal: "Submit for approval",
+    submittingBlueprintProposal: "Submitting...",
+    blueprintProposalSubmitted: "Submitted for approval",
+    blueprintProposalSubmitFailed: "Failed to submit blueprint proposal for approval.",
     emptyTitle: "Waiting for messages",
     emptyBody: "This session has no messages yet.",
     you: "You",

@@ -26,8 +26,8 @@ import type {
   OpenClawConfigState,
   OpenClawVersionInfo,
   RuntimeOverview,
-  RunRoomFeed,
-  RunRoomFeedStreamEvent,
+  RunRoomOutputSnapshot,
+  RunRoomOutputStreamEvent,
   StartAgentTaskInput,
   WorkspaceDashboard,
   ApprovalRequest,
@@ -2977,14 +2977,14 @@ describe("apiRouter", () => {
     }
   });
 
-  it("returns 404 for missing run room feed resources", async () => {
+  it("returns 404 for missing run room output resources", async () => {
     const fixture = await createStoreFixture();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/feed`);
-        const body = await feedResponse.json() as { error?: { code?: string } };
+        const outputResponse = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/output/events`);
+        const body = await outputResponse.json() as { error?: { code?: string } };
 
-        expect(feedResponse.status, JSON.stringify(body)).toBe(404);
+        expect(outputResponse.status, JSON.stringify(body)).toBe(404);
         expect(body.error?.code).toBe("run_room_not_found");
       });
     } finally {
@@ -2992,64 +2992,16 @@ describe("apiRouter", () => {
     }
   });
 
-  it("projects run room feed rows only from validated owners", async () => {
+  it("returns run room output events only from canonical run-room node invocations", async () => {
     const fixture = await createStoreFixture();
     try {
       const createdAt = "2026-06-03T00:00:00.000Z";
-      const runRoom = createRunRoomFact({ id: "run-room-feed-owner", runId: "run-feed-owner" });
+      const runRoom = createRunRoomFact({ id: "run-room-output-owner", runId: "run-output-owner" });
       const otherRunRoom = createRunRoomFact({ id: "run-room-other", runId: "run-other" });
       await fixture.store.createRunRoom(runRoom);
       await fixture.store.createRunRoom(otherRunRoom);
-      const managerCommand: ManagerCommand = {
-        id: "manager-command-feed",
-        runRoomId: runRoom.id,
-        action: "dispatch_worker_task",
-        status: "running",
-        createdAt,
-        updatedAt: createdAt
-      };
-      await fixture.store.appendManagerCommand(managerCommand);
-      const otherManagerCommand: ManagerCommand = {
-        id: "manager-command-other-feed",
-        runRoomId: otherRunRoom.id,
-        action: "dispatch_worker_task",
-        status: "running",
-        createdAt,
-        updatedAt: createdAt
-      };
-      await fixture.store.appendManagerCommand(otherManagerCommand);
-      const workerTask: WorkerTask = {
-        id: "worker-task-feed",
-        runRoomId: runRoom.id,
-        managerCommandId: managerCommand.id,
-        status: "running",
-        createdAt,
-        updatedAt: createdAt
-      };
-      await fixture.store.createWorkerTask(workerTask);
-      await fixture.store.createWorkerTask({
-        id: "worker-task-other-feed",
-        runRoomId: otherRunRoom.id,
-        managerCommandId: otherManagerCommand.id,
-        status: "running",
-        createdAt,
-        updatedAt: createdAt
-      });
-      const humanActionRequest: HumanActionRequest = {
-        id: "human-action-request-feed",
-        runRoomId: runRoom.id,
-        sourceContextType: "run_room",
-        sourceContextId: runRoom.id,
-        responseIntent: "reply_required",
-        status: "pending",
-        title: "Human action",
-        bodyMarkdown: "Please respond.",
-        createdAt,
-        updatedAt: createdAt
-      };
-      await fixture.store.appendHumanActionRequest(humanActionRequest);
       await fixture.store.appendRunInterjection({
-        id: "run-interjection-feed",
+        id: "run-interjection-output",
         runRoomId: runRoom.id,
         target: "manager",
         messageMarkdown: "User interjection.",
@@ -3059,56 +3011,81 @@ describe("apiRouter", () => {
         id: "run-room-output-1",
         ownerType: "run_room",
         ownerId: runRoom.id,
-        actorType: "system",
-        kind: "message_completed",
+        actorType: "worker",
+        kind: "message_started",
         sequence: 1,
-        bodyMarkdown: "Run room system output.",
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-1",
+        bodyMarkdown: "Started output must not create a row.",
+        metadata: { runRoomId: runRoom.id },
         createdAt
       });
       await fixture.store.appendAgentOutputEvent({
-        id: "worker-output-1",
+        id: "message-delta-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "worker",
+        kind: "message_delta",
+        sequence: 2,
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-1",
+        delta: "Streaming delta belongs to the invocation.",
+        metadata: { runRoomId: runRoom.id },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "completed-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 3,
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-1",
+        bodyMarkdown: "Final node output.",
+        metadata: { runRoomId: runRoom.id },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "old-worker-owner-output",
         ownerType: "worker_task",
-        ownerId: workerTask.id,
+        ownerId: "worker-task-output",
         actorType: "worker",
         kind: "message_completed",
         sequence: 1,
-        bodyMarkdown: "Worker execution output.",
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-old-owner",
+        bodyMarkdown: "Old worker owner must not project.",
         metadata: {
           runRoomId: runRoom.id,
-          workerTaskId: workerTask.id
-        },
-        runtimeState: {
-          source: "codex",
-          status: "succeeded"
+          workerTaskId: "worker-task-output"
         },
         createdAt
       });
       await fixture.store.appendAgentOutputEvent({
-        id: "manager-output-1",
+        id: "old-manager-owner-output",
         ownerType: "manager_thread",
-        ownerId: managerCommand.id,
+        ownerId: "manager-thread-output",
         actorType: "manager",
         kind: "message_completed",
         sequence: 1,
-        bodyMarkdown: "Manager formal message.",
-        metadata: {
-          runRoomId: runRoom.id,
-          managerCommandId: managerCommand.id
-        },
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-old-manager",
+        bodyMarkdown: "Old manager owner must not project.",
+        metadata: { runRoomId: runRoom.id },
         createdAt
       });
       await fixture.store.appendAgentOutputEvent({
-        id: "human-action-output-1",
+        id: "old-human-action-owner-output",
         ownerType: "human_action_request",
-        ownerId: humanActionRequest.id,
+        ownerId: "human-action-output",
         actorType: "user",
         kind: "message_completed",
         sequence: 1,
-        bodyMarkdown: "Human action reply.",
-        metadata: {
-          runRoomId: runRoom.id,
-          humanActionRequestId: humanActionRequest.id
-        },
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-old-human-action",
+        bodyMarkdown: "Old human action owner must not project.",
+        metadata: { runRoomId: runRoom.id },
         createdAt
       });
       await fixture.store.appendAgentOutputEvent({
@@ -3118,7 +3095,9 @@ describe("apiRouter", () => {
         actorType: "leader",
         kind: "message_completed",
         sequence: 1,
-        bodyMarkdown: "Chat output must not bleed into run room feed.",
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-chat",
+        bodyMarkdown: "Chat output must not bleed into run room output.",
         metadata: {
           runRoomId: runRoom.id
         },
@@ -3126,129 +3105,114 @@ describe("apiRouter", () => {
       });
       await fixture.store.appendAgentOutputEvent({
         id: "metadata-mismatch-output",
-        ownerType: "worker_task",
-        ownerId: workerTask.id,
-        actorType: "worker",
-        kind: "message_completed",
-        sequence: 2,
-        bodyMarkdown: "Mismatched metadata must not project.",
-        metadata: {
-          runRoomId: otherRunRoom.id,
-          workerTaskId: workerTask.id
-        },
-        createdAt
-      });
-      await fixture.store.appendAgentOutputEvent({
-        id: "backing-object-mismatch-output",
-        ownerType: "worker_task",
-        ownerId: "worker-task-other-feed",
-        actorType: "worker",
-        kind: "message_completed",
-        sequence: 1,
-        bodyMarkdown: "Other run room worker task must not project.",
-        metadata: {
-          runRoomId: runRoom.id,
-          workerTaskId: "worker-task-other-feed"
-        },
-        createdAt
-      });
-      await fixture.store.appendAgentOutputEvent({
-        id: "message-delta-output",
         ownerType: "run_room",
         ownerId: runRoom.id,
-        actorType: "manager",
-        kind: "message_delta",
-        sequence: 2,
-        delta: "Streaming delta projects after PR19.",
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 4,
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-metadata-mismatch",
+        bodyMarkdown: "Mismatched metadata must not project.",
         metadata: {
-          runRoomId: runRoom.id
+          runRoomId: otherRunRoom.id
         },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "missing-source-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "worker",
+        kind: "message_completed",
+        sequence: 5,
+        sourceType: "blueprint_node_run",
+        bodyMarkdown: "Missing source must not project.",
+        metadata: { runRoomId: runRoom.id },
+        createdAt
+      });
+      await fixture.store.appendAgentOutputEvent({
+        id: "tool-state-output",
+        ownerType: "run_room",
+        ownerId: runRoom.id,
+        actorType: "worker",
+        kind: "tool_state",
+        sequence: 6,
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-tool-state",
+        bodyMarkdown: "Tool state must not project until a product meaning exists.",
+        metadata: { runRoomId: runRoom.id },
         createdAt
       });
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        const feedResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed`);
-        const { feed } = await readOkJson<{ feed: RunRoomFeed }>(feedResponse);
+        const outputResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/output/events`);
+        const { output } = await readOkJson<{ output: RunRoomOutputSnapshot }>(outputResponse);
 
-        expect(feed.rows).toHaveLength(6);
-        expect(feed.rows.map((row) => row.bodyMarkdown)).toEqual(expect.arrayContaining([
-          "Run room system output.",
-          "Worker execution output.",
-          "Manager formal message.",
-          "Human action reply.",
-          "Streaming delta projects after PR19.",
-          "User interjection."
-        ]));
-        const workerRow = feed.rows.find((row) => row.sourceType === "worker");
-        const managerRow = feed.rows.find((row) => row.managerCommandId === managerCommand.id);
-        const deltaRow = feed.rows.find((row) => row.agentOutputEventId === "message-delta-output");
-        const humanActionRow = feed.rows.find((row) => row.humanActionRequestId === humanActionRequest.id);
-        expect(workerRow).toMatchObject({
-          sourceType: "worker",
-          displayMode: "execution_output",
-          bodyMarkdown: "Worker execution output.",
-          workerTaskId: workerTask.id,
-          actions: {}
-        });
-        expect(workerRow?.actions?.canReply).not.toBe(true);
-        expect(workerRow?.actions?.canApprove).not.toBe(true);
-        expect(workerRow?.actions?.canReject).not.toBe(true);
-        expect(workerRow?.actions?.canOpenInbox).not.toBe(true);
-        expect(managerRow).toMatchObject({
-          sourceType: "manager",
-          displayMode: "formal_message",
-          managerCommandId: managerCommand.id,
-          actions: { canReply: true }
-        });
-        expect(deltaRow).toMatchObject({
-          sourceType: "manager",
-          displayMode: "formal_message",
-          bodyMarkdown: "Streaming delta projects after PR19.",
-          agentOutputEventId: "message-delta-output"
-        });
-        expect(humanActionRow).toMatchObject({
-          sourceType: "user",
-          displayMode: "formal_message",
-          humanActionRequestId: humanActionRequest.id,
-          actions: { canReply: true }
-        });
+        expect(output.runRoomId).toBe(runRoom.id);
+        expect(output.events.map((event) => event.id)).toEqual([
+          "run-room-output-1",
+          "message-delta-output",
+          "completed-output"
+        ]);
+        expect(output.events.map((event) => event.kind)).toEqual([
+          "message_started",
+          "message_delta",
+          "message_completed"
+        ]);
+        expect(output.interjections).toEqual([
+          expect.objectContaining({
+            id: "run-interjection-output",
+            messageMarkdown: "User interjection."
+          })
+        ]);
+        expect(JSON.stringify(output)).not.toContain("Old worker owner must not project.");
+        expect(JSON.stringify(output)).not.toContain("Old manager owner must not project.");
+        expect(JSON.stringify(output)).not.toContain("Old human action owner must not project.");
+        expect(JSON.stringify(output)).not.toContain("Chat output must not bleed into run room output.");
+        expect(JSON.stringify(output)).not.toContain("Mismatched metadata must not project.");
+        expect(JSON.stringify(output)).not.toContain("Missing source must not project.");
+        expect(JSON.stringify(output)).not.toContain("Tool state must not project.");
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("streams run room feed snapshots and newly appended canonical rows", async () => {
+  it("streams run room output snapshots, newly appended events, and interjections", async () => {
     const fixture = await createStoreFixture();
     const abort = new AbortController();
     try {
       const createdAt = "2026-06-03T00:00:00.000Z";
-      const runRoom = createRunRoomFact({ id: "run-room-feed-stream", runId: "run-feed-stream" });
+      const runRoom = createRunRoomFact({ id: "run-room-output-stream", runId: "run-output-stream" });
       await fixture.store.createRunRoom(runRoom);
       await fixture.store.appendAgentOutputEvent({
         id: "stream-initial-output",
         ownerType: "run_room",
         ownerId: runRoom.id,
-        actorType: "system",
+        actorType: "worker",
         kind: "message_completed",
         sequence: 1,
+        sourceType: "blueprint_node_run",
+        sourceId: "node-run-stream-1",
         bodyMarkdown: "Initial stream output.",
+        metadata: { runRoomId: runRoom.id },
         createdAt
       });
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed/stream`, { signal: abort.signal });
+        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/output/events/stream`, { signal: abort.signal });
         expect(response.status).toBe(200);
         expect(response.headers.get("content-type")).toContain("text/event-stream");
         const reader = createSseReader(response);
         try {
           const snapshot = await readNextSseFrame(reader);
-          expect(snapshot.event).toBe("feed_snapshot");
+          expect(snapshot.event).toBe("output_snapshot");
           expect(snapshot.data).toMatchObject({
-            type: "feed_snapshot",
+            type: "output_snapshot",
             runRoomId: runRoom.id,
-            feed: {
-              rows: [expect.objectContaining({ bodyMarkdown: "Initial stream output." })]
+            output: {
+              events: [expect.objectContaining({ bodyMarkdown: "Initial stream output." })],
+              interjections: []
             }
           });
 
@@ -3256,25 +3220,48 @@ describe("apiRouter", () => {
             id: "stream-live-output",
             ownerType: "run_room",
             ownerId: runRoom.id,
-            actorType: "manager",
+            actorType: "worker",
             kind: "message_delta",
             sequence: 2,
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-stream-1",
             delta: "Live canonical delta.",
+            metadata: { runRoomId: runRoom.id },
             createdAt: "2026-06-03T00:00:01.000Z"
           });
-          const row = await readUntilSseEvent(reader, "feed_row");
-          if (row.data.type !== "feed_row") {
-            throw new Error(`Unexpected SSE event type: ${row.data.type}`);
+          const eventFrame = await readUntilSseEvent(reader, "agent_output_event");
+          if (eventFrame.data.type !== "agent_output_event") {
+            throw new Error(`Unexpected SSE event type: ${eventFrame.data.type}`);
           }
-          expect(row.data).toMatchObject({
-            type: "feed_row",
+          expect(eventFrame.data).toMatchObject({
+            type: "agent_output_event",
             runRoomId: runRoom.id,
-            row: {
-              bodyMarkdown: "Live canonical delta.",
-              agentOutputEventId: "stream-live-output"
+            event: {
+              id: "stream-live-output",
+              delta: "Live canonical delta."
             }
           });
-          expect(row.data.cursor).toContain("run-room-feed-row-stream-live-output");
+          expect(eventFrame.data.cursor).toContain("stream-live-output");
+
+          await fixture.store.appendRunInterjection({
+            id: "stream-live-interjection",
+            runRoomId: runRoom.id,
+            target: "manager",
+            messageMarkdown: "Please inspect the live output.",
+            createdAt: "2026-06-03T00:00:02.000Z"
+          });
+          const interjectionFrame = await readUntilSseEvent(reader, "run_interjection");
+          if (interjectionFrame.data.type !== "run_interjection") {
+            throw new Error(`Unexpected SSE event type: ${interjectionFrame.data.type}`);
+          }
+          expect(interjectionFrame.data).toMatchObject({
+            type: "run_interjection",
+            runRoomId: runRoom.id,
+            interjection: {
+              id: "stream-live-interjection",
+              messageMarkdown: "Please inspect the live output."
+            }
+          });
         } finally {
           abort.abort();
           await reader.reader.cancel().catch(() => undefined);
@@ -3286,7 +3273,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("streams empty snapshots and heartbeat without creating feed facts", async () => {
+  it("streams empty output snapshots and heartbeat without creating facts", async () => {
     const fixture = await createStoreFixture();
     const abort = new AbortController();
     try {
@@ -3307,16 +3294,16 @@ describe("apiRouter", () => {
       await withApiServer(fixture.store, async (baseUrl) => {
         const beforeEvents = await fixture.store.listAgentOutputEvents();
         const beforeInterjections = await fixture.store.listRunInterjections({ runRoomId: runRoom.id });
-        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed/stream`, { signal: abort.signal });
+        const response = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/output/events/stream`, { signal: abort.signal });
         expect(response.status).toBe(200);
         const reader = createSseReader(response);
         try {
           const snapshot = await readNextSseFrame(reader);
-          expect(snapshot.event).toBe("feed_snapshot");
+          expect(snapshot.event).toBe("output_snapshot");
           expect(snapshot.data).toMatchObject({
-            type: "feed_snapshot",
+            type: "output_snapshot",
             runRoomId: runRoom.id,
-            feed: { rows: [] }
+            output: { events: [], interjections: [] }
           });
           const heartbeat = await readUntilSseEvent(reader, "heartbeat");
           expect(heartbeat.data).toMatchObject({ type: "heartbeat", runRoomId: runRoom.id });
@@ -3333,16 +3320,36 @@ describe("apiRouter", () => {
     }
   });
 
-  it("returns 404 for missing run room feed streams before SSE headers", async () => {
+  it("returns 404 for missing run room output streams before SSE headers", async () => {
     const fixture = await createStoreFixture();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
-        const response = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/feed/stream`);
+        const response = await fetch(`${baseUrl}/api/run-rooms/missing-run-room/output/events/stream`);
         const body = await response.json() as { error?: { code?: string } };
 
         expect(response.status, JSON.stringify(body)).toBe(404);
         expect(response.headers.get("content-type")).not.toContain("text/event-stream");
         expect(body.error?.code).toBe("run_room_not_found");
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose old run room feed endpoints as normal product data", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      const runRoom = createRunRoomFact({ id: "run-room-old-feed", runId: "run-old-feed" });
+      await fixture.store.createRunRoom(runRoom);
+
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const snapshotResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed`);
+        const streamResponse = await fetch(`${baseUrl}/api/run-rooms/${runRoom.id}/feed/stream`);
+
+        expect(snapshotResponse.status).toBe(404);
+        expect(streamResponse.status).toBe(404);
+        expect(await snapshotResponse.text()).not.toContain("output_snapshot");
+        expect(await streamResponse.text()).not.toContain("agent_output_event");
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -3469,7 +3476,7 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ messageMarkdown: "Please inspect worker output." })
         });
-        const body = await readOkJson<{ feed: RunRoomFeed }>(response);
+        const body = await readOkJson<{ output: RunRoomOutputSnapshot }>(response);
         const interjections = await fixture.store.listRunInterjections({ runRoomId: "run-room-interjection" });
 
         expect(interjections).toHaveLength(1);
@@ -3480,12 +3487,12 @@ describe("apiRouter", () => {
         });
         expect(await fixture.store.listManagerCommands({ runRoomId: "run-room-interjection" })).toEqual([]);
         expect(await fixture.store.listWorkerTasks({ runRoomId: "run-room-interjection" })).toEqual([]);
-        expect(body.feed.rows).toHaveLength(1);
-        expect(body.feed.rows[0]).toMatchObject({
-          sourceType: "user",
-          displayMode: "formal_message",
-          bodyMarkdown: "Please inspect worker output.",
-          actions: {}
+        expect(body.output.events).toEqual([]);
+        expect(body.output.interjections).toHaveLength(1);
+        expect(body.output.interjections[0]).toMatchObject({
+          runRoomId: "run-room-interjection",
+          target: "manager",
+          messageMarkdown: "Please inspect worker output."
         });
       });
     } finally {
@@ -4150,11 +4157,11 @@ describe("apiRouter", () => {
           })
         ]);
         expect(await fixture.store.listRunRooms({ blueprintId: blueprint.id })).toHaveLength(1);
-        const runPage = await readOkJson<{ run: { run: { id: string; blueprintId: string }; runRoomFeed?: unknown } }>(
+        const runPage = await readOkJson<{ run: { run: { id: string; blueprintId: string }; runRoomOutput?: unknown } }>(
           await fetch(`${baseUrl}/api/blueprint-runs/${body.result.run.run.id}`)
         );
         expect(runPage.run.run).toMatchObject({ id: body.result.run.run.id, blueprintId: blueprint.id });
-        expect(runPage.run.runRoomFeed).toBeDefined();
+        expect(runPage.run.runRoomOutput).toBeDefined();
         await waitForRunsSettled(fixture.store, [body.result.run.run.id]);
       }, adapter, createConfigStoreFixture(), worker);
     } finally {
@@ -4582,6 +4589,116 @@ describe("apiRouter", () => {
             expect.arrayContaining([expect.objectContaining({ humanActionRequestId: humanActionId })])
           );
         }
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("submits chat blueprint proposals through the approval owner and projects an inbox decision", async () => {
+    const fixture = await createStoreFixture();
+    const blueprint = (await fixture.store.listBlueprints())[0]!;
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            harnessId: "codex",
+            title: "Blueprint proposal chat",
+            mode: "blueprint",
+            roleScope: { role: "ceo", blueprintId: blueprint.id }
+          })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "submit_blueprint_proposal",
+              sourceRole: "ceo",
+              payload: {
+                blueprintId: blueprint.id,
+                title: "3-node OpenClaw blueprint",
+                bodyMarkdown: "Manager routes one Agent task and publishes one review-ready output.",
+                sourceMessageId: "assistant-message-1"
+              }
+            }
+          })
+        });
+        const body = await readOkJson<{
+          result: {
+            action: "submit_blueprint_proposal";
+            approvalRequest: ApprovalRequest;
+            humanActionRequest: HumanActionRequest;
+          };
+        }>(response);
+
+        expect(body.result.approvalRequest).toMatchObject({
+          kind: "blueprint_proposal",
+          status: "pending",
+          payloadRef: "chat-message:assistant-message-1",
+          sourceRef: { type: "system", id: created.session.id }
+        });
+        expect(body.result.humanActionRequest).toMatchObject({
+          responseIntent: "decision_required",
+          status: "pending",
+          sourceContextType: "blueprint_governance",
+          sourceContextId: blueprint.id,
+          approvalRequestId: body.result.approvalRequest.id
+        });
+        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([
+          expect.objectContaining({
+            title: "3-node OpenClaw blueprint",
+            responseIntent: "decision_required",
+            approvalRequestId: body.result.approvalRequest.id,
+            humanActionRequestId: body.result.humanActionRequest.id
+          })
+        ]);
+
+        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${body.result.approvalRequest.id}/approve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ comment: "Approve the proposal." })
+        }));
+        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+      });
+    } finally {
+      rmSync(fixture.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps executive decision_required human actions behind the approval owner", async () => {
+    const fixture = await createStoreFixture();
+    try {
+      await withApiServer(fixture.store, async (baseUrl) => {
+        const created = await readOkJson<{ session: HivewardChatSession }>(await fetch(`${baseUrl}/api/chat/sessions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ harnessId: "codex", title: "Executive", mode: "chat", roleScope: { role: "ceo" } })
+        }));
+        const response = await fetch(`${baseUrl}/api/chat/sessions/${created.session.id}/executive-commands`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            command: {
+              action: "request_human_action",
+              sourceRole: "ceo",
+              payload: {
+                sourceContextType: "executive_chat",
+                responseIntent: "decision_required",
+                title: "Forbidden direct decision",
+                bodyMarkdown: "This must be created by submit_blueprint_proposal or another approval owner."
+              }
+            }
+          })
+        });
+        const body = await response.json() as { error?: { code?: string; message?: string } };
+
+        expect(response.status).toBe(400);
+        expect(body.error?.code).toBe("executive_decision_human_action_requires_approval_owner");
+        expect(await fixture.store.listApprovalRequests()).toEqual([]);
+        expect(await fixture.store.listHumanActionRequests()).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
@@ -5108,7 +5225,7 @@ async function waitForRunsSettled(store: FileHivewardStore, runIds: string[]): P
 
 type SseFrame = {
   event: string;
-  data: RunRoomFeedStreamEvent;
+  data: RunRoomOutputStreamEvent;
 };
 
 type SseReader = {
@@ -5179,7 +5296,7 @@ function parseSseFrame(rawFrame: string): SseFrame {
   if (!event || !data) {
     throw new Error(`Invalid SSE frame: ${rawFrame}`);
   }
-  return { event, data: JSON.parse(data) as RunRoomFeedStreamEvent };
+  return { event, data: JSON.parse(data) as RunRoomOutputStreamEvent };
 }
 
 async function readOkJson<T = unknown>(response: Response): Promise<T> {

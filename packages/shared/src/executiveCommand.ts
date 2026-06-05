@@ -1,4 +1,5 @@
 import type { BlueprintDefinition, BlueprintRunView } from "./blueprint";
+import type { ApprovalRequest } from "./lifecycle";
 import type { ChatRoleScope } from "./roles";
 import type { HumanActionRequest, HumanActionRequestResponseIntent, RunRoom } from "./runRoom";
 
@@ -6,6 +7,7 @@ export const executiveCommandActions = [
   "inspect_blueprint",
   "create_blueprint_draft",
   "update_blueprint_draft",
+  "submit_blueprint_proposal",
   "govern_blueprint_version",
   "start_blueprint_run",
   "batch_start_blueprint_runs",
@@ -45,6 +47,17 @@ export interface UpdateBlueprintDraftExecutiveCommand {
     title?: string;
     description?: string;
     patch?: Record<string, unknown>;
+  };
+}
+
+export interface SubmitBlueprintProposalExecutiveCommand {
+  action: "submit_blueprint_proposal";
+  sourceRole: ExecutiveCommandSourceRole;
+  payload: {
+    title: string;
+    bodyMarkdown: string;
+    blueprintId?: string;
+    sourceMessageId?: string;
   };
 }
 
@@ -104,6 +117,7 @@ export type ExecutiveCommand =
   | InspectBlueprintExecutiveCommand
   | CreateBlueprintDraftExecutiveCommand
   | UpdateBlueprintDraftExecutiveCommand
+  | SubmitBlueprintProposalExecutiveCommand
   | GovernBlueprintVersionExecutiveCommand
   | StartBlueprintRunExecutiveCommand
   | BatchStartBlueprintRunsExecutiveCommand
@@ -120,6 +134,7 @@ export type ExecutiveCommandResult =
       action: Exclude<
         ExecutiveCommandAction,
         "inspect_blueprint" | "start_blueprint_run" | "batch_start_blueprint_runs" | "summarize_blueprint" | "request_human_action"
+        | "submit_blueprint_proposal"
       >;
       sourceRole: ExecutiveCommandSourceRole;
       roleScope?: ChatRoleScope;
@@ -156,6 +171,12 @@ export type ExecutiveCommandResult =
       status: "completed";
       action: "request_human_action";
       humanActionRequest: HumanActionRequest;
+    }
+  | {
+      status: "completed";
+      action: "submit_blueprint_proposal";
+      approvalRequest: ApprovalRequest;
+      humanActionRequest: HumanActionRequest;
     };
 
 export interface ExecuteExecutiveCommandResponse {
@@ -182,6 +203,8 @@ export function parseExecutiveCommand(value: unknown): ExecutiveCommand {
       return { action, sourceRole, payload: readCreateBlueprintDraftPayload(command.payload) };
     case "update_blueprint_draft":
       return { action, sourceRole, payload: readUpdateBlueprintDraftPayload(command.payload) };
+    case "submit_blueprint_proposal":
+      return { action, sourceRole, payload: readSubmitBlueprintProposalPayload(command.payload) };
     case "govern_blueprint_version":
       return { action, sourceRole, payload: readGovernBlueprintVersionPayload(command.payload) };
     case "start_blueprint_run":
@@ -220,6 +243,17 @@ function readUpdateBlueprintDraftPayload(value: unknown): UpdateBlueprintDraftEx
     title: readOptionalString(payload.title, "ExecutiveCommand.update_blueprint_draft.payload.title"),
     description: readOptionalString(payload.description, "ExecutiveCommand.update_blueprint_draft.payload.description"),
     patch: payload.patch === undefined ? undefined : readStrictRecord(payload.patch, "ExecutiveCommand.update_blueprint_draft.payload.patch")
+  };
+}
+
+function readSubmitBlueprintProposalPayload(value: unknown): SubmitBlueprintProposalExecutiveCommand["payload"] {
+  const payload = readStrictRecord(value, "ExecutiveCommand.submit_blueprint_proposal.payload");
+  assertOnlyKeys(payload, ["title", "bodyMarkdown", "blueprintId", "sourceMessageId"], "ExecutiveCommand.submit_blueprint_proposal.payload");
+  return {
+    title: readRequiredString(payload.title, "ExecutiveCommand.submit_blueprint_proposal.payload.title"),
+    bodyMarkdown: readRequiredString(payload.bodyMarkdown, "ExecutiveCommand.submit_blueprint_proposal.payload.bodyMarkdown"),
+    blueprintId: readOptionalString(payload.blueprintId, "ExecutiveCommand.submit_blueprint_proposal.payload.blueprintId"),
+    sourceMessageId: readOptionalString(payload.sourceMessageId, "ExecutiveCommand.submit_blueprint_proposal.payload.sourceMessageId")
   };
 }
 

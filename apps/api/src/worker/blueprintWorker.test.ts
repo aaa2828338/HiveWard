@@ -924,9 +924,9 @@ describe("BlueprintWorker", () => {
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd");
     expect(adapter.calls[0]?.prompt).toContain("AgentOutputEnvelope is a transport wrapper");
     expect(adapter.calls[0]?.prompt).toContain("humanReportMd is your free-form human answer");
-    expect(adapter.calls[0]?.prompt).toContain("## 摘要");
-    expect(adapter.calls[0]?.prompt).toContain("100-150");
-    expect(adapter.calls[0]?.prompt).toContain("do not describe internal program phases");
+    expect(adapter.calls[0]?.prompt).toContain("do not repeat fixed section headings");
+    expect(adapter.calls[0]?.prompt).not.toContain("must start with a visible summary section");
+    expect(adapter.calls[0]?.prompt).not.toContain("100-150");
     expect(adapter.calls[0]?.prompt).toContain("real file path, browser URL, or exact artifacts[] reference");
     expect(adapter.calls[0]?.prompt).toContain("Top-level artifacts[] is a publication hint and link/address index");
     expect(adapter.calls[0]?.prompt).toContain("One step may declare many artifacts");

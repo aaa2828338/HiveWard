@@ -62,8 +62,9 @@ describe("agent SDK runtime", () => {
 
     expect(envelope).toContain("The schema is a transport wrapper");
     expect(envelope).toContain("humanReportMd is your free-form human answer");
-    expect(envelope).toContain("## Summary");
-    expect(envelope).toContain("100-150");
+    expect(envelope).toContain("Do not force a fixed report template");
+    expect(envelope).not.toContain("Start humanReportMd with ## Summary");
+    expect(envelope).not.toContain("100-150");
     expect(envelope).toContain("real file path, browser URL, or exact artifacts[] reference");
     expect(envelope).toContain("Only top-level artifacts[] creates openable artifact records");
     expect(envelope).toContain("complete single-file HTML");
@@ -188,6 +189,140 @@ describe("agent SDK runtime", () => {
       networkAccessEnabled: false,
       webSearchMode: "live"
     });
+  });
+
+  it("stops consuming Codex task streams when the turn completes", async () => {
+    const workspace = createWorkspace({ git: true });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-task-terminal-thread",
+        streamEvents: [
+          { type: "thread.started", thread_id: "codex-task-terminal-thread" },
+          { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "Task done" } },
+          {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 2,
+              reasoning_output_tokens: 0
+            }
+          },
+          {
+            type: "item.completed",
+            item: {
+              id: "post-terminal-task-command",
+              type: "command_execution",
+              command: "should not run after task turn.completed",
+              aggregated_output: "",
+              status: "completed"
+            }
+          }
+        ],
+        finalResponse: "unused",
+        usage: null
+      })
+    );
+    const runtimeEvents: unknown[] = [];
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace
+      }),
+      (event) => runtimeEvents.push(event)
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      source: "codex",
+      output: "Task done"
+    });
+    expect(runtimeEvents).toEqual([{ type: "delta", text: "Task done" }]);
+  });
+
+  it("uses the latest Codex task agent message as structured output instead of concatenating progress envelopes", async () => {
+    const workspace = createWorkspace({ git: true });
+    const progressOutput = JSON.stringify({
+      humanReportMd: "Checking sources.",
+      handoffJson: null,
+      result: null,
+      artifacts: null
+    });
+    const finalOutput = JSON.stringify({
+      humanReportMd: "Final report.",
+      handoffJson: null,
+      result: null,
+      artifacts: null
+    });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-task-structured-thread",
+        streamEvents: [
+          { type: "thread.started", thread_id: "codex-task-structured-thread" },
+          { type: "item.completed", item: { id: "msg-progress", type: "agent_message", text: progressOutput } },
+          { type: "item.completed", item: { id: "msg-final", type: "agent_message", text: finalOutput } },
+          {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 2,
+              reasoning_output_tokens: 0
+            }
+          }
+        ],
+        finalResponse: "unused",
+        usage: null
+      })
+    );
+    const runtimeEvents: unknown[] = [];
+
+    const started = await runtime.startTask(
+      createStartInput({
+        source: "codex",
+        workingDirectory: workspace,
+        outputSchema: {
+          type: "object",
+          required: ["humanReportMd"],
+          properties: {
+            humanReportMd: { type: "string" },
+            handoffJson: { type: "object" },
+            result: { type: "object" },
+            artifacts: { type: "array", items: { type: "object" } }
+          }
+        }
+      }),
+      (event) => runtimeEvents.push(event)
+    );
+    const result = await runtime.waitForTask({
+      nodeRunId: "node-run-1",
+      taskId: started.taskId,
+      runId: started.runId,
+      sessionKey: started.sessionKey,
+      source: "codex"
+    });
+
+    expect(result).toMatchObject({
+      status: "succeeded",
+      source: "codex",
+      output: finalOutput
+    });
+    expect(runtimeEvents).toEqual([
+      { type: "delta", text: progressOutput },
+      { type: "delta", text: finalOutput, replace: true }
+    ]);
   });
 
   it("prefers explicit runtime access policy over legacy permission profiles", async () => {
@@ -853,6 +988,66 @@ describe("agent SDK runtime", () => {
         status: "succeeded",
         output: "Hello",
         usage: expect.objectContaining({ inputTokens: 3, outputTokens: 3 })
+      })
+    ]);
+  });
+
+  it("stops consuming Codex chat stream when the turn completes", async () => {
+    const workspace = createWorkspace({ git: true });
+    const runtime = new CodexAgentSdkRuntime(
+      new AgentSdkTaskRegistry(2),
+      { defaultTimeoutMs: 60_000, workspaceRoot: workspace },
+      () => fakeCodexClient({
+        threadId: "codex-thread-chat-terminal",
+        streamEvents: [
+          { type: "thread.started", thread_id: "codex-thread-chat-terminal" },
+          { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "Done" } },
+          {
+            type: "turn.completed",
+            usage: {
+              input_tokens: 1,
+              cached_input_tokens: 0,
+              output_tokens: 1,
+              reasoning_output_tokens: 0
+            }
+          },
+          {
+            type: "item.completed",
+            item: {
+              id: "post-terminal-command",
+              type: "command_execution",
+              command: "should not be consumed after turn.completed",
+              aggregated_output: "",
+              status: "completed"
+            }
+          }
+        ],
+        finalResponse: "unused",
+        usage: null
+      })
+    );
+    const events: unknown[] = [];
+
+    await runtime.streamChatMessage(
+      {
+        source: "codex",
+        sessionKey: "",
+        message: "Hello",
+        attachments: [],
+        modelId: "test-model",
+        idempotencyKey: "chat-terminal"
+      },
+      (event) => events.push(event)
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: "started", source: "codex", status: "running" }),
+      { type: "delta", text: "Done" },
+      expect.objectContaining({
+        type: "done",
+        source: "codex",
+        status: "succeeded",
+        output: "Done"
       })
     ]);
   });

@@ -40,6 +40,7 @@ import type {
   DashboardWidgetType,
   HumanActionResponse,
   InboxProjection,
+  ApprovalRequest,
   ApprovalThread,
   PendingApprovalItem,
   RuntimeOverview,
@@ -66,7 +67,8 @@ import {
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
 } from "../lib/run-state";
-import { buildRunRoomFeedRowsForDisplay } from "../lib/run-room-state";
+import { buildRunRoomOutputMessagesForDisplay } from "../lib/run-room-output-state";
+import type { RunRoomOutputStreamState } from "../lib/run-room-output-state";
 import {
   blueprintKanbanCardIsNavigationOnly,
   blueprintKanbanLaneOrder,
@@ -77,7 +79,7 @@ import { resolveApiResourceUrl } from "../lib/api";
 import { harnessLikeDisplayLabel } from "../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { RunRoomFeedView } from "./RunRoomFeedView";
+import { RunRoomOutputView } from "./RunRoomOutputView";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
@@ -534,6 +536,7 @@ export function RunsPage({
   blueprints,
   blueprint,
   selectedRunId,
+  runRoomOutputStreamState = "idle",
   language,
   t,
   onSelectBlueprint,
@@ -544,6 +547,7 @@ export function RunsPage({
   blueprints: BlueprintDefinition[];
   blueprint?: BlueprintDefinition;
   selectedRunId?: string;
+  runRoomOutputStreamState?: RunRoomOutputStreamState;
   language: Language;
   t: Messages;
   onSelectBlueprint: (blueprintId: string) => void;
@@ -604,10 +608,10 @@ export function RunsPage({
     (issue) => issue.outputBody !== undefined || issue.nodeRun?.error
   ) ?? issues[0];
   const activeIssue = activeIssueKey ? issues.find((issue) => issue.key === activeIssueKey) : defaultActiveIssue;
-  const activeRunRoomId = activeRun?.runRoomFeed?.runRoomId;
-  const runRoomFeedRows = useMemo(
-    () => buildRunRoomFeedRowsForDisplay(activeRun),
-    [activeRun?.run.id, activeRun?.runRoomFeed]
+  const activeRunRoomId = activeRun?.runRoomOutput?.runRoomId;
+  const runRoomOutputMessages = useMemo(
+    () => buildRunRoomOutputMessagesForDisplay(activeRun),
+    [activeRun?.run.id, activeRun?.runRoomOutput, activeRun?.releaseReports]
   );
   const runRecordButtonLabel = language === "zh-CN" ? "选择记录" : "Run records";
   const runFrameState = traceRunFrameState(resolveRunViewDisplayStatus(activeRun));
@@ -877,28 +881,33 @@ export function RunsPage({
                 {!blueprint ? (
                   <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
                 ) : activeRun ? (
-                  <div style={{ display: "grid", gridTemplateRows: "minmax(0, 1fr) auto", gap: 12, minHeight: 0 }}>
-                    <RunRoomFeedView rows={runRoomFeedRows} language={language} />
+                  <div className="run-output-current-layout">
+                    <RunRoomOutputView
+                      messages={runRoomOutputMessages}
+                      language={language}
+                      streamState={runRoomOutputStreamState}
+                      reportAvailable={Boolean(latestReleaseReport)}
+                    />
                     <form
-                      aria-label={language === "zh-CN" ? "RunRoom manager interjection" : "RunRoom manager interjection"}
+                      aria-label={language === "zh-CN" ? "RunRoom 管理消息" : "RunRoom manager interjection"}
                       onSubmit={sendRunInterjection}
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "minmax(0, 1fr) auto",
-                        gap: 8,
-                        alignItems: "end"
-                      }}
+                      className="run-interjection-form"
                     >
                       <textarea
-                        aria-label={language === "zh-CN" ? "Message to manager" : "Message to manager"}
+                        aria-label={language === "zh-CN" ? "给 Manager 的消息" : "Message to manager"}
+                        className="run-interjection-input"
                         disabled={!activeRunRoomId}
                         rows={2}
                         value={runInterjectionDraft}
                         onChange={(event) => setRunInterjectionDraft(event.currentTarget.value)}
                       />
-                      <button type="submit" disabled={!activeRunRoomId || !onSendRunInterjection || runInterjectionDraft.trim().length === 0}>
+                      <button
+                        type="submit"
+                        className="run-interjection-submit"
+                        disabled={!activeRunRoomId || !onSendRunInterjection || runInterjectionDraft.trim().length === 0}
+                      >
                         <Send size={16} />
-                        <span>Send</span>
+                        <span>{language === "zh-CN" ? "发送" : "Send"}</span>
                       </button>
                     </form>
                   </div>
@@ -1321,6 +1330,7 @@ function resolveArtifactDownloadUrl(downloadUrl: string): string {
 
 export function ApprovalsPage({
   approvals,
+  approvalRequests = [],
   approvalThreads = [],
   inboxProjections,
   inboxResponsesByRequestId = {},
@@ -1336,6 +1346,7 @@ export function ApprovalsPage({
   onSendHumanActionResponse
 }: {
   approvals: PendingApprovalItem[];
+  approvalRequests?: ApprovalRequest[];
   approvalThreads?: ApprovalThread[];
   inboxProjections: InboxProjection[];
   inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
@@ -1360,21 +1371,28 @@ export function ApprovalsPage({
     () => new Map(approvalThreads.map((thread) => [thread.id, thread])),
     [approvalThreads]
   );
-  const entries = useMemo(
+  const approvalRequestsById = useMemo(
+    () => new Map(approvalRequests.map((request) => [request.id, request])),
+    [approvalRequests]
+  );
+  const allEntries = useMemo(
     () => buildHumanActionInboxEntries({
       approvals,
+      approvalRequestsById,
       approvalThreadsById,
       projections: inboxProjections,
-      sourceFilter,
-      timeFilter,
-      focusedEntryId,
       language,
-      t,
       copy
     }),
-    [approvalThreadsById, approvals, copy, focusedEntryId, inboxProjections, language, sourceFilter, t, timeFilter]
+    [approvalRequestsById, approvalThreadsById, approvals, copy, inboxProjections, language]
   );
-  const totalEntries = approvals.length + inboxProjections.length;
+  const entries = useMemo(
+    () => allEntries
+      .filter((entry) => entry.id === focusedEntryId || sourceFilter === 'all' || entry.sourceContextType === sourceFilter)
+      .filter((entry) => entry.id === focusedEntryId || isWithinHumanActionTimeFilter(entry.updatedAt, timeFilter)),
+    [allEntries, focusedEntryId, sourceFilter, timeFilter]
+  );
+  const totalEntries = allEntries.length;
   const pendingEntries = entries.filter((entry) => entry.status === 'pending' || entry.status === 'replying').length;
   const selectedEntry = entries.find((entry) => entry.id === selectedEntryId) ??
     (focusedEntryId ? entries.find((entry) => entry.id === focusedEntryId) : undefined) ??
@@ -1403,15 +1421,13 @@ export function ApprovalsPage({
     });
   };
 
-  const sendApprovalReply = (approval: PendingApprovalItem, entryId: string, body: string) => {
-    if (!approval.approvalRequestId || !canSendApprovalReply(approval) || actionPending) return;
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    onReplyApprovalRequest(approval.approvalRequestId, trimmed);
-    clearDraft(entryId);
+  const sendApprovalReply = (approval: ApprovalInboxControl, entryId: string, body: string) => {
+    if (dispatchApprovalInboxReplyAction(approval, body, actionPending, onReplyApprovalRequest)) {
+      clearDraft(entryId);
+    }
   };
 
-  const returnApprovalForRevision = (approval: PendingApprovalItem, entryId: string, body: string) => {
+  const returnApprovalForRevision = (approval: ApprovalInboxControl, entryId: string, body: string) => {
     if (!approval.approvalRequestId || approval.canReturnForRevision !== true || actionPending) return;
     const trimmed = body.trim();
     if (!trimmed) return;
@@ -1420,10 +1436,9 @@ export function ApprovalsPage({
   };
 
   const sendHumanResponse = (projection: InboxProjection, entryId: string, body: string) => {
-    const trimmed = body.trim();
-    if (projection.status !== 'pending' || !trimmed || actionPending) return;
-    onSendHumanActionResponse(projection.humanActionRequestId, trimmed);
-    clearDraft(entryId);
+    if (dispatchHumanActionProjectionResponse(projection, body, actionPending, onSendHumanActionResponse)) {
+      clearDraft(entryId);
+    }
   };
 
   return (
@@ -1497,7 +1512,7 @@ export function ApprovalsPage({
 
         <div className="content-card stack-card inbox-detail-card">
           {selectedEntry ? (
-            selectedEntry.kind === 'approval' ? (
+            selectedEntry.kind === 'approval' || selectedEntry.kind === 'decision_projection' ? (
               <ApprovalRequestDetail
                 entry={selectedEntry}
                 draft={selectedDraft}
@@ -1509,22 +1524,25 @@ export function ApprovalsPage({
                 onSendReply={() => sendApprovalReply(selectedEntry.approval, selectedEntry.id, selectedDraft)}
                 onReturnForRevision={() => returnApprovalForRevision(selectedEntry.approval, selectedEntry.id, selectedDraft)}
                 onApprove={() => {
-                  if (!selectedEntry.approval.approvalRequestId || actionPending) return;
-                  if (selectedEntry.approval.canApprove === false && selectedEntry.approval.canComplete === true) {
-                    onComplete(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
+                  if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'approve', selectedDraft, actionPending, {
+                    onApproveApprovalRequest,
+                    onComplete,
+                    onRejectApprovalRequest
+                  })) {
                     clearDraft(selectedEntry.id);
-                    return;
                   }
-                  onApproveApprovalRequest(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
-                  clearDraft(selectedEntry.id);
                 }}
                 onReject={() => {
-                  if (!selectedEntry.approval.approvalRequestId || actionPending) return;
-                  onRejectApprovalRequest(selectedEntry.approval.approvalRequestId, selectedDraft.trim() || undefined);
-                  clearDraft(selectedEntry.id);
+                  if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'reject', selectedDraft, actionPending, {
+                    onApproveApprovalRequest,
+                    onComplete,
+                    onRejectApprovalRequest
+                  })) {
+                    clearDraft(selectedEntry.id);
+                  }
                 }}
               />
-            ) : (
+            ) : selectedEntry.kind === 'projection' ? (
               <HumanActionProjectionDetail
                 entry={selectedEntry}
                 responses={inboxResponsesByRequestId[selectedEntry.projection.humanActionRequestId] ?? []}
@@ -1534,6 +1552,12 @@ export function ApprovalsPage({
                 actionPending={actionPending}
                 onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
                 onSend={() => sendHumanResponse(selectedEntry.projection, selectedEntry.id, selectedDraft)}
+              />
+            ) : (
+              <UnavailableDecisionProjectionDetail
+                entry={selectedEntry}
+                language={language}
+                copy={copy}
               />
             )
           ) : (
@@ -1558,7 +1582,8 @@ type HumanActionInboxEntry =
       status: string;
       updatedAt: string;
       sourceContextType: InboxProjection['sourceContextType'];
-      approval: PendingApprovalItem;
+      approval: ApprovalInboxControl;
+      sourceApproval: PendingApprovalItem;
       thread?: ApprovalThread;
     }
   | {
@@ -1570,7 +1595,52 @@ type HumanActionInboxEntry =
       updatedAt: string;
       sourceContextType: InboxProjection['sourceContextType'];
       projection: InboxProjection;
+    }
+  | {
+      kind: 'decision_projection';
+      id: string;
+      title: string;
+      subtitle: string;
+      status: string;
+      updatedAt: string;
+      sourceContextType: InboxProjection['sourceContextType'];
+      projection: InboxProjection;
+      approvalRequest: ApprovalRequest;
+      approval: ApprovalInboxControl;
+    }
+  | {
+      kind: 'unavailable_decision_projection';
+      id: string;
+      title: string;
+      subtitle: string;
+      status: InboxProjection['status'];
+      updatedAt: string;
+      sourceContextType: InboxProjection['sourceContextType'];
+      projection: InboxProjection;
+      unavailableReason: string;
     };
+
+export type ApprovalInboxControl = {
+  approvalRequestId?: string;
+  status?: string;
+  reviewOutput?: unknown;
+  replies?: PendingApprovalItem['replies'];
+  canApprove?: boolean;
+  canReply?: boolean;
+  canReject?: boolean;
+  canComplete?: boolean;
+  canTerminate?: boolean;
+  canReturnForRevision?: boolean;
+  discussion?: PendingApprovalItem['discussion'];
+};
+
+type ApprovalInboxDecisionAction = 'approve' | 'reject';
+
+type ApprovalInboxDecisionCallbacks = {
+  onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
+  onComplete: (approvalRequestId: string, comment?: string) => void;
+  onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
+};
 
 type HumanActionSourceFilter = 'all' | InboxProjection['sourceContextType'];
 type HumanActionTimeFilter = 'all' | 'today' | 'week';
@@ -1603,6 +1673,9 @@ type HumanActionInboxCopy = {
   returnForRevision: string;
   approvalDetail: string;
   humanActionDetail: string;
+  decisionUnavailableTitle: string;
+  decisionUnavailableMissing: string;
+  decisionUnavailableNotPending: string;
   context: string;
   intent: string;
   createdBy: string;
@@ -1624,7 +1697,7 @@ function ApprovalRequestDetail({
   onApprove,
   onReject
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'approval' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'approval' | 'decision_projection' }>;
   draft: string;
   language: Language;
   t: Messages;
@@ -1779,8 +1852,86 @@ function HumanActionProjectionDetail({
   );
 }
 
+function UnavailableDecisionProjectionDetail({
+  entry,
+  language,
+  copy
+}: {
+  entry: Extract<HumanActionInboxEntry, { kind: 'unavailable_decision_projection' }>;
+  language: Language;
+  copy: HumanActionInboxCopy;
+}) {
+  const projection = entry.projection;
+  return (
+    <div className="inbox-detail-stack">
+      <div className="inbox-detail-header">
+        <div>
+          <span className="eyebrow">{copy.decisionUnavailableTitle}</span>
+          <h3>{entry.title}</h3>
+          <p>{entry.subtitle}</p>
+        </div>
+        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
+      </div>
+
+      <div className="inbox-detail-facts">
+        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+      </div>
+
+      <div className="empty-state compact-empty-state">
+        <strong>{copy.decisionUnavailableTitle}</strong>
+        <p>{entry.unavailableReason}</p>
+      </div>
+
+      <div className="inbox-content-block">
+        <span>{copy.requestBody}</span>
+        <MarkdownRenderer value={projection.bodyMarkdown} />
+      </div>
+    </div>
+  );
+}
+
 function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
-  void language;
+  if (language === "zh-CN") {
+    return {
+      metric: (shown, total, pending) => "\u5df2\u663e\u793a " + shown + " / " + total + "\uff0c" + pending + " \u6761\u5f85\u5904\u7406",
+      entryCount: (count) => count + " \u6761",
+      sourceFilter: "\u6765\u6e90",
+      timeFilter: "\u65f6\u95f4",
+      allSources: "\u5168\u90e8\u6765\u6e90",
+      allTime: "\u5168\u90e8\u65f6\u95f4",
+      today: "\u4eca\u5929",
+      week: "7 \u5929",
+      runRoom: "\u8fd0\u884c\u623f\u95f4",
+      executiveChat: "Executive \u804a\u5929",
+      blueprintGovernance: "\u84dd\u56fe\u6cbb\u7406",
+      queueTitle: "\u5f85\u5904\u7406\u4e8b\u9879",
+      emptyTitle: "\u6ca1\u6709\u5f85\u5904\u7406\u4e8b\u9879",
+      emptyBody: "\u65b0\u7684\u4eba\u5de5\u5904\u7406\u8bf7\u6c42\u4f1a\u51fa\u73b0\u5728\u8fd9\u91cc\u3002",
+      emptyFilterTitle: "\u6ca1\u6709\u5339\u914d\u7684\u4e8b\u9879",
+      emptyFilterBody: "\u8c03\u6574\u6765\u6e90\u6216\u65f6\u95f4\u7b5b\u9009\u3002",
+      noSelectionTitle: "\u672a\u9009\u62e9\u4e8b\u9879",
+      noSelectionBody: "\u4ece\u5217\u8868\u9009\u62e9\u4e00\u6761\u5f85\u5904\u7406\u4e8b\u9879\u67e5\u770b\u8be6\u60c5\u3002",
+      requestBody: "\u8bf7\u6c42\u5185\u5bb9",
+      replies: "\u5bf9\u8bdd",
+      responseHistory: "\u4eba\u5de5\u56de\u590d\u5386\u53f2",
+      messagePlaceholder: "\u5199\u4e0b\u5904\u7406\u610f\u89c1...",
+      sendMessage: "\u53d1\u9001\u6d88\u606f",
+      sendResponse: "\u53d1\u9001\u5904\u7406\u7ed3\u679c",
+      returnForRevision: "\u8981\u6c42\u4fee\u8ba2",
+      approvalDetail: "\u5ba1\u6279\u8bf7\u6c42",
+      humanActionDetail: "\u4eba\u5de5\u5904\u7406\u8bf7\u6c42",
+      decisionUnavailableTitle: "\u5ba1\u6279\u8bf7\u6c42\u4e0d\u53ef\u7528",
+      decisionUnavailableMissing: "\u8be5\u51b3\u7b56\u8bf7\u6c42\u88ab\u963b\u585e\uff0c\u56e0\u4e3a\u5173\u8054\u7684\u5ba1\u6279\u8bf7\u6c42\u672a\u627e\u5230\u3002",
+      decisionUnavailableNotPending: "\u8be5\u51b3\u7b56\u8bf7\u6c42\u5173\u8054\u7684\u5ba1\u6279\u5df2\u4e0d\u518d\u5f85\u5904\u7406\u3002",
+      context: "\u4e0a\u4e0b\u6587",
+      intent: "\u610f\u56fe",
+      createdBy: "\u521b\u5efa\u8005",
+      acceptAction: "\u901a\u8fc7",
+      completeAction: "\u5b8c\u6210",
+      rejectAction: "\u62d2\u7edd"
+    };
+  }
   return {
     metric: (shown, total, pending) => shown + ' of ' + total + ' shown, ' + pending + ' pending',
     entryCount: (count) => count + ' items',
@@ -1809,6 +1960,9 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     returnForRevision: 'Return for revision',
     approvalDetail: 'Approval request',
     humanActionDetail: 'Human action request',
+    decisionUnavailableTitle: 'Approval request unavailable',
+    decisionUnavailableMissing: 'This decision request is blocked because its bound approval request could not be found.',
+    decisionUnavailableNotPending: 'This decision request is no longer pending on its bound approval request.',
     context: 'Context',
     intent: 'Intent',
     createdBy: 'Created by',
@@ -1820,29 +1974,24 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
 
 function buildHumanActionInboxEntries({
   approvals,
+  approvalRequestsById,
   approvalThreadsById,
   projections,
-  sourceFilter,
-  timeFilter,
-  focusedEntryId,
   language,
-  t
+  copy
 }: {
   approvals: PendingApprovalItem[];
+  approvalRequestsById: Map<string, ApprovalRequest>;
   approvalThreadsById: Map<string, ApprovalThread>;
   projections: InboxProjection[];
-  sourceFilter: HumanActionSourceFilter;
-  timeFilter: HumanActionTimeFilter;
-  focusedEntryId?: string;
   language: Language;
-  t: Messages;
   copy: HumanActionInboxCopy;
 }): HumanActionInboxEntry[] {
-  const approvalEntriesByThreadId = new Map<string, HumanActionInboxEntry>();
+  const approvalEntriesByThreadId = new Map<string, Extract<HumanActionInboxEntry, { kind: 'approval' }>>();
   for (const approval of approvals) {
     const threadId = approval.approvalThreadId ?? approval.approvalRequestId ?? approval.nodeRunId;
     const thread = approvalThreadsById.get(threadId);
-    const entry: HumanActionInboxEntry = {
+    const entry: Extract<HumanActionInboxEntry, { kind: 'approval' }> = {
       kind: 'approval',
       id: 'approval:' + (approval.approvalRequestId ?? threadId),
       title: approval.nodeLabel || 'Approval',
@@ -1850,7 +1999,8 @@ function buildHumanActionInboxEntries({
       status: approval.status ?? 'pending',
       updatedAt: thread?.updatedAt ?? approval.requestedAt,
       sourceContextType: 'run_room',
-      approval,
+      approval: approvalControlFromPendingApproval(approval),
+      sourceApproval: approval,
       thread
     };
     const existing = approvalEntriesByThreadId.get(threadId);
@@ -1865,23 +2015,149 @@ function buildHumanActionInboxEntries({
     }
   }
   const approvalEntries = [...approvalEntriesByThreadId.values()];
-  const projectionEntries: HumanActionInboxEntry[] = projections.map((projection) => ({
-    kind: 'projection',
-    id: 'human:' + projection.humanActionRequestId,
-    title: projection.title,
-    subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
-    status: projection.status,
-    updatedAt: projection.updatedAt,
-    sourceContextType: projection.sourceContextType,
-    projection
-  }));
+  const approvalEntriesByRequestId = new Map(
+    approvalEntries
+      .map((entry) => [entry.approval.approvalRequestId, entry] as const)
+      .filter((entry): entry is [string, Extract<HumanActionInboxEntry, { kind: 'approval' }>] => typeof entry[0] === 'string')
+  );
+  const projectionEntries: HumanActionInboxEntry[] = [];
+  for (const projection of projections) {
+    if (projection.responseIntent === 'decision_required') {
+      const approvalRequestId = projection.approvalRequestId;
+      if (approvalRequestId && approvalEntriesByRequestId.has(approvalRequestId)) {
+        continue;
+      }
+      const approvalRequest = approvalRequestId ? approvalRequestsById.get(approvalRequestId) : undefined;
+      if (approvalRequest?.status === 'pending') {
+        projectionEntries.push({
+          kind: 'decision_projection',
+          id: 'human:' + projection.humanActionRequestId,
+          title: projection.title || approvalRequest.title,
+          subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + approvalRequest.kind,
+          status: approvalRequest.status,
+          updatedAt: approvalRequest.updatedAt ?? projection.updatedAt,
+          sourceContextType: projection.sourceContextType,
+          projection,
+          approvalRequest,
+          approval: approvalControlFromApprovalRequest(approvalRequest)
+        });
+        continue;
+      }
+      projectionEntries.push({
+        kind: 'unavailable_decision_projection',
+        id: 'human:' + projection.humanActionRequestId,
+        title: projection.title,
+        subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
+        status: projection.status,
+        updatedAt: projection.updatedAt,
+        sourceContextType: projection.sourceContextType,
+        projection,
+        unavailableReason: approvalRequest ? copy.decisionUnavailableNotPending : copy.decisionUnavailableMissing
+      });
+      continue;
+    }
+
+    projectionEntries.push({
+      kind: 'projection',
+      id: 'human:' + projection.humanActionRequestId,
+      title: projection.title,
+      subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
+      status: projection.status,
+      updatedAt: projection.updatedAt,
+      sourceContextType: projection.sourceContextType,
+      projection
+    });
+  }
+
   return [...approvalEntries, ...projectionEntries]
-    .filter((entry) => entry.id === focusedEntryId || sourceFilter === 'all' || entry.sourceContextType === sourceFilter)
-    .filter((entry) => entry.id === focusedEntryId || isWithinHumanActionTimeFilter(entry.updatedAt, timeFilter))
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
-function canSendApprovalReply(approval: PendingApprovalItem): boolean {
+function approvalControlFromPendingApproval(approval: PendingApprovalItem): ApprovalInboxControl {
+  return {
+    approvalRequestId: approval.approvalRequestId,
+    status: approval.status,
+    reviewOutput: approval.reviewOutput,
+    replies: approval.replies,
+    canApprove: approval.canApprove,
+    canReply: approval.canReply,
+    canReject: approval.canReject,
+    canComplete: approval.canComplete,
+    canTerminate: approval.canTerminate,
+    canReturnForRevision: approval.canReturnForRevision,
+    discussion: approval.discussion
+  };
+}
+
+function approvalControlFromApprovalRequest(approvalRequest: ApprovalRequest): ApprovalInboxControl {
+  return {
+    approvalRequestId: approvalRequest.id,
+    status: approvalRequest.status,
+    reviewOutput: approvalRequest.body,
+    canApprove: approvalRequest.capabilities.approve,
+    canReply: approvalRequest.capabilities.reply,
+    canReject: approvalRequest.capabilities.reject,
+    canComplete: approvalRequest.capabilities.complete,
+    canTerminate: approvalRequest.capabilities.terminate,
+    canReturnForRevision: approvalRequest.capabilities.returnForRevision,
+    discussion: {
+      mode: approvalRequest.capabilities.reply ? 'message_only' : 'none',
+      canStreamReply: false,
+      reason: 'approval_request_capabilities'
+    }
+  };
+}
+
+export function dispatchApprovalInboxDecisionAction(
+  approval: ApprovalInboxControl,
+  action: ApprovalInboxDecisionAction,
+  draft: string,
+  actionPending: boolean,
+  callbacks: ApprovalInboxDecisionCallbacks
+): boolean {
+  if (!approval.approvalRequestId || actionPending) return false;
+  const comment = draft.trim() || undefined;
+  if (action === 'approve') {
+    if (approval.canApprove === false && approval.canComplete !== true) return false;
+    if (approval.canApprove === false && approval.canComplete === true) {
+      callbacks.onComplete(approval.approvalRequestId, comment);
+      return true;
+    }
+    callbacks.onApproveApprovalRequest(approval.approvalRequestId, comment);
+    return true;
+  }
+  if (approval.canReject !== true) return false;
+  callbacks.onRejectApprovalRequest(approval.approvalRequestId, comment);
+  return true;
+}
+
+export function dispatchApprovalInboxReplyAction(
+  approval: ApprovalInboxControl,
+  body: string,
+  actionPending: boolean,
+  onReplyApprovalRequest: (approvalRequestId: string, message: string) => void
+): boolean {
+  if (!approval.approvalRequestId || !canSendApprovalReply(approval) || actionPending) return false;
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  onReplyApprovalRequest(approval.approvalRequestId, trimmed);
+  return true;
+}
+
+export function dispatchHumanActionProjectionResponse(
+  projection: InboxProjection,
+  body: string,
+  actionPending: boolean,
+  onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void
+): boolean {
+  const trimmed = body.trim();
+  if (projection.responseIntent === 'decision_required') return false;
+  if (projection.status !== 'pending' || !trimmed || actionPending) return false;
+  onSendHumanActionResponse(projection.humanActionRequestId, trimmed);
+  return true;
+}
+
+function canSendApprovalReply(approval: ApprovalInboxControl): boolean {
   return (approval.status ?? 'pending') === 'pending' && approval.canReply === true && approval.discussion?.mode !== 'none';
 }
 
@@ -1912,7 +2188,18 @@ function humanActionStatusClassName(status: string): string {
 }
 
 function humanActionStatusLabel(status: string, language: Language): string {
-  void language;
+  if (language === "zh-CN") {
+    if (status === 'pending') return "\u5f85\u5904\u7406";
+    if (status === 'replying') return "\u56de\u590d\u4e2d";
+    if (status === 'responded') return "\u5df2\u56de\u590d";
+    if (status === 'completed') return "\u5df2\u5b8c\u6210";
+    if (status === 'approved') return "\u5df2\u901a\u8fc7";
+    if (status === 'rejected') return "\u5df2\u62d2\u7edd";
+    if (status === 'terminated') return "\u5df2\u7ec8\u6b62";
+    if (status === 'closed') return "\u5df2\u5173\u95ed";
+    if (status === 'cancelled') return "\u5df2\u53d6\u6d88";
+    return status.replaceAll('_', ' ');
+  }
   if (status === 'pending') return 'pending';
   if (status === 'replying') return 'replying';
   if (status === 'responded') return 'responded';
@@ -1926,14 +2213,22 @@ function humanActionStatusLabel(status: string, language: Language): string {
 }
 
 function humanActionContextLabel(value: InboxProjection['sourceContextType'], language: Language): string {
-  void language;
+  if (language === "zh-CN") {
+    if (value === 'run_room') return "\u8fd0\u884c\u623f\u95f4";
+    if (value === 'executive_chat') return "Executive \u804a\u5929";
+    return "\u84dd\u56fe\u6cbb\u7406";
+  }
   if (value === 'run_room') return 'Run Room';
   if (value === 'executive_chat') return 'Executive chat';
   return 'Blueprint governance';
 }
 
 function humanActionIntentLabel(value: InboxProjection['responseIntent'], language: Language): string {
-  void language;
+  if (language === "zh-CN") {
+    if (value === 'decision_required') return "\u9700\u8981\u51b3\u7b56";
+    if (value === 'reply_required') return "\u9700\u8981\u56de\u590d";
+    return "\u9700\u8981\u5ba1\u9605";
+  }
   if (value === 'decision_required') return 'decision required';
   if (value === 'reply_required') return 'reply required';
   return 'review required';
@@ -2731,36 +3026,35 @@ export function BlueprintKanbanPage({
                     disabled={!blueprintKanbanCardIsNavigationOnly(card)}
                     onClick={() => onOpenCard(card)}
                   >
-                    <div className="feature-card-header">
-                      <div>
+                    <div className="blueprint-kanban-card-main">
+                      <div className="blueprint-kanban-card-title-row">
                         <strong>{card.title}</strong>
-                        <p>{card.summary ?? card.runRoomId ?? card.id}</p>
+                        <span className={`status-pill status-${card.lane}`}>{blueprintKanbanLaneLabel(card.lane, language)}</span>
                       </div>
-                      <ChevronRight size={16} />
+                      <p>{card.summary ?? card.runRoomId ?? card.id}</p>
                     </div>
-                    <div className="mini-row">
-                      <span>{language === "zh-CN" ? "\u72b6\u6001" : "State"}</span>
-                      <code>{blueprintKanbanLaneLabel(card.lane, language)}</code>
-                    </div>
-                    <div className="mini-row">
-                      <span>{language === "zh-CN" ? "\u84dd\u56fe" : "Blueprint"}</span>
-                      <code>{blueprintNameForOptional(blueprints, card.blueprintId)}</code>
-                    </div>
-                    {card.sourceContextType && (
-                      <div className="mini-row">
-                        <span>{copy.fromDate}</span>
-                        <code>{humanActionContextLabel(card.sourceContextType, language)}</code>
-                      </div>
-                    )}
-                    {card.responseIntent && (
-                      <div className="mini-row">
-                        <span>{copy.toDate}</span>
-                        <code>{humanActionIntentLabel(card.responseIntent, language)}</code>
-                      </div>
-                    )}
-                    <div className="mini-row">
-                      <span>{copy.startedAt}</span>
-                      <time dateTime={card.updatedAt}>{formatDateTime(card.updatedAt, language)}</time>
+                    <div className="blueprint-kanban-card-meta">
+                      <span>
+                        <strong>{language === "zh-CN" ? "\u84dd\u56fe" : "Blueprint"}</strong>
+                        {blueprintNameForOptional(blueprints, card.blueprintId)}
+                      </span>
+                      {card.sourceContextType && (
+                        <span>
+                          <strong>{language === "zh-CN" ? "\u6765\u6e90" : "Source"}</strong>
+                          {humanActionContextLabel(card.sourceContextType, language)}
+                        </span>
+                      )}
+                      {card.responseIntent && (
+                        <span>
+                          <strong>{language === "zh-CN" ? "\u610f\u56fe" : "Intent"}</strong>
+                          {humanActionIntentLabel(card.responseIntent, language)}
+                        </span>
+                      )}
+                      <time dateTime={card.updatedAt}>
+                        <strong>{language === "zh-CN" ? "\u66f4\u65b0" : "Updated"}</strong>
+                        {formatDateTime(card.updatedAt, language)}
+                      </time>
+                      <ChevronRight size={15} aria-hidden="true" />
                     </div>
                   </button>
                 ))
@@ -3360,14 +3654,16 @@ function buildTraceIssues(
 ): TraceIssue[] {
   if (!activeRun) return [];
   const nodesById = new Map((blueprint?.nodes ?? []).map((node) => [node.id, node]));
-  const executionRows = buildRunExecutionTraceRows(activeRun, nodesById);
-  if (executionRows.length > 0) {
-    return executionRows
+  const allExecutionRows = buildRunExecutionTraceRows(activeRun, nodesById);
+  const displayExecutionRows = filterDisplayedExecutionTraceRows(activeRun, allExecutionRows);
+  const runRoomOutputByNodeRunId = buildRunRoomOutputPreviewByNodeRunId(activeRun);
+  if (displayExecutionRows.length > 0) {
+    return displayExecutionRows
       .sort(compareExecutionTraceRows)
-      .map((row, index) => createExecutionTraceIssue(row, index + 1, t, language));
+      .map((row, index) => createExecutionTraceIssue(row, index + 1, t, language, runRoomOutputByNodeRunId));
   }
 
-  return [createMissingExecutionFactsTraceIssue(activeRun, 1, t, language)];
+  return allExecutionRows.length === 0 ? [createMissingExecutionFactsTraceIssue(activeRun, 1, t, language)] : [];
 }
 
 function createMissingExecutionFactsTraceIssue(
@@ -3497,6 +3793,57 @@ function buildRunExecutionTraceRows(
   }
 
   return rows;
+}
+
+function filterDisplayedExecutionTraceRows(
+  activeRun: BlueprintRunView,
+  rows: RunExecutionTraceRow[]
+): RunExecutionTraceRow[] {
+  const outputSourceNodeRunIds = collectRunRoomOutputSourceNodeRunIds(activeRun);
+  const managerSlotNodeRunIds = new Set(activeRun.nodeRuns
+    .filter((nodeRun) => nodeRun.nodeType === "manager_slot")
+    .map((nodeRun) => nodeRun.id));
+  return rows.filter((row) => isDisplayedExecutionTraceRow(row, outputSourceNodeRunIds, managerSlotNodeRunIds));
+}
+
+function collectRunRoomOutputSourceNodeRunIds(activeRun: BlueprintRunView): Set<string> {
+  const sourceIds = new Set<string>();
+  for (const event of activeRun.runRoomOutput?.events ?? []) {
+    if (event.sourceType !== "blueprint_node_run" || !event.sourceId) continue;
+    if (
+      event.kind === "message_started" ||
+      event.kind === "message_delta" ||
+      event.kind === "message_completed" ||
+      event.kind === "message_failed"
+    ) {
+      sourceIds.add(event.sourceId);
+    }
+  }
+  return sourceIds;
+}
+
+function buildRunRoomOutputPreviewByNodeRunId(activeRun: BlueprintRunView): Map<string, string> {
+  const outputByNodeRunId = new Map<string, string>();
+  for (const message of buildRunRoomOutputMessagesForDisplay(activeRun)) {
+    const nodeRunId = message.runRoomInvocationId;
+    const content = message.content.trim();
+    if (!nodeRunId || !content) continue;
+    outputByNodeRunId.set(nodeRunId, content);
+  }
+  return outputByNodeRunId;
+}
+
+function isDisplayedExecutionTraceRow(
+  row: RunExecutionTraceRow,
+  outputSourceNodeRunIds: Set<string>,
+  managerSlotNodeRunIds: Set<string>
+): boolean {
+  const nodeRunId = row.step?.nodeRunId ?? row.session?.nodeRunId;
+  if (row.node?.type === "manager_slot" || (nodeRunId && managerSlotNodeRunIds.has(nodeRunId))) return false;
+  if (row.step?.mode && row.step.mode !== "node_execution") return true;
+  if (row.session) return true;
+  if (nodeRunId && outputSourceNodeRunIds.has(nodeRunId)) return true;
+  return row.runtimeRefs.length > 0;
 }
 
 function buildCommandOnlyTraceRow(
@@ -3648,12 +3995,15 @@ function createExecutionTraceIssue(
   row: RunExecutionTraceRow,
   index: number,
   t: Messages,
-  language: Language
+  language: Language,
+  runRoomOutputByNodeRunId: Map<string, string>
 ): TraceIssue {
   const label = executionTraceRowLabel(row, language);
   const body = buildExecutionTraceIssueBody(row, language);
+  const nodeRunId = row.step?.nodeRunId ?? row.session?.nodeRunId;
   const previewSource = row.step?.error ??
     row.command?.error ??
+    (nodeRunId ? runRoomOutputByNodeRunId.get(nodeRunId) : undefined) ??
     executionTraceRowSummary(row, language);
   return {
     key: row.key,

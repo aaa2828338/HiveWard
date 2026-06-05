@@ -78,9 +78,9 @@ import type {
   BlueprintRunView,
   HivewardChatSession,
   HumanActionRequest,
+  RunInterjection,
   RunRoom,
-  RunRoomFeedRow,
-  RunRoomFeedStreamEvent,
+  RunRoomOutputStreamEvent,
   StartBlueprintRunRequest,
   ApplyHivewardUpdateResponse,
   ApplyHivewardUpdateRequest,
@@ -259,14 +259,14 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const runRoomService = new RunRoomService(store);
   const blueprintKanbanService = new BlueprintKanbanService(store);
   const artifactRoot = resolve(configuredArtifactRoot ?? join(store.getDataDir(), "artifacts"));
-  const attachRunRoomFeed = async (view: BlueprintRunView | undefined): Promise<BlueprintRunView | undefined> => {
+  const attachRunRoomOutput = async (view: BlueprintRunView | undefined): Promise<BlueprintRunView | undefined> => {
     if (!view) return undefined;
     const runRooms = await store.listRunRooms({ blueprintId: view.run.blueprintId });
     const runRoom = runRooms.find((candidate) => candidate.runId === view.run.id);
     if (!runRoom) return view;
     return {
       ...view,
-      runRoomFeed: await agentOutputService.projectRunRoomFeed(runRoom.id)
+      runRoomOutput: await agentOutputService.listRunRoomOutputSnapshot(runRoom.id)
     };
   };
 
@@ -704,7 +704,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         body.startedBy ?? "local-user"
       );
       const view = await store.getRunView(run.id);
-      res.status(201).json({ run: await attachRunRoomFeed(view) });
+      res.status(201).json({ run: await attachRunRoomOutput(view) });
     } catch (error) {
       next(error);
     }
@@ -719,7 +719,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         return;
       }
       const view = await store.getLatestRunViewForBlueprint(blueprintId);
-      res.json({ run: (await attachRunRoomFeed(view ?? undefined)) ?? null });
+      res.json({ run: (await attachRunRoomOutput(view ?? undefined)) ?? null });
     } catch (error) {
       next(error);
     }
@@ -732,7 +732,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      res.json({ run: await attachRunRoomFeed(view) });
+      res.json({ run: await attachRunRoomOutput(view) });
     } catch (error) {
       next(error);
     }
@@ -760,7 +760,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_not_found", message: "Blueprint run not found." } });
         return;
       }
-      res.json({ run: await attachRunRoomFeed(view) });
+      res.json({ run: await attachRunRoomOutput(view) });
     } catch (error) {
       next(error);
     }
@@ -1088,7 +1088,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "chat_session_not_found", message: "Chat session not found." } });
         return;
       }
-      const result = await executeExecutiveCommand(store, humanActionRequestService, worker, session, command);
+      const result = await executeExecutiveCommand(store, approvalService, humanActionRequestService, worker, session, command);
       const response: ExecuteExecutiveCommandResponse = { command, result };
       res.status(result.status === "completed" ? 201 : 202).json(response);
     } catch (error) {
@@ -1144,7 +1144,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     });
   });
 
-  router.get("/api/run-rooms/:runRoomId/feed", async (req, res, next) => {
+  router.get("/api/run-rooms/:runRoomId/output/events", async (req, res, next) => {
     try {
       const runRoomId = readRouteParam(req.params.runRoomId, "runRoomId");
       const runRoom = await store.getRunRoom(runRoomId);
@@ -1152,13 +1152,13 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
         res.status(404).json({ error: { code: "run_room_not_found", message: "RunRoom not found." } });
         return;
       }
-      res.json({ feed: await agentOutputService.projectRunRoomFeed(runRoomId) });
+      res.json({ output: await agentOutputService.listRunRoomOutputSnapshot(runRoomId) });
     } catch (error) {
       next(error);
     }
   });
 
-  router.get("/api/run-rooms/:runRoomId/feed/stream", async (req, res, next) => {
+  router.get("/api/run-rooms/:runRoomId/output/events/stream", async (req, res, next) => {
     let closed = false;
     let pollTimer: NodeJS.Timeout | undefined;
     let heartbeatTimer: NodeJS.Timeout | undefined;
@@ -1183,19 +1183,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       res.setHeader("connection", "keep-alive");
       res.flushHeaders?.();
 
-      const sentRowIds = new Set<string>();
-      const snapshot = await agentOutputService.projectRunRoomFeed(runRoomId);
-      for (const row of snapshot.rows) {
-        sentRowIds.add(row.id);
+      const sentEventIds = new Set<string>();
+      const sentInterjectionIds = new Set<string>();
+      const snapshot = await agentOutputService.listRunRoomOutputSnapshot(runRoomId);
+      for (const event of snapshot.events) {
+        sentEventIds.add(event.id);
       }
-      writeRunRoomFeedStreamEvent(res, "feed_snapshot", {
-        type: "feed_snapshot",
+      for (const interjection of snapshot.interjections) {
+        sentInterjectionIds.add(interjection.id);
+      }
+      writeRunRoomOutputStreamEvent(res, "output_snapshot", {
+        type: "output_snapshot",
         runRoomId,
-        feed: snapshot,
-        ...(snapshot.rows.length > 0 ? { cursor: runRoomFeedCursor(snapshot.rows.at(-1)!) } : {}),
+        output: snapshot,
+        ...(snapshot.events.length > 0 ? { cursor: runRoomOutputEventCursor(snapshot.events.at(-1)!) } : {}),
         emittedAt: new Date().toISOString()
       });
-      writeRunRoomFeedStreamEvent(res, "heartbeat", {
+      writeRunRoomOutputStreamEvent(res, "heartbeat", {
         type: "heartbeat",
         runRoomId,
         emittedAt: new Date().toISOString()
@@ -1204,27 +1208,39 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       const poll = async () => {
         if (closed) return;
         try {
-          const feed = await agentOutputService.projectRunRoomFeed(runRoomId);
-          for (const row of feed.rows) {
+          const output = await agentOutputService.listRunRoomOutputSnapshot(runRoomId);
+          for (const event of output.events) {
             if (closed) return;
-            if (sentRowIds.has(row.id)) continue;
-            sentRowIds.add(row.id);
-            writeRunRoomFeedStreamEvent(res, "feed_row", {
-              type: "feed_row",
+            if (sentEventIds.has(event.id)) continue;
+            sentEventIds.add(event.id);
+            writeRunRoomOutputStreamEvent(res, "agent_output_event", {
+              type: "agent_output_event",
               runRoomId,
-              row,
-              cursor: runRoomFeedCursor(row),
+              event,
+              cursor: runRoomOutputEventCursor(event),
+              emittedAt: new Date().toISOString()
+            });
+          }
+          for (const interjection of output.interjections) {
+            if (closed) return;
+            if (sentInterjectionIds.has(interjection.id)) continue;
+            sentInterjectionIds.add(interjection.id);
+            writeRunRoomOutputStreamEvent(res, "run_interjection", {
+              type: "run_interjection",
+              runRoomId,
+              interjection,
+              cursor: runRoomInterjectionCursor(interjection),
               emittedAt: new Date().toISOString()
             });
           }
         } catch (error) {
           if (closed) return;
-          writeRunRoomFeedStreamEvent(res, "feed_error", {
-            type: "feed_error",
+          writeRunRoomOutputStreamEvent(res, "output_error", {
+            type: "output_error",
             runRoomId,
             error: {
-              code: "run_room_feed_stream_failed",
-              message: error instanceof Error ? error.message : "RunRoom feed stream failed."
+              code: "run_room_output_stream_failed",
+              message: error instanceof Error ? error.message : "RunRoom output stream failed."
             },
             emittedAt: new Date().toISOString()
           });
@@ -1236,7 +1252,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       }, 250);
       heartbeatTimer = setInterval(() => {
         if (closed) return;
-        writeRunRoomFeedStreamEvent(res, "heartbeat", {
+        writeRunRoomOutputStreamEvent(res, "heartbeat", {
           type: "heartbeat",
           runRoomId,
           emittedAt: new Date().toISOString()
@@ -1264,8 +1280,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       const view = runRoom?.runId ? await store.getRunView(runRoom.runId) : undefined;
       res.status(201).json({
         interjection,
-        run: await attachRunRoomFeed(view),
-        feed: await agentOutputService.projectRunRoomFeed(runRoomId)
+        run: await attachRunRoomOutput(view),
+        output: await agentOutputService.listRunRoomOutputSnapshot(runRoomId)
       });
     } catch (error) {
       next(error);
@@ -1627,6 +1643,7 @@ function normalizeExecutiveCommandRequest(value: unknown): ExecutiveCommand {
 
 async function executeExecutiveCommand(
   store: HivewardStore,
+  approvalService: ApprovalService,
   humanActionRequestService: HumanActionRequestService,
   worker: BlueprintWorker,
   session: HivewardChatSession,
@@ -1680,6 +1697,15 @@ async function executeExecutiveCommand(
         action: command.action,
         humanActionRequest: await createExecutiveHumanActionRequest(humanActionRequestService, session, command)
       };
+    case "submit_blueprint_proposal": {
+      const result = await createExecutiveBlueprintProposalApproval(approvalService, humanActionRequestService, session, command);
+      return {
+        status: "completed",
+        action: command.action,
+        approvalRequest: result.approvalRequest,
+        humanActionRequest: result.humanActionRequest
+      };
+    }
     case "create_blueprint_draft":
     case "update_blueprint_draft":
     case "govern_blueprint_version":
@@ -1729,8 +1755,16 @@ function readExecutiveCommandTargetBlueprintIds(command: ExecutiveCommand): stri
     case "summarize_blueprint":
     case "start_blueprint_run":
     case "update_blueprint_draft":
+    case "submit_blueprint_proposal":
     case "govern_blueprint_version":
-      return [command.payload.blueprintId];
+      if (command.payload.blueprintId) return [command.payload.blueprintId];
+      if (command.action === "submit_blueprint_proposal" && command.sourceRole === "leader") {
+        throw new ApiBadRequestError(
+          "executive_command_blueprint_scope_required",
+          "Leader blueprint proposal submissions require payload.blueprintId."
+        );
+      }
+      return [];
     case "batch_start_blueprint_runs":
       return command.payload.blueprintIds;
     case "request_human_action":
@@ -1830,6 +1864,56 @@ async function createExecutiveHumanActionRequest(
       sourceRole: command.sourceRole
     }
   });
+}
+
+async function createExecutiveBlueprintProposalApproval(
+  approvalService: ApprovalService,
+  humanActionRequestService: HumanActionRequestService,
+  session: HivewardChatSession,
+  command: Extract<ExecutiveCommand, { action: "submit_blueprint_proposal" }>
+): Promise<{ approvalRequest: ApprovalRequest; humanActionRequest: HumanActionRequest }> {
+  const payload = command.payload;
+  const roleId = executiveRoleId(session, command);
+  const sourceContextType = payload.blueprintId ? "blueprint_governance" : "executive_chat";
+  const sourceContextId = payload.blueprintId ?? session.id;
+  const approvalRequest = await approvalService.createRequest({
+    kind: "blueprint_proposal",
+    title: payload.title,
+    body: payload.bodyMarkdown,
+    payloadRef: payload.sourceMessageId ? `chat-message:${payload.sourceMessageId}` : undefined,
+    sourceRef: { type: "system", id: session.id },
+    requestedBy: {
+      type: "role",
+      label: command.sourceRole === "leader" ? "Leader" : "CEO",
+      roleId
+    },
+    discussionBinding: {
+      mode: "message_only",
+      route: "message_only",
+      canStreamReply: false,
+      reason: "executive_blueprint_proposal",
+      resolverVersion: 1
+    }
+  });
+  const humanActionRequest = await humanActionRequestService.createRequest({
+    producer: command.sourceRole,
+    sourceContextType,
+    sourceContextId,
+    responseIntent: "decision_required",
+    approvalRequestId: approvalRequest.id,
+    title: payload.title,
+    bodyMarkdown: payload.bodyMarkdown,
+    createdByRoleId: roleId,
+    metadata: {
+      chatSessionId: session.id,
+      executiveCommandAction: command.action,
+      sourceRole: command.sourceRole,
+      approvalRequestKind: approvalRequest.kind,
+      ...(payload.sourceMessageId ? { sourceMessageId: payload.sourceMessageId } : {}),
+      ...(payload.blueprintId ? { blueprintId: payload.blueprintId } : {})
+    }
+  });
+  return { approvalRequest, humanActionRequest };
 }
 
 function executiveRoleId(session: HivewardChatSession, command: Pick<ExecutiveCommand, "sourceRole">): string {
@@ -2298,8 +2382,9 @@ const hivewardPlatformContext = [
 const hivewardBlueprintDraftingGuidance = [
   "Blueprint build mode:",
   "The user selected HiveWard Build blueprint mode. Treat the turn as a request to produce a governed blueprint proposal unless they explicitly ask for draft-only, discussion-only, or read-only work.",
-  "If there is enough information, produce a concrete importable blueprint package with proposal text, JSON or patch details, preview, and diff summary for executive review. If essential information is missing, ask for that information instead of fabricating the package.",
-  "Do not describe a natural-language idea as approved, imported, or running until a structured ExecutiveCommand or another real API performs that action."
+  "If there is enough information, write a human-readable proposal first: title, intended workflow, Manager/Agent/Worker nodes, approval points, expected outputs, and risk notes. Do not make raw JSON the primary response.",
+  "If a machine-readable package is useful, place it after the human-readable proposal in a clearly labeled fenced JSON section. Treat it as a draft package only until HiveWard submits it through submit_blueprint_proposal or another real API.",
+  "Do not describe a natural-language idea as approved, imported, submitted for approval, or running until a structured ExecutiveCommand or another real API performs that action."
 ].join("\n");
 
 const hivewardSkillSplitGuidance = [
@@ -4204,17 +4289,21 @@ function readRouteParam(value: string | string[] | undefined, name: string): str
   throw new Error(`Missing route parameter: ${name}`);
 }
 
-function writeRunRoomFeedStreamEvent(
+function writeRunRoomOutputStreamEvent(
   res: Response,
-  eventName: RunRoomFeedStreamEvent["type"],
-  event: RunRoomFeedStreamEvent
+  eventName: RunRoomOutputStreamEvent["type"],
+  event: RunRoomOutputStreamEvent
 ): void {
   res.write(`event: ${eventName}\n`);
   res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
-function runRoomFeedCursor(row: RunRoomFeedRow): string {
-  return `${row.createdAt}:${row.id}`;
+function runRoomOutputEventCursor(event: AgentOutputEvent): string {
+  return `${event.createdAt}:${event.id}`;
+}
+
+function runRoomInterjectionCursor(interjection: RunInterjection): string {
+  return `${interjection.createdAt}:${interjection.id}`;
 }
 
 function withRunDefaults(blueprint: BlueprintDefinition, defaults: RunModelDefaults): BlueprintDefinition {

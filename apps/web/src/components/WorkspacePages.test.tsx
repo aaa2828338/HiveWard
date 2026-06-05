@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type {
+  ApprovalRequest,
   ApprovalThread,
   BlueprintDefinition,
   BlueprintKanbanBoard,
@@ -18,6 +19,9 @@ import {
   buildCurrentOutputDisplayBody,
   CompanyDirectoryPage,
   DashboardPage,
+  dispatchApprovalInboxDecisionAction,
+  dispatchApprovalInboxReplyAction,
+  dispatchHumanActionProjectionResponse,
   RunsPage
 } from "./WorkspacePages";
 
@@ -58,6 +62,9 @@ describe("BlueprintKanbanPage Blueprint Kanban", () => {
     expect(html).toContain("Failed");
     expect(html).toContain("Pending decision");
     expect(html).toContain("Launch Blueprint");
+    expect(html).toContain("blueprint-kanban-card-main");
+    expect(html).toContain("blueprint-kanban-card-meta");
+    expect(html).not.toContain("mini-row");
   });
 
   it("does not render old history primary rows or Kanban mutation actions", () => {
@@ -145,6 +152,48 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
     canReply: true,
     canComplete: false,
     canTerminate: false,
+    ...overrides
+  };
+}
+
+function createApprovalRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
+  return {
+    id: "request-1",
+    kind: "blueprint_proposal",
+    status: "pending",
+    title: "Blueprint proposal",
+    body: "Blueprint proposal body",
+    revision: 1,
+    capabilities: {
+      approve: true,
+      reject: true,
+      reply: true,
+      complete: false,
+      terminate: false,
+      returnForRevision: false
+    },
+    requestedBy: {
+      type: "role",
+      label: "CEO",
+      roleId: "ceo"
+    },
+    requestedAt: "2026-05-21T01:02:00.000Z",
+    ...overrides
+  };
+}
+
+function createInboxProjection(overrides: Partial<InboxProjection> = {}): InboxProjection {
+  return {
+    id: "projection-1",
+    humanActionRequestId: "human-action-1",
+    sourceContextType: "blueprint_governance",
+    sourceContextId: "blueprint-governance-1",
+    responseIntent: "reply_required",
+    status: "pending",
+    title: "Clarify delivery scope",
+    bodyMarkdown: "Please clarify scope.",
+    createdAt: "2026-05-21T01:02:00.000Z",
+    updatedAt: "2026-05-21T01:02:00.000Z",
     ...overrides
   };
 }
@@ -255,6 +304,7 @@ function createBlueprintDefinition(overrides: Partial<BlueprintDefinition> = {})
 
 function renderApprovalsPage({
   approvals,
+  approvalRequests = [],
   approvalThreads = [],
   inboxProjections = [],
   inboxResponsesByRequestId = {},
@@ -262,6 +312,7 @@ function renderApprovalsPage({
   focusedEntryId
 }: {
   approvals: PendingApprovalItem[];
+  approvalRequests?: ApprovalRequest[];
   approvalThreads?: ApprovalThread[];
   inboxProjections?: InboxProjection[];
   inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
@@ -271,6 +322,7 @@ function renderApprovalsPage({
   return renderToStaticMarkup(
     <ApprovalsPage
       approvals={approvals}
+      approvalRequests={approvalRequests}
       approvalThreads={approvalThreads}
       inboxProjections={inboxProjections}
       inboxResponsesByRequestId={inboxResponsesByRequestId}
@@ -492,11 +544,239 @@ describe("ApprovalsPage", () => {
     expect(html).toContain("Clarify delivery scope");
     expect(html).toContain("Please clarify scope.");
     expect(html).toContain("We need the narrow launch scope.");
+    expect(html).toContain("inbox-thread-item");
+    expect(html).toContain("inbox-detail-stack");
+    expect(html).toContain("inbox-content-block");
     expect(html).toContain("Send response");
     expect(html).not.toContain("Accept");
     expect(html).not.toContain("Decline");
     expect(html).not.toContain("Generate candidate");
     expect(html).not.toContain("Use this option");
+  });
+
+  it("renders decision projections through approval controls from the bound approval request", () => {
+    const approvalRequest = createApprovalRequest({
+      id: "approval-request-decision",
+      title: "CEO blueprint proposal",
+      body: "Approve this blueprint proposal.",
+      capabilities: {
+        approve: true,
+        reject: true,
+        reply: true,
+        complete: false,
+        terminate: false,
+        returnForRevision: false
+      }
+    });
+    const projection = createInboxProjection({
+      humanActionRequestId: "human-action-decision",
+      responseIntent: "decision_required",
+      approvalRequestId: approvalRequest.id,
+      title: "Blueprint proposal approval",
+      bodyMarkdown: "Projection body should not own lifecycle."
+    });
+
+    const html = renderApprovalsPage({
+      approvals: [],
+      approvalRequests: [approvalRequest],
+      inboxProjections: [projection]
+    });
+
+    expect(html).toContain("Blueprint proposal approval");
+    expect(html).toContain("Approve this blueprint proposal.");
+    expect(html).toContain("Send message");
+    expect(html).toContain("Accept");
+    expect(html).toContain("Decline");
+    expect(html).not.toContain("Send response");
+  });
+
+  it("routes approval decision controls to approval request callbacks", () => {
+    const calls: string[] = [];
+    const callbacks = {
+      onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => calls.push(`approve:${approvalRequestId}:${comment}`),
+      onComplete: (approvalRequestId: string, comment?: string) => calls.push(`complete:${approvalRequestId}:${comment}`),
+      onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => calls.push(`reject:${approvalRequestId}:${comment}`)
+    };
+
+    expect(dispatchApprovalInboxDecisionAction({
+      approvalRequestId: "approval-request-callback",
+      status: "pending",
+      canApprove: true,
+      canReject: true
+    }, "approve", " approve comment ", false, callbacks)).toBe(true);
+    expect(dispatchApprovalInboxDecisionAction({
+      approvalRequestId: "approval-request-callback",
+      status: "pending",
+      canApprove: true,
+      canReject: true
+    }, "reject", " reject comment ", false, callbacks)).toBe(true);
+
+    expect(calls).toEqual([
+      "approve:approval-request-callback:approve comment",
+      "reject:approval-request-callback:reject comment"
+    ]);
+  });
+
+  it("routes approval replies to approval request reply callbacks", () => {
+    const calls: string[] = [];
+
+    expect(dispatchApprovalInboxReplyAction({
+      approvalRequestId: "approval-request-reply",
+      status: "pending",
+      canReply: true,
+      discussion: {
+        mode: "message_only",
+        canStreamReply: false
+      }
+    }, " reply body ", false, (approvalRequestId, message) => calls.push(`${approvalRequestId}:${message}`))).toBe(true);
+
+    expect(calls).toEqual(["approval-request-reply:reply body"]);
+  });
+
+  it("never routes decision projections to the ordinary human response callback", () => {
+    const calls: string[] = [];
+
+    expect(dispatchHumanActionProjectionResponse(createInboxProjection({
+      humanActionRequestId: "human-action-decision-callback",
+      responseIntent: "decision_required",
+      approvalRequestId: "approval-request-decision-callback"
+    }), "ordinary response", false, (requestId, message) => calls.push(`${requestId}:${message}`))).toBe(false);
+
+    expect(calls).toEqual([]);
+  });
+
+  it("routes reply projections to the ordinary human response callback", () => {
+    const calls: string[] = [];
+
+    expect(dispatchHumanActionProjectionResponse(createInboxProjection({
+      humanActionRequestId: "human-action-reply-callback",
+      responseIntent: "reply_required"
+    }), " ordinary response ", false, (requestId, message) => calls.push(`${requestId}:${message}`))).toBe(true);
+
+    expect(calls).toEqual(["human-action-reply-callback:ordinary response"]);
+  });
+
+  it("does not expose approve or reject controls when decision approval capabilities forbid them", () => {
+    const approvalRequest = createApprovalRequest({
+      id: "approval-request-capabilities",
+      capabilities: {
+        approve: false,
+        reject: false,
+        reply: true,
+        complete: false,
+        terminate: false,
+        returnForRevision: false
+      }
+    });
+    const html = renderApprovalsPage({
+      approvals: [],
+      approvalRequests: [approvalRequest],
+      inboxProjections: [createInboxProjection({
+        humanActionRequestId: "human-action-capabilities",
+        responseIntent: "decision_required",
+        approvalRequestId: approvalRequest.id
+      })]
+    });
+
+    expect(extractButtonByText(html, "Accept")).toContain("disabled");
+    expect(extractButtonByText(html, "Decline")).toContain("disabled");
+    expect(html).not.toContain("Send response");
+  });
+
+  it("renders unresolved decision projections as unavailable without normal action buttons", () => {
+    const html = renderApprovalsPage({
+      approvals: [],
+      approvalRequests: [],
+      inboxProjections: [createInboxProjection({
+        humanActionRequestId: "human-action-missing-owner",
+        responseIntent: "decision_required",
+        approvalRequestId: "missing-approval-request",
+        title: "Missing owner decision"
+      })]
+    });
+
+    expect(html).toContain("Missing owner decision");
+    expect(html).toContain("Approval request unavailable");
+    expect(html).toContain("bound approval request could not be found");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
+    expect(html).not.toContain("Send response");
+    expect(html).not.toContain("Send message");
+  });
+
+  it("renders non-pending decision projections as unavailable without normal action buttons", () => {
+    const approvalRequest = createApprovalRequest({
+      id: "approval-request-approved",
+      status: "approved",
+      capabilities: {
+        approve: false,
+        reject: false,
+        reply: false,
+        complete: false,
+        terminate: false,
+        returnForRevision: false
+      }
+    });
+    const html = renderApprovalsPage({
+      approvals: [],
+      approvalRequests: [approvalRequest],
+      inboxProjections: [createInboxProjection({
+        humanActionRequestId: "human-action-approved-owner",
+        responseIntent: "decision_required",
+        approvalRequestId: approvalRequest.id,
+        title: "Approved owner decision"
+      })]
+    });
+
+    expect(html).toContain("Approved owner decision");
+    expect(html).toContain("no longer pending");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
+    expect(html).not.toContain("Send response");
+  });
+
+  it("deduplicates a pending approval and its matching decision projection", () => {
+    const approval = createPendingApproval({
+      approvalRequestId: "approval-request-duplicate",
+      nodeLabel: "Canonical approval row",
+      reviewOutput: "Canonical approval body"
+    });
+    const html = renderApprovalsPage({
+      approvals: [approval],
+      approvalRequests: [createApprovalRequest({ id: approval.approvalRequestId! })],
+      inboxProjections: [createInboxProjection({
+        humanActionRequestId: "human-action-duplicate",
+        responseIntent: "decision_required",
+        approvalRequestId: approval.approvalRequestId,
+        title: "Duplicate projection row",
+        bodyMarkdown: "Duplicate projection body"
+      })]
+    });
+
+    expect(html).toContain("1 items");
+    expect(html).toContain("1 of 1 shown");
+    expect(html).toContain("Canonical approval row");
+    expect(html).toContain("Canonical approval body");
+    expect(html).not.toContain("Duplicate projection row");
+    expect(html).not.toContain("Duplicate projection body");
+  });
+
+  it("keeps review projections on the send-response path", () => {
+    const html = renderApprovalsPage({
+      approvals: [],
+      inboxProjections: [createInboxProjection({
+        humanActionRequestId: "human-action-review",
+        responseIntent: "review_required",
+        title: "Review this summary",
+        bodyMarkdown: "Review body."
+      })]
+    });
+
+    expect(html).toContain("Review this summary");
+    expect(html).toContain("review required");
+    expect(html).toContain("Send response");
+    expect(html).not.toContain("Accept");
+    expect(html).not.toContain("Decline");
   });
 
   it("opens the focused human action projection detail without adding approval actions", () => {
@@ -750,7 +1030,26 @@ describe("RunsPage", () => {
       ],
       managerContextSnapshots: [],
       runTimeline: [],
-      managerMail: []
+      managerMail: [],
+      runRoomOutput: {
+        runRoomId: "run-room-report",
+        events: [
+          {
+            id: "raw-wrapper-output",
+            ownerType: "run_room",
+            ownerId: "run-room-report",
+            actorType: "worker",
+            kind: "message_completed",
+            sequence: 1,
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-1",
+            bodyMarkdown: "{\"humanReportMd\":\"raw wrapper must not render\"}",
+            metadata: { runRoomId: "run-room-report" },
+            createdAt: now
+          }
+        ],
+        interjections: []
+      }
     };
 
     const html = renderToStaticMarkup(
@@ -774,10 +1073,11 @@ describe("RunsPage", () => {
     expect(html).toContain("Manager summary from reports.");
     expect(html).toContain("Readable artifact");
     expect(html).not.toContain("SECRET_RAW_OUTPUT");
+    expect(html).not.toContain("humanReportMd");
     expect(html).not.toContain("machine-only");
   });
 
-  it("renders RunRoomFeed rows instead of residual transcript and timeline facts", () => {
+  it("renders only the active RunRoom output invocation instead of residual transcript and timeline facts", () => {
     const runView = createRunPageRunView({
       runCommands: [{
         id: "command-1",
@@ -842,38 +1142,56 @@ describe("RunsPage", () => {
         }
         ]
       } as Record<string, unknown>),
-      runRoomFeed: {
+      runRoomOutput: {
         runRoomId: "run-room-transcript",
-        rows: [
+        events: [
           {
-            id: "feed-manager",
-            runRoomId: "run-room-transcript",
-            sourceType: "manager",
-            displayMode: "formal_message",
-            bodyMarkdown: "Manager is coordinating **step one**.",
+            id: "output-started",
+            ownerType: "run_room",
+            ownerId: "run-room-transcript",
+            actorType: "worker",
+            kind: "message_started",
+            sequence: 1,
+            bodyMarkdown: "Agent started.",
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-agent-1",
+            metadata: { runRoomId: "run-room-transcript" },
             createdAt: "2026-05-28T00:01:00.000Z"
           },
           {
-            id: "feed-worker",
-            runRoomId: "run-room-transcript",
-            sourceType: "worker",
-            displayMode: "execution_output",
-            bodyMarkdown: "Worker completed execution output.",
-            workerTaskId: "worker-task-1",
-            managerCommandId: "manager-command-1",
-            agentOutputEventId: "agent-output-1",
-            runtimeState: { phase: "tool", status: "running", label: "npm test" },
+            id: "output-runtime",
+            ownerType: "run_room",
+            ownerId: "run-room-transcript",
+            actorType: "worker",
+            kind: "runtime_state",
+            sequence: 2,
+            bodyMarkdown: "Runtime row must not render.",
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-agent-1",
+            runtimeState: { source: "codex", phase: "tool", label: "repo.search", id: "tool-1", status: "running" },
+            metadata: { runRoomId: "run-room-transcript" },
             createdAt: "2026-05-28T00:02:00.000Z"
           },
           {
-            id: "feed-system",
-            runRoomId: "run-room-transcript",
-            sourceType: "system",
-            displayMode: "formal_message",
-            bodyMarkdown: "RunRoom opened.",
-            createdAt: "2026-05-28T00:03:00.000Z"
+            id: "output-delta",
+            ownerType: "run_room",
+            ownerId: "run-room-transcript",
+            actorType: "worker",
+            kind: "message_delta",
+            sequence: 3,
+            delta: JSON.stringify({
+              humanReportMd: "## Current draft\n\nStreaming draft is visible while running.\n\nUse `best-practice-research` for upstream evidence.",
+              handoffJson: null,
+              result: null,
+              artifacts: null
+            }),
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-agent-1",
+            metadata: { runRoomId: "run-room-transcript" },
+            createdAt: "2026-05-28T00:02:30.000Z"
           }
-        ]
+        ],
+        interjections: []
       },
       runTimeline: [{
         id: "timeline-legacy-summary",
@@ -889,12 +1207,18 @@ describe("RunsPage", () => {
 
     const html = renderRunsPageForRun(runView);
 
-    expect(html).toContain("RunRoom office feed");
-    expect(html).toContain("Manager is coordinating");
-    expect(html).toContain("Worker completed execution output.");
-    expect(html).toContain("RunRoom opened.");
-    expect(html).toContain("Runtime state: tool / running / npm test");
-    expect(html).toContain("Execution details");
+    expect(html).toContain("RunRoom output");
+    expect(html).toContain("Current draft");
+    expect(html).toContain("Streaming draft is visible while running.");
+    expect(html).toContain("best-practice-research");
+    expect(html).toContain("repo.search");
+    expect(html).not.toContain("humanReportMd");
+    expect(html).not.toContain("handoffJson");
+    expect(html).not.toContain("\"artifacts\"");
+    expect(html).not.toContain("&quot;artifacts&quot;");
+    expect(html).not.toContain("Agent started.");
+    expect(html).not.toContain("Runtime row must not render.");
+    expect(html).not.toContain("Execution details");
     const issueCards = extractTraceIssueCards(html).join("");
     expect(issueCards).toContain("Research Agent / Node execution");
     expect(issueCards).not.toContain("Assistant transcript answer");
@@ -914,6 +1238,306 @@ describe("RunsPage", () => {
     expect(html).not.toContain("Send target");
     expect(html).not.toContain("Approve");
     expect(html).not.toContain("Reject");
+  });
+
+  it("shows only the real active worker step when manager and slot container steps are also running", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint = createBlueprintDefinition({
+      id: "blueprint-run-page",
+      name: "Run page blueprint",
+      nodes: [
+        {
+          id: "html-manager",
+          type: "manager",
+          position: { x: 120, y: 120 },
+          config: { label: "HTML Delivery Manager", portCount: 1, maxHandoffs: 4 }
+        },
+        {
+          id: "html-manager-slot-1",
+          type: "manager_slot",
+          position: { x: 220, y: 120 },
+          config: { label: "Slot 1", managerNodeId: "html-manager", slot: 1 }
+        },
+        {
+          id: "html-manager-slot-1-agent-1",
+          type: "agent",
+          runtimeId: "codex",
+          position: { x: 320, y: 120 },
+          parentId: "html-manager-slot-1",
+          config: { label: "News Research", agentName: "news", prompt: "Research news.", tools: [] }
+        }
+      ]
+    });
+    const runView = createRunPageRunView({
+      nodeRuns: [
+        {
+          id: "node-run-manager",
+          blueprintRunId: "run-nested-active",
+          blueprintId: blueprint.id,
+          nodeId: "html-manager",
+          nodeLabel: "HTML Delivery Manager",
+          nodeType: "manager",
+          status: "running",
+          queuedAt: now,
+          startedAt: "2026-05-28T00:00:01.000Z"
+        },
+        {
+          id: "node-run-slot",
+          blueprintRunId: "run-nested-active",
+          blueprintId: blueprint.id,
+          nodeId: "html-manager-slot-1",
+          nodeLabel: "Slot 1",
+          nodeType: "manager_slot",
+          status: "running",
+          queuedAt: now,
+          startedAt: "2026-05-28T00:00:02.000Z"
+        },
+        {
+          id: "node-run-agent",
+          blueprintRunId: "run-nested-active",
+          blueprintId: blueprint.id,
+          nodeId: "html-manager-slot-1-agent-1",
+          nodeLabel: "News Research",
+          nodeType: "agent",
+          status: "running",
+          queuedAt: now,
+          startedAt: "2026-05-28T00:00:03.000Z"
+        }
+      ],
+      runCommands: [{
+        id: "command-nested",
+        commandKey: "run:run-nested-active:root",
+        blueprintId: blueprint.id,
+        runId: "run-nested-active",
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: now,
+        updatedAt: "2026-05-28T00:00:03.000Z"
+      }],
+      runCommandSteps: [
+        {
+          id: "step-manager",
+          commandId: "command-nested",
+          stepKey: "run:run-nested-active:manager",
+          runId: "run-nested-active",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "html-manager",
+          nodeRunId: "node-run-manager",
+          status: "running",
+          createdAt: "2026-05-28T00:00:01.000Z",
+          updatedAt: "2026-05-28T00:00:03.000Z"
+        },
+        {
+          id: "step-slot",
+          commandId: "command-nested",
+          stepKey: "run:run-nested-active:slot",
+          runId: "run-nested-active",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "html-manager-slot-1",
+          nodeRunId: "node-run-slot",
+          status: "running",
+          createdAt: "2026-05-28T00:00:02.000Z",
+          updatedAt: "2026-05-28T00:00:03.000Z"
+        },
+        {
+          id: "step-agent",
+          commandId: "command-nested",
+          stepKey: "run:run-nested-active:agent",
+          runId: "run-nested-active",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "html-manager-slot-1-agent-1",
+          nodeRunId: "node-run-agent",
+          status: "running",
+          createdAt: "2026-05-28T00:00:03.000Z",
+          updatedAt: "2026-05-28T00:00:03.000Z"
+        }
+      ],
+      nodeExecutionSessions: [{
+        id: "session-agent",
+        runId: "run-nested-active",
+        nodeRunId: "node-run-agent",
+        nodeId: "html-manager-slot-1-agent-1",
+        harnessId: "codex",
+        nativeSessionId: "native-agent-session",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-28T00:00:03.000Z",
+        updatedAt: "2026-05-28T00:00:03.000Z"
+      }],
+      runRoomOutput: {
+        runRoomId: "run-room-nested-active",
+        events: [{
+          id: "agent-validation-delta",
+          ownerType: "run_room",
+          ownerId: "run-room-nested-active",
+          actorType: "worker",
+          kind: "message_delta",
+          sequence: 1,
+          delta: JSON.stringify({
+            humanReportMd: "HTML validation is running in the browser now.",
+            handoffJson: null,
+            result: null,
+            artifacts: null
+          }),
+          sourceType: "blueprint_node_run",
+          sourceId: "node-run-agent",
+          metadata: { runRoomId: "run-room-nested-active" },
+          createdAt: "2026-05-28T00:00:04.000Z"
+        }],
+        interjections: []
+      }
+    }, { id: "run-nested-active", status: "running" });
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="en"
+        t={messages.en}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+    const issueCards = extractTraceIssueCards(html);
+    const issueHtml = issueCards.join("");
+
+    expect(issueCards).toHaveLength(1);
+    expect(issueHtml).toContain("News Research / Node execution");
+    expect(issueHtml).toContain("HTML validation is running in the browser now.");
+    expect(issueHtml).not.toContain("HTML Delivery Manager / Node execution");
+    expect(issueHtml).not.toContain("Slot 1 / Node execution");
+  });
+
+  it("keeps a manager work card when the manager node is the RunRoom output source", () => {
+    const now = "2026-05-28T00:00:00.000Z";
+    const blueprint = createBlueprintDefinition({
+      id: "blueprint-run-page",
+      name: "Run page blueprint",
+      nodes: [
+        {
+          id: "manager-1",
+          type: "manager",
+          position: { x: 120, y: 120 },
+          config: { label: "Delivery Manager", portCount: 1, maxHandoffs: 4 }
+        },
+        {
+          id: "slot-1",
+          type: "manager_slot",
+          position: { x: 220, y: 120 },
+          config: { label: "Slot 1", managerNodeId: "manager-1", slot: 1 }
+        }
+      ]
+    });
+    const runView = createRunPageRunView({
+      nodeRuns: [
+        {
+          id: "node-run-manager-output",
+          blueprintRunId: "run-manager-output",
+          blueprintId: blueprint.id,
+          nodeId: "manager-1",
+          nodeLabel: "Delivery Manager",
+          nodeType: "manager",
+          status: "running",
+          queuedAt: now,
+          startedAt: "2026-05-28T00:00:01.000Z"
+        },
+        {
+          id: "node-run-slot-container",
+          blueprintRunId: "run-manager-output",
+          blueprintId: blueprint.id,
+          nodeId: "slot-1",
+          nodeLabel: "Slot 1",
+          nodeType: "manager_slot",
+          status: "running",
+          queuedAt: now,
+          startedAt: "2026-05-28T00:00:02.000Z"
+        }
+      ],
+      runCommands: [{
+        id: "command-manager-output",
+        commandKey: "run:run-manager-output:root",
+        blueprintId: blueprint.id,
+        runId: "run-manager-output",
+        kind: "regular_run",
+        status: "running",
+        currentRevision: 1,
+        currentStep: "node_execution",
+        createdAt: now,
+        updatedAt: "2026-05-28T00:00:02.000Z"
+      }],
+      runCommandSteps: [
+        {
+          id: "step-manager-output",
+          commandId: "command-manager-output",
+          stepKey: "run:run-manager-output:manager",
+          runId: "run-manager-output",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "manager-1",
+          nodeRunId: "node-run-manager-output",
+          status: "running",
+          createdAt: "2026-05-28T00:00:01.000Z",
+          updatedAt: "2026-05-28T00:00:02.000Z"
+        },
+        {
+          id: "step-slot-container",
+          commandId: "command-manager-output",
+          stepKey: "run:run-manager-output:slot",
+          runId: "run-manager-output",
+          revision: 1,
+          mode: "node_execution",
+          nodeId: "slot-1",
+          nodeRunId: "node-run-slot-container",
+          status: "running",
+          createdAt: "2026-05-28T00:00:02.000Z",
+          updatedAt: "2026-05-28T00:00:02.000Z"
+        }
+      ],
+      runRoomOutput: {
+        runRoomId: "run-room-manager-output",
+        events: [{
+          id: "manager-output-delta",
+          ownerType: "run_room",
+          ownerId: "run-room-manager-output",
+          actorType: "manager",
+          kind: "message_delta",
+          sequence: 1,
+          delta: "Manager is deciding the delivery route.",
+          sourceType: "blueprint_node_run",
+          sourceId: "node-run-manager-output",
+          metadata: { runRoomId: "run-room-manager-output" },
+          createdAt: "2026-05-28T00:00:02.000Z"
+        }],
+        interjections: []
+      }
+    }, { id: "run-manager-output", status: "running" });
+
+    const html = renderToStaticMarkup(
+      <RunsPage
+        runs={[runView]}
+        blueprints={[blueprint]}
+        blueprint={blueprint}
+        selectedRunId={runView.run.id}
+        language="en"
+        t={messages.en}
+        onSelectBlueprint={() => undefined}
+        onSelectRun={() => undefined}
+      />
+    );
+    const issueCards = extractTraceIssueCards(html);
+    const issueHtml = issueCards.join("");
+
+    expect(issueCards).toHaveLength(1);
+    expect(issueHtml).toContain("Delivery Manager / Node execution");
+    expect(issueHtml).toContain("Manager is deciding the delivery route.");
+    expect(issueHtml).not.toContain("Slot 1 / Node execution");
   });
 
   it("derives preflight display mode from command step facts instead of node-run id prefixes", () => {
@@ -1106,6 +1730,17 @@ describe("RunsPage", () => {
         createdAt: "2026-05-28T00:01:00.000Z",
         updatedAt: "2026-05-28T00:01:00.000Z"
       }],
+      nodeExecutionSessions: [{
+        id: "session-command-only",
+        runId: "run-command-only",
+        nodeRunId: "node-run-agent-1",
+        nodeId: "agent-1",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:01:00.000Z"
+      }],
       runTimeline: [{
         id: "timeline-legacy-command-only",
         runId: "run-command-only",
@@ -1142,7 +1777,7 @@ describe("RunsPage", () => {
     const html = renderRunsPageForRun(runView);
 
     expect(html).toContain("Execution facts missing");
-    expect(html).toContain("No RunRoomFeed rows yet.");
+    expect(html).toContain("No run output yet.");
     expect(html).not.toContain("Legacy run summary");
     expect(html).not.toContain("Legacy read-only");
     expect(html).not.toContain("Legacy timeline fallback body");
@@ -1152,9 +1787,10 @@ describe("RunsPage", () => {
 
   it("renders exactly one manager interjection input without old run or discussion controls", () => {
     const html = renderRunsPageForRun(createRunPageRunView({
-      runRoomFeed: {
+      runRoomOutput: {
         runRoomId: "run-room-action-bar",
-        rows: []
+        events: [],
+        interjections: []
       }
     }));
 
@@ -1172,6 +1808,94 @@ describe("RunsPage", () => {
     expect(html).not.toContain("Mention");
     expect(html).not.toContain("Direct message");
     expect(html).not.toContain("Send target");
+  });
+
+  it("projects RunRoom output stream state as a display-only status", () => {
+    const html = renderRunsPageForRun(createRunPageRunView({
+      runRoomOutput: {
+        runRoomId: "run-room-live",
+        events: [],
+        interjections: []
+      }
+    }), "en", { streamState: "live" });
+
+    expect(html).toContain("RunRoom output");
+    expect(html).toContain("Live");
+    expect(html).toContain("run-room-output-stream-live");
+    expect(html).not.toContain("Approve");
+    expect(html).not.toContain("Reject");
+  });
+
+  it("keeps terminal RunRoom output text while removing finished runtime activity labels", () => {
+    const runView = createRunPageRunView({
+      runRoomOutput: {
+        runRoomId: "run-room-finished-output",
+        events: [
+          {
+            id: "output-started",
+            ownerType: "run_room",
+            ownerId: "run-room-finished-output",
+            actorType: "worker",
+            kind: "message_started",
+            sequence: 1,
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-finished",
+            metadata: { runRoomId: "run-room-finished-output" },
+            createdAt: "2026-05-28T00:01:00.000Z"
+          },
+          {
+            id: "output-runtime-completed",
+            ownerType: "run_room",
+            ownerId: "run-room-finished-output",
+            actorType: "worker",
+            kind: "runtime_state",
+            sequence: 2,
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-finished",
+            runtimeState: { source: "codex", phase: "tool", label: "web_search", id: "tool-1", status: "completed" },
+            metadata: { runRoomId: "run-room-finished-output" },
+            createdAt: "2026-05-28T00:02:00.000Z"
+          },
+          {
+            id: "output-delta",
+            ownerType: "run_room",
+            ownerId: "run-room-finished-output",
+            actorType: "worker",
+            kind: "message_delta",
+            sequence: 3,
+            delta: "stale command output should disappear",
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-finished",
+            metadata: { runRoomId: "run-room-finished-output" },
+            createdAt: "2026-05-28T00:02:30.000Z"
+          },
+          {
+            id: "output-failed",
+            ownerType: "run_room",
+            ownerId: "run-room-finished-output",
+            actorType: "worker",
+            kind: "message_failed",
+            sequence: 4,
+            bodyMarkdown: "{\"humanReportMd\":\"Readable terminal output should remain\"}",
+            sourceType: "blueprint_node_run",
+            sourceId: "node-run-finished",
+            runtimeState: { source: "codex", status: "failed" },
+            metadata: { runRoomId: "run-room-finished-output" },
+            createdAt: "2026-05-28T00:03:00.000Z"
+          }
+        ],
+        interjections: []
+      }
+    }, { status: "failed" });
+
+    const html = renderRunsPageForRun(runView);
+
+    expect(html).toContain("RunRoom output");
+    expect(html).toContain("Readable terminal output should remain");
+    expect(html).not.toContain("shared-runtime-activity-list");
+    expect(html).not.toContain("web_search");
+    expect(html).not.toContain("stale command output should disappear");
+    expect(html).not.toContain("humanReportMd");
   });
 
   it("displays command and step status without mutating run state", () => {
@@ -1200,6 +1924,17 @@ describe("RunsPage", () => {
         status: "running",
         createdAt: "2026-05-28T00:01:00.000Z",
         updatedAt: "2026-05-28T00:02:00.000Z"
+      }],
+      nodeExecutionSessions: [{
+        id: "session-display",
+        runId: "run-display",
+        nodeRunId: "node-run-agent-1",
+        nodeId: "agent-1",
+        harnessId: "codex",
+        policy: "refresh_per_run",
+        status: "active",
+        createdAt: "2026-05-28T00:01:00.000Z",
+        updatedAt: "2026-05-28T00:02:00.000Z"
       }]
     }, { id: "run-display", status: "running" });
     const before = JSON.stringify({
@@ -1210,8 +1945,8 @@ describe("RunsPage", () => {
     const html = renderRunsPageForRun(runView);
 
     expect(html).toContain("Running");
-    expect(html).toContain("RunRoom office feed");
-    expect(html).toContain("No RunRoomFeed rows yet.");
+    expect(html).toContain("RunRoom output");
+    expect(html).toContain("No run output yet.");
     expect(html).not.toContain("Execution details");
     expect(html).toContain("Research Agent / Node execution");
     expect(html).not.toContain("Execution ledger");
@@ -1720,7 +2455,7 @@ describe("RunsPage", () => {
     );
 
     expect(html).toContain("\u6267\u884c\u4e8b\u5b9e\u7f3a\u5931");
-    expect(html).toContain("\u8fd8\u6ca1\u6709 RunRoomFeed \u884c\u3002");
+    expect(html).toContain("\u8fd8\u6ca1\u6709\u8fd0\u884c\u8f93\u51fa\u3002");
     expect(html).not.toContain("\u51b3\u7b56摘要");
     expect(html).not.toContain("\u6458\u8981");
     expect(html).not.toContain("\u9a8c\u8bc1");
@@ -2690,7 +3425,8 @@ describe("RunsPage", () => {
 
 function renderRunsPageForRun(
   runView: BlueprintRunView,
-  language: "en" | "zh-CN" = "en"
+  language: "en" | "zh-CN" = "en",
+  options: { streamState?: "idle" | "connecting" | "live" | "error" } = {}
 ): string {
   const blueprint = createRunPageBlueprint(runView.run.blueprintId, runView.run.blueprintName);
   return renderToStaticMarkup(
@@ -2699,6 +3435,7 @@ function renderRunsPageForRun(
       blueprints={[blueprint]}
       blueprint={blueprint}
       selectedRunId={runView.run.id}
+      runRoomOutputStreamState={options.streamState}
       language={language}
       t={messages[language]}
       onSelectBlueprint={() => undefined}

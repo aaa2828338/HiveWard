@@ -383,7 +383,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       }
       if (event.type === "turn.completed") {
         usage = event.usage;
-        continue;
+        break;
       }
       if (event.type === "turn.failed") {
         throw new Error(event.error.message);
@@ -436,7 +436,7 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       }
       if (event.type === "turn.completed") {
         usage = event.usage;
-        continue;
+        break;
       }
       if (event.type === "turn.failed") {
         throw new Error(event.error.message);
@@ -451,8 +451,9 @@ export class CodexAgentSdkRuntime implements AgentSdkRuntime {
       if (!event.item.text) {
         continue;
       }
-      agentMessageTexts.set(event.item.id, event.item.text);
-      const nextOutput = Array.from(agentMessageTexts.values()).filter(Boolean).join("\n");
+      const nextOutput = turnOptions.outputSchema
+        ? event.item.text
+        : Array.from(agentMessageTexts.set(event.item.id, event.item.text).values()).filter(Boolean).join("\n");
       if (nextOutput === output) {
         continue;
       }

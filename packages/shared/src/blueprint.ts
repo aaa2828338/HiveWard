@@ -1,7 +1,7 @@
 import type { AgentPermissionProfile, RuntimeObjectRef, RuntimeObjectSource, RuntimeUsageFact } from "./runtime";
 import { normalizeRuntimeAccessPolicy } from "./lifecycle";
 import type { PendingApprovalDiscussionCapabilities } from "./workspace";
-import type { RunRoomFeed } from "./agentOutput";
+import type { RunRoomOutputSnapshot } from "./agentOutput";
 import type {
   ApprovalDecision,
   ApprovalDiscussionBinding,
@@ -473,7 +473,7 @@ export interface BlueprintRunView {
   managerContextSnapshots?: ManagerContextSnapshot[];
   runTimeline?: RunTimelineItem[];
   managerMail?: ManagerMail[];
-  runRoomFeed?: RunRoomFeed;
+  runRoomOutput?: RunRoomOutputSnapshot;
 }
 
 export interface BlueprintRunSummary extends BlueprintRun {

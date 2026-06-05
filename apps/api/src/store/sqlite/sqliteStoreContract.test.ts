@@ -16,7 +16,6 @@ import type {
   RunCommandStep,
   WorkerTask
 } from "@hiveward/shared";
-import { assertRunRoomFeedRow } from "@hiveward/shared";
 import type { HivewardStore } from "../hivewardStore";
 import { FileHivewardStore } from "../fileHivewardStore";
 import { SqliteDriver } from "./sqliteDriver";
@@ -501,16 +500,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listAgentOutputEvents({ ownerType: "run_room", ownerId: runRoom.id })).resolves.toEqual([
         expect.objectContaining({ id: event.id, sequence: 1 })
       ]);
-
-      expect(() => assertRunRoomFeedRow({
-        id: "run-room-feed-execution-output",
-        runRoomId: runRoom.id,
-        sourceType: "worker",
-        displayMode: "execution_output",
-        bodyMarkdown: "Worker output.",
-        actions: { canReply: true },
-        createdAt: contractNow
-      })).toThrow(/execution_output/);
     } finally {
       close?.();
     }
