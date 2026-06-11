@@ -1,9 +1,13 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { BlueprintDefinition, CompanyOverview, CompanyRoleDirectory, HarnessStatus, OpenClawConfigState } from "@hiveward/shared";
 import { ChatPage } from "./ChatPage";
 
 const now = "2026-06-03T00:00:00.000Z";
+const componentsDir = dirname(fileURLToPath(import.meta.url));
 
 const blueprint: BlueprintDefinition = {
   id: "blueprint-growth",
@@ -113,5 +117,13 @@ describe("ChatPage executive surface", () => {
     expect(html).not.toContain("Dispatch worker");
     expect(html).not.toContain("Schedule worker");
     expect(html).not.toContain("Create WorkerTask");
+  });
+
+  it("does not own chat API orchestration directly", () => {
+    const source = readFileSync(resolve(componentsDir, "ChatPage.tsx"), "utf8");
+
+    expect(source).not.toMatch(
+      /api\.(listChatSessions|createHivewardChatSession|streamSessionChat|getChatOutputEvents|updateHivewardChatSession|endHivewardChatSession|executeExecutiveCommand)/
+    );
   });
 });
