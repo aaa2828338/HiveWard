@@ -13258,3 +13258,86 @@ html[data-theme="light"] select {
     width: auto;
   }
 }
+
+@media (max-width: 760px) {
+  .app-shell {
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    overflow: visible;
+  }
+
+  .sidebar-shell {
+    position: relative;
+    top: auto;
+    height: auto;
+    max-height: min(460px, 52vh);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar-nav {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .sidebar-status {
+    min-height: 0;
+    margin-top: 0;
+    z-index: 1;
+  }
+
+  .sidebar-system {
+    gap: 6px;
+    padding-top: 8px;
+  }
+
+  .sidebar-status .sidebar-company-switcher {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 16px;
+    align-items: center;
+    min-height: 30px;
+    gap: 8px;
+    padding: 5px 8px;
+  }
+
+  .sidebar-status .sidebar-company-switcher .company-switcher-avatar {
+    width: 24px;
+    height: 24px;
+  }
+
+  .sidebar-status .sidebar-company-switcher .company-switcher-copy {
+    min-width: 0;
+  }
+
+  .sidebar-status .sidebar-company-switcher .company-switcher-copy strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .blueprint-corner-stack {
+    width: min(260px, calc(100vw - 16px));
+  }
+
+  .blueprint-corner-stack .blueprint-board-switch {
+    height: 36px;
+  }
+
+  .blueprint-corner-stack .blueprint-board-switch button {
+    min-height: 30px;
+    height: auto;
+    gap: 4px;
+    padding: 0 6px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+
+  .main-shell {
+    min-height: 0;
+  }
+}
