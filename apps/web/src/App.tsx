@@ -20,7 +20,6 @@ import type {
   ClaudeCodeModelConfig,
   ClaudeCodeModelPreset,
   ClaudeCodeSavedModelProfile,
-  CompanyOverview,
   CreateCompanyRequest,
   ConfigureOpenClawChannelRequest,
   ConfigureOpenClawModelAuthRequest,
@@ -37,7 +36,6 @@ import type {
   ArchitectureBlueprintView,
   ApprovalRequest,
   ApprovalThread,
-  CompanyRoleDirectory,
   HumanActionResponse,
   InboxProjection,
   OpenClawConfigWizardMetadata,
@@ -45,41 +43,25 @@ import type {
   OpenClawModelUsageSummary,
   OpenClawVersionInfo,
   PendingApprovalItem,
-  PortableBlueprintPackage,
   RuntimeOverview,
   UpdateClaudeCodeModelConfigRequest,
   UpdateCompanyRequest,
   WorkspaceDashboard,
   BlueprintKanbanBoard,
   BlueprintKanbanCard,
-  CanvasPosition,
   BlueprintDefinition,
   BlueprintRunSummary,
   BlueprintRunView,
   ChatPermissionMode
 } from "@hiveward/shared";
-import { api, isClosedApprovalConflictError } from "./lib/api";
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
 import { harnessDisplayLabel, harnessDisplayParts } from "./lib/harness-labels";
-import { applyHarnessPermissionModesToBlueprint } from "./lib/harness-permissions";
-import {
-  applyBlueprintUpdaterToCollection,
-  blueprintCollectionSignature,
-  clearBlueprintDirty,
-  isSameBlueprintSnapshot,
-  listDirtyBlueprintsForAutosave,
-  markBlueprintDirty,
-  mergeBlueprintsPreservingLocalEdits,
-  removeBlueprintFromDirtySet,
-  replaceBlueprint
-} from "./lib/blueprint-edit-state";
 import { getInitialLanguage, messages, type Language, type Messages } from "./lib/i18n";
-import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDetails, upsertRunSummary } from "./lib/run-state";
-import { applyRunRoomOutputStreamEventToRunView, type RunRoomOutputStreamState } from "./lib/run-room-output-state";
-import { emptyBlueprintKanbanBoard } from "./lib/blueprint-kanban-state";
+import { isActiveRunView } from "./lib/run-state";
 import { BlueprintStudioPage } from "./components/BlueprintStudioPage";
 import { HarnessLabel } from "./components/HarnessLabel";
 import hivewardPackage from "../../../package.json";
+import { useWorkspaceController } from "./app/useWorkspaceController";
 import {
   AgentsPage,
   ApprovalsPage,
@@ -97,58 +79,15 @@ import { ChatPage } from "./components/ChatPage";
 import { AppLayout } from "./layouts/AppLayout";
 import { Sidebar } from "./layouts/Sidebar";
 import { AppRoutes } from "./routes/AppRoutes";
-import { getRouteByPathname, getRoutePath, type RouteId, type RouteSystemId } from "./routes/route-registry";
+import { getRouteByPathname, type RouteId, type RouteSystemId } from "./routes/route-registry";
 
-const RUN_POLL_INTERVAL_MS = 2500;
-const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
-const BLUEPRINT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
-const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
-const harnessSkillHarnessIds: HarnessId[] = ["codex", "claudeCode", "openclaw", "hermes", "google", "cursor", "opencode"];
 
 type AppTheme = "light" | "dark";
 type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes">;
 const CHAT_PERMISSION_MODES_STORAGE_KEY = "hiveward-chat-permission-modes";
 const CHAT_PERMISSION_MODES_STORAGE_VERSION = 2;
-
-function syncApprovalThreadsForRun(current: ApprovalThread[], runView: BlueprintRunView): ApprovalThread[] {
-  const runThreads = runView.approvalThreads;
-  if (!runThreads) return current;
-  return sortApprovalThreads([
-    ...runThreads,
-    ...current.filter((thread) => thread.runId !== runView.run.id)
-  ]);
-}
-
-function syncApprovalRequestsForRun(current: ApprovalRequest[], runView: BlueprintRunView): ApprovalRequest[] {
-  const runRequests = runView.approvalRequests;
-  if (!runRequests) return current;
-  return sortApprovalRequests([
-    ...runRequests,
-    ...current.filter((request) => request.runId !== runView.run.id)
-  ]);
-}
-
-function upsertApprovalThread(current: ApprovalThread[], thread: ApprovalThread): ApprovalThread[] {
-  return sortApprovalThreads([thread, ...current.filter((candidate) => candidate.id !== thread.id)]);
-}
-
-function upsertApprovalRequests(current: ApprovalRequest[], requests: ApprovalRequest[]): ApprovalRequest[] {
-  const nextById = new Map(current.map((request) => [request.id, request]));
-  for (const request of requests) {
-    nextById.set(request.id, request);
-  }
-  return sortApprovalRequests([...nextById.values()]);
-}
-
-function sortApprovalThreads(threads: ApprovalThread[]): ApprovalThread[] {
-  return threads.slice().sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
-}
-
-function sortApprovalRequests(requests: ApprovalRequest[]): ApprovalRequest[] {
-  return requests.slice().sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
-}
 
 type OpenClawPanelCopy = {
   title: string;
@@ -196,48 +135,9 @@ export function App() {
   const navigate = useNavigate();
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
   const [theme, setTheme] = useState<AppTheme>(() => getInitialTheme());
-  const [companies, setCompanies] = useState<CompanyOverview[]>([]);
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
-  const [blueprints, setBlueprints] = useState<BlueprintDefinition[]>([]);
-  const [blueprint, setBlueprint] = useState<BlueprintDefinition | undefined>();
-  const [dirtyBlueprintIds, setDirtyBlueprintIds] = useState<Set<string>>(() => new Set());
-  const [catalog, setCatalog] = useState<CatalogSnapshot | undefined>();
-  const [openClawConfig, setOpenClawConfig] = useState<OpenClawConfigState | undefined>();
-  const [openClawWizard, setOpenClawWizard] = useState<OpenClawConfigWizardMetadata | undefined>();
-  const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
-  const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
-  const [hivewardUpdate, setHivewardUpdate] = useState<HivewardUpdateStatus | undefined>();
-  const [hivewardUpdateResult, setHivewardUpdateResult] = useState<ApplyHivewardUpdateResponse | undefined>();
-  const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
-  const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
-  const [hermesConfig, setHermesConfig] = useState<HermesConfigResponse | undefined>();
-  const [claudeCodeModelConfig, setClaudeCodeModelConfig] = useState<ClaudeCodeModelConfig | undefined>();
-  const [claudeCodeModelPresets, setClaudeCodeModelPresets] = useState<ClaudeCodeModelPreset[]>([]);
-  const [claudeCodeSavedModelProfiles, setClaudeCodeSavedModelProfiles] = useState<ClaudeCodeSavedModelProfile[]>([]);
-  const [harnessSkillStatuses, setHarnessSkillStatuses] = useState<Partial<Record<HarnessId, HarnessSkillStatusResponse>>>({});
   const [chatPermissionModes, setChatPermissionModes] = useState<Record<SdkChatHarnessId, ChatPermissionMode>>(() =>
     getInitialChatPermissionModes()
   );
-  const [runtime, setRuntime] = useState<RuntimeOverview | undefined>();
-  const [runSummaries, setRunSummaries] = useState<BlueprintRunSummary[]>([]);
-  const [runDetailsById, setRunDetailsById] = useState<Record<string, BlueprintRunView>>({});
-  const [runRoomOutputStreamStates, setRunRoomOutputStreamStates] = useState<Record<string, RunRoomOutputStreamState>>({});
-  const [approvals, setApprovals] = useState<PendingApprovalItem[]>([]);
-  const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
-  const [approvalThreads, setApprovalThreads] = useState<ApprovalThread[]>([]);
-  const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
-  const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
-  const [inboxProjections, setInboxProjections] = useState<InboxProjection[]>([]);
-  const [inboxResponsesByRequestId, setInboxResponsesByRequestId] = useState<Record<string, HumanActionResponse[]>>({});
-  const [blueprintKanbanBoard, setBlueprintKanbanBoard] = useState<BlueprintKanbanBoard>(() => emptyBlueprintKanbanBoard());
-  const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
-  const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
-  const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
-  const [runPageBlueprintId, setRunPageBlueprintId] = useState<string | undefined>();
-  const [focusedInboxEntryId, setFocusedInboxEntryId] = useState<string | undefined>();
-  const [busyAction, setBusyAction] = useState<string | undefined>();
-  const [dashboardDirty, setDashboardDirty] = useState(false);
-  const [error, setError] = useState<string | undefined>();
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const [expandedSystems, setExpandedSystems] = useState<Record<RouteSystemId, boolean>>({
     hiveward: true,
@@ -250,43 +150,106 @@ export function App() {
     hermes: false
   });
   const t = messages[language];
-  const messageRef = useRef(t);
-  const blueprintRef = useRef<BlueprintDefinition | undefined>(undefined);
-  const blueprintsRef = useRef<BlueprintDefinition[]>([]);
-  const dirtyBlueprintIdsRef = useRef<Set<string>>(new Set());
-  const chatPermissionModesRef = useRef<Record<SdkChatHarnessId, ChatPermissionMode>>(chatPermissionModes);
-  const blueprintAutosaveInFlightRef = useRef(false);
-  const busyActionRef = useRef<string | undefined>(undefined);
-  const selectedBlueprintIdRef = useRef<string | undefined>(undefined);
-  const selectedRunIdRef = useRef<string | undefined>(undefined);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
   const blueprintImportInputRef = useRef<HTMLInputElement | null>(null);
   const activeRouteId = getRouteByPathname(location.pathname)?.id;
+  const hivewardHomeUi = useMemo(() => hivewardHomeCopy(language), [language]);
 
-  useEffect(() => {
-    messageRef.current = t;
-  }, [t]);
-
-  useEffect(() => {
-    blueprintRef.current = blueprint;
-    selectedBlueprintIdRef.current = blueprint?.id;
-  }, [blueprint]);
-
-  useEffect(() => {
-    blueprintsRef.current = blueprints;
-  }, [blueprints]);
-
-  useEffect(() => {
-    dirtyBlueprintIdsRef.current = dirtyBlueprintIds;
-  }, [dirtyBlueprintIds]);
-
-  useEffect(() => {
-    busyActionRef.current = busyAction;
-  }, [busyAction]);
-
-  useEffect(() => {
-    selectedRunIdRef.current = selectedRunId;
-  }, [selectedRunId]);
+  const {
+    companies,
+    selectedCompanyId,
+    selectedCompany,
+    blueprints,
+    blueprint,
+    dirtyBlueprintIds,
+    catalog,
+    openClawConfig,
+    openClawWizard,
+    openClawModelUsage,
+    openClawVersion,
+    hivewardUpdate,
+    hivewardUpdateResult,
+    hivewardUpdateChecking,
+    harnessStatuses,
+    hermesConfig,
+    claudeCodeModelConfig,
+    claudeCodeModelPresets,
+    claudeCodeSavedModelProfiles,
+    harnessSkillStatuses,
+    runtime,
+    runSummaries,
+    runs,
+    approvals,
+    approvalRequests,
+    approvalThreads,
+    roleDirectory,
+    architecture,
+    inboxProjections,
+    inboxResponsesByRequestId,
+    blueprintKanbanBoard,
+    dashboard,
+    selectedNodeId,
+    selectedRunId,
+    runPageBlueprint,
+    focusedInboxEntryId,
+    busyAction,
+    dashboardDirty,
+    error,
+    isSelectedBlueprintDirty,
+    latestRunForBlueprint,
+    selectedRunRoomOutputStreamState,
+    setSelectedNodeId,
+    setSelectedRunId,
+    selectBlueprint,
+    selectRunPageBlueprint,
+    openBlueprintKanbanCard,
+    updateBlueprint,
+    updateArchitectureLayout,
+    mutateDashboard,
+    enterCompany,
+    createCompany,
+    updateCompany,
+    deleteCompany,
+    refreshCatalog,
+    checkOpenClawUpdates,
+    checkHivewardUpdate,
+    applyHivewardUpdateAction,
+    forceHivewardUpdateAction,
+    refreshHarnessStatus,
+    addHermesProfile,
+    addHermesChannel,
+    installHarnessSkills,
+    addOpenClawAgent,
+    configureOpenClawModelAuth,
+    setOpenClawDefaultModel,
+    updateClaudeCodeModelConfig,
+    saveClaudeCodeModelProfile,
+    applyClaudeCodeModelProfile,
+    deleteClaudeCodeModelProfile,
+    configureOpenClawChannel,
+    saveBlueprint,
+    exportBlueprint,
+    deleteBlueprint,
+    importBlueprintFile,
+    createBlueprint,
+    runBlueprint,
+    cancelBlueprintRun,
+    sendRunInterjection,
+    approveApprovalRequest,
+    completeRunApproval,
+    rejectApprovalRequest,
+    replyToApprovalRequest,
+    returnForRevisionApprovalRequest,
+    sendHumanActionResponse,
+    refreshInboxAndApprovals
+  } = useWorkspaceController({
+    activeRouteId,
+    chatPermissionModes,
+    forceHivewardUpdateConfirm: hivewardHomeUi.forceUpdateConfirm,
+    language,
+    navigate,
+    t
+  });
 
   useEffect(() => {
     localStorage.setItem("hiveward-language", language);
@@ -300,10 +263,6 @@ export function App() {
         modes: chatPermissionModes
       })
     );
-  }, [chatPermissionModes]);
-
-  useEffect(() => {
-    chatPermissionModesRef.current = chatPermissionModes;
   }, [chatPermissionModes]);
 
   useEffect(() => {
@@ -339,110 +298,6 @@ export function App() {
     };
   }, []);
 
-  const runs = useMemo<BlueprintRunView[]>(
-    () =>
-      runSummaries.map((summary) => {
-        const detail = runDetailsById[summary.id];
-        return detail ? { ...detail, run: summary } : { run: summary, nodeRuns: [], events: [], finalResult: null };
-      }),
-    [runSummaries, runDetailsById]
-  );
-
-  const hydrateWorkspace = useCallback(
-    async (options?: { blueprintId?: string; runId?: string }) => {
-      const [
-        companyDirectory,
-        nextBlueprints,
-        nextCatalog,
-        nextOpenClawConfig,
-        nextOpenClawWizard,
-        nextOpenClawModelUsage,
-        nextHarnessStatuses,
-        nextHermesConfig,
-        nextClaudeCodeModelResponse,
-        nextHarnessSkillStatuses,
-        nextRunSummaries,
-        nextApprovals,
-        nextApprovalRequests,
-        nextApprovalThreads,
-        nextRoles,
-        nextInboxProjections,
-        nextBlueprintKanbanBoard,
-        nextDashboard,
-        nextRuntime
-      ] = await Promise.all([
-        api.listCompanies(),
-        api.listBlueprints(),
-        api.getCatalogSnapshot(),
-        api.getOpenClawConfig(),
-        api.getOpenClawConfigWizard(),
-        api.getOpenClawModelUsage().catch(() => []),
-        api.getHarnessStatus().catch(() => []),
-        api.getHermesConfig().catch(() => undefined),
-        api.getClaudeCodeModelConfig().catch(() => undefined),
-        loadHarnessSkillStatuses(),
-        api.listBlueprintRuns(),
-        api.listPendingApprovals(),
-        api.listApprovalRequests(),
-        api.listApprovalThreads({ status: "open" }).catch(() => []),
-        api.getRoleDirectory().catch(() => undefined),
-        api.listInboxProjections().catch(() => []),
-        api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard()),
-        api.getDashboardState(),
-        api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
-      ]);
-
-      const preferredRunId = options?.runId ?? selectedRunIdRef.current;
-      const nextRunId = preferredRunId && nextRunSummaries.some((item) => item.id === preferredRunId) ? preferredRunId : undefined;
-      const nextRunView = nextRunId ? await api.getBlueprintRun(nextRunId).catch(() => undefined) : undefined;
-
-      setCompanies(companyDirectory.companies);
-      setSelectedCompanyId(companyDirectory.selectedCompanyId);
-      const hydratedBlueprints = mergeBlueprintsPreservingLocalEdits(
-        nextBlueprints,
-        blueprintsRef.current,
-        dirtyBlueprintIdsRef.current
-      );
-      blueprintsRef.current = hydratedBlueprints;
-      setBlueprints(hydratedBlueprints);
-      setCatalog(nextCatalog);
-      setOpenClawConfig(nextOpenClawConfig);
-      setOpenClawWizard(nextOpenClawWizard);
-      setOpenClawModelUsage(nextOpenClawModelUsage);
-      setHarnessStatuses(nextHarnessStatuses);
-      setHermesConfig(nextHermesConfig);
-      setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
-      setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
-      setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
-      setHarnessSkillStatuses(nextHarnessSkillStatuses);
-      setRunSummaries(nextRunSummaries);
-      setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
-      setApprovals(nextApprovals);
-      setApprovalRequests(nextApprovalRequests);
-      setApprovalThreads(nextApprovalThreads);
-      setRoleDirectory(nextRoles?.roles);
-      setArchitecture(nextRoles?.architecture);
-      setInboxProjections(nextInboxProjections);
-      setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
-      setDashboard(nextDashboard);
-      setRuntime(nextRuntime);
-      setDashboardDirty(false);
-
-      const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintIdRef.current ?? hydratedBlueprints[0]?.id;
-      const nextBlueprint = hydratedBlueprints.find((item) => item.id === preferredBlueprintId) ?? hydratedBlueprints[0];
-      blueprintRef.current = nextBlueprint;
-      selectedBlueprintIdRef.current = nextBlueprint?.id;
-      setBlueprint(nextBlueprint);
-      setSelectedNodeId(undefined);
-      setSelectedRunId(nextRunId);
-    },
-    []
-  );
-
-  const selectedCompany = useMemo(
-    () => companies.find((company) => company.id === selectedCompanyId),
-    [companies, selectedCompanyId]
-  );
   const systemUi = useMemo(
     () =>
       language === "zh-CN"
@@ -571,7 +426,6 @@ export function App() {
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
   const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
-  const hivewardHomeUi = useMemo(() => hivewardHomeCopy(language), [language]);
   const hivewardVersionTitle = hivewardUpdate?.updateAvailable
     ? `${hivewardHomeUi.updateAvailable}: ${hivewardVersionLabel}`
     : `Hiveward ${hivewardVersionLabel}`;
@@ -607,46 +461,6 @@ export function App() {
   const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
   const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
   const companySwitcherLabel = language === "zh-CN" ? "\u9009\u62E9\u516C\u53F8" : "Choose company";
-
-  useEffect(() => {
-    setBusyAction("load");
-    setError(undefined);
-    void hydrateWorkspace()
-      .catch((loadError) => {
-        setError(loadError instanceof Error ? loadError.message : messageRef.current.errors.load);
-      })
-      .finally(() => {
-        setBusyAction(undefined);
-      });
-  }, [hydrateWorkspace]);
-
-  const isSelectedBlueprintDirty = Boolean(blueprint && dirtyBlueprintIds.has(blueprint.id));
-  const latestRunForBlueprint = useMemo(
-    () => (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined),
-    [runs, blueprint]
-  );
-  const runPageBlueprint = useMemo(
-    () => blueprints.find((item) => item.id === runPageBlueprintId),
-    [blueprints, runPageBlueprintId]
-  );
-
-  useEffect(() => {
-    if (!runPageBlueprintId || runPageBlueprint) return;
-    setRunPageBlueprintId(undefined);
-    setSelectedRunId(undefined);
-  }, [runPageBlueprint, runPageBlueprintId]);
-
-  useEffect(() => {
-    if (activeRouteId !== "runs" || runPageBlueprintId || runs.length === 0) return;
-    const preferredRun =
-      runs.find(isActiveRunView) ??
-      (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined) ??
-      runs[0];
-    if (!preferredRun) return;
-    setRunPageBlueprintId(preferredRun.run.blueprintId);
-    setSelectedRunId(preferredRun.run.id);
-  }, [activeRouteId, blueprint, runPageBlueprintId, runs]);
-
   const activeTaskCount = useMemo(
     () => runs.filter(isActiveRunView).length,
     [runs]
@@ -656,84 +470,6 @@ export function App() {
     [approvals]
   );
   const waitingUserKanbanCount = blueprintKanbanBoard.lanes.waiting_user.length;
-  const pollingRunId = useMemo(
-    () =>
-      selectRunPollingTarget({
-        runs,
-        selectedBlueprintId: activeRouteId === "runs" ? runPageBlueprint?.id : blueprint?.id,
-        selectedRunId,
-        view: activeRouteId === "runs" ? "runs" : "blueprint"
-      }),
-    [activeRouteId, blueprint?.id, runPageBlueprint?.id, runs, selectedRunId]
-  );
-  const selectedRunRoomId = selectedRunId ? runDetailsById[selectedRunId]?.runRoomOutput?.runRoomId : undefined;
-  const selectedRunRoomOutputStreamState = selectedRunRoomId ? runRoomOutputStreamStates[selectedRunRoomId] ?? "idle" : "idle";
-
-  const selectBlueprint = useCallback(
-    (blueprintId: string) => {
-      const next = blueprints.find((item) => item.id === blueprintId);
-      if (!next) return;
-      blueprintRef.current = next;
-      selectedBlueprintIdRef.current = next.id;
-      setBlueprint(next);
-      setSelectedNodeId(undefined);
-      const latestRunForNextBlueprint = runs.find((runView) => runView.run.blueprintId === next.id);
-      setSelectedRunId(latestRunForNextBlueprint?.run.id);
-    },
-    [runs, blueprints]
-  );
-
-  const selectRunPageBlueprint = useCallback(
-    (blueprintId: string) => {
-      setRunPageBlueprintId(blueprintId);
-      selectBlueprint(blueprintId);
-    },
-    [selectBlueprint]
-  );
-
-  const openBlueprintKanbanCard = useCallback((card: BlueprintKanbanCard) => {
-    if (card.targetRef.type === "inbox_projection") {
-      const focusedEntryId = `human:${card.targetRef.humanActionRequestId}`;
-      void (async () => {
-        try {
-          const [nextApprovals, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
-            api.listPendingApprovals(),
-            api.listApprovalThreads({ status: "open" }).catch(() => []),
-            api.listInboxProjections(),
-            api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
-          ]);
-          setApprovals(nextApprovals);
-          setApprovalThreads(nextApprovalThreads);
-          setInboxProjections(nextInboxProjections);
-          setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
-        } catch (navigationError) {
-          setError(navigationError instanceof Error ? navigationError.message : messageRef.current.errors.load);
-        } finally {
-          setFocusedInboxEntryId(focusedEntryId);
-          setSelectedNodeId(undefined);
-          navigate(getRoutePath("approvals"));
-        }
-      })();
-      return;
-    }
-    setFocusedInboxEntryId(undefined);
-    const blueprintId = card.targetRef.type === "blueprint" ? card.targetRef.blueprintId : card.targetRef.blueprintId;
-    if (blueprintId) {
-      const nextBlueprint = blueprintsRef.current.find((item) => item.id === blueprintId);
-      if (nextBlueprint) {
-        setBlueprint(nextBlueprint);
-      }
-      setRunPageBlueprintId(blueprintId);
-    }
-    if (card.targetRef.type === "run_room" && card.targetRef.runId) {
-      setSelectedRunId(card.targetRef.runId);
-      setSelectedNodeId(undefined);
-      navigate(getRoutePath("runs"));
-      return;
-    }
-    setSelectedNodeId(undefined);
-    navigate(getRoutePath("blueprint"));
-  }, [navigate]);
 
   const sidebarActivityMeta = useMemo<Partial<Record<RouteId, number>>>(
     () => ({
@@ -777,649 +513,8 @@ export function App() {
     setExpandedSystems((current) => ({ ...current, [systemId]: !current[systemId] }));
   }, []);
 
-  const withBusy = useCallback(async <T,>(action: string, work: () => Promise<T>): Promise<T | undefined> => {
-    setBusyAction(action);
-    setError(undefined);
-    try {
-      return await work();
-    } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : errorMessageForAction(action, messageRef.current));
-      return undefined;
-    } finally {
-      setBusyAction(undefined);
-    }
-  }, []);
-
-  const withApprovalRequestBusy = useCallback(async <T,>(action: string, work: () => Promise<T>): Promise<T | undefined> => {
-    setBusyAction(action);
-    setError(undefined);
-    try {
-      return await work();
-    } catch (actionError) {
-      if (isClosedApprovalConflictError(actionError)) {
-        try {
-          await hydrateWorkspace({ blueprintId: blueprintRef.current?.id });
-        } catch (refreshError) {
-          setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
-        }
-        return undefined;
-      }
-      setError(actionError instanceof Error ? actionError.message : errorMessageForAction(action, messageRef.current));
-      return undefined;
-    } finally {
-      setBusyAction(undefined);
-    }
-  }, [hydrateWorkspace]);
-
-  const applyRunView = useCallback((runView: BlueprintRunView) => {
-    setRunDetailsById((current) => ({ ...current, [runView.run.id]: runView }));
-    setRunSummaries((current) => upsertRunSummary(current, runView.run));
-    setApprovals((current) => syncApprovalsForRun(current, runView));
-    setApprovalRequests((current) => syncApprovalRequestsForRun(current, runView));
-    setApprovalThreads((current) => syncApprovalThreadsForRun(current, runView));
-  }, []);
-
-  const refreshBlueprintKanban = useCallback(async () => {
-    setBlueprintKanbanBoard(await api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard()));
-  }, []);
-
-  const loadOpenClawVersion = useCallback(async () => {
-    try {
-      setOpenClawVersion(await api.getOpenClawVersion());
-    } catch (versionError) {
-      setOpenClawVersion({
-        resolvedAt: new Date().toISOString(),
-        error: versionError instanceof Error ? versionError.message : String(versionError)
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadOpenClawVersion();
-  }, [loadOpenClawVersion]);
-
-  const updateBlueprint = useCallback((updater: (current: BlueprintDefinition) => BlueprintDefinition) => {
-    const result = applyBlueprintUpdaterToCollection(blueprintRef.current, blueprintsRef.current, updater);
-    if (!result.changed || !result.blueprint) return;
-
-    blueprintRef.current = result.blueprint;
-    selectedBlueprintIdRef.current = result.blueprint.id;
-    blueprintsRef.current = result.blueprints;
-    setBlueprint(result.blueprint);
-    setBlueprints(result.blueprints);
-    setDirtyBlueprintIds((currentDirty) => {
-      const nextDirty = markBlueprintDirty(currentDirty, result.blueprint!.id);
-      dirtyBlueprintIdsRef.current = nextDirty;
-      return nextDirty;
-    });
-  }, []);
-
-  const acceptSavedBlueprintSnapshot = useCallback((saved: BlueprintDefinition, savedSnapshot: BlueprintDefinition) => {
-    const currentSnapshot = blueprintsRef.current.find((candidate) => candidate.id === savedSnapshot.id);
-    if (!currentSnapshot || !isSameBlueprintSnapshot(currentSnapshot, savedSnapshot)) return false;
-
-    const nextBlueprints = replaceBlueprint(blueprintsRef.current, saved);
-    blueprintsRef.current = nextBlueprints;
-    setBlueprints(nextBlueprints);
-    if (selectedBlueprintIdRef.current === saved.id) {
-      blueprintRef.current = saved;
-      setBlueprint(saved);
-    }
-    setDirtyBlueprintIds((current) => {
-      const next = clearBlueprintDirty(current, saved.id);
-      dirtyBlueprintIdsRef.current = next;
-      return next;
-    });
-    return true;
-  }, []);
-
-  const updateArchitectureLayout = useCallback((positions: Record<string, CanvasPosition>) => {
-    if (Object.keys(positions).length === 0) return;
-    void api.saveArchitectureLayout(positions)
-      .then((nextRoles) => {
-        setRoleDirectory(nextRoles.roles);
-        setArchitecture(nextRoles.architecture);
-      })
-      .catch((layoutError) => {
-        setError(layoutError instanceof Error ? layoutError.message : messageRef.current.errors.save);
-      });
-  }, []);
-
-  const mutateDashboard = useCallback((updater: (current: WorkspaceDashboard) => WorkspaceDashboard) => {
-    setDashboard((current) => {
-      if (!current) return current;
-      return updater(current);
-    });
-    setDashboardDirty(true);
-  }, []);
-
-  const enterCompany = useCallback(
-    (companyId: string) => {
-      void withBusy("enterCompany", async () => {
-        await api.selectCompany(companyId);
-        navigate(getRoutePath("company"));
-        await hydrateWorkspace();
-      });
-    },
-    [hydrateWorkspace, navigate, withBusy]
-  );
-
-  const createCompany = useCallback(
-    (input: CreateCompanyRequest) =>
-      withBusy("createCompany", async () => {
-        const directory = await api.createCompany(input);
-        setCompanies(directory.companies);
-        setSelectedCompanyId(directory.selectedCompanyId);
-        await hydrateWorkspace();
-        return directory;
-      }),
-    [hydrateWorkspace, withBusy]
-  );
-
-  const updateCompany = useCallback(
-    (companyId: string, input: UpdateCompanyRequest) =>
-      withBusy("updateCompany", async () => {
-        const directory = await api.updateCompany(companyId, input);
-        setCompanies(directory.companies);
-        setSelectedCompanyId(directory.selectedCompanyId);
-        await hydrateWorkspace();
-        return directory;
-      }),
-    [hydrateWorkspace, withBusy]
-  );
-
-  const deleteCompany = useCallback(
-    (companyId: string) => {
-      void withBusy("deleteCompany", async () => {
-        await api.deleteCompany(companyId);
-        await hydrateWorkspace();
-      });
-    },
-    [hydrateWorkspace, withBusy]
-  );
-
-  const refreshCatalog = useCallback(
-    () =>
-      withBusy("refreshCatalog", async () => {
-        const [nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextHarnessSkillStatuses, nextRuntime] = await Promise.all([
-          api.refreshCatalog(),
-          api.getOpenClawConfig(),
-          api.getOpenClawModelUsage().catch(() => []),
-          api.getHarnessStatus().catch(() => []),
-          loadHarnessSkillStatuses(),
-          api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
-        ]);
-        setCatalog(nextCatalog);
-        setOpenClawConfig(nextOpenClawConfig);
-        setOpenClawModelUsage(nextOpenClawModelUsage);
-        setHarnessStatuses(nextHarnessStatuses);
-        setHarnessSkillStatuses(nextHarnessSkillStatuses);
-        setRuntime(nextRuntime);
-      }),
-    [withBusy]
-  );
-
-  const checkOpenClawUpdates = useCallback(
-    () =>
-      withBusy("checkOpenClawUpdates", async () => {
-        const [nextOpenClawVersion, nextCatalog, nextOpenClawConfig, nextOpenClawModelUsage, nextHarnessStatuses, nextHarnessSkillStatuses, nextRuntime] = await Promise.all([
-          api.getOpenClawVersion(),
-          api.refreshCatalog(),
-          api.getOpenClawConfig(),
-          api.getOpenClawModelUsage().catch(() => []),
-          api.getHarnessStatus().catch(() => []),
-          loadHarnessSkillStatuses(),
-          api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
-        ]);
-        setOpenClawVersion(nextOpenClawVersion);
-        setCatalog(nextCatalog);
-        setOpenClawConfig(nextOpenClawConfig);
-        setOpenClawModelUsage(nextOpenClawModelUsage);
-        setHarnessStatuses(nextHarnessStatuses);
-        setHarnessSkillStatuses(nextHarnessSkillStatuses);
-        setRuntime(nextRuntime);
-      }),
-    [withBusy]
-  );
-
-  const checkHivewardUpdate = useCallback(async () => {
-    setHivewardUpdateChecking(true);
-    try {
-      const nextUpdate = await api.getHivewardUpdate();
-      setHivewardUpdate(nextUpdate);
-    } catch (updateError) {
-      setHivewardUpdate({
-        source: "git",
-        currentVersion: hivewardPackage.version,
-        repositoryUrl: hivewardRepositoryUrl,
-        checkedAt: new Date().toISOString(),
-        updateAvailable: false,
-        canApply: false,
-        applyCommand: "",
-        restartRequired: true,
-        error: updateError instanceof Error ? updateError.message : String(updateError)
-      });
-    } finally {
-      setHivewardUpdateChecking(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void checkHivewardUpdate();
-    const timer = window.setInterval(() => {
-      void checkHivewardUpdate();
-    }, HIVEWARD_UPDATE_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [checkHivewardUpdate]);
-
-  const applyHivewardUpdateAction = useCallback(() => {
-    void withBusy("applyHivewardUpdate", async () => {
-      const result = await api.applyHivewardUpdate();
-      setHivewardUpdateResult(result);
-      setHivewardUpdate(result.update);
-    });
-  }, [withBusy]);
-
-  const forceHivewardUpdateAction = useCallback(() => {
-    if (!window.confirm(hivewardHomeUi.forceUpdateConfirm)) return;
-    void withBusy("forceApplyHivewardUpdate", async () => {
-      const result = await api.applyHivewardUpdate({ force: true });
-      setHivewardUpdateResult(result);
-      setHivewardUpdate(result.update);
-    });
-  }, [hivewardHomeUi.forceUpdateConfirm, withBusy]);
-
-  const refreshHarnessStatus = useCallback(
-    () =>
-      withBusy("refreshHarnessStatus", async () => {
-        const [nextHarnessStatuses, nextHermesConfig, nextClaudeCodeModelResponse, nextHarnessSkillStatuses] = await Promise.all([
-          api.getHarnessStatus(),
-          api.getHermesConfig().catch(() => undefined),
-          api.getClaudeCodeModelConfig().catch(() => undefined),
-          loadHarnessSkillStatuses()
-        ]);
-        setHarnessStatuses(nextHarnessStatuses);
-        setHermesConfig(nextHermesConfig);
-        setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
-        setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
-        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
-        setHarnessSkillStatuses(nextHarnessSkillStatuses);
-      }),
-    [withBusy]
-  );
-
-  const addHermesProfile = useCallback(
-    (input: CreateHermesProfileRequest) => {
-      void withBusy("addHermesProfile", async () => {
-        const nextHermesConfig = await api.addHermesProfile(input);
-        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
-        setHermesConfig(nextHermesConfig);
-        setHarnessStatuses(nextHarnessStatuses);
-      });
-    },
-    [harnessStatuses, withBusy]
-  );
-
-  const addHermesChannel = useCallback(
-    (input: CreateHermesChannelRequest) => {
-      void withBusy("addHermesChannel", async () => {
-        const nextHermesConfig = await api.addHermesChannel(input);
-        setHermesConfig(nextHermesConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const installHarnessSkills = useCallback(
-    (harnessId: HarnessId) => {
-      void withBusy(`installHarnessSkills:${harnessId}`, async () => {
-        const nextSkillStatus = await api.installHarnessSkills(harnessId);
-        setHarnessSkillStatuses((current) => ({
-          ...current,
-          [harnessId]: nextSkillStatus
-        }));
-        if (harnessId === "openclaw") {
-          const [nextCatalog, nextHarnessStatuses] = await Promise.all([
-            api.refreshCatalog().catch(() => catalog),
-            api.getHarnessStatus().catch(() => harnessStatuses)
-          ]);
-          if (nextCatalog) setCatalog(nextCatalog);
-          setHarnessStatuses(nextHarnessStatuses);
-        }
-      });
-    },
-    [catalog, harnessStatuses, withBusy]
-  );
-
-  const addOpenClawAgent = useCallback(
-    (input: { name: string; workspace?: string; modelId?: string }) => {
-      void withBusy("addOpenClawAgent", async () => {
-        const nextOpenClawConfig = await api.addOpenClawAgent(input);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const configureOpenClawModelAuth = useCallback(
-    (input: ConfigureOpenClawModelAuthRequest) => {
-      void withBusy("configureOpenClawModelAuth", async () => {
-        const nextOpenClawConfig = await api.configureOpenClawModelAuth(input);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const setOpenClawDefaultModel = useCallback(
-    (modelId: string) => {
-      void withBusy(`setOpenClawDefaultModel:${modelId}`, async () => {
-        const nextOpenClawConfig = await api.updateOpenClawDefaultModel(modelId);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const updateClaudeCodeModelConfig = useCallback(
-    (input: UpdateClaudeCodeModelConfigRequest) => {
-      void withBusy("updateClaudeCodeModelConfig", async () => {
-        const nextClaudeCodeModelResponse = await api.updateClaudeCodeModelConfig(input);
-        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
-        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
-        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
-        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
-        setHarnessStatuses(nextHarnessStatuses);
-      });
-    },
-    [harnessStatuses, withBusy]
-  );
-
-  const saveClaudeCodeModelProfile = useCallback(
-    () => {
-      void withBusy("saveClaudeCodeModelProfile", async () => {
-        const nextClaudeCodeModelResponse = await api.saveClaudeCodeModelProfile();
-        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
-        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
-        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
-      });
-    },
-    [withBusy]
-  );
-
-  const applyClaudeCodeModelProfile = useCallback(
-    (profileId: string) => {
-      void withBusy(`applyClaudeCodeModelProfile:${profileId}`, async () => {
-        const nextClaudeCodeModelResponse = await api.applyClaudeCodeModelProfile(profileId);
-        const nextHarnessStatuses = await api.getHarnessStatus().catch(() => harnessStatuses);
-        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
-        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
-        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
-        setHarnessStatuses(nextHarnessStatuses);
-      });
-    },
-    [harnessStatuses, withBusy]
-  );
-
-  const deleteClaudeCodeModelProfile = useCallback(
-    (profileId: string) => {
-      void withBusy(`deleteClaudeCodeModelProfile:${profileId}`, async () => {
-        const nextClaudeCodeModelResponse = await api.deleteClaudeCodeModelProfile(profileId);
-        setClaudeCodeModelConfig(nextClaudeCodeModelResponse.config);
-        setClaudeCodeModelPresets(nextClaudeCodeModelResponse.presets);
-        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse.savedProfiles);
-      });
-    },
-    [withBusy]
-  );
-
-  const configureOpenClawChannel = useCallback(
-    (input: ConfigureOpenClawChannelRequest) => {
-      void withBusy("configureOpenClawChannel", async () => {
-        const nextOpenClawConfig = await api.configureOpenClawChannel(input);
-        setOpenClawConfig(nextOpenClawConfig);
-      });
-    },
-    [withBusy]
-  );
-
-  const saveBlueprint = useCallback(() => {
-    if (!blueprint) return;
-    void withBusy("saveBlueprint", async () => {
-      const savedSnapshot = blueprint;
-      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModes));
-      acceptSavedBlueprintSnapshot(saved, savedSnapshot);
-    });
-  }, [acceptSavedBlueprintSnapshot, withBusy, blueprint, chatPermissionModes]);
-
-  useEffect(() => {
-    if (!selectedCompanyId) return;
-
-    const saveDirtyBlueprints = async () => {
-      if (blueprintAutosaveInFlightRef.current || busyActionRef.current) return;
-      const dirtyBlueprints = listDirtyBlueprintsForAutosave(blueprintsRef.current, dirtyBlueprintIdsRef.current);
-      if (dirtyBlueprints.length === 0) return;
-
-      blueprintAutosaveInFlightRef.current = true;
-      try {
-        for (const dirtyBlueprint of dirtyBlueprints) {
-          if (!dirtyBlueprintIdsRef.current.has(dirtyBlueprint.id)) continue;
-          const savedSnapshot = blueprintsRef.current.find((candidate) => candidate.id === dirtyBlueprint.id);
-          if (!savedSnapshot) continue;
-          const saved = await api.saveBlueprint(
-            applyHarnessPermissionModesToBlueprint(savedSnapshot, chatPermissionModesRef.current)
-          );
-          acceptSavedBlueprintSnapshot(saved, savedSnapshot);
-        }
-      } catch (autosaveError) {
-        setError(autosaveError instanceof Error ? autosaveError.message : messageRef.current.errors.save);
-      } finally {
-        blueprintAutosaveInFlightRef.current = false;
-      }
-    };
-
-    const timer = window.setInterval(() => {
-      void saveDirtyBlueprints();
-    }, BLUEPRINT_AUTOSAVE_INTERVAL_MS);
-
-    return () => window.clearInterval(timer);
-  }, [acceptSavedBlueprintSnapshot, selectedCompanyId]);
-
-  const exportBlueprint = useCallback((blueprintId?: string) => {
-    const targetBlueprint = blueprintId ? blueprints.find((item) => item.id === blueprintId) : blueprint;
-    if (!targetBlueprint) return;
-    void withBusy("exportBlueprint", async () => {
-      const blueprintPackage = await api.exportBlueprint(targetBlueprint.id);
-      downloadBlueprintPackage(blueprintPackage, targetBlueprint.name);
-    });
-  }, [blueprint, blueprints, withBusy]);
-
-  const deleteBlueprint = useCallback((blueprintId: string) => {
-    void withBusy("deleteBlueprint", async () => {
-      await api.deleteBlueprint(blueprintId);
-      setDirtyBlueprintIds((current) => {
-        const next = removeBlueprintFromDirtySet(current, blueprintId);
-        dirtyBlueprintIdsRef.current = next;
-        return next;
-      });
-      const remainingBlueprints = blueprints.filter((item) => item.id !== blueprintId);
-      const nextBlueprintId = blueprint?.id === blueprintId ? remainingBlueprints[0]?.id : blueprint?.id;
-      await hydrateWorkspace({ blueprintId: nextBlueprintId });
-    });
-  }, [blueprint?.id, blueprints, hydrateWorkspace, withBusy]);
-
   const openBlueprintImport = useCallback(() => {
     blueprintImportInputRef.current?.click();
-  }, []);
-
-  const importBlueprintFile = useCallback(
-    (file?: File) => {
-      if (!file) return;
-      void withBusy("importBlueprint", async () => {
-        const blueprintPackage = JSON.parse(await file.text());
-        const imported = await api.importBlueprintPackage(blueprintPackage);
-        await hydrateWorkspace({ blueprintId: imported[0]?.id });
-        navigate(getRoutePath("blueprint"));
-      });
-    },
-    [hydrateWorkspace, navigate, withBusy]
-  );
-
-  const createBlueprint = useCallback(() => {
-    void withBusy("createBlueprint", async () => {
-      const created = await api.createBlueprint({
-        name: defaultNewBlueprintName(blueprints.length + 1, language)
-      });
-      await hydrateWorkspace({ blueprintId: created.id });
-      navigate(getRoutePath("blueprint"));
-    });
-  }, [blueprints.length, hydrateWorkspace, language, navigate, withBusy]);
-
-  const runBlueprint = useCallback(() => {
-    if (!blueprint) return;
-    void withBusy("runBlueprint", async () => {
-      const saved = await api.saveBlueprint(applyHarnessPermissionModesToBlueprint(blueprint, chatPermissionModes));
-      blueprintRef.current = saved;
-      selectedBlueprintIdRef.current = saved.id;
-      setBlueprint(saved);
-      setBlueprints((current) => {
-        const next = replaceBlueprint(current, saved);
-        blueprintsRef.current = next;
-        return next;
-      });
-      setDirtyBlueprintIds((current) => {
-        const next = clearBlueprintDirty(current, saved.id);
-        dirtyBlueprintIdsRef.current = next;
-        return next;
-      });
-      const runView = await api.startBlueprintRun(saved.id);
-      applyRunView(runView);
-      await refreshBlueprintKanban();
-      setRunPageBlueprintId(saved.id);
-      setSelectedRunId(runView.run.id);
-    });
-  }, [applyRunView, refreshBlueprintKanban, withBusy, blueprint, chatPermissionModes]);
-
-  const cancelBlueprintRun = useCallback(() => {
-    const targetRunId = latestRunForBlueprint?.run.id;
-    if (!targetRunId) return;
-    void withBusy("cancelBlueprintRun", async () => {
-      const updated = await api.cancelBlueprintRun(targetRunId);
-      applyRunView(updated);
-      await refreshBlueprintKanban();
-      setSelectedRunId(updated.run.id);
-    });
-  }, [applyRunView, latestRunForBlueprint?.run.id, refreshBlueprintKanban, withBusy]);
-
-  const sendRunInterjection = useCallback((runRoomId: string, messageMarkdown: string) => {
-    void withBusy("sendRunInterjection", async () => {
-      const response = await api.sendRunInterjection(runRoomId, { messageMarkdown });
-      if (response.run) {
-        applyRunView(response.run);
-        await refreshBlueprintKanban();
-        setSelectedRunId(response.run.run.id);
-      }
-    });
-  }, [applyRunView, refreshBlueprintKanban, withBusy]);
-
-  const applyApprovalRequestResponse = useCallback(
-    async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
-      setApprovalRequests((current) => upsertApprovalRequests(
-        current,
-        [response.approvalRequest, response.nextApprovalRequest].filter((request): request is ApprovalRequest => Boolean(request))
-      ));
-      if (response.approvalThread) {
-        const thread = response.approvalThread;
-        setApprovalThreads((current) => upsertApprovalThread(current, thread));
-      }
-      if (response.run) {
-        applyRunView(response.run);
-        setSelectedRunId(response.run.run.id);
-      }
-      await hydrateWorkspace({ blueprintId: blueprint?.id, runId: response.run?.run.id });
-    },
-    [applyRunView, blueprint?.id, hydrateWorkspace]
-  );
-
-  const approveApprovalRequest = useCallback(
-    (approvalRequestId: string, comment?: string) => {
-      void withApprovalRequestBusy("approveApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.approveApprovalRequest(approvalRequestId, comment));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const rejectApprovalRequest = useCallback(
-    (approvalRequestId: string, comment?: string) => {
-      void withApprovalRequestBusy("rejectApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.rejectApprovalRequest(approvalRequestId, comment));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const replyToApprovalRequest = useCallback(
-    (approvalRequestId: string, message: string) => {
-      void withApprovalRequestBusy("replyApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.replyToApprovalRequest(approvalRequestId, message));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const returnForRevisionApprovalRequest = useCallback(
-    (approvalRequestId: string, message: string) => {
-      void withApprovalRequestBusy("returnForRevisionApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.returnForRevisionApprovalRequest(approvalRequestId, message));
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const completeRunApproval = useCallback(
-    (approvalRequestId: string, comment?: string) => {
-      void withApprovalRequestBusy("completeRunApproval", async () => {
-        const response = await api.completeApprovalRequest(approvalRequestId, comment);
-        await applyApprovalRequestResponse(response);
-      });
-    },
-    [applyApprovalRequestResponse, withApprovalRequestBusy]
-  );
-
-  const sendHumanActionResponse = useCallback(
-    (requestId: string, messageMarkdown: string) => {
-      void withBusy("sendHumanActionResponse", async () => {
-        const result = await api.sendHumanActionResponse(requestId, { messageMarkdown });
-        const nextBlueprintKanbanBoard = await api.listBlueprintKanban().catch(() => undefined);
-        setInboxProjections(result.projections);
-        if (nextBlueprintKanbanBoard) setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
-        setInboxResponsesByRequestId((current) => ({
-          ...current,
-          [requestId]: [...(current[requestId] ?? []), result.response]
-        }));
-      });
-    },
-    [withBusy]
-  );
-
-  const refreshInboxAndApprovals = useCallback(async () => {
-    try {
-      const [nextApprovals, nextApprovalRequests, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
-        api.listPendingApprovals(),
-        api.listApprovalRequests(),
-        api.listApprovalThreads({ status: "open" }).catch(() => []),
-        api.listInboxProjections(),
-        api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
-      ]);
-      setApprovals(nextApprovals);
-      setApprovalRequests(nextApprovalRequests);
-      setApprovalThreads(nextApprovalThreads);
-      setInboxProjections(nextInboxProjections);
-      setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
-    } catch (refreshError) {
-      setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
-    }
   }, []);
 
   const addWidget = useCallback(
@@ -1476,150 +571,6 @@ export function App() {
     window.addEventListener("mousedown", handlePointerDown);
     return () => window.removeEventListener("mousedown", handlePointerDown);
   }, [systemMenuOpen]);
-
-  useEffect(() => {
-    if (!selectedRunId || runDetailsById[selectedRunId]) return;
-
-    let cancelled = false;
-    void api.getBlueprintRun(selectedRunId)
-      .then((runView) => {
-        if (!cancelled) applyRunView(runView);
-      })
-      .catch(() => undefined);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [applyRunView, runDetailsById, selectedRunId]);
-
-  useEffect(() => {
-    if (!selectedRunId || !selectedRunRoomId) return;
-
-    const controller = new AbortController();
-    setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "connecting" }));
-
-    void api.streamRunRoomOutputEvents(
-      selectedRunRoomId,
-      {
-        onEvent: (event) => {
-          if (event.runRoomId !== selectedRunRoomId) return;
-          if (event.type === "output_error") {
-            setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "error" }));
-            return;
-          }
-
-          setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "live" }));
-          if (event.type === "heartbeat") return;
-
-          setRunDetailsById((current) => {
-            const currentRunView = current[selectedRunId];
-            if (!currentRunView) return current;
-            if (currentRunView.runRoomOutput?.runRoomId && currentRunView.runRoomOutput.runRoomId !== selectedRunRoomId) return current;
-
-            const nextRunView = applyRunRoomOutputStreamEventToRunView(currentRunView, event);
-            if (nextRunView === currentRunView) return current;
-            return { ...current, [selectedRunId]: nextRunView };
-          });
-        }
-      },
-      controller.signal
-    ).catch((streamError) => {
-      if (isAbortError(streamError)) return;
-      setRunRoomOutputStreamStates((current) => ({ ...current, [selectedRunRoomId]: "error" }));
-    });
-
-    return () => {
-      controller.abort();
-    };
-  }, [selectedRunId, selectedRunRoomId]);
-
-  useEffect(() => {
-    if (!pollingRunId) {
-      return;
-    }
-
-    let cancelled = false;
-    let timer: number | undefined;
-
-    const scheduleNextPoll = () => {
-      timer = window.setTimeout(() => {
-        void api.getBlueprintRun(pollingRunId)
-          .then((runView) => {
-            if (!cancelled) applyRunView(runView);
-          })
-          .catch(() => undefined)
-          .finally(() => {
-            if (!cancelled) scheduleNextPoll();
-          });
-      }, RUN_POLL_INTERVAL_MS);
-    };
-
-    scheduleNextPoll();
-
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [applyRunView, pollingRunId]);
-
-  useEffect(() => {
-    if (!selectedCompanyId) return;
-
-    let cancelled = false;
-    let timer: number | undefined;
-
-    const pollForBlueprintChanges = async () => {
-      if (busyActionRef.current) return;
-
-      try {
-        const previousBlueprints = blueprintsRef.current;
-        const nextBlueprints = await api.listBlueprints();
-        const nextMergedBlueprints = mergeBlueprintsPreservingLocalEdits(
-          nextBlueprints,
-          previousBlueprints,
-          dirtyBlueprintIdsRef.current
-        );
-        if (cancelled || blueprintCollectionSignature(nextMergedBlueprints) === blueprintCollectionSignature(previousBlueprints)) return;
-
-        const selectedBlueprintId = selectedBlueprintIdRef.current;
-        if (dirtyBlueprintIdsRef.current.size === 0) {
-          await hydrateWorkspace({ blueprintId: selectedBlueprintId });
-          return;
-        }
-
-        blueprintsRef.current = nextMergedBlueprints;
-        setBlueprints(nextMergedBlueprints);
-        const nextSelectedBlueprint = selectedBlueprintId
-          ? nextMergedBlueprints.find((item) => item.id === selectedBlueprintId)
-          : undefined;
-        if (nextSelectedBlueprint && !dirtyBlueprintIdsRef.current.has(nextSelectedBlueprint.id)) {
-          blueprintRef.current = nextSelectedBlueprint;
-          setBlueprint(nextSelectedBlueprint);
-        }
-        const nextRoles = await api.getRoleDirectory().catch(() => undefined);
-        if (cancelled || !nextRoles) return;
-        setRoleDirectory(nextRoles.roles);
-        setArchitecture(nextRoles.architecture);
-      } catch {
-        // Background refresh is opportunistic; user-triggered actions surface errors.
-      }
-    };
-
-    const scheduleNextPoll = () => {
-      timer = window.setTimeout(() => {
-        void pollForBlueprintChanges().finally(() => {
-          if (!cancelled) scheduleNextPoll();
-        });
-      }, BLUEPRINT_CHANGE_POLL_INTERVAL_MS);
-    };
-
-    scheduleNextPoll();
-
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [hydrateWorkspace, selectedCompanyId]);
 
   const renderRoute = (routeId: RouteId): ReactNode => {
     if (routeId === "hivewardHome") {
@@ -3822,34 +2773,6 @@ function formatDateTimeLabel(value: string | undefined, language: Language, fall
   }).format(date);
 }
 
-async function loadHarnessSkillStatuses(): Promise<Partial<Record<HarnessId, HarnessSkillStatusResponse>>> {
-  const entries = await Promise.all(
-    harnessSkillHarnessIds.map(async (harnessId) => {
-      try {
-        return [harnessId, await api.getHarnessSkillStatus(harnessId)] as const;
-      } catch {
-        return [harnessId, undefined] as const;
-      }
-    })
-  );
-  const statuses: Partial<Record<HarnessId, HarnessSkillStatusResponse>> = {};
-  for (const [harnessId, status] of entries) {
-    if (status) statuses[harnessId] = status;
-  }
-  return statuses;
-}
-
-function emptyRuntimeOverview(): RuntimeOverview {
-  return {
-    sessions: [],
-    tasks: []
-  };
-}
-
-function isAbortError(error: unknown): boolean {
-  return typeof DOMException !== "undefined" && error instanceof DOMException && error.name === "AbortError";
-}
-
 function isActionableApproval(approval: PendingApprovalItem): boolean {
   return approval.status !== "approved" && approval.status !== "rejected" && approval.status !== "replying";
 }
@@ -3870,52 +2793,11 @@ function defaultWidgetLayout(index: number) {
   };
 }
 
-function defaultNewBlueprintName(index: number, language: Language): string {
-  return language === "zh-CN" ? `\u65b0\u5efa\u84dd\u56fe ${index}` : `New blueprint ${index}`;
-}
-
-function downloadBlueprintPackage(blueprintPackage: PortableBlueprintPackage, blueprintName: string): void {
-  const blob = new Blob([`${JSON.stringify(blueprintPackage, null, 2)}\n`], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${safeBlueprintFileName(blueprintName)}.blueprint.json`;
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
-function safeBlueprintFileName(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80) || "blueprint";
-}
-
 function makeClientId(prefix: string): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
     return `${prefix}-${crypto.randomUUID()}`;
   }
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-}
-
-function errorMessageForAction(action: string, t: Messages): string {
-  if (action === "createBlueprint") return t.errors.save;
-  if (action === "saveBlueprint") return t.errors.save;
-  if (action === "exportBlueprint") return t.errors.save;
-  if (action === "importBlueprint") return t.errors.save;
-  if (action === "runBlueprint") return t.errors.run;
-  if (action === "cancelBlueprintRun") return t.errors.run;
-  if (action === "sendRunInterjection") return t.errors.run;
-  if (action === "completeRunApproval") return t.errors.approve;
-  if (action === "sendHumanActionResponse") return t.errors.approve;
-  if (action === "configureOpenClawModelAuth") return t.errors.catalog;
-  if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;
-  if (action === "addOpenClawAgent") return t.errors.catalog;
-  if (action === "configureOpenClawChannel") return t.errors.catalog;
-  if (action === "refreshCatalog") return t.errors.catalog;
-  return t.errors.load;
 }
 
 function isApprovalInboxActionBusy(action: string | undefined): boolean {
