@@ -1,30 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router";
 import {
-  Bot,
-  Building2,
-  ChevronDown,
-  ChevronRight,
   CheckCircle2,
   CircleAlert,
   Cloud,
-  Database,
   Download,
   ExternalLink,
   Github,
-  History,
-  Inbox,
-  Languages,
-  LayoutTemplate,
-  ListChecks,
-  MessageSquareText,
-  Moon,
   Plus,
   Puzzle,
-  Radio,
   RefreshCw,
   Save,
   Settings,
-  Sun,
   Trash2,
   X
 } from "lucide-react";
@@ -72,9 +59,8 @@ import type {
   ChatPermissionMode
 } from "@hiveward/shared";
 import { api, isClosedApprovalConflictError } from "./lib/api";
-import { appSectionGroups, appSystemLabels, type AppNavSectionId, type AppSectionId, type AppSystemId } from "./lib/app-sections";
 import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvider } from "./lib/claude-code-saved-profiles";
-import { harnessDisplayLabel, harnessDisplayParts, isHarnessId } from "./lib/harness-labels";
+import { harnessDisplayLabel, harnessDisplayParts } from "./lib/harness-labels";
 import { applyHarnessPermissionModesToBlueprint } from "./lib/harness-permissions";
 import {
   applyBlueprintUpdaterToCollection,
@@ -108,37 +94,15 @@ import {
   SkillsPage
 } from "./components/WorkspacePages";
 import { ChatPage } from "./components/ChatPage";
-
-const sidebarIcons = {
-  company: Building2,
-  chat: MessageSquareText,
-  blueprint: LayoutTemplate,
-  runs: ListChecks,
-  approvals: Inbox,
-  models: Database,
-  agents: Bot,
-  openclaw: Settings,
-  skills: Puzzle,
-  schedule: History,
-  channels: Radio,
-  claudeCodeConfig: Settings,
-  claudeCodeModels: Database,
-  codexConfig: Settings,
-  googleConfig: Settings,
-  cursorConfig: Settings,
-  opencodeConfig: Settings,
-  hermesConfig: Settings,
-  hermesModels: Database,
-  hermesAgents: Bot,
-  hermesSkills: Puzzle,
-  hermesChannels: Radio
-};
+import { AppLayout } from "./layouts/AppLayout";
+import { Sidebar } from "./layouts/Sidebar";
+import { AppRoutes } from "./routes/AppRoutes";
+import { getRouteByPathname, getRoutePath, type RouteId, type RouteSystemId } from "./routes/route-registry";
 
 const RUN_POLL_INTERVAL_MS = 2500;
 const BLUEPRINT_CHANGE_POLL_INTERVAL_MS = 20000;
 const BLUEPRINT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
 const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
-const companyScopedSections = new Set<AppSectionId>(["company", "chat", "blueprint", "runs", "approvals", "schedule"]);
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
 const harnessSkillHarnessIds: HarnessId[] = ["codex", "claudeCode", "openclaw", "hermes", "google", "cursor", "opencode"];
@@ -186,13 +150,6 @@ function sortApprovalRequests(requests: ApprovalRequest[]): ApprovalRequest[] {
   return requests.slice().sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
 }
 
-function AppSystemLabel({ systemId }: { systemId: AppSystemId }) {
-  if (isHarnessId(systemId)) {
-    return <HarnessLabel {...harnessDisplayParts(systemId)} className="nav-system-label" />;
-  }
-  return <span className="nav-system-label">{appSystemLabels[systemId]}</span>;
-}
-
 type OpenClawPanelCopy = {
   title: string;
   subtitle: string;
@@ -235,9 +192,10 @@ type OpenClawPanelCopy = {
 };
 
 export function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [language, setLanguage] = useState<Language>(() => getInitialLanguage());
   const [theme, setTheme] = useState<AppTheme>(() => getInitialTheme());
-  const [section, setSection] = useState<AppSectionId>("blueprint");
   const [companies, setCompanies] = useState<CompanyOverview[]>([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
   const [blueprints, setBlueprints] = useState<BlueprintDefinition[]>([]);
@@ -281,7 +239,7 @@ export function App() {
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
-  const [expandedSystems, setExpandedSystems] = useState<Record<AppSystemId, boolean>>({
+  const [expandedSystems, setExpandedSystems] = useState<Record<RouteSystemId, boolean>>({
     hiveward: true,
     openclaw: true,
     claudeCode: false,
@@ -303,6 +261,7 @@ export function App() {
   const selectedRunIdRef = useRef<string | undefined>(undefined);
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
   const blueprintImportInputRef = useRef<HTMLInputElement | null>(null);
+  const activeRouteId = getRouteByPathname(location.pathname)?.id;
 
   useEffect(() => {
     messageRef.current = t;
@@ -353,13 +312,8 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (selectedCompanyId || !companyScopedSections.has(section)) return;
-    setSection("companyDirectory");
-  }, [section, selectedCompanyId]);
-
-  useEffect(() => {
     window.scrollTo(0, 0);
-  }, [section]);
+  }, [location.pathname]);
 
   useEffect(() => {
     const preventGesture = (event: Event) => {
@@ -683,7 +637,7 @@ export function App() {
   }, [runPageBlueprint, runPageBlueprintId]);
 
   useEffect(() => {
-    if (section !== "runs" || runPageBlueprintId || runs.length === 0) return;
+    if (activeRouteId !== "runs" || runPageBlueprintId || runs.length === 0) return;
     const preferredRun =
       runs.find(isActiveRunView) ??
       (blueprint ? runs.find((runView) => runView.run.blueprintId === blueprint.id) : undefined) ??
@@ -691,7 +645,7 @@ export function App() {
     if (!preferredRun) return;
     setRunPageBlueprintId(preferredRun.run.blueprintId);
     setSelectedRunId(preferredRun.run.id);
-  }, [blueprint, runPageBlueprintId, runs, section]);
+  }, [activeRouteId, blueprint, runPageBlueprintId, runs]);
 
   const activeTaskCount = useMemo(
     () => runs.filter(isActiveRunView).length,
@@ -706,11 +660,11 @@ export function App() {
     () =>
       selectRunPollingTarget({
         runs,
-        selectedBlueprintId: section === "runs" ? runPageBlueprint?.id : blueprint?.id,
+        selectedBlueprintId: activeRouteId === "runs" ? runPageBlueprint?.id : blueprint?.id,
         selectedRunId,
-        view: section === "runs" ? "runs" : "blueprint"
+        view: activeRouteId === "runs" ? "runs" : "blueprint"
       }),
-    [blueprint?.id, runPageBlueprint?.id, runs, section, selectedRunId]
+    [activeRouteId, blueprint?.id, runPageBlueprint?.id, runs, selectedRunId]
   );
   const selectedRunRoomId = selectedRunId ? runDetailsById[selectedRunId]?.runRoomOutput?.runRoomId : undefined;
   const selectedRunRoomOutputStreamState = selectedRunRoomId ? runRoomOutputStreamStates[selectedRunRoomId] ?? "idle" : "idle";
@@ -757,7 +711,7 @@ export function App() {
         } finally {
           setFocusedInboxEntryId(focusedEntryId);
           setSelectedNodeId(undefined);
-          setSection("approvals");
+          navigate(getRoutePath("approvals"));
         }
       })();
       return;
@@ -774,14 +728,14 @@ export function App() {
     if (card.targetRef.type === "run_room" && card.targetRef.runId) {
       setSelectedRunId(card.targetRef.runId);
       setSelectedNodeId(undefined);
-      setSection("runs");
+      navigate(getRoutePath("runs"));
       return;
     }
     setSelectedNodeId(undefined);
-    setSection("blueprint");
-  }, []);
+    navigate(getRoutePath("blueprint"));
+  }, [navigate]);
 
-  const sidebarActivityMeta = useMemo<Partial<Record<AppNavSectionId, number>>>(
+  const sidebarActivityMeta = useMemo<Partial<Record<RouteId, number>>>(
     () => ({
       blueprint: activeCountOrUndefined(dirtyBlueprintIds.size),
       runs: activeCountOrUndefined(activeTaskCount),
@@ -819,7 +773,7 @@ export function App() {
     ]
   );
 
-  const toggleSystemGroup = useCallback((systemId: AppSystemId) => {
+  const toggleSystemGroup = useCallback((systemId: RouteSystemId) => {
     setExpandedSystems((current) => ({ ...current, [systemId]: !current[systemId] }));
   }, []);
 
@@ -943,11 +897,11 @@ export function App() {
     (companyId: string) => {
       void withBusy("enterCompany", async () => {
         await api.selectCompany(companyId);
-        setSection("company");
+        navigate(getRoutePath("company"));
         await hydrateWorkspace();
       });
     },
-    [hydrateWorkspace, withBusy]
+    [hydrateWorkspace, navigate, withBusy]
   );
 
   const createCompany = useCallback(
@@ -1305,10 +1259,10 @@ export function App() {
         const blueprintPackage = JSON.parse(await file.text());
         const imported = await api.importBlueprintPackage(blueprintPackage);
         await hydrateWorkspace({ blueprintId: imported[0]?.id });
-        setSection("blueprint");
+        navigate(getRoutePath("blueprint"));
       });
     },
-    [hydrateWorkspace, withBusy]
+    [hydrateWorkspace, navigate, withBusy]
   );
 
   const createBlueprint = useCallback(() => {
@@ -1317,9 +1271,9 @@ export function App() {
         name: defaultNewBlueprintName(blueprints.length + 1, language)
       });
       await hydrateWorkspace({ blueprintId: created.id });
-      setSection("blueprint");
+      navigate(getRoutePath("blueprint"));
     });
-  }, [hydrateWorkspace, language, withBusy, blueprints.length]);
+  }, [blueprints.length, hydrateWorkspace, language, navigate, withBusy]);
 
   const runBlueprint = useCallback(() => {
     if (!blueprint) return;
@@ -1667,8 +1621,8 @@ export function App() {
     };
   }, [hydrateWorkspace, selectedCompanyId]);
 
-  const renderSection = () => {
-    if (section === "hivewardHome") {
+  const renderRoute = (routeId: RouteId): ReactNode => {
+    if (routeId === "hivewardHome") {
       return (
         <HivewardHomePage
           ui={hivewardHomeUi}
@@ -1684,7 +1638,7 @@ export function App() {
         />
       );
     }
-    if (section === "companyDirectory") {
+    if (routeId === "companyDirectory") {
       return (
         <CompanyDirectoryPage
           companies={companies}
@@ -1698,10 +1652,10 @@ export function App() {
         />
       );
     }
-    if (section === "company") {
+    if (routeId === "company") {
       return <CompanyPage companies={companies} selectedCompanyId={selectedCompanyId} language={language} />;
     }
-    if (section === "chat") {
+    if (routeId === "chat") {
       return (
         <ChatPage
           catalog={catalog}
@@ -1718,7 +1672,7 @@ export function App() {
         />
       );
     }
-    if (section === "openclaw") {
+    if (routeId === "openclaw") {
       return (
         <OpenClawControlPanelPage
           ui={openClawPanelUi}
@@ -1742,7 +1696,7 @@ export function App() {
         />
       );
     }
-    if (section === "blueprint") {
+    if (routeId === "blueprint") {
       return (
         <BlueprintStudioPage
           blueprint={blueprint}
@@ -1776,7 +1730,7 @@ export function App() {
         />
       );
     }
-    if (section === "runs") {
+    if (routeId === "runs") {
       return (
         <RunsPage
           runs={runs}
@@ -1792,7 +1746,7 @@ export function App() {
         />
       );
     }
-    if (section === "approvals") {
+    if (routeId === "approvals") {
       return (
         <ApprovalsPage
           approvals={approvals}
@@ -1813,7 +1767,7 @@ export function App() {
         />
       );
     }
-    if (section === "models") {
+    if (routeId === "models") {
       return (
         <ModelsPage
           catalog={catalog}
@@ -1831,7 +1785,7 @@ export function App() {
         />
       );
     }
-    if (section === "agents") {
+    if (routeId === "agents") {
       return (
         <AgentsPage
           catalog={catalog}
@@ -1843,10 +1797,10 @@ export function App() {
         />
       );
     }
-    if (section === "skills") {
+    if (routeId === "skills") {
       return <SkillsPage catalog={catalog} language={language} t={t} />;
     }
-    if (section === "claudeCodeConfig") {
+    if (routeId === "claudeCodeConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.claudeCodeConfig?.title ?? "Claude code Config"}
@@ -1865,7 +1819,7 @@ export function App() {
         />
       );
     }
-    if (section === "claudeCodeModels") {
+    if (routeId === "claudeCodeModels") {
       return (
         <ClaudeCodeModelsPage
           config={claudeCodeModelConfig}
@@ -1884,7 +1838,7 @@ export function App() {
         />
       );
     }
-    if (section === "codexConfig") {
+    if (routeId === "codexConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.codexConfig?.title ?? "Codex Config"}
@@ -1903,7 +1857,7 @@ export function App() {
         />
       );
     }
-    if (section === "googleConfig") {
+    if (routeId === "googleConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.googleConfig?.title ?? "Google CLI Config"}
@@ -1922,7 +1876,7 @@ export function App() {
         />
       );
     }
-    if (section === "cursorConfig") {
+    if (routeId === "cursorConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.cursorConfig?.title ?? "Cursor CLI Config"}
@@ -1941,7 +1895,7 @@ export function App() {
         />
       );
     }
-    if (section === "opencodeConfig") {
+    if (routeId === "opencodeConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.opencodeConfig?.title ?? "OpenCode Config"}
@@ -1960,7 +1914,7 @@ export function App() {
         />
       );
     }
-    if (section === "hermesConfig") {
+    if (routeId === "hermesConfig") {
       return (
         <HarnessConfigPage
           title={t.pages.hermesConfig?.title ?? "Hermes Config"}
@@ -1979,7 +1933,7 @@ export function App() {
         />
       );
     }
-    if (section === "hermesModels") {
+    if (routeId === "hermesModels") {
       return (
         <HermesModelsPage
           title={t.pages.hermesModels?.title ?? "Hermes Models"}
@@ -1991,7 +1945,7 @@ export function App() {
         />
       );
     }
-    if (section === "hermesAgents") {
+    if (routeId === "hermesAgents") {
       return (
         <HermesAgentsPage
           title={t.pages.hermesAgents?.title ?? "Hermes Agents"}
@@ -2006,7 +1960,7 @@ export function App() {
         />
       );
     }
-    if (section === "hermesSkills") {
+    if (routeId === "hermesSkills") {
       return (
         <HarnessSkillsPage
           title={t.pages.hermesSkills?.title ?? "Hermes Skills"}
@@ -2019,7 +1973,7 @@ export function App() {
         />
       );
     }
-    if (section === "hermesChannels") {
+    if (routeId === "hermesChannels") {
       return (
         <HermesChannelsPage
           title={t.pages.hermesChannels?.title ?? "Hermes Channels"}
@@ -2033,7 +1987,7 @@ export function App() {
         />
       );
     }
-    if (section === "schedule") {
+    if (routeId === "schedule") {
       return (
         <BlueprintKanbanPage
           board={blueprintKanbanBoard}
@@ -2043,7 +1997,7 @@ export function App() {
         />
       );
     }
-    if (section === "channels") {
+    if (routeId === "channels") {
       return (
       <ChannelsPage
         catalog={catalog}
@@ -2060,147 +2014,9 @@ export function App() {
   };
 
   return (
-    <main className="app-shell">
-      <aside className="sidebar-shell">
-        <div className="sidebar-brand">
-          <div className="brand-mark">
-            <img src="/brand/hiveward-hive.png" alt="" />
-          </div>
-          <div>
-            <img
-              className="brand-wordmark"
-              src={theme === "dark" ? "/brand/hiveward-wordmark-on-dark.png" : "/brand/hiveward-wordmark.png"}
-              alt="Hiveward"
-            />
-          </div>
-        </div>
-        <nav className="sidebar-nav">
-          {appSectionGroups.map((group) => {
-            const expanded = expandedSystems[group.id];
-            const groupActive = group.sections.some((item) => item === section);
-            const groupActivityCount = group.sections.reduce((count, item) => count + (sidebarActivityMeta[item] ?? 0), 0);
-            const groupHasHiddenActivity = !expanded && groupActivityCount > 0;
-            const systemChildrenId = `sidebar-system-${group.id}`;
-            const SystemChevron = expanded ? ChevronDown : ChevronRight;
-            return (
-              <section key={group.id} className={`nav-system-group ${groupActive ? "active" : ""}`}>
-                <button
-                  type="button"
-                  className={`nav-system-toggle ${groupActive ? "active" : ""} ${groupHasHiddenActivity ? "has-activity" : ""}`}
-                  aria-expanded={expanded}
-                  aria-controls={group.sections.length > 0 ? systemChildrenId : undefined}
-                  onClick={() => toggleSystemGroup(group.id)}
-                >
-                  <span className="nav-system-main">
-                    <SystemChevron size={14} />
-                    <AppSystemLabel systemId={group.id} />
-                  </span>
-                  {groupHasHiddenActivity && <span className="nav-count nav-system-count">{groupActivityCount}</span>}
-                </button>
-                {expanded && group.sections.length > 0 && (
-                  <div id={systemChildrenId} className="nav-system-children">
-                    {group.sections.map((item) => {
-                      const Icon = sidebarIcons[item];
-                      const activityCount = sidebarActivityMeta[item] ?? 0;
-                      const hasActivity = activityCount > 0;
-                      return (
-                        <button
-                          key={item}
-                          type="button"
-                          className={`nav-item ${section === item ? "active" : ""} ${hasActivity ? "has-activity" : ""}`}
-                          onClick={() => {
-                            setSection(item);
-                            setSystemMenuOpen(false);
-                          }}
-                        >
-                          <span className="nav-item-main">
-                            <Icon size={16} />
-                            <span className="nav-item-label">{t.navigation[item] ?? fallbackNavigationLabel(item, language)}</span>
-                          </span>
-                          {hasActivity && <span className="nav-count">{activityCount}</span>}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </nav>
-        <div className="sidebar-status">
-          {dashboardDirty && <span className="status-badge">{t.common.dirtyWorkspace}</span>}
-          <div className="sidebar-system" ref={systemMenuRef}>
-            <div className="sidebar-company">
-              <button
-                type="button"
-                className={`company-switcher sidebar-company-switcher ${section === "companyDirectory" ? "active" : ""}`}
-                title={selectedCompany?.name ?? companySwitcherLabel}
-                onClick={() => {
-                  setSection("companyDirectory");
-                  setSystemMenuOpen(false);
-                }}
-              >
-                <span className="company-switcher-avatar">
-                  {selectedCompany?.logoUrl ? (
-                    <img src={selectedCompany.logoUrl} alt={selectedCompany.name} />
-                  ) : (
-                    <span>{companyMonogram(selectedCompany)}</span>
-                  )}
-                </span>
-                <span className="company-switcher-copy">
-                  <strong>{selectedCompany?.name ?? companySwitcherLabel}</strong>
-                </span>
-                <ChevronRight size={16} />
-              </button>
-            </div>
-            <div className="sidebar-system-control">
-              <button
-                type="button"
-                className={`sidebar-system-version ${hivewardUpdate?.updateAvailable ? "update-available" : "online"} ${section === "hivewardHome" ? "active" : ""}`}
-                aria-label={hivewardVersionTitle}
-                title={hivewardVersionTitle}
-                onClick={() => {
-                  setSystemMenuOpen(false);
-                  setSection("hivewardHome");
-                  void checkHivewardUpdate();
-                }}
-              >
-                <span className="sidebar-system-dot" aria-hidden="true" />
-                <strong>{hivewardVersionLabel}</strong>
-                {hivewardUpdate?.updateAvailable && <span className="sidebar-system-update-badge">{hivewardHomeUi.newBadge}</span>}
-              </button>
-              <button
-                type="button"
-                className={`sidebar-system-settings ${systemMenuOpen ? "active" : ""}`}
-                title={systemUi.settings}
-                aria-label={systemUi.settings}
-                aria-expanded={systemMenuOpen}
-                onClick={() => {
-                  setSystemMenuOpen((current) => !current);
-                }}
-              >
-                <Settings size={14} />
-              </button>
-              {systemMenuOpen && (
-                <div className="sidebar-system-menu" aria-label={systemUi.title}>
-                  <button type="button" title={themeToggleTitle} aria-label={themeToggleTitle} onClick={toggleTheme}>
-                    {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-                    <span>{systemUi.theme}</span>
-                    <strong>{themeToggleLabel}</strong>
-                  </button>
-                  <button type="button" title={t.actions.switchLanguage} aria-label={t.actions.switchLanguage} onClick={toggleLanguage}>
-                    <Languages size={14} />
-                    <span>{systemUi.language}</span>
-                    <strong>{language === "zh-CN" ? "ZH" : "EN"}</strong>
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      <section className="main-shell">
+    <AppLayout
+      error={error}
+      importControl={
         <input
           ref={blueprintImportInputRef}
           type="file"
@@ -2211,12 +2027,43 @@ export function App() {
             event.currentTarget.value = "";
           }}
         />
-        <section className="page-shell">
-          {error && <div className="error-banner">{error}</div>}
-          {renderSection()}
-        </section>
-      </section>
-    </main>
+      }
+      sidebar={
+        <Sidebar
+          activityMeta={sidebarActivityMeta}
+          companySwitcherLabel={companySwitcherLabel}
+          dashboardDirty={dashboardDirty}
+          dirtyWorkspaceLabel={t.common.dirtyWorkspace}
+          expandedSystems={expandedSystems}
+          hivewardHomeNewBadge={hivewardHomeUi.newBadge}
+          hivewardUpdateAvailable={Boolean(hivewardUpdate?.updateAvailable)}
+          hivewardVersionLabel={hivewardVersionLabel}
+          hivewardVersionTitle={hivewardVersionTitle}
+          language={language}
+          languageSwitchTitle={t.actions.switchLanguage}
+          navigationLabels={t.navigation}
+          selectedCompanyLogoLabel={selectedCompany?.logoLabel}
+          selectedCompanyLogoUrl={selectedCompany?.logoUrl}
+          selectedCompanyName={selectedCompany?.name}
+          systemMenuOpen={systemMenuOpen}
+          systemMenuRef={systemMenuRef}
+          systemUi={systemUi}
+          theme={theme}
+          themeToggleLabel={themeToggleLabel}
+          themeToggleTitle={themeToggleTitle}
+          onCheckHivewardUpdate={() => {
+            void checkHivewardUpdate();
+          }}
+          onCloseSystemMenu={() => setSystemMenuOpen(false)}
+          onToggleLanguage={toggleLanguage}
+          onToggleSystemGroup={toggleSystemGroup}
+          onToggleSystemMenu={() => setSystemMenuOpen((current) => !current)}
+          onToggleTheme={toggleTheme}
+        />
+      }
+    >
+      <AppRoutes renderRoute={renderRoute} selectedCompanyId={selectedCompanyId} />
+    </AppLayout>
   );
 }
 
@@ -3919,20 +3766,6 @@ function OpenClawPanelRow({ label, value }: { label: string; value: ReactNode })
   );
 }
 
-function companyMonogram(company?: Pick<CompanyOverview, "logoLabel" | "name">): string {
-  if (company?.logoLabel?.trim()) return company.logoLabel.trim().slice(0, 2).toUpperCase();
-  if (company?.name?.trim()) {
-    const parts = company.name.trim().split(/\s+/);
-    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-    return parts
-      .slice(0, 2)
-      .map((part) => part[0] ?? "")
-      .join("")
-      .toUpperCase();
-  }
-  return "CO";
-}
-
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem("hiveward-theme");
   if (stored === "light" || stored === "dark") return stored;
@@ -4058,11 +3891,6 @@ function safeBlueprintFileName(value: string): string {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 80) || "blueprint";
-}
-
-function fallbackNavigationLabel(sectionId: AppNavSectionId, language: Language): string {
-  if (language === "zh-CN" && sectionId === "chat") return "\u804a\u5929";
-  return messages.en.navigation[sectionId] ?? sectionId;
 }
 
 function makeClientId(prefix: string): string {

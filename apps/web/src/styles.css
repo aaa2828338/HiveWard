@@ -211,6 +211,8 @@ pre {
 }
 
 .nav-item {
+  display: inline-flex;
+  align-items: center;
   justify-content: space-between;
   min-height: 42px;
   padding: 0 10px;
@@ -218,6 +220,7 @@ pre {
   border-color: transparent;
   background: transparent;
   color: inherit;
+  text-decoration: none;
 }
 
 .nav-item:hover:not(:disabled) {
@@ -320,6 +323,8 @@ pre {
   border: 1px solid rgb(255 255 255 / 0.08);
   border-radius: var(--radius-sm);
   background: rgb(255 255 255 / 0.06);
+  color: inherit;
+  text-decoration: none;
 }
 
 .sidebar-system-dot {
@@ -704,6 +709,37 @@ pre {
 .primary-action:hover:not(:disabled) {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
+}
+
+.route-state-panel {
+  width: min(680px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--paper-strong);
+}
+
+.route-state-panel h1,
+.route-state-panel p {
+  margin: 0;
+}
+
+.route-state-panel .primary-action {
+  width: fit-content;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+}
+
+.route-state-meta {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .page-shell {
@@ -6700,8 +6736,8 @@ button.sidebar-system-version {
   cursor: pointer;
 }
 
-button.sidebar-system-version:hover:not(:disabled),
-button.sidebar-system-version.active {
+.sidebar-system-version:hover,
+.sidebar-system-version.active {
   transform: none;
   border-color: var(--line-strong);
   background: var(--paper-raised);
@@ -9864,6 +9900,15 @@ h6,
   position: absolute;
   opacity: 0;
   pointer-events: none;
+}
+
+.harness-permission-toggle input,
+.config-form .blueprint-permission-toggle input {
+  width: 0;
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .harness-permission-switch {

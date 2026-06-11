@@ -841,6 +841,7 @@ export const messages: Record<Language, Messages> = {
     },
     navigation: {
       company: "公司",
+      chat: "\u804a\u5929",
       blueprint: "\u84dd\u56fe",
       runs: "运行",
       approvals: "收件箱",

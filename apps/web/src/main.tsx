@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { BrowserRouter } from "react-router";
 import "@xyflow/react/dist/style.css";
 import "./styles.css";
 import { App } from "./App";
@@ -14,7 +15,9 @@ if (!root) {
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <AppErrorBoundary>
-      <App />
+      <BrowserRouter>
+        <App />
+      </BrowserRouter>
     </AppErrorBoundary>
   </React.StrictMode>
 );
