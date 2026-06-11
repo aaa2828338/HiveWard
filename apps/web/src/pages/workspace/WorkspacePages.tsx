@@ -59,27 +59,27 @@ import type {
   HumanActionRequestSourceContextType
 } from "@hiveward/shared";
 import { humanActionRequestResponseIntents, humanActionRequestSourceContextTypes } from "@hiveward/shared";
-import type { Language, Messages } from "../lib/i18n";
+import type { Language, Messages } from "../../lib/i18n";
 import {
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
-} from "../lib/run-state";
-import { buildRunRoomOutputMessagesForDisplay } from "../lib/run-room-output-state";
-import type { RunRoomOutputStreamState } from "../lib/run-room-output-state";
+} from "../../lib/run-state";
+import { buildRunRoomOutputMessagesForDisplay } from "../../lib/run-room-output-state";
+import type { RunRoomOutputStreamState } from "../../lib/run-room-output-state";
 import {
   blueprintKanbanCardIsNavigationOnly,
   blueprintKanbanLaneOrder,
   groupBlueprintKanbanCards,
   type BlueprintKanbanFilters
-} from "../lib/blueprint-kanban-state";
-import { resolveApiResourceUrl } from "../lib/api";
-import { harnessLikeDisplayLabel } from "../lib/harness-labels";
-import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
-import { MarkdownRenderer } from "./MarkdownRenderer";
-import { RunRoomOutputView } from "./RunRoomOutputView";
+} from "../../lib/blueprint-kanban-state";
+import { resolveApiResourceUrl } from "../../lib/api";
+import { harnessLikeDisplayLabel } from "../../lib/harness-labels";
+import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../../lib/workspace-path";
+import { MarkdownRenderer } from "../../components/MarkdownRenderer";
+import { RunRoomOutputView } from "../../components/RunRoomOutputView";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
