@@ -134,10 +134,11 @@ describe("execution rebuild old-path exclusion gate", () => {
   });
 
   it("keeps the run page main trace owned by execution facts without legacy inference", () => {
-    const source = readSource("apps/web/src/components/WorkspacePages.tsx");
-    const executionRowsIndex = source.indexOf("const executionRows = buildRunExecutionTraceRows");
-    const executionReturnIndex = source.indexOf("if (executionRows.length > 0)", executionRowsIndex);
-    const missingFactsIndex = source.indexOf("return [createMissingExecutionFactsTraceIssue", executionReturnIndex);
+    const source = readSource("apps/web/src/pages/workspace/WorkspacePages.tsx");
+    const executionRowsIndex = source.indexOf("const allExecutionRows = buildRunExecutionTraceRows");
+    const displayedRowsIndex = source.indexOf("const displayExecutionRows = filterDisplayedExecutionTraceRows", executionRowsIndex);
+    const executionReturnIndex = source.indexOf("if (displayExecutionRows.length > 0)", displayedRowsIndex);
+    const missingFactsIndex = source.indexOf("return allExecutionRows.length === 0 ? [createMissingExecutionFactsTraceIssue", executionReturnIndex);
     const buildTraceIssuesBody = sliceBetween(source, "function buildTraceIssues", "function createMissingExecutionFactsTraceIssue");
     const executionRowsBody = sliceBetween(source, "function buildRunExecutionTraceRows", "function buildCommandOnlyTraceRow");
 
@@ -148,7 +149,8 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(source).not.toContain("buildRunTimelineTraceItems");
     expect(source).not.toContain("const nodeRunIds = new Set");
     expect(executionRowsIndex).toBeGreaterThanOrEqual(0);
-    expect(executionReturnIndex).toBeGreaterThan(executionRowsIndex);
+    expect(displayedRowsIndex).toBeGreaterThan(executionRowsIndex);
+    expect(executionReturnIndex).toBeGreaterThan(displayedRowsIndex);
     expect(missingFactsIndex).toBeGreaterThan(executionReturnIndex);
     expect(buildTraceIssuesBody).toContain("buildRunExecutionTraceRows");
     expect(buildTraceIssuesBody).toContain("createMissingExecutionFactsTraceIssue");
@@ -355,7 +357,7 @@ describe("execution rebuild old-path exclusion gate", () => {
     ]);
     expectSourceToContainAll(workspacePageTests, [
       "renders only the active RunRoom output invocation instead of residual transcript and timeline facts",
-      "keeps terminal RunRoom output text while hiding finished runtime records",
+      "keeps terminal RunRoom output text while removing finished runtime activity labels",
       "derives preflight display mode from command step facts instead of node-run id prefixes",
       "does not use legacy timeline fallback when command and step facts exist",
       "renders explicit missing execution facts when canonical trace facts are absent",

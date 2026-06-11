@@ -32,7 +32,7 @@ describe("OpenClawConfigStore", () => {
     process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
     process.env.APPDATA = join(dir, "appdata");
     process.env.OPENCLAW_STATE_DIR = join(dir, "state");
-    delete process.env.OPENCLAW_CLI_ENTRY;
+    process.env.OPENCLAW_CLI_ENTRY = join(stagedDir, "openclaw.mjs");
 
     try {
       const version = await new OpenClawConfigStore(join(dir, "openclaw.json")).getVersion();

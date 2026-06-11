@@ -59,27 +59,28 @@ import type {
   HumanActionRequestSourceContextType
 } from "@hiveward/shared";
 import { humanActionRequestResponseIntents, humanActionRequestSourceContextTypes } from "@hiveward/shared";
-import type { Language, Messages } from "../lib/i18n";
+import type { Language, Messages } from "../../lib/i18n";
 import {
   isTerminalBlueprintRunStatus,
   readAcknowledgedTerminalRunIds,
   resolveBlueprintActivityState,
   resolveRunViewDisplayStatus,
   writeAcknowledgedTerminalRunIds
-} from "../lib/run-state";
-import { buildRunRoomOutputMessagesForDisplay } from "../lib/run-room-output-state";
-import type { RunRoomOutputStreamState } from "../lib/run-room-output-state";
+} from "../../lib/run-state";
+import { buildRunRoomOutputMessagesForDisplay } from "../../lib/run-room-output-state";
+import type { RunRoomOutputStreamState } from "../../lib/run-room-output-state";
 import {
   blueprintKanbanCardIsNavigationOnly,
   blueprintKanbanLaneOrder,
   groupBlueprintKanbanCards,
   type BlueprintKanbanFilters
-} from "../lib/blueprint-kanban-state";
-import { resolveApiResourceUrl } from "../lib/api";
-import { harnessLikeDisplayLabel } from "../lib/harness-labels";
-import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../lib/workspace-path";
-import { MarkdownRenderer } from "./MarkdownRenderer";
-import { RunRoomOutputView } from "./RunRoomOutputView";
+} from "../../lib/blueprint-kanban-state";
+import { resolveApiResourceUrl } from "../../lib/api";
+import { harnessLikeDisplayLabel } from "../../lib/harness-labels";
+import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../../lib/workspace-path";
+import { MarkdownRenderer } from "../../components/MarkdownRenderer";
+import { RunRoomOutputView } from "../../components/RunRoomOutputView";
+import { PageBody, PageHeader, PageShell } from "../../shared/ui";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
@@ -2958,8 +2959,8 @@ export function BlueprintKanbanPage({
   const lanes = useMemo(() => groupBlueprintKanbanCards(board, filters), [board, filters]);
 
   return (
-    <section className="page-grid trace-page-grid blueprint-kanban-page">
-      <div className="trace-page-title blueprint-kanban-title">
+    <PageShell className="blueprint-kanban-page">
+      <PageHeader className="blueprint-kanban-title">
         <div>
           <h2>{copy.title}</h2>
           <p>{language === "zh-CN" ? "\u6309\u72b6\u6001\u67e5\u770b\u84dd\u56fe\u8fd0\u884c\u5165\u53e3" : "Track blueprint run entry points by current state."}</p>
@@ -3006,16 +3007,16 @@ export function BlueprintKanbanPage({
             </select>
           </label>
         </div>
-      </div>
+      </PageHeader>
 
-      <section className="trace-layout blueprint-kanban-layout">
+      <PageBody className="blueprint-kanban-layout">
         {blueprintKanbanLaneOrder.map((lane) => (
-          <div key={lane} className="trace-column-shell blueprint-kanban-lane" data-kanban-lane={lane}>
-            <div className="trace-column-header blueprint-kanban-lane-header">
+          <div key={lane} className="page-panel blueprint-kanban-lane" data-kanban-lane={lane}>
+            <div className="page-panel-header blueprint-kanban-lane-header">
               <h3>{blueprintKanbanLaneLabel(lane, language)}</h3>
               <span className={`status-pill status-${lane}`}>{lanes[lane].length}</span>
             </div>
-            <div className="content-card stack-card blueprint-kanban-card-list">
+            <div className="page-scroll blueprint-kanban-card-list">
               {lanes[lane].length ? (
                 lanes[lane].map((card) => (
                   <button
@@ -3064,8 +3065,8 @@ export function BlueprintKanbanPage({
             </div>
           </div>
         ))}
-      </section>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 

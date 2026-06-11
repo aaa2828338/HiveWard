@@ -38,9 +38,7 @@ import type {
   ChatAttachment,
   ChatMode,
   ChatPermissionMode,
-  ChatRuntimeActivity,
   ChatRoleScope,
-  ChatRuntimeRef,
   ChatStreamTimings,
   ChatThinkingEffort,
   CompanyOverview,
@@ -48,27 +46,18 @@ import type {
   HarnessId,
   HarnessStatus,
   AgentOutputEvent,
-  HivewardChatSession,
   OpenClawConfigState,
   RuntimeOverview
 } from "@hiveward/shared";
 import type { Language } from "../lib/i18n";
-import { api } from "../lib/api";
-import { shouldRefreshStreamingChatMessages, shouldShowRuntimeStatus, toChatRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
+import { shouldShowRuntimeStatus, type ChatRuntimeStatusView } from "../lib/chat-state";
+import * as chatController from "../controllers/chat-controller";
 import { harnessDisplayParts, harnessLikeDisplayLabel, harnessLikeDisplayParts } from "../lib/harness-labels";
-import { projectModelOutputThread, type ModelOutputThreadMessage } from "../lib/model-output-thread";
 import { HarnessLabel } from "./HarnessLabel";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { PageHeader, PageShell } from "../shared/ui";
 
-type ChatMessage = Omit<ModelOutputThreadMessage, "runtimeStatus"> & {
-  status?: "sent" | "streaming" | "failed";
-  runtimeRef?: ChatRuntimeRef;
-  runtimeStatus?: ChatRuntimeStatusView;
-  runtimeActivities?: ChatRuntimeActivity[];
-  progressText?: string;
-  speakerLabel?: string;
-  agentId?: string;
-};
+type ChatMessage = chatController.ChatMessage;
 
 type SelectOption = {
   value: string;
@@ -80,9 +69,7 @@ type SelectOption = {
   thinkingLevels?: ChatThinkingEffort[];
 };
 
-type HivewardSessionView = HivewardChatSession & {
-  messages: ChatMessage[];
-};
+type HivewardSessionView = chatController.HivewardSessionView;
 
 const maxReadableFileChars = 24_000;
 const maxUploadFiles = 6;
@@ -186,9 +173,9 @@ export function ChatPage({
     : undefined;
   const titleBlueprint = chatMode === "blueprint" ? selectedChatBlueprint : selectedRoleBlueprint;
   const selectedRoleLabel = selectedRole?.label ?? copy.ceoRole;
-  const activePermissionMode = resolveHarnessPermissionMode(harnessId, harnessPermissionModes, activeSessionView);
+  const activePermissionMode = chatController.resolveHarnessPermissionMode(harnessId, harnessPermissionModes, activeSessionView);
   const canConfigurePermission =
-    Boolean(activeSessionView) && activeSessionView?.harnessId === harnessId && supportsChatPermissionMode(harnessId);
+    Boolean(activeSessionView) && activeSessionView?.harnessId === harnessId && chatController.supportsChatPermissionMode(harnessId);
 
   const applySessionRoleScope = useCallback(
     (roleScope: ChatRoleScope | undefined) => {
@@ -203,52 +190,44 @@ export function ChatPage({
     [roleDirectory?.ceo.id]
   );
 
+  const activeSessionViewIdRef = useRef(activeSessionViewId);
+  useEffect(() => {
+    activeSessionViewIdRef.current = activeSessionViewId;
+  }, [activeSessionViewId]);
+
+  const applySessionSelection = useCallback(
+    (patch: chatController.SessionSelectionPatch) => {
+      if (patch.harnessId) setHarnessId(patch.harnessId);
+      if (patch.modelId) setModelId(patch.modelId);
+      if (patch.agentId) setAgentId(patch.agentId);
+      if (patch.thinkingEffort) setThinkingEffort(patch.thinkingEffort);
+      if (patch.chatMode) setChatMode(patch.chatMode);
+      applySessionRoleScope(patch.roleScope);
+    },
+    [applySessionRoleScope]
+  );
+
   const loadChatSessions = useCallback(
     async (preferredSessionId?: string) => {
-      setSessionsLoading(true);
-      setError(undefined);
-      try {
-        let sessions = await api.listChatSessions();
-        if (sessions.length === 0) {
-          const created = await api.createHivewardChatSession({
-            harnessId,
-            title: copy.newSessionViewTitle,
-            modelId: defaultModelId || undefined,
-            agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
-            thinkingEffort,
-            permissionMode: resolveHarnessPermissionMode(harnessId, harnessPermissionModes),
-            mode: chatMode,
-            roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
-          });
-          sessions = [created];
-        }
-        const nextActiveId =
-          preferredSessionId && sessions.some((session) => session.id === preferredSessionId)
-            ? preferredSessionId
-            : activeSessionViewId && sessions.some((session) => session.id === activeSessionViewId)
-              ? activeSessionViewId
-              : sessions[0]?.id;
-        const activeEvents = nextActiveId ? await api.getChatOutputEvents(nextActiveId) : [];
-        const nextSessionViews = sessions.map((session) => ({
-          ...session,
-          messages: session.id === nextActiveId ? decorateAgentOutputMessages(activeEvents, copy) : []
-        }));
-        setSessionViews(nextSessionViews);
-        setActiveSessionViewId(nextActiveId);
-        const nextActiveSession = nextSessionViews.find((session) => session.id === nextActiveId);
-        if (nextActiveSession) {
-          setHarnessId(nextActiveSession.harnessId);
-          if (nextActiveSession.modelId) setModelId(nextActiveSession.modelId);
-          if (nextActiveSession.agentId) setAgentId(nextActiveSession.agentId);
-          if (nextActiveSession.thinkingEffort) setThinkingEffort(nextActiveSession.thinkingEffort);
-          setChatMode(nextActiveSession.mode);
-          applySessionRoleScope(nextActiveSession.roleScope);
-        }
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : copy.historyLoadFailed);
-      } finally {
-        setSessionsLoading(false);
-      }
+      await chatController.loadChatSessions({
+        preferredSessionId,
+        activeSessionViewId,
+        agentId,
+        chatMode,
+        copy,
+        defaultModelId,
+        harnessId,
+        harnessPermissionModes,
+        selectedCompanyId,
+        selectedBlueprintScopeId,
+        selectedRole,
+        thinkingEffort,
+        setSessionsLoading,
+        setError,
+        setSessionViews,
+        setActiveSessionViewId,
+        applySessionSelection
+      });
     },
     [
       activeSessionViewId,
@@ -258,7 +237,7 @@ export function ChatPage({
       defaultModelId,
       harnessId,
       harnessPermissionModes,
-      applySessionRoleScope,
+      applySessionSelection,
       selectedCompanyId,
       selectedBlueprintScopeId,
       selectedRole,
@@ -278,16 +257,7 @@ export function ChatPage({
   const updateActiveSessionViewMessages = useCallback<Dispatch<SetStateAction<ChatMessage[]>>>(
     (nextMessagesAction) => {
       updateActiveSessionView((sessionView) => {
-        const nextMessages =
-          typeof nextMessagesAction === "function"
-            ? nextMessagesAction(sessionView.messages)
-            : nextMessagesAction;
-        return {
-          ...sessionView,
-          title: deriveSessionViewTitle(sessionView, nextMessages, copy),
-          messages: nextMessages,
-          updatedAt: new Date().toISOString()
-        };
+        return chatController.updateSessionViewMessages({ copy, sessionView, nextMessagesAction });
       });
     },
     [copy, updateActiveSessionView]
@@ -308,191 +278,110 @@ export function ChatPage({
   }, [activeSessionView?.title]);
 
   const saveSessionTitle = useCallback(async () => {
-    if (!activeSessionView) return;
-    const nextTitle = titleDraft.trim();
-    if (!nextTitle) return;
-    setTitleSaving(true);
-    setError(undefined);
-    try {
-      const titleResult = await api.updateHivewardChatSession(activeSessionView.id, { title: nextTitle });
-      setSessionViews((current) =>
-        current.map((sessionView) =>
-          sessionView.id === activeSessionView.id
-            ? {
-                ...titleResult,
-                messages: sessionView.messages,
-                updatedAt: new Date().toISOString()
-              }
-            : sessionView
-        )
-      );
-      setTitleEditing(false);
-    } catch (titleError) {
-      setError(titleError instanceof Error ? titleError.message : copy.titleUpdateFailed);
-    } finally {
-      setTitleSaving(false);
-    }
+    await chatController.saveSessionTitle({
+      activeSessionView,
+      copy,
+      titleDraft,
+      setTitleSaving,
+      setError,
+      setSessionViews,
+      setTitleEditing
+    });
   }, [activeSessionView, copy.titleUpdateFailed, titleDraft]);
 
   const endActiveSession = useCallback(async () => {
-    if (!activeSessionView || activeSessionView.status === "ended") return;
-    setError(undefined);
-    try {
-      const ended = await api.endHivewardChatSession(activeSessionView.id);
-      setSessionViews((current) =>
-        current.map((sessionView) =>
-          sessionView.id === ended.id
-            ? {
-                ...ended,
-                messages: sessionView.messages
-              }
-            : sessionView
-        )
-      );
-      setRebuildFromHivewardHistory(false);
-    } catch (endError) {
-      setError(endError instanceof Error ? endError.message : copy.sessionEndFailed);
-    }
+    await chatController.endActiveSession({
+      activeSessionView,
+      copy,
+      setError,
+      setSessionViews,
+      setRebuildFromHivewardHistory
+    });
   }, [activeSessionView, copy.sessionEndFailed]);
 
   const updateActiveSessionPermissionMode = useCallback(
     async (value: string) => {
-      if (!activeSessionView || activeSessionView.harnessId !== harnessId || !supportsChatPermissionMode(harnessId)) return;
-      const permissionMode = value === "full_access" ? "full_access" : "safe";
-      const previousPermissionMode = activeSessionView.permissionMode ?? activePermissionMode ?? "safe";
-      setError(undefined);
-      setSessionViews((current) =>
-        current.map((sessionView) =>
-          sessionView.id === activeSessionView.id
-            ? {
-                ...sessionView,
-                permissionMode,
-                updatedAt: new Date().toISOString()
-              }
-            : sessionView
-        )
-      );
-      try {
-        const updated = await api.updateHivewardChatSession(activeSessionView.id, { permissionMode });
-        setSessionViews((current) =>
-          current.map((sessionView) =>
-            sessionView.id === updated.id
-              ? {
-                  ...updated,
-                  messages: sessionView.messages
-                }
-              : sessionView
-          )
-        );
-      } catch (permissionError) {
-        setSessionViews((current) =>
-          current.map((sessionView) =>
-            sessionView.id === activeSessionView.id
-              ? {
-                  ...sessionView,
-                  permissionMode: previousPermissionMode,
-                  updatedAt: new Date().toISOString()
-                }
-              : sessionView
-          )
-        );
-        setError(permissionError instanceof Error ? permissionError.message : copy.permissionUpdateFailed);
-      }
+      await chatController.updateActiveSessionPermissionMode({
+        value,
+        activePermissionMode,
+        activeSessionView,
+        copy,
+        harnessId,
+        setError,
+        setSessionViews
+      });
     },
     [activePermissionMode, activeSessionView, copy.permissionUpdateFailed, harnessId]
   );
 
   const bindActiveSessionView = useCallback(
     (event: AgentOutputEvent, eventHarnessId: HarnessId) => {
-      const sessionKey = readOutputRuntimeString(event, "sessionKey");
-      updateActiveSessionView((sessionView) => ({
-        ...sessionView,
-        harnessId: eventHarnessId,
-        nativeSessionId: sessionKey || undefined,
-        nativeSessionState: sessionKey ? "resumable" : sessionView.nativeSessionState,
-        updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt
+      updateActiveSessionView((sessionView) => chatController.bindSessionViewToOutputEvent({
+        event,
+        eventHarnessId,
+        sessionView
       }));
     },
     [updateActiveSessionView]
   );
 
   const createSessionView = useCallback(async () => {
-    try {
-      const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId);
-      const nextSession = await api.createHivewardChatSession({
-        harnessId,
-        title: copy.newSessionViewTitle,
-        modelId: modelId || undefined,
-        agentId: harnessId === "openclaw" ? agentId || undefined : undefined,
-        thinkingEffort,
-        permissionMode: resolveHarnessPermissionMode(harnessId, harnessPermissionModes),
-        mode: chatMode,
-        roleScope
-      });
-      const nextSessionView: HivewardSessionView = { ...nextSession, messages: [] };
-      setSessionViews((current) => [nextSessionView, ...current]);
-      setActiveSessionViewId(nextSessionView.id);
-      setRebuildFromHivewardHistory(false);
-      setDraft("");
-      setAttachments([]);
-      setError(undefined);
-    } catch (sessionError) {
-      setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
-    }
+    await chatController.createSessionView({
+      agentId,
+      chatMode,
+      copy,
+      harnessId,
+      harnessPermissionModes,
+      modelId,
+      selectedBlueprintScopeId,
+      selectedCompanyId,
+      selectedRole,
+      thinkingEffort,
+      setSessionViews,
+      setActiveSessionViewId,
+      setRebuildFromHivewardHistory,
+      setDraft,
+      setAttachments,
+      setError
+    });
   }, [agentId, chatMode, copy, harnessId, harnessPermissionModes, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]);
 
   const loadSessionMessages = useCallback(
     async (sessionViewId: string) => {
-      setHistoryLoadingSessionKey(sessionViewId);
-      try {
-        const events = await api.getChatOutputEvents(sessionViewId);
-        setSessionViews((current) =>
-          current.map((sessionView) =>
-            sessionView.id === sessionViewId
-              ? {
-                  ...sessionView,
-                  messages: decorateAgentOutputMessages(events, copy),
-                  updatedAt: new Date().toISOString()
-                }
-              : sessionView
-          )
-        );
-      } catch (historyError) {
-        setError(historyError instanceof Error ? historyError.message : copy.historyLoadFailed);
-      } finally {
-        setHistoryLoadingSessionKey((current) => (current === sessionViewId ? undefined : current));
-      }
+      await chatController.loadSessionMessages({
+        sessionViewId,
+        copy,
+        setHistoryLoadingSessionKey,
+        setError,
+        setSessionViews
+      });
     },
     [copy]
   );
 
   const activateNativeSession = useCallback(
     async (sessionKey: string) => {
-      const nativeSession = runtimeSessions.find((session) => session.id === sessionKey);
-      try {
-        const session = await api.createHivewardChatSession({
-          harnessId: "openclaw",
-          nativeSessionId: sessionKey,
-          title: nativeSession ? formatNativeSessionLabel(nativeSession) : sessionKey,
-          agentId: readAgentIdFromSessionKey(sessionKey) ?? defaultAgentId,
-          modelId: modelId || undefined,
-          thinkingEffort,
-          mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
-        });
-        setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
-        setActiveSessionViewId(session.id);
-        setHarnessId("openclaw");
-        setAgentId(session.agentId ?? defaultAgentId);
-        setRebuildFromHivewardHistory(false);
-        setDraft("");
-        setAttachments([]);
-        setError(undefined);
-      } catch (sessionError) {
-        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
-      }
+      await chatController.activateNativeSession({
+        chatMode,
+        copy,
+        defaultAgentId,
+        modelId,
+        runtimeSessions,
+        selectedBlueprintScopeId,
+        selectedCompanyId,
+        selectedRole,
+        sessionKey,
+        thinkingEffort,
+        setSessionViews,
+        setActiveSessionViewId,
+        applySessionSelection,
+        setRebuildFromHivewardHistory,
+        setDraft,
+        setAttachments,
+        setError
+      });
     },
-    [chatMode, copy.sessionCreateFailed, defaultAgentId, modelId, runtimeSessions, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
+    [applySessionSelection, chatMode, copy, defaultAgentId, modelId, runtimeSessions, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   useEffect(() => {
@@ -526,16 +415,11 @@ export function ChatPage({
     if (!activeSessionView?.messages.some((message) => message.status === "streaming")) return;
 
     const interval = window.setInterval(() => {
-      void api.getChatOutputEvents(activeSessionView.id).then((serverEvents) => {
-        const serverMessages = decorateAgentOutputMessages(serverEvents, copy);
-        const shouldRefresh = shouldRefreshStreamingChatMessages({
-          localMessages: activeSessionView.messages,
-          serverMessages
-        });
-        if (shouldRefresh) {
-          void loadSessionMessages(activeSessionView.id);
-        }
-      }).catch(() => undefined);
+      void chatController.refreshStreamingChatMessages({
+        activeSessionView,
+        copy,
+        loadSessionMessages
+      });
     }, 8_000);
 
     return () => window.clearInterval(interval);
@@ -672,61 +556,52 @@ export function ChatPage({
 
   const selectHarness = useCallback(
     async (nextHarnessId: HarnessId) => {
-      setHarnessId(nextHarnessId);
-      const existing = sessionViews.find((sessionView) => sessionView.harnessId === nextHarnessId && sessionView.status !== "ended");
-      if (existing) {
-        setActiveSessionViewId(existing.id);
-        applySessionRoleScope(existing.roleScope);
-        void loadSessionMessages(existing.id);
-        return;
-      }
-      try {
-        const session = await api.createHivewardChatSession({
-          harnessId: nextHarnessId,
-          title: copy.newSessionViewTitle,
-          modelId: modelId || undefined,
-          agentId: nextHarnessId === "openclaw" ? agentId || undefined : undefined,
-          thinkingEffort,
-          permissionMode: resolveHarnessPermissionMode(nextHarnessId, harnessPermissionModes),
-          mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
-        });
-        setSessionViews((current) => [{ ...session, messages: [] }, ...current]);
-        setActiveSessionViewId(session.id);
-        setRebuildFromHivewardHistory(false);
-      } catch (sessionError) {
-        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
-      }
+      await chatController.selectHarness({
+        nextHarnessId,
+        agentId,
+        chatMode,
+        copy,
+        harnessPermissionModes,
+        modelId,
+        selectedBlueprintScopeId,
+        selectedCompanyId,
+        selectedRole,
+        sessionViews,
+        thinkingEffort,
+        setSessionViews,
+        setActiveSessionViewId,
+        applySessionSelection,
+        setRebuildFromHivewardHistory,
+        setError,
+        loadSessionMessages
+      });
     },
-    [agentId, applySessionRoleScope, chatMode, copy, harnessPermissionModes, loadSessionMessages, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
+    [agentId, applySessionSelection, chatMode, copy, harnessPermissionModes, loadSessionMessages, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, sessionViews, thinkingEffort]
   );
 
   const selectAgent = useCallback(
     async (nextAgentId: string) => {
-      setAgentId(nextAgentId);
-      if (harnessId !== "openclaw" || nextAgentId === agentId) return;
-      try {
-        const session = await api.createHivewardChatSession({
-          harnessId: "openclaw",
-          title: copy.newSessionViewTitle,
-          modelId: modelId || undefined,
-          agentId: nextAgentId || undefined,
-          thinkingEffort,
-          mode: chatMode,
-          roleScope: buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId)
-        });
-        const nextSessionView: HivewardSessionView = { ...session, messages: [] };
-        setSessionViews((current) => [nextSessionView, ...current]);
-        setActiveSessionViewId(nextSessionView.id);
-        setRebuildFromHivewardHistory(false);
-        setDraft("");
-        setAttachments([]);
-        setError(undefined);
-      } catch (sessionError) {
-        setError(sessionError instanceof Error ? sessionError.message : copy.sessionCreateFailed);
-      }
+      await chatController.selectAgent({
+        nextAgentId,
+        agentId,
+        chatMode,
+        copy,
+        harnessId,
+        modelId,
+        selectedBlueprintScopeId,
+        selectedCompanyId,
+        selectedRole,
+        thinkingEffort,
+        setSessionViews,
+        setActiveSessionViewId,
+        applySessionSelection,
+        setRebuildFromHivewardHistory,
+        setDraft,
+        setAttachments,
+        setError
+      });
     },
-    [agentId, chatMode, copy, harnessId, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
+    [agentId, applySessionSelection, chatMode, copy, harnessId, modelId, selectedBlueprintScopeId, selectedCompanyId, selectedRole, thinkingEffort]
   );
 
   const canSend =
@@ -738,162 +613,56 @@ export function ChatPage({
     (activeSessionView?.status !== "native_missing" || rebuildFromHivewardHistory);
 
   const sendMessage = async () => {
-    if (!canSend) return;
-
-    const controller = new AbortController();
-    const content = draft.trim();
-    const outgoingAttachments = attachments;
-    const includePlatformContext = messages.length === 0;
-    const roleScope = buildChatRoleScope(selectedCompanyId, selectedRole, selectedBlueprintScopeId);
-    const sendHarnessId = harnessId;
-    const sendHarnessLabel = formatHarnessLabel(sendHarnessId);
-    const sendIsOpenClawHarness = sendHarnessId === "openclaw";
-    const sendPermissionMode = resolveHarnessPermissionMode(sendHarnessId, harnessPermissionModes, activeSessionView);
-    const sendModelId = modelOptions.some((option) => option.value === modelId) ? modelId : defaultModelId;
-    const sendModelOption = modelOptions.find((option) => option.value === sendModelId);
-    const sendThinkingEffort = resolveSupportedThinkingEffort(
-      normalizeThinkingLevels(sendModelOption?.thinkingLevels),
-      thinkingEffort
-    );
-    const now = new Date().toISOString();
-    const userMessage: ChatMessage = {
-      id: makeLocalId("chat-user"),
-      sessionId: activeSessionView!.id,
-      role: "user",
-      content: content || copy.attachmentOnlyMessage,
-      createdAt: now,
-      attachments: outgoingAttachments,
-      status: "sent",
-      speakerLabel: copy.you,
-      harnessId: sendHarnessId
-    };
-    const assistantId = makeLocalId("chat-assistant");
-    const assistantMessage: ChatMessage = {
-      id: assistantId,
-      sessionId: activeSessionView!.id,
-      role: "assistant",
-      content: "",
-      createdAt: now,
-      status: "streaming",
-      speakerLabel: `${selectedRoleLabel} / ${formatHarnessSpeaker(
-        sendHarnessId,
-        sendIsOpenClawHarness ? agentId : undefined
-      )}`,
-      harnessId: sendHarnessId,
-      agentId: sendIsOpenClawHarness ? agentId : undefined,
-      modelId: sendModelId
-    };
-
-    updateActiveSessionViewMessages((current) => [...current, userMessage, assistantMessage]);
-    setDraft("");
-    setAttachments([]);
-    setError(undefined);
-    setIsSending(true);
-    streamAbortRef.current = controller;
-
-    let progressTimer: number | undefined;
-    try {
-      const progressStartedAt = Date.now();
-      progressTimer = window.setInterval(() => {
-        const elapsedSeconds = Math.max(1, Math.floor((Date.now() - progressStartedAt) / 1000));
-        updateActiveSessionViewMessages((current) =>
-          current.map((item) =>
-            item.id === assistantId && item.status === "streaming" && !item.content
-              ? {
-                  ...item,
-                  progressText: formatWaitingProgress(copy, elapsedSeconds, Boolean(item.runtimeRef), sendHarnessLabel)
-                }
-              : item
-          )
-        );
-      }, 10_000);
-
-      if (controller.signal.aborted) throw new DOMException(copy.stopped, "AbortError");
-
-      await api.streamSessionChat(
-        activeSessionView!.id,
-        {
-          message: content,
-          attachments: outgoingAttachments,
-          modelId: sendModelId || undefined,
-          agentId: sendIsOpenClawHarness ? agentId || undefined : undefined,
-          thinkingEffort: sendThinkingEffort,
-          permissionMode: sendPermissionMode,
-          includePlatformContext,
-          mode: chatMode,
-          roleScope,
-          rebuildFromHivewardHistory
-        },
-        {
-          onEvent: (event) => {
-            applyAgentOutputEvent(assistantId, event, updateActiveSessionViewMessages, copy, sendHarnessId);
-            if (event.kind === "message_started" || event.kind === "message_completed" || event.kind === "message_failed") {
-              bindActiveSessionView(event, sendHarnessId);
-            }
-          }
-        },
-        controller.signal
-      );
-      setRebuildFromHivewardHistory(false);
-      void loadChatSessions(activeSessionView!.id);
-    } catch (streamError) {
-      if (controller.signal.aborted) {
-        updateActiveSessionViewMessages((current) =>
-          current.map((item) =>
-            item.id === assistantId
-              ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || copy.stopped, status: "sent" }
-              : item
-          )
-        );
-        return;
-      }
-      const message = streamError instanceof Error ? streamError.message : copy.sendFailed;
-      setError(message);
-      updateActiveSessionViewMessages((current) =>
-        current.map((item) =>
-          item.id === assistantId
-            ? { ...item, progressText: undefined, runtimeStatus: undefined, content: item.content || message, status: "failed" }
-            : item
-        )
-      );
-    } finally {
-      if (progressTimer !== undefined) window.clearInterval(progressTimer);
-      if (streamAbortRef.current === controller) streamAbortRef.current = null;
-      void onInboxProjectionsRefreshNeeded?.();
-      setIsSending(false);
-    }
+    if (!canSend || !activeSessionView) return;
+    await chatController.streamChatMessage({
+      activeSessionView,
+      agentId,
+      attachments,
+      chatMode,
+      copy,
+      defaultModelId,
+      draft,
+      harnessId,
+      harnessPermissionModes,
+      messages,
+      modelId,
+      modelOptions,
+      onInboxProjectionsRefreshNeeded,
+      rebuildFromHivewardHistory,
+      selectedBlueprintScopeId,
+      selectedCompanyId,
+      selectedRole,
+      selectedRoleLabel,
+      thinkingEffort,
+      updateActiveSessionViewMessages,
+      bindActiveSessionView,
+      setDraft,
+      setAttachments,
+      setError,
+      setIsSending,
+      setRebuildFromHivewardHistory,
+      streamAbortRef,
+      onStreamComplete: (sessionId) => chatController.refreshCompletedStreamSession({
+        sessionId,
+        getActiveSessionViewId: () => activeSessionViewIdRef.current,
+        loadChatSessions,
+        loadSessionMessages
+      })
+    });
   };
 
   const submitBlueprintProposal = async (message: ChatMessage) => {
-    if (!activeSessionView || !canSubmitBlueprintProposalMessage(message, activeSessionView)) return;
-    const sourceRole = executiveSourceRoleForSession(activeSessionView);
-    if (!sourceRole) return;
-    const blueprintId = activeSessionView.roleScope?.blueprintId ?? selectedBlueprintScopeId;
-    if (sourceRole === "leader" && !blueprintId) {
-      setError(copy.blueprintProposalSubmitFailed);
-      return;
-    }
-
-    setProposalSubmittingMessageId(message.id);
-    setError(undefined);
-    try {
-      await api.executeExecutiveCommand(activeSessionView.id, {
-        action: "submit_blueprint_proposal",
-        sourceRole,
-        payload: {
-          title: deriveBlueprintProposalTitle(message.content, titleBlueprint, copy),
-          bodyMarkdown: message.content,
-          ...(blueprintId ? { blueprintId } : {}),
-          sourceMessageId: message.id
-        }
-      });
-      setSubmittedBlueprintProposalMessageIds((current) => new Set(current).add(message.id));
-      void onInboxProjectionsRefreshNeeded?.();
-    } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : copy.blueprintProposalSubmitFailed);
-    } finally {
-      setProposalSubmittingMessageId((current) => (current === message.id ? undefined : current));
-    }
+    await chatController.submitBlueprintProposal({
+      activeSessionView,
+      copy,
+      message,
+      selectedBlueprintScopeId,
+      titleBlueprint,
+      setError,
+      setProposalSubmittingMessageId,
+      setSubmittedBlueprintProposalMessageIds,
+      onInboxProjectionsRefreshNeeded
+    });
   };
 
   const stopMessage = () => {
@@ -909,8 +678,8 @@ export function ChatPage({
   };
 
   return (
-    <section className={`page-grid chat-page-grid ${settingsCollapsed ? "chat-settings-collapsed" : ""}`}>
-      <div className="trace-page-title chat-page-title">
+    <PageShell className={`chat-page-grid ${settingsCollapsed ? "chat-settings-collapsed" : ""}`}>
+      <PageHeader className="chat-page-title">
         <div className="chat-page-title-copy">
           <h2>{copy.title}</h2>
           <p>
@@ -927,7 +696,7 @@ export function ChatPage({
         >
           <HarnessLabel {...harnessLikeDisplayParts(harnessId)} />
         </span>
-      </div>
+      </PageHeader>
 
       <div className="chat-workspace">
         <div className={`chat-settings-column ${settingsCollapsed ? "collapsed" : ""}`}>
@@ -1127,7 +896,7 @@ export function ChatPage({
               ) : (
                 messages.map((message) => {
                   const runtimeActivities = message.runtimeActivities ?? message.runtimeRef?.activity ?? [];
-                  const canSubmitProposal = canSubmitBlueprintProposalMessage(message, activeSessionView);
+                  const canSubmitProposal = chatController.canSubmitBlueprintProposalMessage(message, activeSessionView);
                   const proposalSubmitted = submittedBlueprintProposalMessageIds.has(message.id);
                   const proposalSubmitting = proposalSubmittingMessageId === message.id;
                   return (
@@ -1282,7 +1051,7 @@ export function ChatPage({
           </section>
         </div>
       </div>
-    </section>
+    </PageShell>
   );
 }
 
@@ -1415,152 +1184,6 @@ function ChatSelect({
   );
 }
 
-function applyAgentOutputEvent(
-  assistantId: string,
-  event: AgentOutputEvent,
-  setMessages: Dispatch<SetStateAction<ChatMessage[]>>,
-  copy: ReturnType<typeof chatCopy>,
-  fallbackHarnessId: HarnessId
-) {
-  if (event.kind === "message_delta") {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              content: event.metadata?.replace === true ? event.delta ?? "" : `${message.content}${event.delta ?? ""}`,
-              progressText: undefined
-            }
-          : message
-      )
-    );
-    return;
-  }
-
-  if (event.kind === "runtime_state") {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? updateMessageRuntimeActivity(message, event)
-          : message
-      )
-    );
-    return;
-  }
-
-  if (event.kind === "message_started") {
-    const harnessLabel = formatHarnessLabel(readOutputRuntimeString(event, "source") ?? fallbackHarnessId);
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              progressText: message.content ? undefined : copy.acceptedWaiting(harnessLabel),
-              runtimeStatus: undefined,
-              runtimeRef: toRuntimeRef(event, message.runtimeActivities ?? message.runtimeRef?.activity),
-              runtimeActivities: message.runtimeActivities ?? message.runtimeRef?.activity
-            }
-          : message
-      )
-    );
-    return;
-  }
-
-  if (event.kind === "message_completed" || event.kind === "message_failed") {
-    setMessages((current) =>
-      current.map((message) =>
-        message.id === assistantId
-          ? {
-              ...message,
-              progressText: undefined,
-              runtimeStatus: undefined,
-              content: message.content || event.bodyMarkdown || readOutputRuntimeString(event, "error") || "",
-              status: event.kind === "message_failed" || readOutputRuntimeString(event, "status") === "failed" || readOutputRuntimeString(event, "status") === "cancelled" ? "failed" : "sent",
-              runtimeRef: toRuntimeRef(event, message.runtimeActivities ?? message.runtimeRef?.activity),
-              runtimeActivities: message.runtimeActivities ?? message.runtimeRef?.activity
-            }
-          : message
-      )
-    );
-    return;
-  }
-
-  const errorMessage = formatAgentOutputError(event, copy);
-  setMessages((current) =>
-    current.map((message) =>
-      message.id === assistantId
-        ? { ...message, progressText: undefined, runtimeStatus: undefined, content: message.content || errorMessage, status: "failed" }
-        : message
-    )
-  );
-}
-
-function updateMessageRuntimeActivity(
-  message: ChatMessage,
-  event: AgentOutputEvent
-): ChatMessage {
-  const runtimeStatus = toChatRuntimeStatus(event);
-  const activity = toRuntimeActivity(event);
-  if (!activity || !runtimeStatus) return message;
-  const runtimeActivities = upsertRuntimeActivity(message.runtimeActivities ?? message.runtimeRef?.activity ?? [], activity);
-  return {
-    ...message,
-    runtimeStatus,
-    runtimeActivities,
-    runtimeRef: message.runtimeRef
-      ? {
-          ...message.runtimeRef,
-          activity: runtimeActivities,
-          updatedAt: activity.updatedAt
-        }
-      : message.runtimeRef
-  };
-}
-
-function toRuntimeActivity(event: AgentOutputEvent): ChatRuntimeActivity | undefined {
-  const phase = event.runtimeState?.phase;
-  const label = event.runtimeState?.label;
-  const source = event.runtimeState?.source;
-  if ((phase !== "thinking" && phase !== "tool" && phase !== "command") || typeof label !== "string" || !isRuntimeObjectSource(source)) {
-    return undefined;
-  }
-  const activityStatus = event.runtimeState?.activityStatus;
-  return {
-    id: readOutputRuntimeString(event, "activityId") ?? `${source}:${phase}:${label}`,
-    source,
-    phase,
-    label,
-    status: activityStatus === "started" || activityStatus === "completed" ? activityStatus : "updated",
-    updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt
-  };
-}
-
-function upsertRuntimeActivity(current: ChatRuntimeActivity[], activity: ChatRuntimeActivity): ChatRuntimeActivity[] {
-  const index = current.findIndex((item) => item.id === activity.id);
-  if (index < 0) return [...current, activity];
-  return current.map((item, itemIndex) => itemIndex === index ? { ...item, ...activity } : item);
-}
-
-function formatAgentOutputError(event: AgentOutputEvent, copy: ReturnType<typeof chatCopy>): string {
-  const code = readOutputRuntimeString(event, "code");
-  if (code === "openclaw_gateway_not_configured") return copy.openClawGatewayNotConfigured;
-  if (code === "openclaw_gateway_unreachable") return copy.openClawGatewayUnreachable;
-  if (code === "openclaw_gateway_not_connected") return copy.openClawGatewayNotConnected;
-  return event.bodyMarkdown ?? readOutputRuntimeString(event, "error") ?? copy.runtimeError;
-}
-
-function formatWaitingProgress(
-  copy: ReturnType<typeof chatCopy>,
-  elapsedSeconds: number,
-  accepted: boolean,
-  harnessLabel: string
-): string {
-  const minutes = Math.floor(elapsedSeconds / 60);
-  const seconds = elapsedSeconds % 60;
-  const elapsed = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-  return `${accepted ? copy.acceptedWaiting(harnessLabel) : copy.waiting(harnessLabel)} ${elapsed}`;
-}
-
 function formatChatRuntimeStatusTitle(status: ChatRuntimeStatusView, copy: ReturnType<typeof chatCopy>): string {
   if (status.phase === "command") return copy.runtimeCommand;
   if (status.phase === "tool") return copy.runtimeTool;
@@ -1591,68 +1214,10 @@ function formatDurationMs(value: number): string {
   return `${Math.max(0, Math.round(value))}ms`;
 }
 
-function toRuntimeRef(
-  event: AgentOutputEvent,
-  activity?: ChatRuntimeActivity[]
-): ChatRuntimeRef | undefined {
-  const taskId = readOutputRuntimeString(event, "taskId");
-  const runId = readOutputRuntimeString(event, "runId");
-  const sessionKey = readOutputRuntimeString(event, "sessionKey");
-  const source = event.runtimeState?.source;
-  const status = readOutputRuntimeString(event, "status");
-  if (!taskId || !runId || !sessionKey || !isRuntimeObjectSource(source) || !status) return undefined;
-  return {
-    taskId,
-    runId,
-    sessionKey,
-    source,
-    status,
-    updatedAt: readOutputRuntimeString(event, "updatedAt") ?? event.createdAt,
-    error: readOutputRuntimeString(event, "error"),
-    usage: readOutputRuntimeRecord(event, "usage") as ChatRuntimeRef["usage"],
-    timings: readOutputRuntimeRecord(event, "timings") as ChatRuntimeRef["timings"],
-    activity: activity?.length ? activity : undefined
-  };
-}
-
-function decorateAgentOutputMessages(events: readonly AgentOutputEvent[], copy: ReturnType<typeof chatCopy>): ChatMessage[] {
-  return projectModelOutputThread(events).map((message) => ({
-    ...message,
-    runtimeStatus: message.runtimeStatus,
-    speakerLabel: message.role === "user" ? copy.you : formatHarnessLabel(message.harnessId ?? "openclaw")
-  }));
-}
-
-function readOutputRuntimeString(event: AgentOutputEvent, key: string): string | undefined {
-  const value = event.runtimeState?.[key];
-  return typeof value === "string" && value ? value : undefined;
-}
-
-function readOutputRuntimeRecord(event: AgentOutputEvent, key: string): Record<string, unknown> | undefined {
-  const value = event.runtimeState?.[key];
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-}
-
-function isRuntimeObjectSource(value: unknown): value is ChatRuntimeRef["source"] {
-  return value === "openclaw" ||
-    value === "claude" ||
-    value === "codex" ||
-    value === "google" ||
-    value === "cursor" ||
-    value === "opencode" ||
-    value === "hermes";
-}
-
 function readNativeSessionOptionValue(value: string): string | undefined {
   if (value.startsWith(nativeSessionOptionPrefix)) return value.slice(nativeSessionOptionPrefix.length);
   if (value.startsWith(legacyNativeSessionOptionPrefix)) return value.slice(legacyNativeSessionOptionPrefix.length);
   return undefined;
-}
-
-function readAgentIdFromSessionKey(sessionKey: string): string | undefined {
-  if (sessionKey === "main") return "main";
-  const match = /^agent:([^:]+):/.exec(sessionKey);
-  return match?.[1];
 }
 
 function isVisibleSessionView(sessionView: HivewardSessionView, agentId: string): boolean {
@@ -1760,20 +1325,6 @@ function resolveBlueprintSelection(
 
 function readSelectedBlueprintScopeId(selectedBlueprintId: string): string | undefined {
   return selectedBlueprintId === newBlueprintOptionValue ? undefined : selectedBlueprintId;
-}
-
-function buildChatRoleScope(
-  selectedCompanyId: string | undefined,
-  role: CompanyRoleDirectory["ceo"] | CompanyRoleDirectory["leaders"][number] | undefined,
-  selectedBlueprintId?: string
-): ChatRoleScope | undefined {
-  if (!role) return undefined;
-  return {
-    companyId: selectedCompanyId,
-    role: role.kind,
-    leaderId: role.kind === "leader" ? role.id : undefined,
-    blueprintId: role.kind === "leader" ? role.blueprintId : selectedBlueprintId
-  };
 }
 
 function buildHarnessModelOptions(
@@ -1955,41 +1506,6 @@ function isReadableTextFile(file: File): boolean {
   );
 }
 
-function deriveSessionViewTitle(sessionView: HivewardSessionView, messages: ChatMessage[], copy: ReturnType<typeof chatCopy>): string {
-  if (sessionView.messages.length > 0 && sessionView.title !== copy.newSessionViewTitle) return sessionView.title;
-  const firstUserMessage = messages.find((message) => message.role === "user")?.content.trim();
-  if (!firstUserMessage) return sessionView.title || copy.newSessionViewTitle;
-  return firstUserMessage.length > 24 ? `${firstUserMessage.slice(0, 24)}...` : firstUserMessage;
-}
-
-function canSubmitBlueprintProposalMessage(message: ChatMessage, sessionView: HivewardSessionView | undefined): boolean {
-  if (!sessionView || sessionView.mode !== "blueprint") return false;
-  if (message.role !== "assistant") return false;
-  if (message.status === "streaming" || message.status === "failed") return false;
-  if (!message.content.trim()) return false;
-  const sourceRole = executiveSourceRoleForSession(sessionView);
-  return sourceRole === "ceo" || sourceRole === "leader";
-}
-
-function executiveSourceRoleForSession(sessionView: HivewardSessionView | undefined): "ceo" | "leader" | undefined {
-  const role = sessionView?.roleScope?.role;
-  return role === "ceo" || role === "leader" ? role : undefined;
-}
-
-function deriveBlueprintProposalTitle(
-  content: string,
-  blueprint: BlueprintDefinition | undefined,
-  copy: ReturnType<typeof chatCopy>
-): string {
-  const line = content
-    .split(/\r?\n/)
-    .map((item) => item.replace(/^#+\s*/, "").replace(/\*\*/g, "").trim())
-    .find((item) => item && item !== "```json" && item !== "```" && !item.startsWith("{") && !item.startsWith("["));
-  const fallback = blueprint ? `${blueprint.name} ${copy.blueprintProposalTitle}` : copy.blueprintProposalTitle;
-  const title = line ?? fallback;
-  return title.length > 80 ? `${title.slice(0, 77)}...` : title;
-}
-
 function formatHarnessSpeaker(harnessId: string, agentId?: string): string {
   const harnessLabel = formatHarnessLabel(harnessId);
   return agentId ? `${harnessLabel} / ${agentId}` : harnessLabel;
@@ -1997,19 +1513,6 @@ function formatHarnessSpeaker(harnessId: string, agentId?: string): string {
 
 function formatHarnessLabel(harnessId: string): string {
   return harnessLikeDisplayLabel(harnessId);
-}
-
-function resolveHarnessPermissionMode(
-  harnessId: HarnessId,
-  harnessPermissionModes: Partial<Record<HarnessId, ChatPermissionMode>> | undefined,
-  session?: HivewardChatSession
-): ChatPermissionMode | undefined {
-  if (!supportsChatPermissionMode(harnessId)) return undefined;
-  return session?.permissionMode ?? harnessPermissionModes?.[harnessId] ?? "safe";
-}
-
-function supportsChatPermissionMode(harnessId: HarnessId): boolean {
-  return harnessId === "codex" || harnessId === "claudeCode" || harnessId === "google" || harnessId === "cursor" || harnessId === "opencode" || harnessId === "hermes";
 }
 
 function formatHarnessStatusMeta(status: HarnessStatus | undefined, copy: ReturnType<typeof chatCopy>): string {

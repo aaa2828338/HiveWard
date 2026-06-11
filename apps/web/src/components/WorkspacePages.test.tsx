@@ -23,7 +23,7 @@ import {
   dispatchApprovalInboxReplyAction,
   dispatchHumanActionProjectionResponse,
   RunsPage
-} from "./WorkspacePages";
+} from "../pages/workspace/WorkspacePages";
 
 describe("CompanyDirectoryPage", () => {
   it("renders the add-company action without the external Plus icon component", () => {
