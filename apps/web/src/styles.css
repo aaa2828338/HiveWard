@@ -1,3 +1,5 @@
+@import "./shared/styles/page-shell.css";
+
 :root {
   font-family: Inter, "Segoe UI Variable Text", "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
   color: #13262f;
@@ -13059,15 +13061,21 @@ html[data-theme="light"] select {
 
 .blueprint-kanban-layout {
   min-width: 0;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
+  align-items: stretch;
   gap: 16px;
+  overflow: hidden;
 }
 
 .blueprint-kanban-lane {
   min-width: 0;
-  height: auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .blueprint-kanban-lane-header {
@@ -13081,6 +13089,7 @@ html[data-theme="light"] select {
   align-content: start;
   gap: 10px;
   padding: 10px;
+  overflow: auto;
 }
 
 .blueprint-kanban-card-button {

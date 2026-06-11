@@ -55,6 +55,7 @@ import * as chatController from "../controllers/chat-controller";
 import { harnessDisplayParts, harnessLikeDisplayLabel, harnessLikeDisplayParts } from "../lib/harness-labels";
 import { HarnessLabel } from "./HarnessLabel";
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { PageHeader, PageShell } from "../shared/ui";
 
 type ChatMessage = chatController.ChatMessage;
 
@@ -677,8 +678,8 @@ export function ChatPage({
   };
 
   return (
-    <section className={`page-grid chat-page-grid ${settingsCollapsed ? "chat-settings-collapsed" : ""}`}>
-      <div className="trace-page-title chat-page-title">
+    <PageShell className={`chat-page-grid ${settingsCollapsed ? "chat-settings-collapsed" : ""}`}>
+      <PageHeader className="chat-page-title">
         <div className="chat-page-title-copy">
           <h2>{copy.title}</h2>
           <p>
@@ -695,7 +696,7 @@ export function ChatPage({
         >
           <HarnessLabel {...harnessLikeDisplayParts(harnessId)} />
         </span>
-      </div>
+      </PageHeader>
 
       <div className="chat-workspace">
         <div className={`chat-settings-column ${settingsCollapsed ? "collapsed" : ""}`}>
@@ -1050,7 +1051,7 @@ export function ChatPage({
           </section>
         </div>
       </div>
-    </section>
+    </PageShell>
   );
 }
 
