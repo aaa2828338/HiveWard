@@ -42,6 +42,23 @@ describe("CompanyDirectoryPage", () => {
     expect(html).toContain("Add company");
     expect(html).toContain("local-add-icon");
   });
+
+  it("renders loading instead of empty while the company directory is busy", () => {
+    const html = renderToStaticMarkup(
+      <CompanyDirectoryPage
+        companies={[]}
+        language="en"
+        busy={true}
+        onEnterCompany={() => undefined}
+        onCreateCompany={async () => undefined}
+        onUpdateCompany={async () => undefined}
+        onDeleteCompany={() => undefined}
+      />
+    );
+
+    expect(html).toContain("Companies are loading.");
+    expect(html).not.toContain("No companies are available.");
+  });
 });
 
 describe("BlueprintKanbanPage Blueprint Kanban", () => {

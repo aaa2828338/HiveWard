@@ -277,6 +277,7 @@ export function CompanyDirectoryPage({
   const copy =
     language === "zh-CN"
       ? {
+          loadingCompanies: "\u516c\u53f8\u52a0\u8f7d\u4e2d\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           active: "\u5F53\u524D\u516C\u53F8",
           switchTitle: "\u516C\u53F8\u5217\u8868",
@@ -294,6 +295,7 @@ export function CompanyDirectoryPage({
           deleteConfirm: (name: string) => `\u5220\u9664\u516C\u53F8\u201C${name}\u201D\u4F1A\u79FB\u9664\u8BE5\u516C\u53F8\u4E0B\u7684\u84DD\u56FE\u548C\u8FD0\u884C\u8BB0\u5F55\u3002\u786E\u8BA4\u5220\u9664\uFF1F`
         }
       : {
+          loadingCompanies: "Companies are loading.",
           noCompanies: "No companies are available.",
           active: "Current company",
           switchTitle: "Companies",
@@ -376,7 +378,12 @@ export function CompanyDirectoryPage({
       </div>
 
       <div className="content-card stack-card company-selector-card">
-        {companies.length === 0 ? (
+        {busy && companies.length === 0 ? (
+          <div className="empty-state page-empty">
+            <Loader2 className="spin" size={16} />
+            {copy.loadingCompanies}
+          </div>
+        ) : companies.length === 0 ? (
           <div className="empty-state page-empty">{copy.noCompanies}</div>
         ) : (
           <div className="company-list-grid">
