@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { NavigateFunction } from "react-router";
 import type {
-  ApplyHivewardUpdateResponse,
   ApprovalRequest,
   ApprovalThread,
   ArchitectureBlueprintView,
@@ -29,7 +28,7 @@ import type {
   HermesConfigResponse,
   HivewardUpdateStatus,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   OpenClawConfigState,
   OpenClawConfigWizardMetadata,
   OpenClawModelUsageSummary,
@@ -73,7 +72,6 @@ type WorkspaceChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "googl
 type UseWorkspaceControllerOptions = {
   activeRouteId: RouteId | undefined;
   chatPermissionModes: Record<WorkspaceChatHarnessId, ChatPermissionMode>;
-  forceHivewardUpdateConfirm: string;
   language: Language;
   navigate: NavigateFunction;
   t: Messages;
@@ -120,7 +118,6 @@ function sortApprovalRequests(requests: ApprovalRequest[]): ApprovalRequest[] {
 export function useWorkspaceController({
   activeRouteId,
   chatPermissionModes,
-  forceHivewardUpdateConfirm,
   language,
   navigate,
   t
@@ -136,7 +133,6 @@ export function useWorkspaceController({
   const [openClawModelUsage, setOpenClawModelUsage] = useState<OpenClawModelUsageSummary[]>([]);
   const [openClawVersion, setOpenClawVersion] = useState<OpenClawVersionInfo | undefined>();
   const [hivewardUpdate, setHivewardUpdate] = useState<HivewardUpdateStatus | undefined>();
-  const [hivewardUpdateResult, setHivewardUpdateResult] = useState<ApplyHivewardUpdateResponse | undefined>();
   const [hivewardUpdateChecking, setHivewardUpdateChecking] = useState(false);
   const [harnessStatuses, setHarnessStatuses] = useState<HarnessStatus[]>([]);
   const [hermesConfig, setHermesConfig] = useState<HermesConfigResponse | undefined>();
@@ -153,14 +149,14 @@ export function useWorkspaceController({
   const [approvalThreads, setApprovalThreads] = useState<ApprovalThread[]>([]);
   const [roleDirectory, setRoleDirectory] = useState<CompanyRoleDirectory | undefined>();
   const [architecture, setArchitecture] = useState<ArchitectureBlueprintView | undefined>();
-  const [inboxProjections, setInboxProjections] = useState<InboxProjection[]>([]);
-  const [inboxResponsesByRequestId, setInboxResponsesByRequestId] = useState<Record<string, HumanActionResponse[]>>({});
+  const [humanActionQueue, setHumanActionQueue] = useState<HumanActionQueueItem[]>([]);
+  const [humanActionResponsesByRequestId, setHumanActionResponsesByRequestId] = useState<Record<string, HumanActionResponse[]>>({});
   const [blueprintKanbanBoard, setBlueprintKanbanBoard] = useState<BlueprintKanbanBoard>(() => emptyBlueprintKanbanBoard());
   const [dashboard, setDashboard] = useState<WorkspaceDashboard | undefined>();
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>();
   const [selectedRunId, setSelectedRunId] = useState<string | undefined>();
   const [runPageBlueprintId, setRunPageBlueprintId] = useState<string | undefined>();
-  const [focusedInboxEntryId, setFocusedInboxEntryId] = useState<string | undefined>();
+  const [focusedHumanActionEntryId, setFocusedHumanActionEntryId] = useState<string | undefined>();
   const [busyAction, setBusyAction] = useState<string | undefined>();
   const [dashboardDirty, setDashboardDirty] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -228,10 +224,10 @@ export function useWorkspaceController({
         nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
-        nextApprovalRequests,
+        loadedApprovalRequests,
         nextApprovalThreads,
         nextRoles,
-        nextInboxProjections,
+        nextHumanActionQueue,
         nextBlueprintKanbanBoard,
         nextDashboard,
         nextRuntime
@@ -251,7 +247,7 @@ export function useWorkspaceController({
         api.listApprovalRequests(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
         api.getRoleDirectory().catch(() => undefined),
-        api.listInboxProjections().catch(() => []),
+        api.listHumanActionQueue().catch(() => []),
         api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard()),
         api.getDashboardState(),
         api.getRuntimeOverview().catch(() => emptyRuntimeOverview())
@@ -283,11 +279,11 @@ export function useWorkspaceController({
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
       setApprovals(nextApprovals);
-      setApprovalRequests(nextApprovalRequests);
+      setApprovalRequests(loadedApprovalRequests);
       setApprovalThreads(nextApprovalThreads);
       setRoleDirectory(nextRoles?.roles);
       setArchitecture(nextRoles?.architecture);
-      setInboxProjections(nextInboxProjections);
+      setHumanActionQueue(nextHumanActionQueue);
       setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
@@ -383,31 +379,31 @@ export function useWorkspaceController({
   );
 
   const openBlueprintKanbanCard = useCallback((card: BlueprintKanbanCard) => {
-    if (card.targetRef.type === "inbox_projection") {
+    if (card.targetRef.type === "human_action_queue_item") {
       const focusedEntryId = `human:${card.targetRef.humanActionRequestId}`;
       void (async () => {
         try {
-          const [nextApprovals, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
+          const [nextApprovals, nextApprovalThreads, nextHumanActionQueue, nextBlueprintKanbanBoard] = await Promise.all([
             api.listPendingApprovals(),
             api.listApprovalThreads({ status: "open" }).catch(() => []),
-            api.listInboxProjections(),
+            api.listHumanActionQueue(),
             api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
           ]);
           setApprovals(nextApprovals);
           setApprovalThreads(nextApprovalThreads);
-          setInboxProjections(nextInboxProjections);
+          setHumanActionQueue(nextHumanActionQueue);
           setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
         } catch (navigationError) {
           setError(navigationError instanceof Error ? navigationError.message : messageRef.current.errors.load);
         } finally {
-          setFocusedInboxEntryId(focusedEntryId);
+          setFocusedHumanActionEntryId(focusedEntryId);
           setSelectedNodeId(undefined);
           navigate(getRoutePath("approvals"));
         }
       })();
       return;
     }
-    setFocusedInboxEntryId(undefined);
+    setFocusedHumanActionEntryId(undefined);
     const blueprintId = card.targetRef.type === "blueprint" ? card.targetRef.blueprintId : card.targetRef.blueprintId;
     if (blueprintId) {
       const nextBlueprint = blueprintCollectionRef.current.find((item) => item.id === blueprintId);
@@ -660,23 +656,6 @@ export function useWorkspaceController({
     }, HIVEWARD_UPDATE_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [checkHivewardUpdate]);
-
-  const applyHivewardUpdateAction = useCallback(() => {
-    void runWorkspaceTask("applyHivewardUpdate", async () => {
-      const result = await api.applyHivewardUpdate();
-      setHivewardUpdateResult(result);
-      setHivewardUpdate(result.update);
-    });
-  }, [runWorkspaceTask]);
-
-  const forceHivewardUpdateAction = useCallback(() => {
-    if (!window.confirm(forceHivewardUpdateConfirm)) return;
-    void runWorkspaceTask("forceApplyHivewardUpdate", async () => {
-      const result = await api.applyHivewardUpdate({ force: true });
-      setHivewardUpdateResult(result);
-      setHivewardUpdate(result.update);
-    });
-  }, [forceHivewardUpdateConfirm, runWorkspaceTask]);
 
   const refreshHarnessStatus = useCallback(
     () =>
@@ -971,7 +950,7 @@ export function useWorkspaceController({
     async (response: Awaited<ReturnType<typeof api.approveApprovalRequest>>) => {
       setApprovalRequests((current) => upsertApprovalRequests(
         current,
-        [response.approvalRequest, response.nextApprovalRequest].filter((request): request is ApprovalRequest => Boolean(request))
+        [response.approvalRequest]
       ));
       if (response.approvalThread) {
         const thread = response.approvalThread;
@@ -1013,33 +992,14 @@ export function useWorkspaceController({
     [applyApprovalRequestResponse, runApprovalTask]
   );
 
-  const returnForRevisionApprovalRequest = useCallback(
-    (approvalRequestId: string, message: string) => {
-      void runApprovalTask("returnForRevisionApprovalRequest", async () => {
-        await applyApprovalRequestResponse(await api.returnForRevisionApprovalRequest(approvalRequestId, message));
-      });
-    },
-    [applyApprovalRequestResponse, runApprovalTask]
-  );
-
-  const completeRunApproval = useCallback(
-    (approvalRequestId: string, comment?: string) => {
-      void runApprovalTask("completeRunApproval", async () => {
-        const response = await api.completeApprovalRequest(approvalRequestId, comment);
-        await applyApprovalRequestResponse(response);
-      });
-    },
-    [applyApprovalRequestResponse, runApprovalTask]
-  );
-
   const sendHumanActionResponse = useCallback(
     (requestId: string, messageMarkdown: string) => {
       void runWorkspaceTask("sendHumanActionResponse", async () => {
         const result = await api.sendHumanActionResponse(requestId, { messageMarkdown });
         const nextBlueprintKanbanBoard = await api.listBlueprintKanban().catch(() => undefined);
-        setInboxProjections(result.projections);
+        setHumanActionQueue(result.queue);
         if (nextBlueprintKanbanBoard) setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
-        setInboxResponsesByRequestId((current) => ({
+        setHumanActionResponsesByRequestId((current) => ({
           ...current,
           [requestId]: [...(current[requestId] ?? []), result.response]
         }));
@@ -1050,17 +1010,17 @@ export function useWorkspaceController({
 
   const refreshInboxAndApprovals = useCallback(async () => {
     try {
-      const [nextApprovals, nextApprovalRequests, nextApprovalThreads, nextInboxProjections, nextBlueprintKanbanBoard] = await Promise.all([
+      const [nextApprovals, loadedApprovalRequests, nextApprovalThreads, nextHumanActionQueue, nextBlueprintKanbanBoard] = await Promise.all([
         api.listPendingApprovals(),
         api.listApprovalRequests(),
         api.listApprovalThreads({ status: "open" }).catch(() => []),
-        api.listInboxProjections(),
+        api.listHumanActionQueue(),
         api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
       ]);
       setApprovals(nextApprovals);
-      setApprovalRequests(nextApprovalRequests);
+      setApprovalRequests(loadedApprovalRequests);
       setApprovalThreads(nextApprovalThreads);
-      setInboxProjections(nextInboxProjections);
+      setHumanActionQueue(nextHumanActionQueue);
       setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : messageRef.current.errors.load);
@@ -1224,7 +1184,6 @@ export function useWorkspaceController({
     openClawModelUsage,
     openClawVersion,
     hivewardUpdate,
-    hivewardUpdateResult,
     hivewardUpdateChecking,
     harnessStatuses,
     hermesConfig,
@@ -1240,14 +1199,14 @@ export function useWorkspaceController({
     approvalThreads,
     roleDirectory,
     architecture,
-    inboxProjections,
-    inboxResponsesByRequestId,
+    humanActionQueue,
+    humanActionResponsesByRequestId,
     blueprintKanbanBoard,
     dashboard,
     selectedNodeId,
     selectedRunId,
     runPageBlueprint,
-    focusedInboxEntryId,
+    focusedHumanActionEntryId,
     busyAction,
     dashboardDirty,
     error,
@@ -1269,8 +1228,6 @@ export function useWorkspaceController({
     refreshCatalog,
     checkOpenClawUpdates,
     checkHivewardUpdate,
-    applyHivewardUpdateAction,
-    forceHivewardUpdateAction,
     refreshHarnessStatus,
     addHermesProfile,
     addHermesChannel,
@@ -1292,10 +1249,8 @@ export function useWorkspaceController({
     cancelBlueprintRun,
     sendRunInterjection,
     approveApprovalRequest,
-    completeRunApproval,
     rejectApprovalRequest,
     replyToApprovalRequest,
-    returnForRevisionApprovalRequest,
     sendHumanActionResponse,
     refreshInboxAndApprovals
   };
@@ -1360,7 +1315,6 @@ function errorMessageForAction(action: string, t: Messages): string {
   if (action === "runBlueprint") return t.errors.run;
   if (action === "cancelBlueprintRun") return t.errors.run;
   if (action === "sendRunInterjection") return t.errors.run;
-  if (action === "completeRunApproval") return t.errors.approve;
   if (action === "sendHumanActionResponse") return t.errors.approve;
   if (action === "configureOpenClawModelAuth") return t.errors.catalog;
   if (action.startsWith("setOpenClawDefaultModel:")) return t.errors.catalog;

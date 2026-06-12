@@ -7,7 +7,7 @@ import type {
   BlueprintKanbanBoard,
   BlueprintRunView,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   PendingApprovalItem,
   WorkspaceDashboard
 } from "@hiveward/shared";
@@ -21,7 +21,7 @@ import {
   DashboardPage,
   dispatchApprovalInboxDecisionAction,
   dispatchApprovalInboxReplyAction,
-  dispatchHumanActionProjectionResponse,
+  dispatchHumanActionQueueResponse,
   RunsPage
 } from "../pages/workspace/WorkspacePages";
 
@@ -150,8 +150,6 @@ function createPendingApproval(overrides: Partial<PendingApprovalItem> = {}): Pe
     canApprove: true,
     canReject: true,
     canReply: true,
-    canComplete: false,
-    canTerminate: false,
     ...overrides
   };
 }
@@ -167,10 +165,7 @@ function createApprovalRequest(overrides: Partial<ApprovalRequest> = {}): Approv
     capabilities: {
       approve: true,
       reject: true,
-      reply: true,
-      complete: false,
-      terminate: false,
-      returnForRevision: false
+      reply: true
     },
     requestedBy: {
       type: "role",
@@ -182,9 +177,9 @@ function createApprovalRequest(overrides: Partial<ApprovalRequest> = {}): Approv
   };
 }
 
-function createInboxProjection(overrides: Partial<InboxProjection> = {}): InboxProjection {
+function createHumanActionQueueItem(overrides: Partial<HumanActionQueueItem> = {}): HumanActionQueueItem {
   return {
-    id: "projection-1",
+    id: "queue-item-1",
     humanActionRequestId: "human-action-1",
     sourceContextType: "blueprint_governance",
     sourceContextId: "blueprint-governance-1",
@@ -225,15 +220,15 @@ function createKanbanBoard(): BlueprintKanbanBoard {
       blueprintId: "blueprint-1",
       runId: "run-waiting",
       humanActionRequestId: "human-action-request-1",
-      inboxProjectionId: "inbox-projection-human-action-request-1",
+      humanActionQueueItemId: "human-action-queue-item-human-action-request-1",
       lane: "waiting_user" as const,
       sourceContextType: "run_room" as const,
       responseIntent: "decision_required" as const,
       title: "Pending decision",
       updatedAt,
       targetRef: {
-        type: "inbox_projection" as const,
-        inboxProjectionId: "inbox-projection-human-action-request-1",
+        type: "human_action_queue_item" as const,
+        humanActionQueueItemId: "human-action-queue-item-human-action-request-1",
         humanActionRequestId: "human-action-request-1",
         runRoomId: "run-room-waiting"
       }
@@ -306,16 +301,16 @@ function renderApprovalsPage({
   approvals,
   approvalRequests = [],
   approvalThreads = [],
-  inboxProjections = [],
-  inboxResponsesByRequestId = {},
+  humanActionQueue = [],
+  humanActionResponsesByRequestId = {},
   actionPending = false,
   focusedEntryId
 }: {
   approvals: PendingApprovalItem[];
   approvalRequests?: ApprovalRequest[];
   approvalThreads?: ApprovalThread[];
-  inboxProjections?: InboxProjection[];
-  inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
+  humanActionQueue?: HumanActionQueueItem[];
+  humanActionResponsesByRequestId?: Record<string, HumanActionResponse[]>;
   actionPending?: boolean;
   focusedEntryId?: string;
 }): string {
@@ -324,17 +319,15 @@ function renderApprovalsPage({
       approvals={approvals}
       approvalRequests={approvalRequests}
       approvalThreads={approvalThreads}
-      inboxProjections={inboxProjections}
-      inboxResponsesByRequestId={inboxResponsesByRequestId}
+      humanActionQueue={humanActionQueue}
+      humanActionResponsesByRequestId={humanActionResponsesByRequestId}
       language="en"
       t={messages.en}
       actionPending={actionPending}
       focusedEntryId={focusedEntryId}
       onApproveApprovalRequest={() => undefined}
-      onComplete={() => undefined}
       onRejectApprovalRequest={() => undefined}
       onReplyApprovalRequest={() => undefined}
-      onReturnForRevisionApprovalRequest={() => undefined}
       onSendHumanActionResponse={() => undefined}
     />
   );
@@ -370,7 +363,7 @@ describe("ApprovalsPage", () => {
         nodeRunId: "node-run-v2",
         currentRequestId: "request-v2",
         currentRevision: 2,
-        capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+        capabilities: { approve: true, reject: true, reply: true },
         createdAt: "2026-05-21T01:02:00.000Z",
         updatedAt: "2026-05-21T01:04:00.000Z"
       }
@@ -380,14 +373,12 @@ describe("ApprovalsPage", () => {
       <ApprovalsPage
         approvals={approvals}
         approvalThreads={approvalThreads}
-        inboxProjections={[]}
+        humanActionQueue={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
-        onComplete={() => undefined}
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onReturnForRevisionApprovalRequest={() => undefined}
         onSendHumanActionResponse={() => undefined}
       />
     );
@@ -398,27 +389,26 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("old body");
   });
 
-  it("renders message and explicit return-for-revision actions as separate controls", () => {
+  it("renders only reply, accept, and decline as approval controls", () => {
     const html = renderToStaticMarkup(
       <ApprovalsPage
-        approvals={[createPendingApproval({
-          canReturnForRevision: true
-        } as Partial<PendingApprovalItem>)]}
+        approvals={[createPendingApproval()]}
         approvalThreads={[]}
-        inboxProjections={[]}
+        humanActionQueue={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
-        onComplete={() => undefined}
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onReturnForRevisionApprovalRequest={() => undefined}
         onSendHumanActionResponse={() => undefined}
       />
     );
 
     expect(html).toContain("Send message");
-    expect(html).toContain("Return for revision");
+    expect(html).toContain("Accept");
+    expect(html).toContain("Decline");
+    expect(html).not.toContain("Return for revision");
+    expect(html).not.toContain("Complete");
     expect(html).not.toContain("Request changes");
     expect(html).not.toMatch(/reply with changes/i);
   });
@@ -428,15 +418,13 @@ describe("ApprovalsPage", () => {
       <ApprovalsPage
         approvals={[createPendingApproval()]}
         approvalThreads={[]}
-        inboxProjections={[]}
+        humanActionQueue={[]}
         language="en"
         t={messages.en}
         actionPending
         onApproveApprovalRequest={() => undefined}
-        onComplete={() => undefined}
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onReturnForRevisionApprovalRequest={() => undefined}
         onSendHumanActionResponse={() => undefined}
       />
     );
@@ -452,18 +440,14 @@ describe("ApprovalsPage", () => {
           canApprove: false,
           canReject: false,
           canReply: false,
-          canComplete: false,
-          canReturnForRevision: false
         })]}
         approvalThreads={[]}
-        inboxProjections={[]}
+        humanActionQueue={[]}
         language="en"
         t={messages.en}
         onApproveApprovalRequest={() => undefined}
-        onComplete={() => undefined}
         onRejectApprovalRequest={() => undefined}
         onReplyApprovalRequest={() => undefined}
-        onReturnForRevisionApprovalRequest={() => undefined}
         onSendHumanActionResponse={() => undefined}
       />
     );
@@ -514,9 +498,9 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Candidate selected");
   });
 
-  it("renders human action projections with response-only controls", () => {
-    const projection: InboxProjection = {
-      id: "projection-1",
+  it("renders human action queue items with response-only controls", () => {
+    const queueItem: HumanActionQueueItem = {
+      id: "queue-item-1",
       humanActionRequestId: "human-action-1",
       sourceContextType: "run_room",
       sourceContextId: "run-room-1",
@@ -529,15 +513,15 @@ describe("ApprovalsPage", () => {
     };
     const response: HumanActionResponse = {
       id: "response-1",
-      requestId: projection.humanActionRequestId,
+      requestId: queueItem.humanActionRequestId,
       messageMarkdown: "We need the narrow launch scope.",
       createdAt: "2026-05-21T01:03:00.000Z"
     };
     const html = renderApprovalsPage({
       approvals: [],
-      inboxProjections: [projection],
-      inboxResponsesByRequestId: {
-        [projection.humanActionRequestId]: [response]
+      humanActionQueue: [queueItem],
+      humanActionResponsesByRequestId: {
+        [queueItem.humanActionRequestId]: [response]
       }
     });
 
@@ -554,7 +538,7 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Use this option");
   });
 
-  it("renders decision projections through approval controls from the bound approval request", () => {
+  it("renders decision queue items through approval controls from the bound approval request", () => {
     const approvalRequest = createApprovalRequest({
       id: "approval-request-decision",
       title: "CEO blueprint proposal",
@@ -562,24 +546,21 @@ describe("ApprovalsPage", () => {
       capabilities: {
         approve: true,
         reject: true,
-        reply: true,
-        complete: false,
-        terminate: false,
-        returnForRevision: false
+        reply: true
       }
     });
-    const projection = createInboxProjection({
+    const queueItem = createHumanActionQueueItem({
       humanActionRequestId: "human-action-decision",
       responseIntent: "decision_required",
       approvalRequestId: approvalRequest.id,
       title: "Blueprint proposal approval",
-      bodyMarkdown: "Projection body should not own lifecycle."
+      bodyMarkdown: "Queue item body should not own lifecycle."
     });
 
     const html = renderApprovalsPage({
       approvals: [],
       approvalRequests: [approvalRequest],
-      inboxProjections: [projection]
+      humanActionQueue: [queueItem]
     });
 
     expect(html).toContain("Blueprint proposal approval");
@@ -594,7 +575,6 @@ describe("ApprovalsPage", () => {
     const calls: string[] = [];
     const callbacks = {
       onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => calls.push(`approve:${approvalRequestId}:${comment}`),
-      onComplete: (approvalRequestId: string, comment?: string) => calls.push(`complete:${approvalRequestId}:${comment}`),
       onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => calls.push(`reject:${approvalRequestId}:${comment}`)
     };
 
@@ -633,10 +613,10 @@ describe("ApprovalsPage", () => {
     expect(calls).toEqual(["approval-request-reply:reply body"]);
   });
 
-  it("never routes decision projections to the ordinary human response callback", () => {
+  it("never routes decision queue items to the ordinary human response callback", () => {
     const calls: string[] = [];
 
-    expect(dispatchHumanActionProjectionResponse(createInboxProjection({
+    expect(dispatchHumanActionQueueResponse(createHumanActionQueueItem({
       humanActionRequestId: "human-action-decision-callback",
       responseIntent: "decision_required",
       approvalRequestId: "approval-request-decision-callback"
@@ -645,10 +625,10 @@ describe("ApprovalsPage", () => {
     expect(calls).toEqual([]);
   });
 
-  it("routes reply projections to the ordinary human response callback", () => {
+  it("routes reply queue items to the ordinary human response callback", () => {
     const calls: string[] = [];
 
-    expect(dispatchHumanActionProjectionResponse(createInboxProjection({
+    expect(dispatchHumanActionQueueResponse(createHumanActionQueueItem({
       humanActionRequestId: "human-action-reply-callback",
       responseIntent: "reply_required"
     }), " ordinary response ", false, (requestId, message) => calls.push(`${requestId}:${message}`))).toBe(true);
@@ -662,16 +642,13 @@ describe("ApprovalsPage", () => {
       capabilities: {
         approve: false,
         reject: false,
-        reply: true,
-        complete: false,
-        terminate: false,
-        returnForRevision: false
+        reply: true
       }
     });
     const html = renderApprovalsPage({
       approvals: [],
       approvalRequests: [approvalRequest],
-      inboxProjections: [createInboxProjection({
+      humanActionQueue: [createHumanActionQueueItem({
         humanActionRequestId: "human-action-capabilities",
         responseIntent: "decision_required",
         approvalRequestId: approvalRequest.id
@@ -683,11 +660,11 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Send response");
   });
 
-  it("renders unresolved decision projections as unavailable without normal action buttons", () => {
+  it("renders unresolved decision queue items as unavailable without normal action buttons", () => {
     const html = renderApprovalsPage({
       approvals: [],
       approvalRequests: [],
-      inboxProjections: [createInboxProjection({
+      humanActionQueue: [createHumanActionQueueItem({
         humanActionRequestId: "human-action-missing-owner",
         responseIntent: "decision_required",
         approvalRequestId: "missing-approval-request",
@@ -704,23 +681,20 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Send message");
   });
 
-  it("renders non-pending decision projections as unavailable without normal action buttons", () => {
+  it("renders non-pending decision queue items as unavailable without normal action buttons", () => {
     const approvalRequest = createApprovalRequest({
       id: "approval-request-approved",
       status: "approved",
       capabilities: {
         approve: false,
         reject: false,
-        reply: false,
-        complete: false,
-        terminate: false,
-        returnForRevision: false
+        reply: false
       }
     });
     const html = renderApprovalsPage({
       approvals: [],
       approvalRequests: [approvalRequest],
-      inboxProjections: [createInboxProjection({
+      humanActionQueue: [createHumanActionQueueItem({
         humanActionRequestId: "human-action-approved-owner",
         responseIntent: "decision_required",
         approvalRequestId: approvalRequest.id,
@@ -735,7 +709,7 @@ describe("ApprovalsPage", () => {
     expect(html).not.toContain("Send response");
   });
 
-  it("deduplicates a pending approval and its matching decision projection", () => {
+  it("deduplicates a pending approval and its matching decision queue item", () => {
     const approval = createPendingApproval({
       approvalRequestId: "approval-request-duplicate",
       nodeLabel: "Canonical approval row",
@@ -744,12 +718,12 @@ describe("ApprovalsPage", () => {
     const html = renderApprovalsPage({
       approvals: [approval],
       approvalRequests: [createApprovalRequest({ id: approval.approvalRequestId! })],
-      inboxProjections: [createInboxProjection({
+      humanActionQueue: [createHumanActionQueueItem({
         humanActionRequestId: "human-action-duplicate",
         responseIntent: "decision_required",
         approvalRequestId: approval.approvalRequestId,
-        title: "Duplicate projection row",
-        bodyMarkdown: "Duplicate projection body"
+        title: "Duplicate queue item row",
+        bodyMarkdown: "Duplicate queue item body"
       })]
     });
 
@@ -757,31 +731,31 @@ describe("ApprovalsPage", () => {
     expect(html).toContain("1 of 1 shown");
     expect(html).toContain("Canonical approval row");
     expect(html).toContain("Canonical approval body");
-    expect(html).not.toContain("Duplicate projection row");
-    expect(html).not.toContain("Duplicate projection body");
+    expect(html).not.toContain("Duplicate queue item row");
+    expect(html).not.toContain("Duplicate queue item body");
   });
 
-  it("keeps review projections on the send-response path", () => {
+  it("keeps reply queue items on the send-response path", () => {
     const html = renderApprovalsPage({
       approvals: [],
-      inboxProjections: [createInboxProjection({
+      humanActionQueue: [createHumanActionQueueItem({
         humanActionRequestId: "human-action-review",
-        responseIntent: "review_required",
+        responseIntent: "reply_required",
         title: "Review this summary",
         bodyMarkdown: "Review body."
       })]
     });
 
     expect(html).toContain("Review this summary");
-    expect(html).toContain("review required");
+    expect(html).toContain("reply required");
     expect(html).toContain("Send response");
     expect(html).not.toContain("Accept");
     expect(html).not.toContain("Decline");
   });
 
-  it("opens the focused human action projection detail without adding approval actions", () => {
-    const firstProjection: InboxProjection = {
-      id: "projection-first",
+  it("opens the focused human action queue item detail without adding approval actions", () => {
+    const firstQueueItem: HumanActionQueueItem = {
+      id: "queue-item-first",
       humanActionRequestId: "human-action-first",
       sourceContextType: "run_room",
       sourceContextId: "run-room-1",
@@ -792,9 +766,9 @@ describe("ApprovalsPage", () => {
       createdAt: "2026-05-21T01:02:00.000Z",
       updatedAt: "2026-05-21T01:02:00.000Z"
     };
-    const focusedProjection: InboxProjection = {
-      ...firstProjection,
-      id: "projection-focused",
+    const focusedQueueItem: HumanActionQueueItem = {
+      ...firstQueueItem,
+      id: "queue-item-focused",
       humanActionRequestId: "human-action-focused",
       title: "Focused response",
       bodyMarkdown: "Focused body.",
@@ -803,7 +777,7 @@ describe("ApprovalsPage", () => {
 
     const html = renderApprovalsPage({
       approvals: [],
-      inboxProjections: [firstProjection, focusedProjection],
+      humanActionQueue: [firstQueueItem, focusedQueueItem],
       focusedEntryId: "human:human-action-focused"
     });
 
@@ -814,8 +788,8 @@ describe("ApprovalsPage", () => {
   });
 
   it("disables approval and human response actions while a request action is pending", () => {
-    const projection: InboxProjection = {
-      id: "projection-pending",
+    const queueItem: HumanActionQueueItem = {
+      id: "queue-item-pending",
       humanActionRequestId: "human-action-pending",
       sourceContextType: "run_room",
       sourceContextId: "run-room-1",
@@ -828,7 +802,7 @@ describe("ApprovalsPage", () => {
     };
     const html = renderApprovalsPage({
       approvals: [createPendingApproval()],
-      inboxProjections: [projection],
+      humanActionQueue: [queueItem],
       actionPending: true
     });
 
@@ -950,7 +924,7 @@ describe("RunsPage", () => {
           title: "Round 1 Execution Plan",
           body: "Approved plan body.",
           revision: 1,
-          capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+          capabilities: { approve: true, reject: true, reply: true },
           requestedBy: { type: "node", label: "Top Manager", nodeId: "manager-1" },
           requestedAt: now
         }
@@ -3181,7 +3155,7 @@ describe("RunsPage", () => {
         body: "# Round 1 Execution Plan\n\n## Plan\n制作一个单文件 HTML 测试页面。",
         status: "pending",
         requestedBy: { type: "node", label: "自分发测试 Manager", nodeId: "manager" },
-        capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+        capabilities: { approve: true, reject: true, reply: true },
         requestedAt: "2026-05-28T00:03:00.000Z",
         revision: 1
       }],

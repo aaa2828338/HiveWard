@@ -57,9 +57,6 @@ export interface ApprovalCapabilities {
   approve: boolean;
   reject: boolean;
   reply: boolean;
-  complete: boolean;
-  terminate: boolean;
-  returnForRevision?: boolean;
 }
 
 export type ApprovalRequestKind =
@@ -77,8 +74,6 @@ export type ApprovalRequestStatus =
   | "approved"
   | "rejected"
   | "replied"
-  | "completed"
-  | "terminated"
   | "superseded";
 
 export type ApprovalThreadStatus = "open" | "closed";
@@ -168,8 +163,6 @@ export interface ApprovalRequest {
   };
   threadId?: string;
   revision: number;
-  replacesRequestId?: string;
-  supersededByRequestId?: string;
   capabilities: ApprovalCapabilities;
   requestedBy: {
     type: "node" | "role" | "system";
@@ -185,9 +178,6 @@ export type ApprovalDecisionAction =
   | "approve"
   | "reject"
   | "reply"
-  | "complete"
-  | "terminate"
-  | "return_for_revision"
   | "auto_approve"
   | "supersede";
 
@@ -397,33 +387,26 @@ export interface RunTimelineItem {
 export const emptyApprovalCapabilities = Object.freeze({
   approve: false,
   reject: false,
-  reply: false,
-  complete: false,
-  terminate: false,
-  returnForRevision: false
+  reply: false
 }) satisfies ApprovalCapabilities;
 
 export function resolveApprovalCapabilities(
   kind: ApprovalRequestKind,
-  status: ApprovalRequestStatus = "pending",
-  options: { finalRound?: boolean } = {}
+  status: ApprovalRequestStatus = "pending"
 ): ApprovalCapabilities {
   if (status !== "pending") return { ...emptyApprovalCapabilities };
 
   switch (kind) {
     case "iteration_requirement_plan":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true };
     case "agent_proposal":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true };
     case "manager_release_report":
-      return { approve: !options.finalRound, reject: true, reply: true, complete: true, terminate: false, returnForRevision: true };
+      return { approve: true, reject: true, reply: true };
     case "blueprint_proposal":
     case "leader_delegation":
     case "company_config":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: false, returnForRevision: false };
     case "run_request":
     case "generic_message":
-      return { approve: true, reject: true, reply: true, complete: false, terminate: true, returnForRevision: false };
+      return { approve: true, reject: true, reply: true };
   }
 }
 
@@ -433,11 +416,6 @@ export function capabilitiesAllow(capabilities: ApprovalCapabilities, action: Ap
   if (action === "approve") return capabilities.approve;
   if (action === "reject") return capabilities.reject;
   if (action === "reply") return capabilities.reply;
-  if (action === "complete") return capabilities.complete;
-  if (action === "terminate") return capabilities.terminate;
-  if (action === "return_for_revision") {
-    return capabilities.returnForRevision === true;
-  }
   return false;
 }
 
@@ -447,9 +425,6 @@ export function approvalActionIsMessageOnly(action: ApprovalDecisionAction): boo
 
 export function approvalActionCanTriggerWorkflow(action: ApprovalDecisionAction): boolean {
   return action === "approve" ||
-    action === "complete" ||
-    action === "terminate" ||
-    action === "return_for_revision" ||
     action === "auto_approve";
 }
 

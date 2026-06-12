@@ -175,9 +175,6 @@ function buildApprovalItemFromRequest(
     canApprove: request.capabilities.approve,
     canReject: request.capabilities.reject,
     canReply: request.capabilities.reply,
-    canComplete: request.capabilities.complete,
-    canTerminate: request.capabilities.terminate,
-    canReturnForRevision: request.capabilities.returnForRevision === true,
     decidedAt: isPending ? undefined : request.updatedAt,
     ...(upstream ? { upstream } : {})
   };

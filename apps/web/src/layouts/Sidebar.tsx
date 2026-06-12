@@ -5,12 +5,12 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
-  History,
   Inbox,
   Languages,
   LayoutTemplate,
   ListChecks,
   MessageSquareText,
+  Monitor,
   Moon,
   Puzzle,
   Radio,
@@ -34,11 +34,11 @@ const sidebarIcons: Partial<Record<RouteId, typeof Building2>> = {
   blueprint: LayoutTemplate,
   runs: ListChecks,
   approvals: Inbox,
+  monitor: Monitor,
   models: Database,
   agents: Bot,
   openclaw: Settings,
   skills: Puzzle,
-  schedule: History,
   channels: Radio,
   claudeCodeConfig: Settings,
   claudeCodeModels: Database,
@@ -59,7 +59,7 @@ export type SidebarProps = {
   dashboardDirty: boolean;
   dirtyWorkspaceLabel: string;
   expandedSystems: Record<RouteSystemId, boolean>;
-  hivewardHomeNewBadge: string;
+  hivewardUpdateBadge: string;
   hivewardUpdateAvailable: boolean;
   hivewardVersionLabel: string;
   hivewardVersionTitle: string;
@@ -94,7 +94,7 @@ export function Sidebar({
   dashboardDirty,
   dirtyWorkspaceLabel,
   expandedSystems,
-  hivewardHomeNewBadge,
+  hivewardUpdateBadge,
   hivewardUpdateAvailable,
   hivewardVersionLabel,
   hivewardVersionTitle,
@@ -211,13 +211,11 @@ export function Sidebar({
             </NavLink>
           </div>
           <div className="sidebar-system-control">
-            <NavLink
-              className={({ isActive }) =>
-                `sidebar-system-version ${hivewardUpdateAvailable ? "update-available" : "online"} ${isActive ? "active" : ""}`.trim()
-              }
+            <button
+              type="button"
+              className={`sidebar-system-version ${hivewardUpdateAvailable ? "update-available" : "online"}`}
               aria-label={hivewardVersionTitle}
               title={hivewardVersionTitle}
-              to={getRoutePath("hivewardHome")}
               onClick={() => {
                 onCloseSystemMenu();
                 onCheckHivewardUpdate();
@@ -225,8 +223,8 @@ export function Sidebar({
             >
               <span className="sidebar-system-dot" aria-hidden="true" />
               <strong>{hivewardVersionLabel}</strong>
-              {hivewardUpdateAvailable && <span className="sidebar-system-update-badge">{hivewardHomeNewBadge}</span>}
-            </NavLink>
+              {hivewardUpdateAvailable && <span className="sidebar-system-update-badge">{hivewardUpdateBadge}</span>}
+            </button>
             <button
               type="button"
               className={`sidebar-system-settings ${systemMenuOpen ? "active" : ""}`}

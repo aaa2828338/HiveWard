@@ -8,7 +8,6 @@ import type {
   ApprovalRequest,
   ApprovalRequestKind,
   ApprovalRequestStatus,
-  ReleaseReport,
   RunTimelineItem
 } from "@hiveward/shared";
 import {
@@ -20,16 +19,6 @@ import type { HivewardStore } from "../store/hivewardStore";
 export interface ApprovalActionResult {
   approvalRequest: ApprovalRequest;
   decision: ApprovalDecision;
-  nextApprovalRequest?: ApprovalRequest;
-}
-
-export interface ApprovalRevisionDraft {
-  title?: string;
-  body?: string;
-  payloadRef?: string;
-  releaseReport?: ReleaseReport;
-  capabilities?: ApprovalCapabilities;
-  discussionBinding?: ApprovalDiscussionBindingDraft;
 }
 
 export type ApprovalDiscussionBindingDraft = Omit<
@@ -113,9 +102,6 @@ export class ApprovalService {
     threadId?: string;
     requestedBy: ApprovalRequest["requestedBy"];
     revision?: number;
-    replacesRequestId?: string;
-    closeReplacedRequest?: boolean;
-    finalRound?: boolean;
     requestedAt?: string;
     capabilities?: ApprovalCapabilities;
     discussionBinding?: ApprovalDiscussionBindingDraft;
@@ -132,21 +118,13 @@ export class ApprovalService {
       body: input.body,
       payloadRef: input.payloadRef,
       sourceRef: input.sourceRef,
-      threadId: input.threadId ?? input.replacesRequestId ?? `thread-${nanoid(10)}`,
+      threadId: input.threadId ?? `thread-${nanoid(10)}`,
       revision: input.revision ?? 1,
-      replacesRequestId: input.replacesRequestId,
-      capabilities: input.capabilities ?? resolveApprovalCapabilities(input.kind, "pending", { finalRound: input.finalRound }),
+      capabilities: input.capabilities ?? resolveApprovalCapabilities(input.kind, "pending"),
       requestedBy: input.requestedBy,
       requestedAt: now,
       updatedAt: now
     };
-
-    if (input.replacesRequestId && input.closeReplacedRequest !== false) {
-      const previous = await this.store.getApprovalRequest(input.replacesRequestId);
-      if (previous && previous.status === "pending") {
-        await this.closeRequest(previous, "superseded", "supersede", "system", request.id);
-      }
-    }
 
     const discussionBinding = input.discussionBinding
       ? buildApprovalDiscussionBindingForRequest(request, input.discussionBinding, now)
@@ -176,125 +154,10 @@ export class ApprovalService {
     return this.decide(id, "reject", "rejected", { comment });
   }
 
-  complete(id: string, comment?: string): Promise<ApprovalActionResult> {
-    return this.decide(id, "complete", "completed", { comment });
-  }
-
-  terminate(id: string, comment?: string): Promise<ApprovalActionResult> {
-    return this.decide(id, "terminate", "terminated", { comment });
-  }
-
-  async returnForRevision(
-    id: string,
-    message: string,
-    options: { mode: "keep_current_request" | "supersede_request"; revisionOverride?: ApprovalRevisionDraft }
-  ): Promise<ApprovalActionResult> {
-    if (options.mode === "supersede_request") {
-      return this.createSupersedingRevision(id, message, options.revisionOverride ?? {});
-    }
-    const trimmed = message.trim();
-    if (!trimmed) throw new Error("Approval return_for_revision message is required.");
-    const current = await this.requirePendingRequest(id, "return_for_revision");
-    const now = new Date().toISOString();
-    const updated: ApprovalRequest = { ...current, updatedAt: now };
-    const decision = this.buildDecision(current.id, "return_for_revision", "pending", "user", trimmed, now);
-    return this.applyDecisionOrThrow({ approvalRequest: updated, decision });
-  }
-
-  async markSupersededByRevision(id: string, supersededByRequestId: string): Promise<ApprovalRequest> {
-    const current = await this.requireRequest(id);
-    const now = new Date().toISOString();
-    const resultingStatus = current.status === "pending" ? "superseded" : current.status;
-    const decision = {
-      ...await this.requireReturnForRevisionDecision(id),
-      resultingStatus
-    };
-    const superseded: ApprovalRequest = {
-      ...current,
-      status: resultingStatus,
-      supersededByRequestId: current.status === "pending" ? supersededByRequestId : current.supersededByRequestId,
-      capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: now
-    };
-    const result = await this.applyDecisionOrThrow({ approvalRequest: superseded, decision });
-    return result.approvalRequest;
-  }
-
-  private async requireReturnForRevisionDecision(approvalRequestId: string): Promise<ApprovalDecision> {
-    const decision = (await this.store.listApprovalDecisions(approvalRequestId))
-      .slice()
-      .reverse()
-      .find((candidate) => candidate.action === "return_for_revision");
-    if (!decision) {
-      throw new Error(`Approval request ${approvalRequestId} has no return_for_revision decision to supersede.`);
-    }
-    return decision;
-  }
-
-  private async createSupersedingRevision(
-    id: string,
-    message: string,
-    revisionOverride: ApprovalRevisionDraft = {}
-  ): Promise<ApprovalActionResult> {
-    const feedback = message.trim();
-    if (!feedback) throw new Error("Approval revision message is required.");
-
-    const current = await this.requirePendingRequest(id, "return_for_revision");
-    const revision = current.revision + 1;
-    const draft = await this.buildDecisionRevision(current, feedback, revision, revisionOverride);
-    const now = new Date().toISOString();
-    const nextApprovalRequestId = `approval-${nanoid(10)}`;
-    const nextApprovalRequest: ApprovalRequest = {
-      ...current,
-      id: nextApprovalRequestId,
-      status: "pending",
-      title: draft.title,
-      body: draft.body,
-      payloadRef: draft.payloadRef,
-      revision,
-      replacesRequestId: current.id,
-      supersededByRequestId: undefined,
-      capabilities: draft.capabilities,
-      requestedAt: now,
-      updatedAt: now
-    };
-    const releaseReport = draft.releaseReport
-      ? {
-          ...draft.releaseReport,
-          approvalRequestId: nextApprovalRequestId,
-          createdAt: draft.releaseReport.createdAt || now
-        }
-      : undefined;
-    const decision = this.buildDecision(current.id, "return_for_revision", "superseded", "user", feedback, now);
-    const superseded: ApprovalRequest = {
-      ...current,
-      status: "superseded",
-      supersededByRequestId: nextApprovalRequestId,
-      capabilities: { ...emptyApprovalCapabilities },
-      updatedAt: now
-    };
-    const nextApprovalDiscussionBinding = draft.discussionBinding
-      ? buildApprovalDiscussionBindingForRequest(nextApprovalRequest, draft.discussionBinding, now)
-      : copyApprovalDiscussionBindingForRequest(
-          await this.store.getApprovalDiscussionBinding(current.id),
-          nextApprovalRequest,
-          now
-        );
-    return this.applyDecisionOrThrow({
-      approvalRequest: superseded,
-      decision,
-      nextApprovalRequest,
-      nextApprovalDiscussionBinding,
-      releaseReport
-    });
-  }
-
   async reply(
     id: string,
-    message: string,
-    revisionOverride: ApprovalRevisionDraft = {}
+    message: string
   ): Promise<ApprovalActionResult> {
-    void revisionOverride;
     return this.recordPendingReply(id, message);
   }
 
@@ -326,15 +189,12 @@ export class ApprovalService {
     if (request.capabilities.approve) {
       return this.decide(request.id, "auto_approve", "approved", { actor: "system", comment });
     }
-    if (request.capabilities.complete) {
-      return this.decide(request.id, "complete", "completed", { actor: "system", comment });
-    }
     throw new Error("Approval request cannot be auto-resolved.");
   }
 
-  async supersede(id: string, supersededByRequestId?: string): Promise<ApprovalActionResult> {
+  async supersede(id: string): Promise<ApprovalActionResult> {
     const current = await this.requireRequest(id);
-    const closed = await this.closeRequest(current, "superseded", "supersede", "system", supersededByRequestId);
+    const closed = await this.closeRequest(current, "superseded", "supersede", "system");
     const decision = (await this.store.listApprovalDecisions(current.id)).at(-1);
     if (!decision) throw new Error("Supersede decision was not recorded.");
     return { approvalRequest: closed, decision };
@@ -344,7 +204,7 @@ export class ApprovalService {
     const pending = await this.store.listApprovalRequests({ runId, status: "pending" });
     const closed: ApprovalRequest[] = [];
     for (const request of pending) {
-      closed.push(await this.closeRequest(request, "superseded", "supersede", "system", undefined, comment));
+      closed.push(await this.closeRequest(request, "superseded", "supersede", "system", comment));
     }
     return closed;
   }
@@ -359,12 +219,6 @@ export class ApprovalService {
     if (current.status === "pending") {
       if (!capabilitiesAllow(current.capabilities, action)) {
         throw new Error(`Approval request does not allow ${action}.`);
-      }
-      if (action === "complete" && current.kind !== "manager_release_report") {
-        throw new Error("Only manager release reports can be completed.");
-      }
-      if (action === "terminate" && current.kind === "manager_release_report") {
-        throw new Error("Manager release reports cannot be terminated.");
       }
     }
     const now = new Date().toISOString();
@@ -390,7 +244,6 @@ export class ApprovalService {
     status: ApprovalRequestStatus,
     action: ApprovalDecisionAction,
     actor: ApprovalDecision["actor"],
-    supersededByRequestId?: string,
     comment?: string
   ): Promise<ApprovalRequest> {
     const now = new Date().toISOString();
@@ -398,7 +251,6 @@ export class ApprovalService {
     const next: ApprovalRequest = {
       ...request,
       status,
-      supersededByRequestId,
       capabilities: { ...emptyApprovalCapabilities },
       updatedAt: now
     };
@@ -445,18 +297,12 @@ export class ApprovalService {
   private async applyDecisionOrThrow(input: {
     approvalRequest: ApprovalRequest;
     decision: ApprovalDecision;
-    nextApprovalRequest?: ApprovalRequest;
-    nextApprovalDiscussionBinding?: ApprovalDiscussionBinding;
-    releaseReport?: ReleaseReport;
   }): Promise<ApprovalActionResult> {
     const result = await this.store.applyApprovalDecision({
       approvalRequestId: input.approvalRequest.id,
       expectedStatus: "pending",
       nextRequest: input.approvalRequest,
       decision: input.decision,
-      nextApprovalRequest: input.nextApprovalRequest,
-      nextApprovalDiscussionBinding: input.nextApprovalDiscussionBinding,
-      releaseReport: input.releaseReport,
       timelineItem: input.approvalRequest.runId && await this.store.getBlueprintRun(input.approvalRequest.runId)
         ? this.buildDecisionTimelineItem(input.approvalRequest, input.decision)
         : undefined
@@ -465,11 +311,6 @@ export class ApprovalService {
       throw new ApprovalConflictError(result.approvalRequest ? "Approval request is already closed." : undefined);
     }
     return result;
-  }
-
-  private appendDecisionTimeline(request: ApprovalRequest, decision: ApprovalDecision): Promise<unknown> {
-    if (!request.runId) return Promise.resolve();
-    return this.store.appendRunTimelineItem(this.buildDecisionTimelineItem(request, decision));
   }
 
   private buildDecisionTimelineItem(
@@ -490,92 +331,6 @@ export class ApprovalService {
     };
   }
 
-  private async buildDecisionRevision(
-    current: ApprovalRequest,
-    message: string,
-    revision: number,
-    override: ApprovalRevisionDraft
-  ): Promise<{
-    title: string;
-    body: string;
-    payloadRef?: string;
-    releaseReport?: ReleaseReport;
-    capabilities: ApprovalCapabilities;
-    discussionBinding?: ApprovalDiscussionBindingDraft;
-  }> {
-    if (override.title || override.body || override.payloadRef || override.releaseReport || override.capabilities || override.discussionBinding) {
-      return {
-        title: override.title ?? appendRevisionSuffix(current.title, revision),
-        body: override.body ?? current.body,
-        payloadRef: override.payloadRef ?? current.payloadRef,
-        releaseReport: override.releaseReport,
-        capabilities: override.capabilities ?? current.capabilities,
-        discussionBinding: override.discussionBinding
-      };
-    }
-
-    if (current.kind === "manager_release_report" && current.roundId) {
-      if (!current.runId) {
-        throw new Error("Release report revision requires a blueprint run.");
-      }
-      const reports = (await this.store.listReleaseReports(current.runId)).filter((report) => report.roundId === current.roundId);
-      const currentReport = reports.find((report) => report.approvalRequestId === current.id || report.id === current.payloadRef) ?? reports.at(-1);
-      const round = (await this.store.listIterationRounds({ runId: current.runId }))
-        .find((candidate) => candidate.id === current.roundId);
-      const version = Math.max(0, ...reports.map((report) => report.version)) + 1;
-      const reportId = `release-report-${nanoid(10)}`;
-      const title = `Round ${round?.roundNumber ?? current.roundId} Release Report v${version}`;
-      const artifactRefs = currentReport?.artifactRefs ?? [];
-      const summary = [
-        `This is the revised v${version} report based on review feedback.`,
-        "Revision feedback:",
-        message,
-        "Previous report summary:",
-        currentReport?.summary ?? current.body
-      ].join("\n\n");
-      const artifactBody = artifactRefs.length
-        ? artifactRefs.map((ref) => `- ${ref.title}: ${ref.location}`).join("\n")
-        : "- No artifacts were published for this report revision.";
-      return {
-        title,
-        body: `${summary}\n\nArtifacts:\n${artifactBody}`,
-        payloadRef: reportId,
-        capabilities: current.capabilities,
-        releaseReport: {
-          id: reportId,
-          runId: current.runId,
-          roundId: current.roundId,
-          approvalRequestId: "",
-          version,
-          title,
-          summary,
-          artifactRefs,
-          supersedesReportId: currentReport?.id,
-          createdAt: ""
-        }
-      };
-    }
-
-    const title = appendRevisionSuffix(current.title, revision);
-    return {
-      title,
-      body: [
-        `Revision ${revision} for ${current.kind}.`,
-        "Previous request:",
-        current.body,
-        "Revision feedback:",
-        message,
-        "Revised request:",
-        `${current.body}\n\nRequested adjustment: ${message}`
-      ].join("\n\n"),
-      payloadRef: current.payloadRef,
-      capabilities: current.capabilities
-    };
-  }
-}
-
-function appendRevisionSuffix(title: string, revision: number): string {
-  return `${title.replace(/\s+v\d+$/i, "")} v${revision}`;
 }
 
 function buildDefaultApprovalDiscussionBinding(
@@ -607,21 +362,6 @@ export function buildApprovalDiscussionBindingForRequest(
     threadId: draft.threadId ?? request.threadId,
     createdAt: draft.createdAt ?? now,
     updatedAt: draft.updatedAt ?? now
-  };
-}
-
-function copyApprovalDiscussionBindingForRequest(
-  binding: ApprovalDiscussionBinding | undefined,
-  request: ApprovalRequest,
-  now: string
-): ApprovalDiscussionBinding | undefined {
-  if (!binding) return undefined;
-  return {
-    ...binding,
-    approvalRequestId: request.id,
-    threadId: request.threadId,
-    createdAt: now,
-    updatedAt: now
   };
 }
 

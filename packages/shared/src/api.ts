@@ -18,7 +18,7 @@ import type { PendingApprovalItem, WorkspaceDashboard } from "./workspace";
 import type { ApprovalDecision, ApprovalReply, ApprovalRequest, ApprovalThread, ManagerMail } from "./lifecycle";
 import type { ArchitectureBlueprintView, ChatRoleScope, CompanyRoleDirectory } from "./roles";
 import type { AgentOutputEvent, RunRoomOutputSnapshot } from "./agentOutput";
-import type { BlueprintKanbanBoard, HumanActionResponse, InboxProjection, RunInterjection } from "./runRoom";
+import type { BlueprintKanbanBoard, HumanActionResponse, HumanActionQueueItem, RunInterjection } from "./runRoom";
 
 export interface ListBlueprintsResponse {
   blueprints: BlueprintDefinition[];
@@ -157,20 +157,11 @@ export interface ApprovalRequestResponse {
   approvalThread?: ApprovalThread;
   approvalReplies?: ApprovalReply[];
   decision?: ApprovalDecision;
-  nextApprovalRequest?: ApprovalRequest;
   run?: BlueprintRunView;
 }
 
 export interface ReplyApprovalRequestRequest {
   message: string;
-}
-
-export interface CompleteApprovalRequestRequest {
-  comment?: string;
-}
-
-export interface TerminateApprovalRequestRequest {
-  comment?: string;
 }
 
 export interface ListApprovalMessagesResponse {
@@ -186,8 +177,8 @@ export interface SaveArchitectureBlueprintLayoutRequest {
   positions: Record<string, ArchitectureBlueprintView["nodes"][number]["position"]>;
 }
 
-export interface ListInboxProjectionsResponse {
-  projections: InboxProjection[];
+export interface ListHumanActionQueueResponse {
+  items: HumanActionQueueItem[];
 }
 
 export interface CreateHumanActionResponseRequest {
@@ -197,7 +188,7 @@ export interface CreateHumanActionResponseRequest {
 
 export interface HumanActionResponseResponse {
   response: HumanActionResponse;
-  projections: InboxProjection[];
+  queue: HumanActionQueueItem[];
 }
 
 export interface ListHumanActionResponsesResponse {

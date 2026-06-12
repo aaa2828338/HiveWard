@@ -3,14 +3,13 @@ import { harnessDisplayLabels } from "../lib/harness-labels";
 export type RouteSystemId = "hiveward" | "codex" | "claudeCode" | "openclaw" | "hermes" | "google" | "cursor" | "opencode";
 
 export type RouteId =
-  | "hivewardHome"
   | "companyDirectory"
   | "company"
   | "chat"
   | "blueprint"
   | "runs"
   | "approvals"
-  | "schedule"
+  | "monitor"
   | "openclaw"
   | "models"
   | "agents"
@@ -29,14 +28,13 @@ export type RouteId =
   | "hermesChannels";
 
 export type RoutePath =
-  | "/"
   | "/companies"
   | "/company"
   | "/chat"
   | "/blueprint"
   | "/runs"
   | "/approvals"
-  | "/history"
+  | "/monitor"
   | "/openclaw"
   | "/openclaw/models"
   | "/openclaw/agents"
@@ -88,13 +86,6 @@ export const routeSystemLabels = {
 
 export const routeRegistry: readonly AppRouteRecord[] = [
   {
-    id: "hivewardHome",
-    path: "/",
-    systemId: "hiveward",
-    titleKey: "hivewardHome",
-    requiresCompany: false
-  },
-  {
     id: "companyDirectory",
     path: "/companies",
     systemId: "hiveward",
@@ -142,12 +133,12 @@ export const routeRegistry: readonly AppRouteRecord[] = [
     nav: { labelKey: "approvals", order: 4 }
   },
   {
-    id: "schedule",
-    path: "/history",
+    id: "monitor",
+    path: "/monitor",
     systemId: "hiveward",
-    titleKey: "schedule",
+    titleKey: "monitor",
     requiresCompany: true,
-    nav: { labelKey: "schedule", order: 5 }
+    nav: { labelKey: "monitor", order: 5 }
   },
   {
     id: "codexConfig",

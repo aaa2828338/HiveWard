@@ -109,7 +109,6 @@ describe("run state sync", () => {
       canApprove: false,
       canReply: false,
       canReject: false,
-      canComplete: false,
       reviewOutput: "Report feedback was recorded."
     });
   });
@@ -153,7 +152,7 @@ describe("run state sync", () => {
     });
   });
 
-  it("maps return-for-revision capability into pending approval items", () => {
+  it("does not project removed return-for-revision capability into pending approval items", () => {
     const runView = createRunView("waiting_approval");
     runView.approvalRequests = [
       createApprovalRequest({
@@ -163,10 +162,7 @@ describe("run state sync", () => {
         capabilities: {
           approve: true,
           reject: true,
-          reply: true,
-          complete: false,
-          terminate: false,
-          returnForRevision: true
+          reply: true
         }
       }),
       createApprovalRequest({
@@ -176,22 +172,15 @@ describe("run state sync", () => {
         capabilities: {
           approve: true,
           reject: true,
-          reply: true,
-          complete: false,
-          terminate: false,
-          returnForRevision: true
+          reply: true
         }
       })
     ];
 
     const approvals = syncApprovalsForRun([], runView);
 
-    expect(approvals.find((approval) => approval.approvalRequestId === "approval-agent-change")).toMatchObject({
-      canReturnForRevision: true
-    });
-    expect(approvals.find((approval) => approval.approvalRequestId === "approval-plan-revise")).toMatchObject({
-      canReturnForRevision: true
-    });
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-agent-change")).not.toHaveProperty("canReturnForRevision");
+    expect(approvals.find((approval) => approval.approvalRequestId === "approval-plan-revise")).not.toHaveProperty("canReturnForRevision");
   });
 
   it("restores lifecycle approval replies from thread facts", () => {
@@ -715,9 +704,7 @@ function createApprovalRequest(overrides: Partial<ApprovalRequest>): ApprovalReq
     capabilities: {
       approve: false,
       reject: false,
-      reply: false,
-      complete: false,
-      terminate: false
+      reply: false
     },
     requestedBy: {
       type: "node",

@@ -91,7 +91,7 @@ export function ChatPage({
   roleDirectory,
   language,
   harnessPermissionModes,
-  onInboxProjectionsRefreshNeeded
+  onHumanActionQueueRefreshNeeded
 }: {
   catalog?: CatalogSnapshot;
   openClawConfig?: OpenClawConfigState;
@@ -103,7 +103,7 @@ export function ChatPage({
   roleDirectory?: CompanyRoleDirectory;
   language: Language;
   harnessPermissionModes?: Partial<Record<HarnessId, ChatPermissionMode>>;
-  onInboxProjectionsRefreshNeeded?: () => void | Promise<void>;
+  onHumanActionQueueRefreshNeeded?: () => void | Promise<void>;
 }) {
   const copy = chatCopy(language);
   const openClawModelOptions = useMemo(() => buildOpenClawModelOptions(catalog, openClawConfig), [catalog, openClawConfig]);
@@ -627,7 +627,7 @@ export function ChatPage({
       messages,
       modelId,
       modelOptions,
-      onInboxProjectionsRefreshNeeded,
+      onHumanActionQueueRefreshNeeded,
       rebuildFromHivewardHistory,
       selectedBlueprintScopeId,
       selectedCompanyId,
@@ -661,7 +661,7 @@ export function ChatPage({
       setError,
       setProposalSubmittingMessageId,
       setSubmittedBlueprintProposalMessageIds,
-      onInboxProjectionsRefreshNeeded
+      onHumanActionQueueRefreshNeeded
     });
   };
 

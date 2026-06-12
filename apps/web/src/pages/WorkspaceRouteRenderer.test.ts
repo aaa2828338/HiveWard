@@ -22,7 +22,7 @@ describe("page extraction ownership", () => {
   it("mounts routes through extracted page modules", () => {
     expect(routeRendererSource).toContain("export type PageProps");
     expect(routeRendererSource).toContain("WorkspaceRouteRenderer");
-    expect(routeRendererSource).toContain("HivewardHomePage");
+    expect(routeRendererSource).not.toContain("HivewardHomePage");
     expect(routeRendererSource).toContain("OpenClawControlPanelPage");
     expect(routeRendererSource).toContain("BlueprintStudioPage");
     expect(routeRendererSource).toContain("ApprovalsPage");

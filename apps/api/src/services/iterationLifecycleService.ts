@@ -119,8 +119,6 @@ export class IterationService {
     body: string;
     revision?: number;
     threadId?: string;
-    replacesRequestId?: string;
-    closeReplacedRequest?: boolean;
     discussionBinding?: ApprovalDiscussionBindingDraft;
     metadata?: Pick<IterationRound, "researchStatus" | "researchSummary" | "researchArtifactIds" | "planSource" | "contextSnapshotId">;
   }): Promise<ApprovalRequest> {
@@ -147,11 +145,9 @@ export class IterationService {
       },
       threadId: input.threadId,
       revision: input.revision,
-      replacesRequestId: input.replacesRequestId,
-      closeReplacedRequest: input.closeReplacedRequest,
       discussionBinding: input.discussionBinding,
       capabilities: input.metadata?.researchStatus === "blocked"
-        ? { approve: false, reject: true, reply: true, complete: false, terminate: false, returnForRevision: true }
+        ? { approve: false, reject: true, reply: true }
         : undefined
     });
     await this.store.upsertIterationRound({
@@ -181,8 +177,6 @@ export class IterationService {
     artifacts: Artifact[];
     discussionBinding?: ApprovalDiscussionBindingDraft;
   }): Promise<{ round: IterationRound; releaseReport: ReleaseReport; approvalRequest: ApprovalRequest }> {
-    const session = await this.requireSession(input.round.sessionId);
-    const finalRound = input.round.roundNumber >= session.maxRounds;
     const priorReports = (await this.store.listReleaseReports(input.run.id)).filter((report) => report.roundId === input.round.id);
     const version = priorReports.length + 1;
     const reportId = `release-report-${nanoid(10)}`;
@@ -217,7 +211,6 @@ export class IterationService {
         label: input.managerNode.config.label,
         nodeId: input.managerNode.id
       },
-      finalRound,
       discussionBinding: input.discussionBinding
     });
     const releaseReport: ReleaseReport = {
@@ -265,14 +258,6 @@ export class IterationService {
       });
       return { resumeExecution: true, completeRun: false };
     }
-    if (result.nextApprovalRequest) {
-      await this.store.upsertIterationRound({
-        ...round,
-        status: "requirement_pending",
-        requirementRequestId: result.nextApprovalRequest.id
-      });
-      await this.appendLifecycleRevisionTimeline(result.nextApprovalRequest, "requirement_published");
-    }
     return { resumeExecution: false, completeRun: false };
   }
 
@@ -280,21 +265,6 @@ export class IterationService {
     const round = await this.roundForRequest(result.approvalRequest);
     if (!round) return { resumeExecution: false, completeRun: false };
     const session = await this.requireSession(round.sessionId);
-    if (result.decision.action === "complete") {
-      const now = result.decision.createdAt;
-      await this.store.upsertIterationRound({ ...round, status: "report_approved" });
-      await this.store.upsertIterationRound({ ...round, status: "completed", endedAt: now });
-      await this.store.upsertIterationSession({ ...session, status: "completed", endedAt: now });
-      await this.store.appendRunTimelineItem({
-        id: `timeline-${nanoid(10)}`,
-        runId: round.runId,
-        createdAt: now,
-        actorLabel: "manager",
-        kind: "run_completed",
-        title: "Self-iteration completed"
-      });
-      return { resumeExecution: false, completeRun: true };
-    }
     if (result.decision.action === "approve" || result.decision.action === "auto_approve") {
       const now = result.decision.createdAt;
       const humanFeedback = await this.approvalService.buildApprovalHumanFeedback(result.approvalRequest, result.decision);
@@ -321,19 +291,20 @@ export class IterationService {
           }
         };
       }
-      return { resumeExecution: false, completeRun: false };
+      await this.store.upsertIterationSession({ ...session, status: "completed", endedAt: now });
+      await this.store.appendRunTimelineItem({
+        id: `timeline-${nanoid(10)}`,
+        runId: round.runId,
+        createdAt: now,
+        actorLabel: "manager",
+        kind: "run_completed",
+        title: "Self-iteration completed"
+      });
+      return { resumeExecution: false, completeRun: true };
     }
     if (result.decision.action === "reject") {
       await this.markRoundArtifactsRejected(round);
       return { resumeExecution: false, completeRun: false };
-    }
-    if (result.nextApprovalRequest) {
-      await this.store.upsertIterationRound({
-        ...round,
-        status: "report_pending",
-        releaseReportRequestId: result.nextApprovalRequest.id
-      });
-      await this.appendLifecycleRevisionTimeline(result.nextApprovalRequest, "release_report_published");
     }
     return { resumeExecution: false, completeRun: false };
   }
@@ -356,24 +327,6 @@ export class IterationService {
     await Promise.all(artifacts
       .filter((artifact) => idSet.has(artifact.id))
       .map((artifact) => this.store.upsertArtifact({ ...artifact, status })));
-  }
-
-  private appendLifecycleRevisionTimeline(
-    request: ApprovalRequest,
-    kind: "requirement_published" | "release_report_published"
-  ): Promise<unknown> {
-    if (!request.runId) return Promise.resolve();
-    return this.store.appendRunTimelineItem({
-      id: `timeline-${nanoid(10)}`,
-      runId: request.runId,
-      createdAt: request.requestedAt,
-      actorNodeId: request.requestedBy.nodeId,
-      actorLabel: request.requestedBy.label,
-      kind,
-      title: request.title,
-      body: request.body,
-      payloadRef: request.payloadRef
-    });
   }
 
   async markRunTerminal(

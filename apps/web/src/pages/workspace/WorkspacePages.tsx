@@ -39,7 +39,7 @@ import type {
   DashboardWidget,
   DashboardWidgetType,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   ApprovalRequest,
   ApprovalThread,
   PendingApprovalItem,
@@ -1333,33 +1333,29 @@ export function ApprovalsPage({
   approvals,
   approvalRequests = [],
   approvalThreads = [],
-  inboxProjections,
-  inboxResponsesByRequestId = {},
+  humanActionQueue,
+  humanActionResponsesByRequestId = {},
   language,
   t,
   actionPending = false,
   focusedEntryId,
   onApproveApprovalRequest,
-  onComplete,
   onRejectApprovalRequest,
   onReplyApprovalRequest,
-  onReturnForRevisionApprovalRequest,
   onSendHumanActionResponse
 }: {
   approvals: PendingApprovalItem[];
   approvalRequests?: ApprovalRequest[];
   approvalThreads?: ApprovalThread[];
-  inboxProjections: InboxProjection[];
-  inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
+  humanActionQueue: HumanActionQueueItem[];
+  humanActionResponsesByRequestId?: Record<string, HumanActionResponse[]>;
   language: Language;
   t: Messages;
   actionPending?: boolean;
   focusedEntryId?: string;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
-  onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: 'Approvals', description: '' };
@@ -1381,11 +1377,11 @@ export function ApprovalsPage({
       approvals,
       approvalRequestsById,
       approvalThreadsById,
-      projections: inboxProjections,
+      queue: humanActionQueue,
       language,
       copy
     }),
-    [approvalRequestsById, approvalThreadsById, approvals, copy, inboxProjections, language]
+    [approvalRequestsById, approvalThreadsById, approvals, copy, humanActionQueue, language]
   );
   const entries = useMemo(
     () => allEntries
@@ -1428,16 +1424,8 @@ export function ApprovalsPage({
     }
   };
 
-  const returnApprovalForRevision = (approval: ApprovalInboxControl, entryId: string, body: string) => {
-    if (!approval.approvalRequestId || approval.canReturnForRevision !== true || actionPending) return;
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    onReturnForRevisionApprovalRequest(approval.approvalRequestId, trimmed);
-    clearDraft(entryId);
-  };
-
-  const sendHumanResponse = (projection: InboxProjection, entryId: string, body: string) => {
-    if (dispatchHumanActionProjectionResponse(projection, body, actionPending, onSendHumanActionResponse)) {
+  const sendHumanResponse = (queueItem: HumanActionQueueItem, entryId: string, body: string) => {
+    if (dispatchHumanActionQueueResponse(queueItem, body, actionPending, onSendHumanActionResponse)) {
       clearDraft(entryId);
     }
   };
@@ -1513,7 +1501,7 @@ export function ApprovalsPage({
 
         <div className="content-card stack-card inbox-detail-card">
           {selectedEntry ? (
-            selectedEntry.kind === 'approval' || selectedEntry.kind === 'decision_projection' ? (
+            selectedEntry.kind === 'approval' || selectedEntry.kind === 'decision_queue_item' ? (
               <ApprovalRequestDetail
                 entry={selectedEntry}
                 draft={selectedDraft}
@@ -1523,11 +1511,9 @@ export function ApprovalsPage({
                 actionPending={actionPending}
                 onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
                 onSendReply={() => sendApprovalReply(selectedEntry.approval, selectedEntry.id, selectedDraft)}
-                onReturnForRevision={() => returnApprovalForRevision(selectedEntry.approval, selectedEntry.id, selectedDraft)}
                 onApprove={() => {
                   if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'approve', selectedDraft, actionPending, {
                     onApproveApprovalRequest,
-                    onComplete,
                     onRejectApprovalRequest
                   })) {
                     clearDraft(selectedEntry.id);
@@ -1536,26 +1522,25 @@ export function ApprovalsPage({
                 onReject={() => {
                   if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'reject', selectedDraft, actionPending, {
                     onApproveApprovalRequest,
-                    onComplete,
                     onRejectApprovalRequest
                   })) {
                     clearDraft(selectedEntry.id);
                   }
                 }}
               />
-            ) : selectedEntry.kind === 'projection' ? (
-              <HumanActionProjectionDetail
+            ) : selectedEntry.kind === 'queue_item' ? (
+              <HumanActionQueueDetail
                 entry={selectedEntry}
-                responses={inboxResponsesByRequestId[selectedEntry.projection.humanActionRequestId] ?? []}
+                responses={humanActionResponsesByRequestId[selectedEntry.queueItem.humanActionRequestId] ?? []}
                 draft={selectedDraft}
                 language={language}
                 copy={copy}
                 actionPending={actionPending}
                 onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
-                onSend={() => sendHumanResponse(selectedEntry.projection, selectedEntry.id, selectedDraft)}
+                onSend={() => sendHumanResponse(selectedEntry.queueItem, selectedEntry.id, selectedDraft)}
               />
             ) : (
-              <UnavailableDecisionProjectionDetail
+              <UnavailableDecisionQueueDetail
                 entry={selectedEntry}
                 language={language}
                 copy={copy}
@@ -1582,42 +1567,42 @@ type HumanActionInboxEntry =
       subtitle: string;
       status: string;
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
       approval: ApprovalInboxControl;
       sourceApproval: PendingApprovalItem;
       thread?: ApprovalThread;
     }
   | {
-      kind: 'projection';
+      kind: 'queue_item';
       id: string;
       title: string;
       subtitle: string;
-      status: InboxProjection['status'];
+      status: HumanActionQueueItem['status'];
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
     }
   | {
-      kind: 'decision_projection';
+      kind: 'decision_queue_item';
       id: string;
       title: string;
       subtitle: string;
       status: string;
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
       approvalRequest: ApprovalRequest;
       approval: ApprovalInboxControl;
     }
   | {
-      kind: 'unavailable_decision_projection';
+      kind: 'unavailable_decision_queue_item';
       id: string;
       title: string;
       subtitle: string;
-      status: InboxProjection['status'];
+      status: HumanActionQueueItem['status'];
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
       unavailableReason: string;
     };
 
@@ -1629,9 +1614,6 @@ export type ApprovalInboxControl = {
   canApprove?: boolean;
   canReply?: boolean;
   canReject?: boolean;
-  canComplete?: boolean;
-  canTerminate?: boolean;
-  canReturnForRevision?: boolean;
   discussion?: PendingApprovalItem['discussion'];
 };
 
@@ -1639,11 +1621,10 @@ type ApprovalInboxDecisionAction = 'approve' | 'reject';
 
 type ApprovalInboxDecisionCallbacks = {
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
 };
 
-type HumanActionSourceFilter = 'all' | InboxProjection['sourceContextType'];
+type HumanActionSourceFilter = 'all' | HumanActionQueueItem['sourceContextType'];
 type HumanActionTimeFilter = 'all' | 'today' | 'week';
 
 type HumanActionInboxCopy = {
@@ -1671,7 +1652,6 @@ type HumanActionInboxCopy = {
   messagePlaceholder: string;
   sendMessage: string;
   sendResponse: string;
-  returnForRevision: string;
   approvalDetail: string;
   humanActionDetail: string;
   decisionUnavailableTitle: string;
@@ -1681,7 +1661,6 @@ type HumanActionInboxCopy = {
   intent: string;
   createdBy: string;
   acceptAction: string;
-  completeAction: string;
   rejectAction: string;
 };
 
@@ -1694,11 +1673,10 @@ function ApprovalRequestDetail({
   actionPending,
   onDraftChange,
   onSendReply,
-  onReturnForRevision,
   onApprove,
   onReject
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'approval' | 'decision_projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'approval' | 'decision_queue_item' }>;
   draft: string;
   language: Language;
   t: Messages;
@@ -1706,17 +1684,14 @@ function ApprovalRequestDetail({
   actionPending: boolean;
   onDraftChange: (value: string) => void;
   onSendReply: () => void;
-  onReturnForRevision: () => void;
   onApprove: () => void;
   onReject: () => void;
 }) {
   const approval = entry.approval;
-  const canApprove = Boolean(approval.approvalRequestId && !actionPending && (approval.canApprove !== false || approval.canComplete === true));
+  const canApprove = Boolean(approval.approvalRequestId && !actionPending && approval.canApprove !== false);
   const canReject = Boolean(approval.approvalRequestId && !actionPending && approval.canReject === true);
   const canReply = Boolean(approval.approvalRequestId && !actionPending && canSendApprovalReply(approval));
-  const canReturn = Boolean(approval.approvalRequestId && !actionPending && approval.canReturnForRevision === true && draft.trim());
   const canEditDraft = (approval.status ?? 'pending') === 'pending' && !actionPending;
-  const approveLabel = approval.canApprove === false && approval.canComplete === true ? copy.completeAction : copy.acceptAction;
   void t;
 
   return (
@@ -1762,13 +1737,9 @@ function ApprovalRequestDetail({
           {actionPending ? <Loader2 className="spin" size={15} /> : <Send size={15} />}
           {copy.sendMessage}
         </button>
-        <button type="button" disabled={!canReturn} onClick={onReturnForRevision}>
-          <RefreshCw size={15} />
-          {copy.returnForRevision}
-        </button>
         <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
           <BadgeCheck size={15} />
-          {approveLabel}
+          {copy.acceptAction}
         </button>
         <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
           <X size={15} />
@@ -1779,7 +1750,7 @@ function ApprovalRequestDetail({
   );
 }
 
-function HumanActionProjectionDetail({
+function HumanActionQueueDetail({
   entry,
   responses,
   draft,
@@ -1789,7 +1760,7 @@ function HumanActionProjectionDetail({
   onDraftChange,
   onSend
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'queue_item' }>;
   responses: HumanActionResponse[];
   draft: string;
   language: Language;
@@ -1798,8 +1769,8 @@ function HumanActionProjectionDetail({
   onDraftChange: (value: string) => void;
   onSend: () => void;
 }) {
-  const projection = entry.projection;
-  const canRespond = projection.status === 'pending' && !actionPending;
+  const queueItem = entry.queueItem;
+  const canRespond = queueItem.status === 'pending' && !actionPending;
   return (
     <div className="inbox-detail-stack">
       <div className="inbox-detail-header">
@@ -1812,13 +1783,13 @@ function HumanActionProjectionDetail({
       </div>
 
       <div className="inbox-detail-facts">
-        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
-        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+        <span>{copy.context}: {humanActionContextLabel(queueItem.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(queueItem.responseIntent, language)}</span>
       </div>
 
       <div className="inbox-content-block">
         <span>{copy.requestBody}</span>
-        <MarkdownRenderer value={projection.bodyMarkdown} />
+        <MarkdownRenderer value={queueItem.bodyMarkdown} />
       </div>
 
       {responses.length > 0 && (
@@ -1853,16 +1824,16 @@ function HumanActionProjectionDetail({
   );
 }
 
-function UnavailableDecisionProjectionDetail({
+function UnavailableDecisionQueueDetail({
   entry,
   language,
   copy
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'unavailable_decision_projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'unavailable_decision_queue_item' }>;
   language: Language;
   copy: HumanActionInboxCopy;
 }) {
-  const projection = entry.projection;
+  const queueItem = entry.queueItem;
   return (
     <div className="inbox-detail-stack">
       <div className="inbox-detail-header">
@@ -1875,8 +1846,8 @@ function UnavailableDecisionProjectionDetail({
       </div>
 
       <div className="inbox-detail-facts">
-        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
-        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+        <span>{copy.context}: {humanActionContextLabel(queueItem.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(queueItem.responseIntent, language)}</span>
       </div>
 
       <div className="empty-state compact-empty-state">
@@ -1886,7 +1857,7 @@ function UnavailableDecisionProjectionDetail({
 
       <div className="inbox-content-block">
         <span>{copy.requestBody}</span>
-        <MarkdownRenderer value={projection.bodyMarkdown} />
+        <MarkdownRenderer value={queueItem.bodyMarkdown} />
       </div>
     </div>
   );
@@ -1919,7 +1890,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
       messagePlaceholder: "\u5199\u4e0b\u5904\u7406\u610f\u89c1...",
       sendMessage: "\u53d1\u9001\u6d88\u606f",
       sendResponse: "\u53d1\u9001\u5904\u7406\u7ed3\u679c",
-      returnForRevision: "\u8981\u6c42\u4fee\u8ba2",
       approvalDetail: "\u5ba1\u6279\u8bf7\u6c42",
       humanActionDetail: "\u4eba\u5de5\u5904\u7406\u8bf7\u6c42",
       decisionUnavailableTitle: "\u5ba1\u6279\u8bf7\u6c42\u4e0d\u53ef\u7528",
@@ -1929,7 +1899,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
       intent: "\u610f\u56fe",
       createdBy: "\u521b\u5efa\u8005",
       acceptAction: "\u901a\u8fc7",
-      completeAction: "\u5b8c\u6210",
       rejectAction: "\u62d2\u7edd"
     };
   }
@@ -1958,7 +1927,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     messagePlaceholder: 'Write a response...',
     sendMessage: 'Send message',
     sendResponse: 'Send response',
-    returnForRevision: 'Return for revision',
     approvalDetail: 'Approval request',
     humanActionDetail: 'Human action request',
     decisionUnavailableTitle: 'Approval request unavailable',
@@ -1968,7 +1936,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     intent: 'Intent',
     createdBy: 'Created by',
     acceptAction: 'Accept',
-    completeAction: 'Complete',
     rejectAction: 'Decline'
   };
 }
@@ -1977,14 +1944,14 @@ function buildHumanActionInboxEntries({
   approvals,
   approvalRequestsById,
   approvalThreadsById,
-  projections,
+  queue,
   language,
   copy
 }: {
   approvals: PendingApprovalItem[];
   approvalRequestsById: Map<string, ApprovalRequest>;
   approvalThreadsById: Map<string, ApprovalThread>;
-  projections: InboxProjection[];
+  queue: HumanActionQueueItem[];
   language: Language;
   copy: HumanActionInboxCopy;
 }): HumanActionInboxEntry[] {
@@ -2021,56 +1988,56 @@ function buildHumanActionInboxEntries({
       .map((entry) => [entry.approval.approvalRequestId, entry] as const)
       .filter((entry): entry is [string, Extract<HumanActionInboxEntry, { kind: 'approval' }>] => typeof entry[0] === 'string')
   );
-  const projectionEntries: HumanActionInboxEntry[] = [];
-  for (const projection of projections) {
-    if (projection.responseIntent === 'decision_required') {
-      const approvalRequestId = projection.approvalRequestId;
+  const queueEntries: HumanActionInboxEntry[] = [];
+  for (const queueItem of queue) {
+    if (queueItem.responseIntent === 'decision_required') {
+      const approvalRequestId = queueItem.approvalRequestId;
       if (approvalRequestId && approvalEntriesByRequestId.has(approvalRequestId)) {
         continue;
       }
       const approvalRequest = approvalRequestId ? approvalRequestsById.get(approvalRequestId) : undefined;
       if (approvalRequest?.status === 'pending') {
-        projectionEntries.push({
-          kind: 'decision_projection',
-          id: 'human:' + projection.humanActionRequestId,
-          title: projection.title || approvalRequest.title,
-          subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + approvalRequest.kind,
+        queueEntries.push({
+          kind: 'decision_queue_item',
+          id: 'human:' + queueItem.humanActionRequestId,
+          title: queueItem.title || approvalRequest.title,
+          subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + approvalRequest.kind,
           status: approvalRequest.status,
-          updatedAt: approvalRequest.updatedAt ?? projection.updatedAt,
-          sourceContextType: projection.sourceContextType,
-          projection,
+          updatedAt: approvalRequest.updatedAt ?? queueItem.updatedAt,
+          sourceContextType: queueItem.sourceContextType,
+          queueItem,
           approvalRequest,
           approval: approvalControlFromApprovalRequest(approvalRequest)
         });
         continue;
       }
-      projectionEntries.push({
-        kind: 'unavailable_decision_projection',
-        id: 'human:' + projection.humanActionRequestId,
-        title: projection.title,
-        subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
-        status: projection.status,
-        updatedAt: projection.updatedAt,
-        sourceContextType: projection.sourceContextType,
-        projection,
+      queueEntries.push({
+        kind: 'unavailable_decision_queue_item',
+        id: 'human:' + queueItem.humanActionRequestId,
+        title: queueItem.title,
+        subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + humanActionIntentLabel(queueItem.responseIntent, language),
+        status: queueItem.status,
+        updatedAt: queueItem.updatedAt,
+        sourceContextType: queueItem.sourceContextType,
+        queueItem,
         unavailableReason: approvalRequest ? copy.decisionUnavailableNotPending : copy.decisionUnavailableMissing
       });
       continue;
     }
 
-    projectionEntries.push({
-      kind: 'projection',
-      id: 'human:' + projection.humanActionRequestId,
-      title: projection.title,
-      subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
-      status: projection.status,
-      updatedAt: projection.updatedAt,
-      sourceContextType: projection.sourceContextType,
-      projection
+    queueEntries.push({
+      kind: 'queue_item',
+      id: 'human:' + queueItem.humanActionRequestId,
+      title: queueItem.title,
+      subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + humanActionIntentLabel(queueItem.responseIntent, language),
+      status: queueItem.status,
+      updatedAt: queueItem.updatedAt,
+      sourceContextType: queueItem.sourceContextType,
+      queueItem
     });
   }
 
-  return [...approvalEntries, ...projectionEntries]
+  return [...approvalEntries, ...queueEntries]
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
@@ -2083,9 +2050,6 @@ function approvalControlFromPendingApproval(approval: PendingApprovalItem): Appr
     canApprove: approval.canApprove,
     canReply: approval.canReply,
     canReject: approval.canReject,
-    canComplete: approval.canComplete,
-    canTerminate: approval.canTerminate,
-    canReturnForRevision: approval.canReturnForRevision,
     discussion: approval.discussion
   };
 }
@@ -2098,9 +2062,6 @@ function approvalControlFromApprovalRequest(approvalRequest: ApprovalRequest): A
     canApprove: approvalRequest.capabilities.approve,
     canReply: approvalRequest.capabilities.reply,
     canReject: approvalRequest.capabilities.reject,
-    canComplete: approvalRequest.capabilities.complete,
-    canTerminate: approvalRequest.capabilities.terminate,
-    canReturnForRevision: approvalRequest.capabilities.returnForRevision,
     discussion: {
       mode: approvalRequest.capabilities.reply ? 'message_only' : 'none',
       canStreamReply: false,
@@ -2119,11 +2080,7 @@ export function dispatchApprovalInboxDecisionAction(
   if (!approval.approvalRequestId || actionPending) return false;
   const comment = draft.trim() || undefined;
   if (action === 'approve') {
-    if (approval.canApprove === false && approval.canComplete !== true) return false;
-    if (approval.canApprove === false && approval.canComplete === true) {
-      callbacks.onComplete(approval.approvalRequestId, comment);
-      return true;
-    }
+    if (approval.canApprove === false) return false;
     callbacks.onApproveApprovalRequest(approval.approvalRequestId, comment);
     return true;
   }
@@ -2145,16 +2102,16 @@ export function dispatchApprovalInboxReplyAction(
   return true;
 }
 
-export function dispatchHumanActionProjectionResponse(
-  projection: InboxProjection,
+export function dispatchHumanActionQueueResponse(
+  queueItem: HumanActionQueueItem,
   body: string,
   actionPending: boolean,
   onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void
 ): boolean {
   const trimmed = body.trim();
-  if (projection.responseIntent === 'decision_required') return false;
-  if (projection.status !== 'pending' || !trimmed || actionPending) return false;
-  onSendHumanActionResponse(projection.humanActionRequestId, trimmed);
+  if (queueItem.responseIntent !== 'reply_required') return false;
+  if (queueItem.status !== 'pending' || !trimmed || actionPending) return false;
+  onSendHumanActionResponse(queueItem.humanActionRequestId, trimmed);
   return true;
 }
 
@@ -2213,7 +2170,7 @@ function humanActionStatusLabel(status: string, language: Language): string {
   return status.replaceAll('_', ' ');
 }
 
-function humanActionContextLabel(value: InboxProjection['sourceContextType'], language: Language): string {
+function humanActionContextLabel(value: HumanActionQueueItem['sourceContextType'], language: Language): string {
   if (language === "zh-CN") {
     if (value === 'run_room') return "\u8fd0\u884c\u623f\u95f4";
     if (value === 'executive_chat') return "Executive \u804a\u5929";
@@ -2224,15 +2181,13 @@ function humanActionContextLabel(value: InboxProjection['sourceContextType'], la
   return 'Blueprint governance';
 }
 
-function humanActionIntentLabel(value: InboxProjection['responseIntent'], language: Language): string {
+function humanActionIntentLabel(value: HumanActionQueueItem['responseIntent'], language: Language): string {
   if (language === "zh-CN") {
     if (value === 'decision_required') return "\u9700\u8981\u51b3\u7b56";
-    if (value === 'reply_required') return "\u9700\u8981\u56de\u590d";
-    return "\u9700\u8981\u5ba1\u9605";
+    return "\u9700\u8981\u56de\u590d";
   }
   if (value === 'decision_required') return 'decision required';
-  if (value === 'reply_required') return 'reply required';
-  return 'review required';
+  return 'reply required';
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

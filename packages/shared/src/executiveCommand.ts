@@ -316,7 +316,7 @@ function readRequestHumanActionPayload(value: unknown): RequestHumanActionExecut
   const responseIntent = readRequiredString(payload.responseIntent, "ExecutiveCommand.request_human_action.payload.responseIntent");
   assertAllowed(
     responseIntent,
-    ["decision_required", "reply_required", "review_required"] as const,
+    ["decision_required", "reply_required"] as const,
     "ExecutiveCommand.request_human_action.payload.responseIntent"
   );
   return {

@@ -109,7 +109,7 @@ import { buildHivewardRoleSkillPrompt, parseExecutiveCommand } from "@hiveward/s
 import { ApprovalService } from "../services/lifecycleApprovalService";
 import { isPathInside } from "../services/artifactService";
 import { HumanActionRequestService } from "../services/humanActionRequestService";
-import { InboxProjectionService } from "../services/inboxProjectionService";
+import { HumanActionQueueService } from "../services/humanActionQueueService";
 import { AgentOutputService } from "../services/agentOutputService";
 import { RunRoomService } from "../services/runRoomService";
 import { BlueprintKanbanService } from "../services/blueprintKanbanService";
@@ -124,10 +124,7 @@ import { applyHivewardUpdate, getHivewardUpdateStatus } from "../update";
 type ApprovalRouteAction =
   | "approve"
   | "reject"
-  | "reply"
-  | "complete"
-  | "terminate"
-  | "return_for_revision";
+  | "reply";
 
 interface ApiRouterDeps {
   store: HivewardStore;
@@ -254,7 +251,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   const approvalService = new ApprovalService(store);
   const managerMailProjector = new ManagerMailProjector(store);
   const humanActionRequestService = new HumanActionRequestService(store);
-  const inboxProjectionService = new InboxProjectionService(store);
+  const humanActionQueueService = new HumanActionQueueService(store);
   const agentOutputService = new AgentOutputService(store);
   const runRoomService = new RunRoomService(store);
   const blueprintKanbanService = new BlueprintKanbanService(store);
@@ -863,30 +860,6 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.post("/api/approval-requests/:approvalRequestId/return-for-revision", async (req, res, next) => {
-    try {
-      res.json(await applyApprovalRequestRouteAction("return_for_revision", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/approval-requests/:approvalRequestId/complete", async (req, res, next) => {
-    try {
-      res.json(await applyApprovalRequestRouteAction("complete", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  router.post("/api/approval-requests/:approvalRequestId/terminate", async (req, res, next) => {
-    try {
-      res.json(await applyApprovalRequestRouteAction("terminate", readRouteParam(req.params.approvalRequestId, "approvalRequestId"), req.body));
-    } catch (error) {
-      next(error);
-    }
-  });
-
   router.get("/api/approval-messages", async (_req, res, next) => {
     try {
       res.json({ messages: await managerMailProjector.refresh() });
@@ -912,9 +885,9 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     }
   });
 
-  router.get("/api/inbox-projections", async (_req, res, next) => {
+  router.get("/api/human-action-queue", async (_req, res, next) => {
     try {
-      res.json({ projections: await inboxProjectionService.rebuild() });
+      res.json({ items: await humanActionQueueService.rebuild() });
     } catch (error) {
       next(error);
     }
@@ -923,7 +896,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   router.get("/api/human-action-requests/:requestId/responses", async (req, res, next) => {
     try {
       const requestId = readRouteParam(req.params.requestId, "requestId");
-      res.json({ responses: await inboxProjectionService.listResponses(requestId) });
+      res.json({ responses: await humanActionQueueService.listResponses(requestId) });
     } catch (error) {
       next(error);
     }
@@ -940,7 +913,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       });
       res.status(201).json({
         response,
-        projections: await inboxProjectionService.rebuild({ status: "pending" })
+        queue: await humanActionQueueService.rebuild({ status: "pending" })
       });
     } catch (error) {
       next(error);
@@ -1419,18 +1392,8 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       await approvalService.approve(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reject") {
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
-    } else if (action === "reply") {
-      await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
-    } else if (action === "return_for_revision") {
-      await approvalService.returnForRevision(
-        approvalRequestId,
-        readOptionalString(body.message) ?? readOptionalString(body.comment) ?? "",
-        { mode: returnForRevisionModeForRequest(approvalRequest) }
-      );
-    } else if (action === "complete") {
-      await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
     } else {
-      await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
+      await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
     }
     await managerMailProjector.refresh();
     return buildApprovalRequestResponse(approvalRequestId);
@@ -1442,7 +1405,7 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
   }
 
   async function applyTerminalApprovalRequestAction(
-    action: "approve" | "reply" | "complete" | "terminate" | "reject",
+    action: "approve" | "reply" | "reject",
     approvalRequestId: string,
     body: Record<string, unknown>
   ): Promise<void> {
@@ -1450,27 +1413,17 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
       await approvalService.approve(approvalRequestId, readOptionalString(body.comment));
     } else if (action === "reply") {
       await approvalService.reply(approvalRequestId, readOptionalString(body.message) ?? "");
-    } else if (action === "complete") {
-      await approvalService.complete(approvalRequestId, readOptionalString(body.comment));
-    } else if (action === "terminate") {
-      await approvalService.terminate(approvalRequestId, readOptionalString(body.comment));
     } else {
       await approvalService.reject(approvalRequestId, readOptionalString(body.comment));
     }
   }
 
-  function returnForRevisionModeForRequest(
-    request: ApprovalRequest
-  ): "keep_current_request" | "supersede_request" {
-    return request.kind === "agent_proposal" ? "keep_current_request" : "supersede_request";
-  }
-
   function canApplyTerminalApprovalRequestAction(
     action: ApprovalRouteAction,
     request: ApprovalRequest
-  ): action is "approve" | "reply" | "complete" | "terminate" | "reject" {
+  ): action is "approve" | "reply" | "reject" {
     if (action === "approve") return request.status !== "pending";
-    return action === "reply" || action === "complete" || action === "terminate" || action === "reject";
+    return action === "reply" || action === "reject";
   }
 
   async function buildApprovalRequestResponse(approvalRequestId: string, runId?: string): Promise<ApprovalRequestResponse> {
@@ -1484,14 +1437,11 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     const approvalThread = (await store.listApprovalThreads(approvalFilter))
       .find((thread) => thread.id === threadId);
     const approvalReplies = await store.listApprovalReplies({ threadId });
-    const nextApprovalRequest = (await store.listApprovalRequests(approvalFilter))
-      .find((request) => request.replacesRequestId === approvalRequestId);
     return {
       approvalRequest,
       approvalThread,
       approvalReplies,
       decision: decisions.at(-1),
-      nextApprovalRequest,
       run: runId ? await store.getRunView(runId) : undefined
     };
   }

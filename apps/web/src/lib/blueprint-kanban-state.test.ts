@@ -37,10 +37,10 @@ describe("blueprint-kanban-state", () => {
       id: "waiting",
       lane: "waiting_user",
       humanActionRequestId: "human-action-request-1",
-      inboxProjectionId: "inbox-projection-human-action-request-1",
+      humanActionQueueItemId: "human-action-queue-item-human-action-request-1",
       targetRef: {
-        type: "inbox_projection",
-        inboxProjectionId: "inbox-projection-human-action-request-1",
+        type: "human_action_queue_item",
+        humanActionQueueItemId: "human-action-queue-item-human-action-request-1",
         humanActionRequestId: "human-action-request-1"
       }
     }) as BlueprintKanbanCard & {

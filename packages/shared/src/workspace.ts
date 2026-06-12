@@ -64,15 +64,12 @@ export interface PendingApprovalItem {
   requestedAt: string;
   reviewOutput?: unknown;
   replies?: PendingApprovalReply[];
-  status?: "pending" | "replying" | "approved" | "rejected" | "replied" | "completed" | "terminated" | "superseded";
+  status?: "pending" | "replying" | "approved" | "rejected" | "replied" | "superseded";
   decidedAt?: string;
   decisionComment?: string;
   canApprove?: boolean;
   canReply?: boolean;
   canReject?: boolean;
-  canComplete?: boolean;
-  canTerminate?: boolean;
-  canReturnForRevision?: boolean;
   upstream?: PendingApprovalUpstreamItem[];
 }
 

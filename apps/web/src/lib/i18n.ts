@@ -453,7 +453,7 @@ export const messages: Record<Language, Messages> = {
       agents: "Agents",
       openclaw: "Config",
       skills: "Skills",
-      schedule: "History",
+      monitor: "Monitor",
       channels: "Channels",
       claudeCodeConfig: "Config",
       claudeCodeModels: "Models",
@@ -514,9 +514,9 @@ export const messages: Record<Language, Messages> = {
         title: "Skills",
         description: "Inspect Skills loaded from the OpenClaw catalog."
       },
-      schedule: {
-        title: "History",
-        description: "Review previous run records and inbox items by date range."
+      monitor: {
+        title: "Monitor",
+        description: "Monitor runs, worker tasks, and human action queue items by status."
       },
       channels: {
         title: "Channels",
@@ -847,7 +847,7 @@ export const messages: Record<Language, Messages> = {
       approvals: "收件箱",
       models: "模型",
       agents: "Agent",
-      schedule: "历史",
+      monitor: "监控",
       openclaw: "\u914d\u7f6e",
       skills: "Skills",
       channels: "\u9891\u9053",
@@ -910,9 +910,9 @@ export const messages: Record<Language, Messages> = {
         title: "Skills",
         description: "\u67e5\u770b\u4ece OpenClaw \u76ee\u5f55\u62c9\u53d6\u7684 Skills\u3002"
       },
-      schedule: {
-        title: "历史",
-        description: "按日期范围回看运行记录和收件箱记录。"
+      monitor: {
+        title: "监控",
+        description: "按状态查看运行、Worker 任务和人工待处理事项。"
       },
       channels: {
         title: "\u9891\u9053",

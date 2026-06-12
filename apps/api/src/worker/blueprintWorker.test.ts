@@ -32,7 +32,6 @@ import {
 import { FileHivewardStore } from "../store/fileHivewardStore";
 import type { HivewardStore } from "../store/hivewardStore";
 import { SqliteHivewardStore } from "../store/sqlite/sqliteHivewardStore";
-import { ApprovalService } from "../services/lifecycleApprovalService";
 import { resolveApprovalDiscussion } from "../services/approvalDiscussionResolver";
 import {
   BlueprintWorker,
@@ -242,10 +241,7 @@ describe("BlueprintWorker", () => {
       capabilities: {
         approve: true,
         reject: true,
-        reply: true,
-        complete: false,
-        terminate: true,
-        returnForRevision: true
+        reply: true
       },
       requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
       requestedAt: now,
@@ -285,10 +281,7 @@ describe("BlueprintWorker", () => {
       capabilities: {
         approve: true,
         reject: true,
-        reply: true,
-        complete: false,
-        terminate: true,
-        returnForRevision: true
+        reply: true
       },
       requestedBy: { type: "node", label: "Delivery", nodeId: "delivery" },
       requestedAt: now,
@@ -1216,7 +1209,7 @@ describe("BlueprintWorker", () => {
     expect(adapter.sendCalls).toHaveLength(0);
   });
 
-  it("reruns an Agent approval only through explicit return_for_revision", async () => {
+  it("rejects removed Agent approval actions without mutating approval state", async () => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-"));
     const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
     await store.init();
@@ -1230,11 +1223,9 @@ describe("BlueprintWorker", () => {
     };
     const blueprint = createBlueprint([delivery], []);
     const adapter = new ScriptedAdapter([
-      createStartedAgentTask("task-agent-change-1"),
-      createStartedAgentTask("task-agent-change-2")
+      createStartedAgentTask("task-agent-change-1")
     ], [
-      createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
-      createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
+      createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer")
     ]);
     const worker = new BlueprintWorker(store, adapter);
 
@@ -1259,228 +1250,32 @@ describe("BlueprintWorker", () => {
       sessions: await store.listNodeExecutionSessions({ runId: run.id })
     }).capability);
 
-    await worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "return_for_revision", {
+    const unsafeApply = worker.applyApprovalRequest.bind(worker) as (
+      blueprint: BlueprintDefinition,
+      run: typeof waitingView.run,
+      approvalRequestId: string,
+      action: string,
+      input?: { comment?: string; message?: string }
+    ) => Promise<unknown>;
+    await expect(unsafeApply(blueprint, waitingView.run, approvalRequest.id, "return_for_revision", {
       comment: "Regenerate with sources."
-    });
+    })).rejects.toThrow("Unsupported approval action: return_for_revision");
 
-    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
-    const revisedRequest = revisedView.approvalRequests
-      ?.filter((request) => request.kind === "agent_proposal" && request.status === "pending")
-      .at(-1);
-    const revisedNode = revisedView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
+    const unchangedView = await store.getRunView(run.id);
+    const originalRequest = unchangedView?.approvalRequests?.find((request) => request.id === approvalRequest.id);
+    const unchangedNode = unchangedView?.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
 
-    expect(adapter.calls).toHaveLength(2);
-    expect(adapter.calls[1]?.input).toMatchObject({
-      approvalRevision: expect.objectContaining({
-        requestedChanges: "Regenerate with sources."
-      })
-    });
+    expect(adapter.calls).toHaveLength(1);
+    expect(unchangedView?.run.status).toBe("waiting_approval");
     expect(originalRequest).toMatchObject({
-      status: "superseded",
-      supersededByRequestId: revisedRequest?.id
-    });
-    expect(revisedRequest).toMatchObject({
       status: "pending",
-      threadId: approvalRequest.threadId,
-      replacesRequestId: approvalRequest.id,
-      revision: 2
+      capabilities: { approve: true, reject: true, reply: true }
     });
-    expect(revisedNode?.status).toBe("waiting_approval");
-    expect(revisedNode?.output).toMatchObject({
-      approvalType: "agent",
-      reviewOutput: "revised answer"
-    });
-    expect(revisedView.approvalDecisions?.map((decision) => decision.action)).toEqual(["return_for_revision"]);
-    await expect(store.getApprovalDiscussionBinding(revisedRequest?.id ?? "")).resolves.toMatchObject({
-      approvalRequestId: revisedRequest?.id,
-      threadId: approvalRequest.threadId,
-      mode: "executor",
-      route: "agent_approval"
-    });
-  });
-
-  it("keeps original approval actionable when return_for_revision rerun fails or returns empty output", async () => {
-    const cases: Array<{ label: string; result: AgentTaskResult }> = [
-      { label: "failed", result: createCompletedAgentTask("task-agent-change-2", "failed", undefined, "model failed") },
-      { label: "empty", result: createCompletedAgentTask("task-agent-change-2", "succeeded", undefined) }
-    ];
-
-    for (const testCase of cases) {
-      const tempDir = mkdtempSync(path.join(os.tmpdir(), `hiveward-worker-request-changes-${testCase.label}-`));
-      const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-      await store.init();
-
-      const delivery = createAgentNode("delivery", "Delivery");
-      delivery.config = {
-        ...delivery.config,
-        approval: {
-          enabled: true
-        }
-      };
-      const blueprint = createBlueprint([delivery], []);
-      const adapter = new ScriptedAdapter([
-        createStartedAgentTask("task-agent-change-1"),
-        createStartedAgentTask("task-agent-change-2")
-      ], [
-        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer"),
-        testCase.result
-      ]);
-      const worker = new BlueprintWorker(store, adapter);
-
-      const run = await worker.startRun(blueprint, "test-user");
-      const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-      const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
-      const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-      if (!approvalRequest || !waitingNode) throw new Error("Expected agent approval request.");
-
-      await expect(worker.applyApprovalRequest(blueprint, waitingView.run, approvalRequest.id, "return_for_revision", {
-        comment: "Regenerate with sources."
-      })).rejects.toThrow();
-
-      const restoredView = await store.getRunView(run.id);
-      const originalRequest = restoredView?.approvalRequests?.find((request) => request.id === approvalRequest.id);
-      const revisedRequests = restoredView?.approvalRequests
-        ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id) ?? [];
-      const restoredNode = restoredView?.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id);
-
-      expect(restoredView?.run.status).toBe("waiting_approval");
-      expect(originalRequest).toMatchObject({
-        status: "pending",
-        capabilities: expect.objectContaining({ approve: true, reply: true, returnForRevision: true })
-      });
-      expect(originalRequest?.capabilities).not.toHaveProperty("requestChanges");
-      expect(originalRequest?.capabilities).not.toHaveProperty("revise");
-      expect(revisedRequests).toHaveLength(0);
-      expect(restoredNode).toMatchObject({
-        status: "waiting_approval",
-        output: expect.objectContaining({ reviewOutput: "draft answer" })
-      });
-      expect(restoredView?.approvalDecisions?.filter((decision) => decision.action === "return_for_revision")).toHaveLength(1);
-    }
-  });
-
-  it("persists approval revision context across worker restart and creates revised Agent approval in the same thread after restored rerun", async () => {
-    const tempDir = mkdtempSync(path.join(os.tmpdir(), "hiveward-worker-restored-revision-"));
-    const store = new FileHivewardStore(path.join(tempDir, "hiveward-store.json"));
-    await store.init();
-
-    const delivery = createAgentNode("delivery", "Delivery");
-    delivery.config = {
-      ...delivery.config,
-      approval: {
-        enabled: true
-      }
-    };
-    const blueprint = createBlueprint([delivery], []);
-    const firstWorker = new BlueprintWorker(
-      store,
-      new ScriptedAdapter([
-        createStartedAgentTask("task-agent-change-1")
-      ], [
-        createCompletedAgentTask("task-agent-change-1", "succeeded", "draft answer")
-      ]),
-      { nodeRunLeaseMs: 10 }
-    );
-
-    const run = await firstWorker.startRun(blueprint, "test-user");
-    const waitingView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const waitingNode = waitingView.nodeRuns.find((nodeRun) => nodeRun.nodeId === "delivery");
-    const approvalRequest = waitingView.approvalRequests?.find((request) => request.kind === "agent_proposal");
-    if (!approvalRequest || !waitingNode || !isAgentApprovalWaitingOutputForTest(waitingNode.output)) {
-      throw new Error("Expected agent approval request.");
-    }
-
-    await new ApprovalService(store).returnForRevision(
-      approvalRequest.id,
-      "Regenerate with sources.",
-      { mode: "keep_current_request" }
-    );
-    const revisionContext = {
-      threadId: approvalRequest.threadId,
-      replacesRequestId: approvalRequest.id,
-      revision: approvalRequest.revision + 1,
-      requestedChanges: "Regenerate with sources."
-    };
-    const now = new Date().toISOString();
-    const runtimeRef = {
-      source: "openclaw" as const,
-      sourceId: "task-agent-change-2",
-      sourceUpdatedAt: now,
-      taskId: "task-agent-change-2",
-      runId: "task-agent-change-2-run",
-      sessionKey: "agent:main:main"
-    };
-    await store.upsertNodeRun({
-      ...waitingNode,
-      status: "running",
-      input: {
-        originalInput: waitingNode.input,
-        approvalRevisionContext: revisionContext,
-        approvalRevision: {
-          previousOutput: waitingNode.output.reviewOutput,
-          previousReplies: waitingNode.output.replies,
-          requestedChanges: revisionContext.requestedChanges
-        }
-      },
-      output: undefined,
-      runtimeRef,
-      startedAt: now,
-      endedAt: undefined,
-      error: undefined
-    });
-    const waitingCommand = (await store.listRunCommands({ runId: run.id }))[0];
-    const waitingStep = waitingCommand
-      ? (await store.listRunCommandSteps({ commandId: waitingCommand.id })).find((step) => step.nodeRunId === waitingNode.id)
-      : undefined;
-    if (!waitingCommand || !waitingStep) throw new Error("Expected command step for restored revision run.");
-    await store.updateRunCommand({
-      id: waitingCommand.id,
-      status: "running",
-      currentStep: "node_execution",
-      endedAt: undefined,
-      error: undefined
-    });
-    await store.updateRunCommandStep({
-      id: waitingStep.id,
-      status: "running",
-      nodeRunId: waitingNode.id,
-      runtimeRef,
-      startedAt: now,
-      endedAt: undefined,
-      error: undefined
-    });
-    await store.updateBlueprintRun({ ...waitingView.run, status: "running" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    const restoredWorker = new BlueprintWorker(
-      store,
-      new ScriptedAdapter([], [
-        createCompletedAgentTask("task-agent-change-2", "succeeded", "revised answer")
-      ])
-    );
-    await restoredWorker.resumeActiveRuns();
-
-    const revisedView = await waitForRunStatus(store, run.id, "waiting_approval");
-    const originalRequest = revisedView.approvalRequests?.find((request) => request.id === approvalRequest.id);
-    const revisedRequest = revisedView.approvalRequests
-      ?.filter((request) => request.kind === "agent_proposal" && request.replacesRequestId === approvalRequest.id)
-      .at(-1);
-
-    expect(originalRequest).toMatchObject({
-      status: "superseded",
-      supersededByRequestId: revisedRequest?.id
-    });
-    expect(revisedRequest).toMatchObject({
-      status: "pending",
-      threadId: approvalRequest.threadId,
-      replacesRequestId: approvalRequest.id,
-      revision: approvalRequest.revision + 1
-    });
-    expect(revisedView.nodeRuns.find((nodeRun) => nodeRun.id === waitingNode.id)).toMatchObject({
+    expect(unchangedNode).toMatchObject({
       status: "waiting_approval",
-      output: expect.objectContaining({ reviewOutput: "revised answer" })
+      output: expect.objectContaining({ reviewOutput: "draft answer" })
     });
+    expect(await store.listApprovalDecisions(approvalRequest.id)).toEqual([]);
   });
 
   it("keeps approvalRequestId Agent approval replies append-only and approves the original output", async () => {
@@ -3336,7 +3131,7 @@ async function waitForRunTerminal(store: HivewardStore, runId: string): Promise<
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}; last status=${lastView?.run.status}; approvals=${lastView?.approvalRequests?.map((request) => `${request.kind}:${request.status}:${request.requestedBy.nodeId}:approve=${request.capabilities.approve}:complete=${request.capabilities.complete}:body=${request.body.slice(0, 240)}`).join(",")}; nodes=${lastView?.nodeRuns.map((nodeRun) => `${nodeRun.nodeId}:${nodeRun.status}`).join(",")}`);
+  throw new Error(`Blueprint run did not reach a terminal state in time: ${runId}; last status=${lastView?.run.status}; approvals=${lastView?.approvalRequests?.map((request) => `${request.kind}:${request.status}:${request.requestedBy.nodeId}:approve=${request.capabilities.approve}:body=${request.body.slice(0, 240)}`).join(",")}; nodes=${lastView?.nodeRuns.map((nodeRun) => `${nodeRun.nodeId}:${nodeRun.status}`).join(",")}`);
 }
 
 async function waitForRunStatus(

@@ -12,7 +12,7 @@ describe("SelfIterationOrchestrator", () => {
     const selected = orchestrator.selectNextAutoResolvableRequest({
       requests: [
         approval("other", "iteration_requirement_plan", "2026-05-30T00:00:00.000Z", { approve: true }),
-        approval("top-manager", "manager_release_report", "2026-05-30T00:00:02.000Z", { complete: true }),
+        approval("top-manager", "manager_release_report", "2026-05-30T00:00:02.000Z", { approve: true }),
         approval("top-manager", "iteration_requirement_plan", "2026-05-30T00:00:01.000Z", { approve: true })
       ],
       topManagerNodeId: "top-manager",
@@ -35,7 +35,7 @@ describe("SelfIterationOrchestrator", () => {
       config
     )).toBe(false);
     expect(orchestrator.canAutoResolveRequest(
-      approval("top-manager", "manager_release_report", "2026-05-30T00:00:00.000Z", { approve: false, complete: false }),
+      approval("top-manager", "manager_release_report", "2026-05-30T00:00:00.000Z", { approve: false }),
       config
     )).toBe(false);
   });
@@ -59,8 +59,6 @@ function approval(
       approve: false,
       reject: false,
       reply: false,
-      complete: false,
-      terminate: false,
       ...capabilities
     },
     requestedBy: {

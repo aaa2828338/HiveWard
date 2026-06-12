@@ -930,7 +930,7 @@ describe("apiRouter", () => {
     }
   });
 
-  it("routes only canonical return_for_revision approval request actions", async () => {
+  it("rejects removed approval request actions before they reach the worker", async () => {
     const fixture = await createStoreFixture();
     const calls: Array<{ action: string; approvalRequestId?: string; comment?: string; message?: string }> = [];
     const worker = {
@@ -938,7 +938,7 @@ describe("apiRouter", () => {
         _blueprint: BlueprintDefinition,
         run: BlueprintRun,
         approvalRequestId: string,
-        action: "approve" | "reject" | "reply" | "complete" | "terminate" | "return_for_revision",
+        action: "approve" | "reject" | "reply",
         input?: { comment?: string; message?: string }
       ) {
         calls.push({ action, approvalRequestId, comment: input?.comment, message: input?.message });
@@ -952,40 +952,25 @@ describe("apiRouter", () => {
       const canonicalRequest = await seedRunApprovalRequest(fixture.store, run.id, "node-run-return");
 
       await withApiServer(fixture.store, async (baseUrl) => {
-        await readOkJson(await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/return-for-revision`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Return through the canonical route." })
-        }));
-        const dashedAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/request-changes`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Return through the canonical route." })
-        });
-        const underscoredAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/request_changes`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Return through the canonical route." })
-        });
-        const reviseAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/revise`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Return through the canonical route." })
-        });
-        const returnForRevisionAlias = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/return_for_revision`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ message: "Return through the deleted underscore alias." })
-        });
-        expect(dashedAlias.status).toBe(404);
-        expect(underscoredAlias.status).toBe(404);
-        expect(reviseAlias.status).toBe(404);
-        expect(returnForRevisionAlias.status).toBe(404);
+        for (const removedRoute of [
+          "return-for-revision",
+          "return_for_revision",
+          "request-changes",
+          "request_changes",
+          "revise",
+          "complete",
+          "terminate"
+        ]) {
+          const response = await fetch(`${baseUrl}/api/approval-requests/${canonicalRequest.id}/${removedRoute}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ message: "Removed route must not execute.", comment: "Removed route must not execute." })
+          });
+          expect(response.status).toBe(404);
+        }
       }, new TrackingAdapter(), createConfigStoreFixture(), worker);
 
-      expect(calls).toEqual([
-        { action: "return_for_revision", approvalRequestId: canonicalRequest.id, comment: undefined, message: "Return through the canonical route." }
-      ]);
+      expect(calls).toEqual([]);
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
@@ -3420,11 +3405,11 @@ describe("apiRouter", () => {
         expect(board.lanes.waiting_user).toEqual([
           expect.objectContaining({
             humanActionRequestId: request.id,
-            inboxProjectionId: `inbox-projection-${request.id}`,
+            humanActionQueueItemId: `human-action-queue-item-${request.id}`,
             lane: "waiting_user",
             responseIntent: "decision_required",
             targetRef: expect.objectContaining({
-              type: "inbox_projection",
+              type: "human_action_queue_item",
               humanActionRequestId: request.id
             })
           })
@@ -4397,7 +4382,7 @@ describe("apiRouter", () => {
             payload: {
               sourceContextType: "blueprint_governance",
               blueprintId: blueprint.id,
-              responseIntent: "review_required",
+              responseIntent: "reply_required",
               title: "Review blueprint",
               bodyMarkdown: "Review this governance step."
             }
@@ -4483,11 +4468,11 @@ describe("apiRouter", () => {
           body: JSON.stringify({ messageMarkdown: "Reply completed." })
         });
         const replyBody = await readOkJson<{
-          projections: Array<{ humanActionRequestId: string; status: string }>;
+          queue: Array<{ humanActionRequestId: string; status: string }>;
         }>(replyResponse);
         const replyRequest = await fixture.store.getHumanActionRequest("human-action-reply");
         expect(replyRequest?.status).toBe("responded");
-        expect(replyBody.projections.some((projection) => projection.humanActionRequestId === "human-action-reply")).toBe(false);
+        expect(replyBody.queue.some((item) => item.humanActionRequestId === "human-action-reply")).toBe(false);
         expect(await fixture.store.listHumanActionRequests({ status: "pending" })).toEqual([
           expect.objectContaining({ id: "human-action-decision" })
         ]);
@@ -4504,11 +4489,11 @@ describe("apiRouter", () => {
           body: JSON.stringify({ messageMarkdown: "I approve in text." })
         });
         const decisionBody = await readOkJson<{
-          projections: Array<{ humanActionRequestId: string; status: string }>;
+          queue: Array<{ humanActionRequestId: string; status: string }>;
         }>(decisionResponse);
         const decisionRequest = await fixture.store.getHumanActionRequest("human-action-decision");
         expect(decisionRequest?.status).toBe("pending");
-        expect(decisionBody.projections).toEqual([
+        expect(decisionBody.queue).toEqual([
           expect.objectContaining({ humanActionRequestId: "human-action-decision", status: "pending" })
         ]);
 
@@ -4520,7 +4505,7 @@ describe("apiRouter", () => {
         const closedDecisionRequest = await fixture.store.getHumanActionRequest("human-action-decision");
         expect(closedDecisionRequest?.status).toBe("closed");
         expect(await fixture.store.listHumanActionRequests({ status: "pending" })).toEqual([]);
-        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+        expect(await fixture.store.listHumanActionQueue({ status: "pending" })).toEqual([]);
 
         await fixture.store.updateHumanActionRequest({
           id: "human-action-decision",
@@ -4539,22 +4524,20 @@ describe("apiRouter", () => {
           status: "closed"
         });
         expect(await fixture.store.listApprovalDecisions(approval.id)).toHaveLength(1);
-        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+        expect(await fixture.store.listHumanActionQueue({ status: "pending" })).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
     }
   });
 
-  it("closes approval-owned decision human actions for every terminal approval route", async () => {
+  it("closes approval-owned decision human actions for approval and rejection routes", async () => {
     const fixture = await createStoreFixture();
     try {
       await withApiServer(fixture.store, async (baseUrl) => {
         for (const routeCase of [
           { action: "approve", resultingStatus: "approved", kind: "leader_delegation" },
-          { action: "reject", resultingStatus: "rejected", kind: "leader_delegation" },
-          { action: "complete", resultingStatus: "completed", kind: "manager_release_report" },
-          { action: "terminate", resultingStatus: "terminated", kind: "run_request" }
+          { action: "reject", resultingStatus: "rejected", kind: "leader_delegation" }
         ] as const) {
           const approval = await seedStandaloneApprovalRequest(
             fixture.store,
@@ -4585,7 +4568,7 @@ describe("apiRouter", () => {
           expect(await fixture.store.getHumanActionRequest(humanActionId)).toMatchObject({
             status: "closed"
           });
-          expect(await fixture.store.listInboxProjections({ status: "pending" })).not.toEqual(
+          expect(await fixture.store.listHumanActionQueue({ status: "pending" })).not.toEqual(
             expect.arrayContaining([expect.objectContaining({ humanActionRequestId: humanActionId })])
           );
         }
@@ -4647,7 +4630,7 @@ describe("apiRouter", () => {
           sourceContextId: blueprint.id,
           approvalRequestId: body.result.approvalRequest.id
         });
-        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([
+        expect(await fixture.store.listHumanActionQueue({ status: "pending" })).toEqual([
           expect.objectContaining({
             title: "3-node OpenClaw blueprint",
             responseIntent: "decision_required",
@@ -4661,7 +4644,7 @@ describe("apiRouter", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ comment: "Approve the proposal." })
         }));
-        expect(await fixture.store.listInboxProjections({ status: "pending" })).toEqual([]);
+        expect(await fixture.store.listHumanActionQueue({ status: "pending" })).toEqual([]);
       });
     } finally {
       rmSync(fixture.dir, { recursive: true, force: true });
