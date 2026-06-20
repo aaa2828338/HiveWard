@@ -34,6 +34,17 @@ import { getVisibleClaudeCodeSavedProfiles, isClaudeCodeSavedProfileActiveProvid
 import { harnessDisplayLabel, harnessDisplayParts } from "../../lib/harness-labels";
 import type { Language } from "../../lib/i18n";
 import { HarnessLabel } from "../../components/HarnessLabel";
+import {
+  CardHeader,
+  EmptyState,
+  ErrorState,
+  PageBody,
+  PageHeader,
+  PageShell,
+  StatusBadge,
+  Tooltip,
+  type StatusBadgeTone
+} from "../../shared/ui";
 import { ConfiguredModelCard, IdentityTitle } from "../workspace/WorkspacePages";
 
 export type OpenClawPanelCopy = {
@@ -117,26 +128,25 @@ export function OpenClawControlPanelPage({
   onInstallSkills: () => void;
 }) {
   return (
-    <section id="openclaw-control-panel" className="page-grid openclaw-control-page">
-      <div className="trace-page-title openclaw-page-title">
-        <div className="openclaw-panel-title">
-          <Cloud size={18} />
-          <div>
-            <strong>{ui.title}</strong>
-            <span>{ui.subtitle}</span>
+    <PageShell className="openclaw-control-page">
+      <PageHeader
+        leading={<Cloud size={18} />}
+        title={ui.title}
+        description={ui.subtitle}
+        actions={
+          <div className="openclaw-page-actions">
+            <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
+              {openClawVersionHealthy ? ui.available : ui.unavailable}
+            </span>
+            <button type="button" onClick={onCheckUpdates} disabled={busy}>
+              <RefreshCw size={14} className={busy ? "spin" : undefined} />
+              {busy ? ui.checking : ui.checkUpdates}
+            </button>
           </div>
-        </div>
-        <div className="openclaw-page-actions">
-          <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
-            {openClawVersionHealthy ? ui.available : ui.unavailable}
-          </span>
-          <button type="button" onClick={onCheckUpdates} disabled={busy}>
-            <RefreshCw size={14} className={busy ? "spin" : undefined} />
-            {busy ? ui.checking : ui.checkUpdates}
-          </button>
-        </div>
-      </div>
+        }
+      />
 
+      <PageBody className="page-grid page-scroll openclaw-control-page-body">
       <div className="content-card stack-card openclaw-status-card">
         <div className="openclaw-panel-metrics">
           <OpenClawPanelMetric label={ui.version} value={openClawVersionLabel} />
@@ -165,9 +175,7 @@ export function OpenClawControlPanelPage({
 
       <div className="openclaw-control-grid">
         <div className="content-card stack-card openclaw-control-section">
-          <div className="card-title-block">
-            <h3>{ui.gateway}</h3>
-          </div>
+          <CardHeader title={ui.gateway} />
           <OpenClawPanelRow label={ui.url} value={gatewaySettings?.url ?? ui.none} />
           <OpenClawPanelRow label={ui.origin} value={gatewaySettings?.origin ?? ui.none} />
           <OpenClawPanelRow label={ui.source} value={gatewaySourceLabel} />
@@ -178,9 +186,7 @@ export function OpenClawControlPanelPage({
         </div>
 
         <div className="content-card stack-card openclaw-control-section">
-          <div className="card-title-block">
-            <h3>{ui.config}</h3>
-          </div>
+          <CardHeader title={ui.config} />
           <OpenClawPanelRow label={ui.configPath} value={openClawConfig?.configPath ?? ui.none} />
           <OpenClawPanelRow label={ui.workspace} value={openClawConfig?.defaultWorkspace ?? ui.none} />
           <OpenClawPanelRow label={ui.defaultModel} value={openClawConfig?.defaultModelId ?? ui.none} />
@@ -191,7 +197,8 @@ export function OpenClawControlPanelPage({
           <OpenClawPanelRow label={ui.lastChecked} value={formatDateTimeLabel(openClawVersion?.resolvedAt, language, ui.none)} />
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -232,24 +239,23 @@ export function HarnessConfigPage({
   const connectionState = status?.connectionState ?? "unavailable";
   const healthy = connectionState === "connected" || connectionState === "available";
   return (
-    <section className="page-grid openclaw-control-page">
-      <div className="trace-page-title openclaw-page-title">
-        <div className="openclaw-panel-title">
-          <Settings size={18} />
-          <div>
-            <strong>{title}</strong>
-            <span>{description}</span>
+    <PageShell className="harness-config-page openclaw-control-page">
+      <PageHeader
+        leading={<Settings size={18} />}
+        title={title}
+        description={description}
+        actions={
+          <div className="openclaw-page-actions">
+            <span className={`openclaw-panel-state ${healthy ? "online" : "offline"}`}>{copy.states[connectionState]}</span>
+            <button type="button" onClick={onRefresh} disabled={busy}>
+              <RefreshCw size={14} className={busy ? "spin" : undefined} />
+              {busy ? copy.checking : copy.check}
+            </button>
           </div>
-        </div>
-        <div className="openclaw-page-actions">
-          <span className={`openclaw-panel-state ${healthy ? "online" : "offline"}`}>{copy.states[connectionState]}</span>
-          <button type="button" onClick={onRefresh} disabled={busy}>
-            <RefreshCw size={14} className={busy ? "spin" : undefined} />
-            {busy ? copy.checking : copy.check}
-          </button>
-        </div>
-      </div>
+        }
+      />
 
+      <PageBody className="page-grid page-scroll openclaw-control-page-body">
       <HarnessStatusBlock
         status={status}
         language={language}
@@ -269,17 +275,26 @@ export function HarnessConfigPage({
 
       {permissionMode && onPermissionModeChange ? (
         <div className="content-card stack-card harness-permission-card">
-          <div className="card-title-block harness-permission-title">
-            <h3>{permissionCopy.title}</h3>
-            <span className="harness-permission-help" tabIndex={0} aria-label={permissionCopy.helpAria}>
-              <CircleAlert size={14} />
-              <span className="harness-permission-tooltip" role="tooltip">
+          <CardHeader
+            className="harness-permission-title"
+            title={permissionCopy.title}
+            actions={
+              <Tooltip
+                className="harness-permission-help"
+                label={
+                  <span className="harness-permission-help-content">
                 <strong>{permissionMode === "full_access" ? permissionCopy.fullLabel : permissionCopy.safeLabel}</strong>
                 <span>{permissionMode === "full_access" ? permissionCopy.fullBody : permissionCopy.safeBody}</span>
                 <span>{permissionMode === "full_access" ? permissionCopy.fullWarning : permissionCopy.safeWarning}</span>
-              </span>
-            </span>
-          </div>
+                  </span>
+                }
+              >
+                <span tabIndex={0} aria-label={permissionCopy.helpAria}>
+                  <CircleAlert size={14} />
+                </span>
+              </Tooltip>
+            }
+          />
           <label className={`harness-permission-toggle ${permissionMode === "full_access" ? "enabled" : ""}`}>
             <input
               type="checkbox"
@@ -295,7 +310,8 @@ export function HarnessConfigPage({
       ) : null}
 
       {children}
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -333,6 +349,8 @@ export function ClaudeCodeModelsPage({
   const copy =
     language === "zh-CN"
       ? {
+          pageTitle: "Claude Code \u6a21\u578b",
+          pageDescription: "\u67e5\u770b\u5e76\u5199\u5165\u672c\u673a Claude Code \u6a21\u578b\u6620\u5c04\u3002",
           configuredModels: "\u5df2\u914d\u7f6e\u6a21\u578b",
           savedModels: "\u5df2\u4fdd\u5b58\u6a21\u578b",
           configureModels: "\u6a21\u578b\u914d\u7f6e",
@@ -356,6 +374,8 @@ export function ClaudeCodeModelsPage({
           advancedModel: "\u9ad8\u9636"
         }
       : {
+          pageTitle: "Claude Code Models",
+          pageDescription: "Inspect and write local Claude Code model mappings.",
           configuredModels: "Configured models",
           savedModels: "Saved models",
           configureModels: "Model config",
@@ -430,23 +450,27 @@ export function ClaudeCodeModelsPage({
   };
 
   return (
-    <>
-      <section className="page-grid">
+    <PageShell className="claude-code-models-page">
+      <PageHeader
+        title={copy.pageTitle}
+        description={copy.pageDescription}
+        actions={
+          <div className="card-actions">
+            <button type="button" disabled={busyAction === "saveClaudeCodeModelProfile" || configuredModels.length === 0} onClick={onSaveProfile}>
+              {busyAction === "saveClaudeCodeModelProfile" ? <RefreshCw size={16} className="spin" /> : <Save size={16} />}
+              {busyAction === "saveClaudeCodeModelProfile" ? copy.savingCurrent : copy.saveCurrent}
+            </button>
+            <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
+              <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
+              {refreshBusy ? copy.refreshing : copy.refresh}
+            </button>
+          </div>
+        }
+      />
+      <PageBody className="page-grid page-scroll claude-code-models-page-body">
         <div className="content-card stack-card">
           <div className="card-toolbar">
-            <div className="card-title-block">
-              <h3>{copy.configuredModels}</h3>
-            </div>
-            <div className="card-actions">
-              <button type="button" disabled={busyAction === "saveClaudeCodeModelProfile" || configuredModels.length === 0} onClick={onSaveProfile}>
-                {busyAction === "saveClaudeCodeModelProfile" ? <RefreshCw size={16} className="spin" /> : <Save size={16} />}
-                {busyAction === "saveClaudeCodeModelProfile" ? copy.savingCurrent : copy.saveCurrent}
-              </button>
-              <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
-                <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
-                {refreshBusy ? copy.refreshing : copy.refresh}
-              </button>
-            </div>
+            <CardHeader title={copy.configuredModels} />
           </div>
           <div className="model-card-grid claude-code-model-list">
             {configuredModels.length ? (
@@ -499,16 +523,14 @@ export function ClaudeCodeModelsPage({
                 </ConfiguredModelCard>
               ))
             ) : (
-              <div className="empty-state page-empty">{copy.empty}</div>
+              <EmptyState title={copy.empty} />
             )}
           </div>
         </div>
 
         <div className="content-card stack-card">
           <div className="card-toolbar">
-            <div className="card-title-block">
-              <h3>{copy.savedModels}</h3>
-            </div>
+            <CardHeader title={copy.savedModels} />
           </div>
           <div className="model-card-grid claude-code-model-list">
             {visibleSavedProfiles.length ? (
@@ -552,7 +574,7 @@ export function ClaudeCodeModelsPage({
                 );
               })
             ) : (
-              <div className="empty-state page-empty">{copy.noSavedProfiles}</div>
+              <EmptyState title={copy.noSavedProfiles} />
             )}
           </div>
         </div>
@@ -568,8 +590,8 @@ export function ClaudeCodeModelsPage({
             onUpdate={onUpdate}
           />
         </div>
-      </section>
-    </>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -593,18 +615,19 @@ export function HermesModelsPage({
     : { refresh: "Refresh", refreshing: "Checking", empty: "No Hermes models have been resolved.", usage: "Usage", calls: "Calls", tokens: "Tokens", cost: "Cost", recent7d: "Last 7 days", defaultOption: "Default" };
   const models = status?.models ?? [];
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{title}</h3>
-            <p>{description}</p>
-          </div>
+    <PageShell className="hermes-models-page">
+      <PageHeader
+        title={title}
+        description={description}
+        actions={
           <button type="button" title={copy.refresh} disabled={busy} onClick={onRefresh}>
             <RefreshCw size={16} className={busy ? "spin" : undefined} />
             {busy ? copy.refreshing : copy.refresh}
           </button>
-        </div>
+        }
+      />
+      <PageBody className="page-grid page-scroll hermes-models-page-body">
+      <div className="content-card stack-card">
         <div className="model-card-grid">
           {models.length ? models.map((model) => (
             <ConfiguredModelCard
@@ -614,10 +637,11 @@ export function HermesModelsPage({
               copy={copy}
               language={language}
             />
-          )) : <div className="empty-state page-empty">{copy.empty}</div>}
+          )) : <EmptyState title={copy.empty} />}
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -657,17 +681,21 @@ export function HermesAgentsPage({
     setProfileDescription("");
   };
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.configured}</h3>
-            <p>{copy.hint}</p>
-          </div>
+    <PageShell className="hermes-agents-page">
+      <PageHeader
+        title={title}
+        description={description}
+        actions={
           <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
             <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
             {refreshBusy ? copy.refreshing : copy.refresh}
           </button>
+        }
+      />
+      <PageBody className="page-grid page-scroll hermes-agents-page-body">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <CardHeader title={copy.configured} description={copy.hint} />
         </div>
         <div className="model-card-grid">
           {profiles.length ? (
@@ -675,7 +703,7 @@ export function HermesAgentsPage({
               <article key={profile.id} className="model-card">
                 <div className="model-card-head">
                   <IdentityTitle kind="agent" id={profile.id} label={profile.label} />
-                  {profile.isDefault && <span className="status-pill status-default">{copy.defaultBadge}</span>}
+                  {profile.isDefault && <StatusBadge label={copy.defaultBadge} tone="neutral" />}
                 </div>
                 <div className="model-card-main">
                   <code>{profile.path ?? profile.id}</code>
@@ -689,16 +717,13 @@ export function HermesAgentsPage({
               </article>
             ))
           ) : (
-            <div className="empty-state page-empty">{copy.empty}</div>
+            <EmptyState title={copy.empty} />
           )}
         </div>
       </div>
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.add}</h3>
-            <p>{description}</p>
-          </div>
+          <CardHeader title={copy.add} description={description} />
         </div>
         <div className="form-grid">
           <label>
@@ -724,7 +749,8 @@ export function HermesAgentsPage({
           </button>
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -749,15 +775,14 @@ export function HarnessSkillsPage({
     ? { installed: "已安装 Hermes Skill", profile: "Profile", path: "路径", source: "数据源", count: (value: number) => `${value.toLocaleString(language)} Skills`, empty: "尚未扫描到 Hermes 已安装 Skill。" }
     : { installed: "Installed Hermes Skills", profile: "Profile", path: "Path", source: "Source", count: (value: number) => `${value.toLocaleString(language)} Skills`, empty: "No installed Hermes skills were scanned." };
   return (
-    <section className="page-grid">
+    <PageShell className="hermes-skills-page">
+      <PageHeader
+        title={title}
+        description={description}
+        actions={<StatusBadge label={copy.count(hermesSkills?.length ?? 0)} tone="info" />}
+      />
+      <PageBody className="page-grid page-scroll hermes-skills-page-body">
       <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{title}</h3>
-            <p>{description}</p>
-          </div>
-          <span className="status-pill status-running">{copy.count(hermesSkills?.length ?? 0)}</span>
-        </div>
         <div className="model-card-grid">
           {hermesSkills?.length ? (
             hermesSkills.map((skill) => (
@@ -767,7 +792,7 @@ export function HarnessSkillsPage({
                     <strong>{skill.label}</strong>
                     <code>{skill.id}</code>
                   </div>
-                  <span className="status-pill status-succeeded">{skill.profileId ?? "default"}</span>
+                  <StatusBadge label={skill.profileId ?? "default"} tone="success" />
                 </div>
                 <div className="model-card-main">
                   <code>{skill.path}</code>
@@ -779,12 +804,13 @@ export function HarnessSkillsPage({
               </article>
             ))
           ) : (
-            <div className="empty-state page-empty">{copy.empty}</div>
+            <EmptyState title={copy.empty} />
           )}
         </div>
       </div>
       <HarnessSkillsCard ui={openClawPanelSkillCopy(language)} skillStatus={skillStatus} language={language} busy={busy} onInstallSkills={onInstallSkills} />
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -819,24 +845,28 @@ export function HermesChannelsPage({
     setDraft({ platform: draft.platform, id: "", name: "", type: draft.type });
   };
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.configured}</h3>
-            <p>{description}</p>
-          </div>
+    <PageShell className="hermes-channels-page">
+      <PageHeader
+        title={title}
+        description={description}
+        actions={
           <button type="button" title={copy.refresh} disabled={refreshBusy} onClick={onRefresh}>
             <RefreshCw size={16} className={refreshBusy ? "spin" : undefined} />
             {refreshBusy ? copy.refreshing : copy.refresh}
           </button>
+        }
+      />
+      <PageBody className="page-grid page-scroll hermes-channels-page-body">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <CardHeader title={copy.configured} description={description} />
         </div>
         <div className="model-card-grid">
           {channels.length ? channels.map((channel) => (
             <article key={`${channel.profileId ?? "default"}:${channel.platform}:${channel.id}:${channel.threadId ?? ""}`} className="model-card">
               <div className="model-card-head">
                 <IdentityTitle kind="channel" id={channel.platform} label={channel.name} />
-                <span className="status-pill status-succeeded">{copy.enabled}</span>
+                <StatusBadge label={copy.enabled} tone="success" />
               </div>
               <div className="model-card-main">
                 <code>{`${channel.platform}:${channel.id}`}</code>
@@ -847,15 +877,12 @@ export function HermesChannelsPage({
                 <span>{`${copy.threadId}: ${channel.threadId ?? "-"}`}</span>
               </div>
             </article>
-          )) : <div className="empty-state page-empty">{copy.empty}</div>}
+          )) : <EmptyState title={copy.empty} />}
         </div>
       </div>
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.add}</h3>
-            <p>{config?.channelDirectoryPath ?? copy.source}</p>
-          </div>
+          <CardHeader title={copy.add} description={config?.channelDirectoryPath ?? copy.source} />
         </div>
         <div className="form-grid">
           <label><span>{copy.platform}</span><input value={draft.platform} onChange={(event) => updateDraft("platform", event.target.value)} /></label>
@@ -871,7 +898,8 @@ export function HermesChannelsPage({
           </button>
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -1000,13 +1028,15 @@ function ClaudeCodeModelConfigCard({
   return (
     <div className="content-card stack-card openclaw-control-section claude-code-config-card">
       <div className="card-toolbar">
-        <div className="card-title-block">
-          <h3>{title ?? copy.title}</h3>
-        </div>
-        <button type="button" disabled={busy} onClick={submitDraft}>
-          {busy ? <RefreshCw size={14} className="spin" /> : <Save size={14} />}
-          {busy ? copy.saving : copy.save}
-        </button>
+        <CardHeader
+          title={title ?? copy.title}
+          actions={
+            <button type="button" disabled={busy} onClick={submitDraft}>
+              {busy ? <RefreshCw size={14} className="spin" /> : <Save size={14} />}
+              {busy ? copy.saving : copy.save}
+            </button>
+          }
+        />
       </div>
       <div className="form-grid form-grid-wide wizard-field-grid claude-code-config-grid">
         <div className="wizard-field claude-code-provider-field">
@@ -1046,7 +1076,7 @@ function ClaudeCodeModelConfigCard({
             />
           </label>
         </div>
-        {localError && <div className="error-banner field-span-full">{localError}</div>}
+        {localError && <ErrorState className="field-span-full ui-state-compact" title={localError} />}
       </div>
     </div>
   );
@@ -1186,16 +1216,17 @@ function HarnessSkillsCard({
       : "content-card stack-card openclaw-control-section harness-skills-card";
   return (
     <div className={className}>
-      <div className="card-title-block harness-skills-card-head">
-        <div>
-          <h3>{ui.skills}</h3>
-          <p>{description}</p>
-        </div>
-        <button type="button" onClick={onInstallSkills} disabled={busy || !supported} title={ui.installSkills}>
-          <Puzzle size={14} className={busy ? "spin" : undefined} />
-          {busy ? ui.installingSkills : ui.installSkills}
-        </button>
-      </div>
+      <CardHeader
+        className="harness-skills-card-head"
+        title={ui.skills}
+        description={description}
+        actions={
+          <button type="button" onClick={onInstallSkills} disabled={busy || !supported} title={ui.installSkills}>
+            <Puzzle size={14} className={busy ? "spin" : undefined} />
+            {busy ? ui.installingSkills : ui.installSkills}
+          </button>
+        }
+      />
 
       {skills.length ? (
         skills.map((skill) => (
@@ -1204,14 +1235,14 @@ function HarnessSkillsCard({
             label={skill.label}
             value={
               <span className="harness-check-value">
-                <span className={`status-pill ${statusClassForHarnessSkill(skill.status)}`}>{ui.skillStatus[skill.status]}</span>
+                <StatusBadge label={ui.skillStatus[skill.status]} tone={statusToneForHarnessSkill(skill.status)} />
                 <span>{skill.targetPath ?? skill.sourcePath}</span>
               </span>
             }
           />
         ))
       ) : (
-        <div className="empty-state page-empty">{language === "zh-CN" ? "\u5c1a\u672a\u83b7\u53d6 skill \u72b6\u6001\u3002" : "Skill status has not been loaded."}</div>
+        <EmptyState title={language === "zh-CN" ? "\u5c1a\u672a\u83b7\u53d6 skill \u72b6\u6001\u3002" : "Skill status has not been loaded."} />
       )}
     </div>
   );
@@ -1289,10 +1320,10 @@ function harnessPermissionCopy(language: Language) {
       };
 }
 
-function statusClassForHarnessSkill(status: HarnessSkillInstallStatus): string {
-  if (status === "installed") return "status-succeeded";
-  if (status === "stale" || status === "missing") return "status-running";
-  return "status-failed";
+function statusToneForHarnessSkill(status: HarnessSkillInstallStatus): StatusBadgeTone {
+  if (status === "installed") return "success";
+  if (status === "stale" || status === "missing") return "warning";
+  return "danger";
 }
 
 function HarnessStatusBlock({
@@ -1327,18 +1358,13 @@ function HarnessStatusBlock({
 
       <div className="openclaw-control-grid">
         <div className="content-card stack-card openclaw-control-section">
-          <div className="card-title-block">
-            <h3>{copy.summary}</h3>
-            <p>{status?.summary ?? copy.notChecked}</p>
-          </div>
+          <CardHeader title={copy.summary} description={status?.summary ?? copy.notChecked} />
           <OpenClawPanelRow label={copy.checkedAt} value={formatDateTimeLabel(status?.checkedAt, language, "-")} />
           {skillsCard}
         </div>
 
         <div className="content-card stack-card openclaw-control-section">
-          <div className="card-title-block">
-            <h3>{copy.checks}</h3>
-          </div>
+          <CardHeader title={copy.checks} />
           {status?.checks.length ? (
             status.checks.map((check) => (
               <OpenClawPanelRow
@@ -1346,14 +1372,14 @@ function HarnessStatusBlock({
                 label={check.label}
                 value={
                   <span className="harness-check-value">
-                    <span className={`status-pill ${statusClassForHarnessCheck(check.status)}`}>{copy.checkStatus[check.status]}</span>
+                    <StatusBadge label={copy.checkStatus[check.status]} tone={statusToneForHarnessCheck(check.status)} />
                     <span>{check.detail}</span>
                   </span>
                 }
               />
             ))
           ) : (
-            <div className="empty-state page-empty">{copy.notChecked}</div>
+            <EmptyState title={copy.notChecked} />
           )}
         </div>
       </div>
@@ -1361,10 +1387,10 @@ function HarnessStatusBlock({
   );
 }
 
-function statusClassForHarnessCheck(status: HarnessStatus["checks"][number]["status"]): string {
-  if (status === "pass") return "status-succeeded";
-  if (status === "warning") return "status-running";
-  return "status-failed";
+function statusToneForHarnessCheck(status: HarnessStatus["checks"][number]["status"]): StatusBadgeTone {
+  if (status === "pass") return "success";
+  if (status === "warning") return "warning";
+  return "danger";
 }
 
 function harnessStatusCopy(language: Language) {

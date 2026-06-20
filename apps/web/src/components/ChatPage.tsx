@@ -55,7 +55,7 @@ import * as chatController from "../controllers/chat-controller";
 import { harnessDisplayParts, harnessLikeDisplayLabel, harnessLikeDisplayParts } from "../lib/harness-labels";
 import { HarnessLabel } from "./HarnessLabel";
 import { MarkdownRenderer } from "./MarkdownRenderer";
-import { PageHeader, PageShell } from "../shared/ui";
+import { Button, EmptyState, IconButton, PageActions, PageHeader, PageShell, PanelHeader } from "../shared/ui";
 
 type ChatMessage = chatController.ChatMessage;
 
@@ -67,6 +67,7 @@ type SelectOption = {
   disabled?: boolean;
   variant?: "create";
   thinkingLevels?: ChatThinkingEffort[];
+  nativeSessionId?: string;
 };
 
 type HivewardSessionView = chatController.HivewardSessionView;
@@ -76,8 +77,6 @@ const maxUploadFiles = 6;
 const composerMinHeightPx = 42;
 const composerMaxHeightPx = 132;
 const newSessionViewOptionValue = "__new_session_view__";
-const nativeSessionOptionPrefix = "__native_harness_session__:";
-const legacyNativeSessionOptionPrefix = "__native_openclaw_session__:";
 const newBlueprintOptionValue = "__new_blueprint__";
 
 export function ChatPage({
@@ -462,9 +461,10 @@ export function ChatPage({
           ? runtimeSessions
               .filter((session) => isVisibleNativeChatSessionKey(session.id, agentId))
               .filter((session) => !knownNativeSessionIds.has(session.id))
-              .map((session) => ({
-                value: `${nativeSessionOptionPrefix}${session.id}`,
-                label: formatNativeSessionLabel(session)
+              .map((session, index) => ({
+                value: `native-session-option-${index}`,
+                label: formatNativeSessionLabel(session),
+                nativeSessionId: session.id
               }))
           : [])
       ];
@@ -532,9 +532,9 @@ export function ChatPage({
         void createSessionView();
         return;
       }
-      const nativeSessionKey = readNativeSessionOptionValue(sessionViewId);
-      if (nativeSessionKey) {
-        void activateNativeSession(nativeSessionKey);
+      const selectedOption = sessionViewOptions.find((option) => option.value === sessionViewId);
+      if (selectedOption?.nativeSessionId) {
+        void activateNativeSession(selectedOption.nativeSessionId);
         return;
       }
       const nextSessionView = sessionViews.find((sessionView) => sessionView.id === sessionViewId);
@@ -551,7 +551,7 @@ export function ChatPage({
       setAttachments([]);
       setError(undefined);
     },
-    [activateNativeSession, applySessionRoleScope, createSessionView, loadSessionMessages, sessionViews]
+    [activateNativeSession, applySessionRoleScope, createSessionView, loadSessionMessages, sessionViewOptions, sessionViews]
   );
 
   const selectHarness = useCallback(
@@ -679,40 +679,39 @@ export function ChatPage({
 
   return (
     <PageShell className={`chat-page-grid ${settingsCollapsed ? "chat-settings-collapsed" : ""}`}>
-      <PageHeader className="chat-page-title">
-        <div className="chat-page-title-copy">
-          <h2>{copy.title}</h2>
-          <p>
-            {selectedRoleLabel}
-            {titleBlueprint ? ` / ${titleBlueprint.name}` : company?.name ? ` / ${company.name}` : ""}
-          </p>
-        </div>
-        <span
-          className={`openclaw-panel-state ${
-            selectedHarnessStatus?.connectionState === "connected" || selectedHarnessStatus?.connectionState === "available"
-              ? "online"
-              : "offline"
-          }`}
-        >
-          <HarnessLabel {...harnessLikeDisplayParts(harnessId)} />
-        </span>
-      </PageHeader>
+      <PageHeader
+        title={copy.title}
+        description={`${selectedRoleLabel}${titleBlueprint ? ` / ${titleBlueprint.name}` : company?.name ? ` / ${company.name}` : ""}`}
+        actions={
+          <span
+            className={`openclaw-panel-state ${
+              selectedHarnessStatus?.connectionState === "connected" || selectedHarnessStatus?.connectionState === "available"
+                ? "online"
+                : "offline"
+            }`}
+          >
+            <HarnessLabel {...harnessLikeDisplayParts(harnessId)} />
+          </span>
+        }
+      />
 
       <div className="chat-workspace">
         <div className={`chat-settings-column ${settingsCollapsed ? "collapsed" : ""}`}>
-          <div className="chat-column-header chat-settings-column-header">
-            {!settingsCollapsed && <h3>{copy.settings}</h3>}
-            <button
-              type="button"
-              className="chat-settings-collapse-button"
-              title={settingsCollapsed ? copy.expandSettings : copy.collapseSettings}
-              aria-label={settingsCollapsed ? copy.expandSettings : copy.collapseSettings}
-              onClick={() => setSettingsCollapsed((current) => !current)}
-            >
-              {settingsCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
-              <span>{settingsCollapsed ? copy.expandSettings : copy.collapseSettings}</span>
-            </button>
-          </div>
+          <PanelHeader
+            className="chat-settings-column-header"
+            title={settingsCollapsed ? copy.settings : copy.settings}
+            actions={
+              <Button
+                className="chat-settings-collapse-button"
+                icon={settingsCollapsed ? <ChevronRight size={15} /> : <ChevronLeft size={15} />}
+                title={settingsCollapsed ? copy.expandSettings : copy.collapseSettings}
+                aria-label={settingsCollapsed ? copy.expandSettings : copy.collapseSettings}
+                onClick={() => setSettingsCollapsed((current) => !current)}
+              >
+                {settingsCollapsed ? copy.expandSettings : copy.collapseSettings}
+              </Button>
+            }
+          />
 
           <aside className={`content-card stack-card chat-settings-panel ${settingsCollapsed ? "collapsed" : ""}`} aria-label={copy.settings}>
             {settingsCollapsed ? (
@@ -838,61 +837,54 @@ export function ChatPage({
         </div>
 
         <div className="chat-window-column">
-          <div className="chat-column-header chat-window-column-header">
-            {titleEditing ? (
-              <form
-                className="chat-title-edit-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveSessionTitle();
-                }}
-              >
-                <input
-                  value={titleDraft}
-                  aria-label={copy.editSessionTitle}
-                  autoFocus
-                  maxLength={120}
-                  onChange={(event) => setTitleDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") cancelEditingTitle();
+          <PanelHeader
+            className="chat-window-column-header"
+            title={titleEditing ? copy.editSessionTitle : activeSessionView?.title || copy.noSessionView}
+            actions={
+              titleEditing ? (
+                <form
+                  className="chat-title-edit-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveSessionTitle();
                   }}
-                />
-                <button type="submit" title={copy.saveSessionTitle} aria-label={copy.saveSessionTitle} disabled={titleSaving || !titleDraft.trim()}>
-                  {titleSaving ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
-                </button>
-                <button type="button" title={copy.cancelEditSessionTitle} aria-label={copy.cancelEditSessionTitle} onClick={cancelEditingTitle}>
-                  <X size={14} />
-                </button>
-              </form>
-            ) : (
-              <div className="chat-title-display">
-                <h3>{activeSessionView?.title || copy.noSessionView}</h3>
-                <button type="button" title={copy.newSessionView} aria-label={copy.newSessionView} onClick={() => void createSessionView()}>
-                  <Plus size={14} />
-                </button>
-                <button type="button" title={copy.editSessionTitle} aria-label={copy.editSessionTitle} onClick={startEditingTitle}>
-                  <Pencil size={14} />
-                </button>
-                <button
-                  type="button"
-                  title={copy.endSession}
-                  aria-label={copy.endSession}
-                  disabled={!activeSessionView || activeSessionView.status === "ended"}
-                  onClick={() => void endActiveSession()}
                 >
-                  <Square size={14} />
-                </button>
-              </div>
-            )}
-          </div>
+                  <input
+                    value={titleDraft}
+                    aria-label={copy.editSessionTitle}
+                    autoFocus
+                    maxLength={120}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") cancelEditingTitle();
+                    }}
+                  />
+                  <IconButton
+                    type="submit"
+                    icon={titleSaving ? <Loader2 className="spin" size={14} /> : <Check size={14} />}
+                    label={copy.saveSessionTitle}
+                    disabled={titleSaving || !titleDraft.trim()}
+                  />
+                  <IconButton icon={<X size={14} />} label={copy.cancelEditSessionTitle} onClick={cancelEditingTitle} />
+                </form>
+              ) : (
+                <PageActions>
+                  <IconButton icon={<Plus size={14} />} label={copy.newSessionView} onClick={() => void createSessionView()} />
+                  <IconButton icon={<Pencil size={14} />} label={copy.editSessionTitle} onClick={startEditingTitle} />
+                  <IconButton
+                    icon={<Square size={14} />}
+                    label={copy.endSession}
+                    disabled={!activeSessionView || activeSessionView.status === "ended"}
+                    onClick={() => void endActiveSession()}
+                  />
+                </PageActions>
+              )
+            }
+          />
           <section className="content-card chat-window-card" aria-label={activeSessionView?.title || copy.noSessionView}>
             <div className="chat-thread" ref={threadRef}>
               {messages.length === 0 ? (
-                <div className="chat-empty-state">
-                  <MessageSquareText size={22} />
-                  <strong>{copy.emptyTitle}</strong>
-                  <span>{copy.emptyBody}</span>
-                </div>
+                <EmptyState className="chat-placeholder-state" icon={<MessageSquareText size={22} />} title={copy.emptyTitle} description={copy.emptyBody} />
               ) : (
                 messages.map((message) => {
                   const runtimeActivities = message.runtimeActivities ?? message.runtimeRef?.activity ?? [];
@@ -1214,12 +1206,6 @@ function formatDurationMs(value: number): string {
   return `${Math.max(0, Math.round(value))}ms`;
 }
 
-function readNativeSessionOptionValue(value: string): string | undefined {
-  if (value.startsWith(nativeSessionOptionPrefix)) return value.slice(nativeSessionOptionPrefix.length);
-  if (value.startsWith(legacyNativeSessionOptionPrefix)) return value.slice(legacyNativeSessionOptionPrefix.length);
-  return undefined;
-}
-
 function isVisibleSessionView(sessionView: HivewardSessionView, agentId: string): boolean {
   if (sessionView.harnessId !== "openclaw") return true;
   const selectedAgentId = normalizeSessionAgentId(agentId);
@@ -1244,7 +1230,8 @@ function parseAgentSessionKey(sessionKey: string): { agentId: string; rest: stri
 }
 
 function isPrimaryChatSessionRest(rest: string): boolean {
-  return rest === "main" || rest.startsWith("dashboard:");
+  const [section] = rest.split(":");
+  return rest === "main" || section === "dashboard";
 }
 
 function normalizeSessionAgentId(agentId: string | undefined): string {

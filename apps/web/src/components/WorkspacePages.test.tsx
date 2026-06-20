@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type {
@@ -25,8 +28,13 @@ import {
   RunsPage
 } from "../pages/workspace/WorkspacePages";
 
+const workspacePagesSource = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "../pages/workspace/WorkspacePages.tsx"),
+  "utf8"
+);
+
 describe("CompanyDirectoryPage", () => {
-  it("renders the add-company action without the external Plus icon component", () => {
+  it("renders the add-company action through the shared button and lucide Plus icon", () => {
     const html = renderToStaticMarkup(
       <CompanyDirectoryPage
         companies={[]}
@@ -40,7 +48,19 @@ describe("CompanyDirectoryPage", () => {
     );
 
     expect(html).toContain("Add company");
-    expect(html).toContain("local-add-icon");
+    expect(html).toContain("ui-button-primary");
+    expect(html).toContain("lucide-plus");
+    expect(html).not.toContain("local-add-icon");
+  });
+
+  it("routes destructive company confirmation through the shared ConfirmDialog", () => {
+    const companyDirectorySource = workspacePagesSource.slice(
+      workspacePagesSource.indexOf("export function CompanyDirectoryPage"),
+      workspacePagesSource.indexOf("function nextDraftCompanyName")
+    );
+
+    expect(companyDirectorySource).toContain("<ConfirmDialog");
+    expect(companyDirectorySource).not.toContain(["window", "confirm"].join("."));
   });
 
   it("renders loading instead of empty while the company directory is busy", () => {
@@ -1812,7 +1832,8 @@ describe("RunsPage", () => {
 
     expect(html).toContain("RunRoom output");
     expect(html).toContain("Live");
-    expect(html).toContain("run-room-output-stream-live");
+    expect(html).toContain("ui-status-badge-success");
+    expect(html).not.toContain("run-room-output-stream-live");
     expect(html).not.toContain("Approve");
     expect(html).not.toContain("Reject");
   });

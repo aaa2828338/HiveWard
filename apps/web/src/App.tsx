@@ -486,7 +486,7 @@ export function App() {
         />
       }
     >
-      <AppRoutes renderRoute={renderRoute} selectedCompanyId={selectedCompanyId} />
+      <AppRoutes language={language} renderRoute={renderRoute} selectedCompanyId={selectedCompanyId} />
     </AppLayout>
   );
 }
