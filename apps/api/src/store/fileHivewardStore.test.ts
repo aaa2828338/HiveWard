@@ -119,7 +119,7 @@ describe("FileHivewardStore blueprint node sanitization", () => {
       title: "Legacy plan",
       body: "Review the legacy plan.",
       revision: 1,
-      capabilities: { approve: true, reject: true, reply: true, complete: false, terminate: false },
+      capabilities: { approve: true, reject: true, reply: true },
       requestedBy: { type: "node", label: "Manager", nodeId: "manager" },
       requestedAt: now
     };
@@ -162,7 +162,7 @@ describe("FileHivewardStore blueprint node sanitization", () => {
         status: "stale",
         title: "Stale",
         body: "Stale projection",
-        capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+        capabilities: { approve: false, reject: false, reply: false },
         createdAt: now,
         updatedAt: now
       }]

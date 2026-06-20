@@ -141,6 +141,7 @@ import {
 } from "../lib/harness-permissions";
 import { runtimeDisplayLabel } from "../lib/harness-labels";
 import { HarnessLabel } from "./HarnessLabel";
+import { CanvasPageShell, EmptyState, IconButton } from "../shared/ui";
 
 const nodeTypes = {
   blueprintNode: BlueprintNodeCard,
@@ -154,6 +155,10 @@ const edgeTypes: EdgeTypes = {
 const fallbackCanvasViewportSize: CanvasSize = { width: 1200, height: 900 };
 const nodeMenuPopoverWidth = 146;
 const nodeMenuViewportMargin = 12;
+
+function blueprintCloseLabel(t: Messages): string {
+  return t.navigation.blueprint === "Blueprint" ? "Close" : "关闭";
+}
 
 const palette: Array<{ type: BlueprintNodeType; icon: typeof Plus }> = [
   { type: "agent", icon: Bot },
@@ -429,6 +434,7 @@ export function BlueprintStudioPage({
           pending: "pending",
           latestRun: "latest run",
           noRun: "no runs",
+          close: "Close",
           openBlueprint: "Open business blueprint"
         }
       : {
@@ -440,6 +446,7 @@ export function BlueprintStudioPage({
           pending: "\u5f85\u5904\u7406",
           latestRun: "\u6700\u8fd1\u8fd0\u884c",
           noRun: "\u6682\u65e0\u8fd0\u884c",
+          close: "\u5173\u95ed",
           openBlueprint: "\u6253\u5f00\u4e1a\u52a1\u84dd\u56fe"
         };
   }, [t.navigation.blueprint]);
@@ -1300,7 +1307,7 @@ export function BlueprintStudioPage({
   if (blueprintBoard === "architecture") {
     return (
       <ReactFlowProvider>
-        <section className="blueprint-shell compact-blueprint-shell">
+        <CanvasPageShell className="blueprint-shell compact-blueprint-shell">
           <section
             ref={canvasPanelRef}
             className="blueprint-canvas-panel expanded-blueprint-panel architecture-blueprint-shell"
@@ -1348,14 +1355,14 @@ export function BlueprintStudioPage({
               />
             )}
           </section>
-        </section>
+        </CanvasPageShell>
       </ReactFlowProvider>
     );
   }
 
   return (
     <ReactFlowProvider>
-      <section className="blueprint-shell compact-blueprint-shell">
+      <CanvasPageShell className="blueprint-shell compact-blueprint-shell">
         <section
           ref={canvasPanelRef}
           className={`blueprint-canvas-panel expanded-blueprint-panel blueprint-canvas-state-${currentBlueprintActivity}`}
@@ -1590,7 +1597,7 @@ export function BlueprintStudioPage({
               </div>
               <div className="blueprint-card-list">
                 {visibleBlueprints.length === 0 ? (
-                  <div className="empty-state compact-empty-state">{t.empty.selectBlueprint}</div>
+                  <EmptyState className="ui-state-compact" title={t.empty.selectBlueprint} />
                 ) : (
                   visibleBlueprints.map((item) => {
                     const selected = item.id === drawerSelectedBlueprintId;
@@ -1755,7 +1762,7 @@ export function BlueprintStudioPage({
             }}
           />
         )}
-      </section>
+      </CanvasPageShell>
     </ReactFlowProvider>
   );
 }
@@ -1769,6 +1776,7 @@ type BlueprintBoardCopy = {
   pending: string;
   latestRun: string;
   noRun: string;
+  close: string;
   openBlueprint: string;
 };
 
@@ -1903,9 +1911,7 @@ function ArchitectureRoleDetailSidebar({
           <span className="hero-eyebrow modal-eyebrow">{isCeo ? nodeData.copy.ceo : nodeData.copy.leader}</span>
           <h3>{nodeData.label}</h3>
         </div>
-        <button type="button" className="icon-button node-modal-close" onClick={onClose}>
-          <X size={18} />
-        </button>
+        <IconButton className="node-modal-close" icon={<X size={18} />} label={nodeData.copy.close} onClick={onClose} />
       </header>
 
       <div className="node-modal-grid">
@@ -2014,9 +2020,7 @@ function NodeDetailSidebar({
           <span className="hero-eyebrow modal-eyebrow">{t.nodeTypes[node.type]}</span>
           <EditableNodeTitle value={node.config.label} onChange={(label) => onPatchConfig({ label })} />
         </div>
-        <button type="button" className="icon-button node-modal-close" onClick={onClose}>
-          <X size={18} />
-        </button>
+        <IconButton className="node-modal-close" icon={<X size={18} />} label={blueprintCloseLabel(t)} onClick={onClose} />
       </header>
 
       <div className="node-modal-grid">
@@ -2408,9 +2412,7 @@ function BatchAgentSettingsModal({
             <span className="hero-eyebrow modal-eyebrow">{t.metrics.agents(nodes.length)}</span>
             <h3>Batch settings</h3>
           </div>
-          <button type="button" className="icon-button node-modal-close" onClick={onClose}>
-            <X size={18} />
-          </button>
+          <IconButton className="node-modal-close" icon={<X size={18} />} label={blueprintCloseLabel(t)} onClick={onClose} />
         </header>
 
         <div className="node-modal-grid">
@@ -3074,9 +3076,7 @@ function AgentSkillField({
                   <strong>{match?.label ?? skillId}</strong>
                   <span>{match ? `${match.category} | ${match.id}` : skillId}</span>
                 </div>
-                <button type="button" className="icon-button" onClick={() => removeSkill(skillId)}>
-                  <X size={14} />
-                </button>
+                <IconButton icon={<X size={14} />} label={t.actions.remove} onClick={() => removeSkill(skillId)} />
               </div>
             );
           })

@@ -27,7 +27,7 @@
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   IterationRound,
   IterationSession,
   ManagerCommand,
@@ -118,14 +118,12 @@ export type ApplyApprovalDecisionInput = {
   expectedStatus: "pending";
   nextRequest: ApprovalRequest;
   decision: ApprovalDecision;
-  nextApprovalRequest?: ApprovalRequest;
-  nextApprovalDiscussionBinding?: ApprovalDiscussionBinding;
   releaseReport?: ReleaseReport;
   timelineItem?: Omit<RunTimelineItem, "sequence"> & { sequence?: number };
 };
 
 export type ApplyApprovalDecisionResult =
-  | { status: "applied"; approvalRequest: ApprovalRequest; decision: ApprovalDecision; nextApprovalRequest?: ApprovalRequest }
+  | { status: "applied"; approvalRequest: ApprovalRequest; decision: ApprovalDecision }
   | { status: "conflict"; approvalRequest?: ApprovalRequest };
 
 export interface HivewardStore {
@@ -211,11 +209,11 @@ export interface HivewardStore {
   updateHumanActionRequest(input: { id: string } & Partial<HumanActionRequest>): Promise<HumanActionRequest>;
   appendHumanActionResponse(response: HumanActionResponse): Promise<HumanActionResponse>;
   listHumanActionResponses(filter?: { requestId?: string }): Promise<HumanActionResponse[]>;
-  listInboxProjections(filter?: {
-    sourceContextType?: InboxProjection["sourceContextType"];
-    responseIntent?: InboxProjection["responseIntent"];
-    status?: InboxProjection["status"];
-  }): Promise<InboxProjection[]>;
+  listHumanActionQueue(filter?: {
+    sourceContextType?: HumanActionQueueItem["sourceContextType"];
+    responseIntent?: HumanActionQueueItem["responseIntent"];
+    status?: HumanActionQueueItem["status"];
+  }): Promise<HumanActionQueueItem[]>;
   appendAgentOutputEvent(event: AgentOutputEvent): Promise<AgentOutputEvent>;
   listAgentOutputEvents(filter?: { ownerType?: AgentOutputEvent["ownerType"]; ownerId?: string }): Promise<AgentOutputEvent[]>;
   createRunCommandIfAbsent(command: RunCommand): Promise<{ command: RunCommand; created: boolean }>;

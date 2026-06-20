@@ -36,7 +36,7 @@ describe("SqliteDriver schema migrations", () => {
       "Review v1 output",
       "Approve the v1 output.",
       1,
-      JSON.stringify({ approve: true, reject: true, reply: true, complete: false, terminate: false }),
+      JSON.stringify({ approve: true, reject: true, reply: true }),
       JSON.stringify({ type: "node", label: "Agent" }),
       "2026-05-29T00:00:00.000Z",
       "2026-05-29T00:00:00.000Z"
@@ -49,7 +49,7 @@ describe("SqliteDriver schema migrations", () => {
       "Review v1 requirement",
       "Approve the v1 requirement.",
       1,
-      JSON.stringify({ approve: true, reject: true, reply: true, complete: false, terminate: false, revise: true }),
+      JSON.stringify({ approve: true, reject: true, reply: true }),
       JSON.stringify({ type: "node", label: "Manager" }),
       "2026-05-29T00:00:00.000Z",
       "2026-05-29T00:00:00.000Z"
@@ -62,7 +62,7 @@ describe("SqliteDriver schema migrations", () => {
       "Review v1 release",
       "Approve the v1 release.",
       1,
-      JSON.stringify({ approve: true, reject: true, reply: true, complete: true, terminate: false, revise: true }),
+      JSON.stringify({ approve: true, reject: true, reply: true }),
       JSON.stringify({ type: "node", label: "Manager" }),
       "2026-05-29T00:00:00.000Z",
       "2026-05-29T00:00:00.000Z"
@@ -358,8 +358,6 @@ describe("SqliteDriver schema migrations", () => {
         source_id TEXT,
         thread_id TEXT,
         revision INTEGER NOT NULL,
-        replaces_request_id TEXT,
-        superseded_by_request_id TEXT,
         capabilities_json TEXT NOT NULL,
         requested_by_json TEXT NOT NULL,
         requested_at TEXT NOT NULL,

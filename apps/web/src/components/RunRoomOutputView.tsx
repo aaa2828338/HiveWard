@@ -1,6 +1,7 @@
 import type { ChatRuntimeActivity } from "@hiveward/shared";
 import type { Language } from "../lib/i18n";
 import type { RunRoomOutputMessage, RunRoomOutputStreamState } from "../lib/run-room-output-state";
+import { EmptyState, StatusBadge, type StatusBadgeTone } from "../shared/ui";
 import { SharedMessageView } from "./SharedMessageView";
 
 export interface RunRoomOutputViewProps {
@@ -20,12 +21,10 @@ export function RunRoomOutputView({ messages, language, streamState = "idle", re
           <h4>{copy.title}</h4>
           <p>{reportAvailable ? copy.reportAvailableHint : copy.hint}</p>
         </div>
-        <span className={`status-pill status-default run-room-output-stream-pill run-room-output-stream-${streamState}`}>
-          {streamCopy}
-        </span>
+        <StatusBadge className="run-room-output-stream-pill" label={streamCopy} tone={streamStateTone(streamState)} />
       </div>
       {messages.length === 0 ? (
-        <div className="empty-state compact-empty-state">{reportAvailable ? copy.reportAvailableEmpty : copy.empty}</div>
+        <EmptyState className="ui-state-compact" title={reportAvailable ? copy.reportAvailableEmpty : copy.empty} />
       ) : (
         <div className="trace-output-stream run-room-output-list" aria-live="polite">
           {messages.map((message) => (
@@ -45,6 +44,13 @@ export function RunRoomOutputView({ messages, language, streamState = "idle", re
       )}
     </section>
   );
+}
+
+function streamStateTone(streamState: RunRoomOutputStreamState): StatusBadgeTone {
+  if (streamState === "live") return "success";
+  if (streamState === "connecting") return "warning";
+  if (streamState === "error") return "danger";
+  return "neutral";
 }
 
 function getRunRoomOutputCopy(language: Language) {

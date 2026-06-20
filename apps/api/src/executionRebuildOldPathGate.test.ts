@@ -97,6 +97,26 @@ describe("execution rebuild old-path exclusion gate", () => {
       "history-page-grid",
       "history-list-row",
       "history-list-button",
+      "/api/inbox-projections",
+      "review_required",
+      "InboxProjection",
+      "ListInboxProjectionsResponse",
+      "InboxProjectionService",
+      "listInboxProjections",
+      "projectInboxProjections",
+      "inboxProjection",
+      "inbox-projection-",
+      "/api/approval-requests/:approvalRequestId/return-for-revision",
+      "/api/approval-requests/:approvalRequestId/complete",
+      "/api/approval-requests/:approvalRequestId/terminate",
+      "returnForRevisionApprovalRequest",
+      "completeApprovalRequest",
+      "terminateApprovalRequest",
+      "canComplete",
+      "canTerminate",
+      "canReturnForRevision",
+      "returnForRevision",
+      "return_for_revision",
       "selectInbox",
       "completeInbox",
       "closeBoundDecisionHumanActions"
@@ -131,6 +151,9 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(lifecycleApprovalSource).not.toContain("store.updateHumanActionRequest");
     expect(lifecycleApprovalSource).not.toContain("store.upsertApprovalRequest");
     expect(humanActionRequestSource).not.toContain("store.updateHumanActionRequest");
+    expect(productionSource).toContain("HumanActionQueueItem");
+    expect(productionSource).toContain("ListHumanActionQueueResponse");
+    expect(productionSource).toContain("/api/human-action-queue");
   });
 
   it("keeps the run page main trace owned by execution facts without legacy inference", () => {
@@ -200,7 +223,6 @@ describe("execution rebuild old-path exclusion gate", () => {
     expect(worker).not.toContain("await this.executeSummaryNode(");
     expect(directQueuedNodeRunOwners).toEqual([
       "startPreflightNodeRun",
-      "rerunAgentApprovalForRequestedChanges",
       "createRunningNodeRun",
       "ensureNodeRunClaim"
     ]);
@@ -302,11 +324,12 @@ describe("execution rebuild old-path exclusion gate", () => {
       "rejects executive decision human actions without the canonical approval owner",
       "executive_decision_human_action_requires_approval_owner",
       "expect(await fixture.store.listHumanActionRequests()).toEqual([])",
-      "routes only canonical return_for_revision approval request actions",
-      "expect(dashedAlias.status).toBe(404)",
-      "expect(underscoredAlias.status).toBe(404)",
-      "expect(reviseAlias.status).toBe(404)",
-      "expect(returnForRevisionAlias.status).toBe(404)"
+      "rejects removed approval request actions before they reach the worker",
+      "\"return-for-revision\"",
+      "\"complete\"",
+      "\"terminate\"",
+      "expect(response.status).toBe(404)",
+      "expect(calls).toEqual([])"
     ]);
     expectSourceToContainAll(lifecycleTests, [
       "does not expose approval selection or persist selected reply facts",

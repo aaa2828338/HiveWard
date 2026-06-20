@@ -17,6 +17,6 @@ describe("useWorkspaceController ownership", () => {
     expect(controllerSource).toMatch(/api\.listCompanies\(\)/);
     expect(controllerSource).toMatch(/api\.saveBlueprint\(/);
     expect(controllerSource).toMatch(/api\.getBlueprintRun\(/);
-    expect(controllerSource).toMatch(/api\.listInboxProjections\(/);
+    expect(controllerSource).toMatch(/api\.listHumanActionQueue\(/);
   });
 });

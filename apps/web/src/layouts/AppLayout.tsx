@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { ErrorState } from "../shared/ui";
 
 export function AppLayout({
   children,
@@ -12,15 +13,15 @@ export function AppLayout({
   sidebar: ReactNode;
 }) {
   return (
-    <main className="app-shell">
+    <div className="app-shell">
       {sidebar}
       <section className="main-shell">
         {importControl}
-        <section className="page-shell">
-          {error && <div className="error-banner">{error}</div>}
+        <section className={error ? "app-content-shell has-app-feedback" : "app-content-shell"}>
+          {error && <ErrorState className="app-feedback-state" title={error} />}
           {children}
         </section>
       </section>
-    </main>
+    </div>
   );
 }

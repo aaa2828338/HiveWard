@@ -78,7 +78,7 @@ export interface WorkerTask {
 export const humanActionRequestSourceContextTypes = ["run_room", "executive_chat", "blueprint_governance"] as const;
 export type HumanActionRequestSourceContextType = typeof humanActionRequestSourceContextTypes[number];
 
-export const humanActionRequestResponseIntents = ["decision_required", "reply_required", "review_required"] as const;
+export const humanActionRequestResponseIntents = ["decision_required", "reply_required"] as const;
 export type HumanActionRequestResponseIntent = typeof humanActionRequestResponseIntents[number];
 
 export const humanActionRequestStatuses = ["pending", "responded", "closed", "cancelled"] as const;
@@ -109,7 +109,7 @@ export interface HumanActionResponse {
   metadata?: Record<string, unknown>;
 }
 
-export interface InboxProjection {
+export interface HumanActionQueueItem {
   id: string;
   humanActionRequestId: string;
   sourceContextType: HumanActionRequestSourceContextType;
@@ -129,7 +129,7 @@ export type BlueprintKanbanCardLane = typeof blueprintKanbanCardLanes[number];
 
 export type BlueprintKanbanCardTargetRef =
   | { type: "run_room"; runRoomId: string; runId?: string; blueprintId?: string }
-  | { type: "inbox_projection"; inboxProjectionId: string; humanActionRequestId: string; runRoomId?: string }
+  | { type: "human_action_queue_item"; humanActionQueueItemId: string; humanActionRequestId: string; runRoomId?: string }
   | { type: "blueprint"; blueprintId: string };
 
 export interface BlueprintKanbanCard {
@@ -140,7 +140,7 @@ export interface BlueprintKanbanCard {
   runId?: string;
   workerTaskId?: string;
   humanActionRequestId?: string;
-  inboxProjectionId?: string;
+  humanActionQueueItemId?: string;
   lane: BlueprintKanbanCardLane;
   sourceContextType?: HumanActionRequestSourceContextType;
   responseIntent?: HumanActionRequestResponseIntent;
@@ -224,8 +224,8 @@ export function assertHumanActionResponse(response: HumanActionResponse): void {
   assertString(response.createdAt, "HumanActionResponse.createdAt");
 }
 
-export function assertInboxProjectionDirectWrite(value: unknown): never {
-  throw new Error("InboxProjection is a read-only projection from HumanActionRequest and cannot be direct-written.");
+export function assertHumanActionQueueItemDirectWrite(value: unknown): never {
+  throw new Error("HumanActionQueueItem is a read-only projection from HumanActionRequest and cannot be direct-written.");
 }
 
 function assertString(value: unknown, fieldName: string): asserts value is string {

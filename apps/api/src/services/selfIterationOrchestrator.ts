@@ -20,8 +20,7 @@ export class SelfIterationOrchestrator {
       return config.autoApproveRequirements === true && request.capabilities.approve === true;
     }
     if (request.kind === "manager_release_report") {
-      return config.autoApproveReleaseReports === true &&
-        (request.capabilities.approve === true || request.capabilities.complete === true);
+      return config.autoApproveReleaseReports === true && request.capabilities.approve === true;
     }
     return false;
   }

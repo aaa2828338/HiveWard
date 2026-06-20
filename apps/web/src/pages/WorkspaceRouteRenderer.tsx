@@ -29,9 +29,7 @@ import {
   HermesAgentsPage,
   HermesChannelsPage,
   HermesModelsPage,
-  HivewardHomePage,
   OpenClawControlPanelPage,
-  type HivewardHomeCopy,
   type OpenClawPanelCopy
 } from "./system/SystemPages";
 
@@ -44,8 +42,6 @@ export type PageProps = {
   language: Language;
   t: Messages;
   chatPermissionModes: Record<SdkChatHarnessId, ChatPermissionMode>;
-  hivewardHomeUi: HivewardHomeCopy;
-  hivewardVersionLabel: string;
   openClawPanelUi: OpenClawPanelCopy;
   openClawVersionLabel: string;
   openClawVersionHealthy: boolean;
@@ -78,8 +74,6 @@ export function WorkspaceRouteRenderer({
   language,
   t,
   chatPermissionModes,
-  hivewardHomeUi,
-  hivewardVersionLabel,
   openClawPanelUi,
   openClawVersionLabel,
   openClawVersionHealthy,
@@ -116,9 +110,6 @@ export function WorkspaceRouteRenderer({
     openClawWizard,
     openClawModelUsage,
     openClawVersion,
-    hivewardUpdate,
-    hivewardUpdateResult,
-    hivewardUpdateChecking,
     harnessStatuses,
     hermesConfig,
     claudeCodeModelConfig,
@@ -133,13 +124,13 @@ export function WorkspaceRouteRenderer({
     approvalThreads,
     roleDirectory,
     architecture,
-    inboxProjections,
-    inboxResponsesByRequestId,
+    humanActionQueue,
+    humanActionResponsesByRequestId,
     blueprintKanbanBoard,
     selectedNodeId,
     selectedRunId,
     runPageBlueprint,
-    focusedInboxEntryId,
+    focusedHumanActionEntryId,
     busyAction,
     isSelectedBlueprintDirty,
     latestRunForBlueprint,
@@ -157,9 +148,6 @@ export function WorkspaceRouteRenderer({
     deleteCompany,
     refreshCatalog,
     checkOpenClawUpdates,
-    checkHivewardUpdate,
-    applyHivewardUpdateAction,
-    forceHivewardUpdateAction,
     refreshHarnessStatus,
     addHermesProfile,
     addHermesChannel,
@@ -180,30 +168,12 @@ export function WorkspaceRouteRenderer({
     cancelBlueprintRun,
     sendRunInterjection,
     approveApprovalRequest,
-    completeRunApproval,
     rejectApprovalRequest,
     replyToApprovalRequest,
-    returnForRevisionApprovalRequest,
     sendHumanActionResponse,
     refreshInboxAndApprovals
   } = workspace;
 
-    if (routeId === "hivewardHome") {
-      return (
-        <HivewardHomePage
-          ui={hivewardHomeUi}
-          language={language}
-          versionLabel={hivewardVersionLabel}
-          update={hivewardUpdate}
-          updateResult={hivewardUpdateResult}
-          checking={hivewardUpdateChecking}
-          updating={busyAction === "applyHivewardUpdate" || busyAction === "forceApplyHivewardUpdate"}
-          onCheckUpdate={checkHivewardUpdate}
-          onApplyUpdate={applyHivewardUpdateAction}
-          onForceUpdate={forceHivewardUpdateAction}
-        />
-      );
-    }
     if (routeId === "companyDirectory") {
       return (
         <CompanyDirectoryPage
@@ -234,7 +204,7 @@ export function WorkspaceRouteRenderer({
           roleDirectory={roleDirectory}
           language={language}
           harnessPermissionModes={chatPermissionModes}
-          onInboxProjectionsRefreshNeeded={refreshInboxAndApprovals}
+          onHumanActionQueueRefreshNeeded={refreshInboxAndApprovals}
         />
       );
     }
@@ -318,17 +288,15 @@ export function WorkspaceRouteRenderer({
           approvals={approvals}
           approvalRequests={approvalRequests}
           approvalThreads={approvalThreads}
-          inboxProjections={inboxProjections}
-          inboxResponsesByRequestId={inboxResponsesByRequestId}
+          humanActionQueue={humanActionQueue}
+          humanActionResponsesByRequestId={humanActionResponsesByRequestId}
           language={language}
           t={t}
           actionPending={isApprovalInboxActionBusy(busyAction)}
-          focusedEntryId={focusedInboxEntryId}
+          focusedEntryId={focusedHumanActionEntryId}
           onApproveApprovalRequest={approveApprovalRequest}
-          onComplete={completeRunApproval}
           onRejectApprovalRequest={rejectApprovalRequest}
           onReplyApprovalRequest={replyToApprovalRequest}
-          onReturnForRevisionApprovalRequest={returnForRevisionApprovalRequest}
           onSendHumanActionResponse={sendHumanActionResponse}
         />
       );
@@ -553,7 +521,7 @@ export function WorkspaceRouteRenderer({
         />
       );
     }
-    if (routeId === "schedule") {
+    if (routeId === "monitor") {
       return (
         <BlueprintKanbanPage
           board={blueprintKanbanBoard}
@@ -584,8 +552,6 @@ function isApprovalInboxActionBusy(action: string | undefined): boolean {
     action === "approveApprovalRequest" ||
     action === "rejectApprovalRequest" ||
     action === "replyApprovalRequest" ||
-    action === "returnForRevisionApprovalRequest" ||
-    action === "completeRunApproval" ||
     action === "sendHumanActionResponse"
   ));
 }

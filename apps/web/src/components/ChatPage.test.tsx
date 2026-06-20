@@ -126,4 +126,14 @@ describe("ChatPage executive surface", () => {
       /api\.(listChatSessions|createHivewardChatSession|streamSessionChat|getChatOutputEvents|updateHivewardChatSession|endHivewardChatSession|executeExecutiveCommand)/
     );
   });
+
+  it("does not infer native session identity from select value prefixes", () => {
+    const source = readFileSync(resolve(componentsDir, "ChatPage.tsx"), "utf8");
+
+    expect(source).toContain("nativeSessionId?: string");
+    expect(source).toContain("selectedOption?.nativeSessionId");
+    expect(source).not.toContain("nativeSessionOptionPrefix");
+    expect(source).not.toContain("readNativeSessionOptionValue");
+    expect(source).not.toContain(["startsWith", '("dashboard:")'].join(""));
+  });
 });

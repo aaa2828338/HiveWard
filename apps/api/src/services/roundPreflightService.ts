@@ -690,8 +690,8 @@ function formatBlockedRoundPlan(input: {
     "",
     "## Required Action",
     "- Leave a comment with missing credentials, permissions, facts, or revised instructions.",
-    "- Use the explicit return_for_revision action after the missing information is available.",
-    "- This approval cannot be approved into execution until a revised plan is generated."
+    "- Reject the request if the missing information cannot be supplied in this thread.",
+    "- This approval cannot be approved into execution until the blocker is resolved."
   ].filter((part) => part !== undefined).join("\n");
 }
 

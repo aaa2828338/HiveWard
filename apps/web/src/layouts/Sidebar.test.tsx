@@ -18,7 +18,7 @@ const baseSidebarProps: SidebarProps = {
     cursor: true,
     opencode: true
   },
-  hivewardHomeNewBadge: "New",
+  hivewardUpdateBadge: "New",
   hivewardUpdateAvailable: false,
   hivewardVersionLabel: "v0.0.0",
   hivewardVersionTitle: "HiveWard version",
@@ -92,9 +92,14 @@ describe("Sidebar", () => {
 
   it("marks utility sidebar links active from the router location", () => {
     const companiesHtml = renderSidebar("/companies");
-    const homeHtml = renderSidebar("/");
 
     expect(companiesHtml).toContain("sidebar-company-switcher active");
-    expect(homeHtml).toContain("sidebar-system-version online active");
+  });
+
+  it("does not expose the removed root route as a sidebar link", () => {
+    const html = renderSidebar("/blueprint");
+
+    expect(html).not.toContain('href="/"');
+    expect(html).toContain("sidebar-system-version online");
   });
 });

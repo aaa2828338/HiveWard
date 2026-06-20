@@ -37,7 +37,7 @@ import type {
   HivewardChatSession,
   HumanActionRequest,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   IterationRound,
   IterationSession,
   ManagerCommand,
@@ -963,7 +963,7 @@ export class SqliteHivewardStore implements HivewardStore {
         throw new Error(`HumanActionRequest is not pending: ${response.requestId}`);
       }
       this.insertHumanActionResponse(response);
-      if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
+      if (request.responseIntent === "reply_required") {
         this.upsertHumanActionRequest({
           ...request,
           status: "responded",
@@ -986,12 +986,12 @@ export class SqliteHivewardStore implements HivewardStore {
       .map(humanActionResponseFromRow);
   }
 
-  async listInboxProjections(filter: {
-    sourceContextType?: InboxProjection["sourceContextType"];
-    responseIntent?: InboxProjection["responseIntent"];
-    status?: InboxProjection["status"];
-  } = {}): Promise<InboxProjection[]> {
-    return projectInboxProjectionsFromFacts(
+  async listHumanActionQueue(filter: {
+    sourceContextType?: HumanActionQueueItem["sourceContextType"];
+    responseIntent?: HumanActionQueueItem["responseIntent"];
+    status?: HumanActionQueueItem["status"];
+  } = {}): Promise<HumanActionQueueItem[]> {
+    return projectHumanActionQueueItemsFromFacts(
       this.readHumanActionRequests(filter),
       await this.listHumanActionResponses()
     );
@@ -1223,7 +1223,6 @@ export class SqliteHivewardStore implements HivewardStore {
     return rowsWithRequests.map(({ row, request }) => {
       const requestRunId = request.runId ?? requireString(row.run_id);
       const approvalReplies = pendingApprovalRepliesFromApprovalReplies(approvalRepliesByRequestId.get(request.id) ?? []);
-      const canReturnForRevision = request.capabilities.returnForRevision === true;
       return {
         approvalRequestId: request.id,
         approvalThreadId: approvalThreadIdForRequest(request),
@@ -1247,10 +1246,7 @@ export class SqliteHivewardStore implements HivewardStore {
         ...(approvalReplies ? { replies: approvalReplies } : {}),
         canApprove: request.capabilities.approve,
         canReject: request.capabilities.reject,
-        canReply: request.capabilities.reply,
-        canComplete: request.capabilities.complete,
-        canTerminate: request.capabilities.terminate,
-        canReturnForRevision
+        canReply: request.capabilities.reply
       };
     });
   }
@@ -1361,9 +1357,9 @@ export class SqliteHivewardStore implements HivewardStore {
     this.driver.db.prepare(
       `INSERT INTO approval_requests (
         id, run_id, round_id, node_run_id, kind, status, title, body, payload_ref,
-        source_type, source_id, thread_id, revision, replaces_request_id, superseded_by_request_id,
+        source_type, source_id, thread_id, revision,
         capabilities_json, requested_by_json, requested_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         title = excluded.title,
@@ -1371,8 +1367,6 @@ export class SqliteHivewardStore implements HivewardStore {
         payload_ref = excluded.payload_ref,
         thread_id = excluded.thread_id,
         revision = excluded.revision,
-        replaces_request_id = excluded.replaces_request_id,
-        superseded_by_request_id = excluded.superseded_by_request_id,
         capabilities_json = excluded.capabilities_json,
         requested_by_json = excluded.requested_by_json,
         updated_at = excluded.updated_at`
@@ -1390,8 +1384,6 @@ export class SqliteHivewardStore implements HivewardStore {
       request.sourceRef?.id,
       request.threadId,
       request.revision,
-      request.replacesRequestId,
-      request.supersededByRequestId,
       stringifyJson(request.capabilities),
       stringifyJson(request.requestedBy),
       request.requestedAt,
@@ -1502,13 +1494,11 @@ export class SqliteHivewardStore implements HivewardStore {
         `UPDATE approval_requests
          SET status = ?,
              capabilities_json = ?,
-             superseded_by_request_id = ?,
              updated_at = ?
          WHERE id = ? AND status = 'pending'`
       ).run(
         input.nextRequest.status,
         stringifyJson(input.nextRequest.capabilities),
-        input.nextRequest.supersededByRequestId,
         input.nextRequest.updatedAt,
         input.approvalRequestId
       );
@@ -1517,17 +1507,6 @@ export class SqliteHivewardStore implements HivewardStore {
       }
       this.upsertApprovalThreadSync(approvalThreadFromRequest(input.nextRequest));
       this.appendApprovalDecisionSync(input.decision);
-      if (input.nextApprovalRequest) {
-        this.upsertApprovalRequestSync(input.nextApprovalRequest);
-        if (input.nextApprovalDiscussionBinding) {
-          if (input.nextApprovalDiscussionBinding.approvalRequestId !== input.nextApprovalRequest.id) {
-            throw new Error("Approval discussion binding must target the next approval request.");
-          }
-          const existingBinding = this.getApprovalDiscussionBindingSync(input.nextApprovalRequest.id);
-          if (existingBinding) throw new Error(`Approval discussion binding already exists: ${input.nextApprovalRequest.id}`);
-          this.upsertApprovalDiscussionBinding(input.nextApprovalDiscussionBinding);
-        }
-      }
       if (input.releaseReport) this.upsertReleaseReportSync(input.releaseReport);
       if (input.timelineItem) this.appendRunTimelineItemSync(input.timelineItem);
       if (input.nextRequest.status !== "pending") {
@@ -1536,8 +1515,7 @@ export class SqliteHivewardStore implements HivewardStore {
       return {
         status: "applied",
         approvalRequest: input.nextRequest,
-        decision: input.decision,
-        nextApprovalRequest: input.nextApprovalRequest
+        decision: input.decision
       };
     });
   }
@@ -3941,10 +3919,10 @@ function agentOutputEventFromRow(row: Row): AgentOutputEvent {
   };
 }
 
-function projectInboxProjectionsFromFacts(
+function projectHumanActionQueueItemsFromFacts(
   requests: HumanActionRequest[],
   responses: HumanActionResponse[]
-): InboxProjection[] {
+): HumanActionQueueItem[] {
   const latestResponseByRequestId = new Map<string, string>();
   for (const response of responses) {
     const existing = latestResponseByRequestId.get(response.requestId);
@@ -3954,7 +3932,7 @@ function projectInboxProjectionsFromFacts(
   }
   return requests
     .map((request) => ({
-      id: `inbox-projection-${request.id}`,
+      id: `human-action-queue-item-${request.id}`,
       humanActionRequestId: request.id,
       sourceContextType: request.sourceContextType,
       sourceContextId: request.sourceContextId,
@@ -4069,8 +4047,6 @@ function approvalRequestFromRow(row: Row): ApprovalRequest {
     sourceRef: sourceType && sourceId ? { type: sourceType, id: sourceId } : undefined,
     threadId: readString(row.thread_id),
     revision: readNumber(row.revision, 1),
-    replacesRequestId: readString(row.replaces_request_id),
-    supersededByRequestId: readString(row.superseded_by_request_id),
     capabilities: readJson(row.capabilities_json),
     requestedBy: readJson(row.requested_by_json),
     requestedAt: requireString(row.requested_at),

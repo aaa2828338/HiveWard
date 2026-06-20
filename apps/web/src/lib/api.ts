@@ -21,8 +21,6 @@
   HarnessStatus,
   HarnessStatusResponse,
   HermesConfigResponse,
-  ApplyHivewardUpdateResponse,
-  ApplyHivewardUpdateRequest,
   ApprovalThread,
   ApprovalThreadRepliesResponse,
   ApprovalThreadResponse,
@@ -72,10 +70,10 @@
   HumanActionRequestSourceContextType,
   HivewardChatSession,
   HivewardChatSessionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   ListHumanActionResponsesResponse,
   ListBlueprintKanbanResponse,
-  ListInboxProjectionsResponse,
+  ListHumanActionQueueResponse,
   ListChatSessionsResponse,
   StartBlueprintRunResponse,
   UpdateOpenClawDefaultModelRequest,
@@ -321,13 +319,6 @@ export const api = {
   async getHivewardUpdate(): Promise<HivewardUpdateResponse["update"]> {
     const response = await request<HivewardUpdateResponse>("/api/hiveward-update");
     return response.update;
-  },
-
-  async applyHivewardUpdate(input: ApplyHivewardUpdateRequest = {}): Promise<ApplyHivewardUpdateResponse> {
-    return request<ApplyHivewardUpdateResponse>("/api/hiveward-update/apply", {
-      method: "POST",
-      body: JSON.stringify(input satisfies ApplyHivewardUpdateRequest)
-    });
   },
 
   async getHarnessStatus(): Promise<HarnessStatus[]> {
@@ -594,27 +585,6 @@ export const api = {
     });
   },
 
-  async returnForRevisionApprovalRequest(approvalRequestId: string, message: string): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/return-for-revision`, {
-      method: "POST",
-      body: JSON.stringify({ message })
-    });
-  },
-
-  async completeApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/complete`, {
-      method: "POST",
-      body: JSON.stringify({ comment })
-    });
-  },
-
-  async terminateApprovalRequest(approvalRequestId: string, comment?: string): Promise<ApprovalRequestResponse> {
-    return request<ApprovalRequestResponse>(`/api/approval-requests/${encodeURIComponent(approvalRequestId)}/terminate`, {
-      method: "POST",
-      body: JSON.stringify({ comment })
-    });
-  },
-
   async getRoleDirectory(): Promise<RoleDirectoryResponse> {
     return request<RoleDirectoryResponse>("/api/roles");
   },
@@ -628,9 +598,9 @@ export const api = {
     });
   },
 
-  async listInboxProjections(): Promise<InboxProjection[]> {
-    const response = await request<ListInboxProjectionsResponse>("/api/inbox-projections");
-    return response.projections;
+  async listHumanActionQueue(): Promise<HumanActionQueueItem[]> {
+    const response = await request<ListHumanActionQueueResponse>("/api/human-action-queue");
+    return response.items;
   },
 
   async listHumanActionResponses(requestId: string): Promise<HumanActionResponse[]> {
@@ -643,8 +613,8 @@ export const api = {
   async sendHumanActionResponse(
     requestId: string,
     input: CreateHumanActionResponseRequest
-  ): Promise<{ response: HumanActionResponse; projections: InboxProjection[] }> {
-    return request<{ response: HumanActionResponse; projections: InboxProjection[] }>(
+  ): Promise<{ response: HumanActionResponse; queue: HumanActionQueueItem[] }> {
+    return request<{ response: HumanActionResponse; queue: HumanActionQueueItem[] }>(
       `/api/human-action-requests/${encodeURIComponent(requestId)}/responses`,
       {
         method: "POST",

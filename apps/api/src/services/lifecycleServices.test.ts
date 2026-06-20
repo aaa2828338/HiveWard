@@ -94,7 +94,6 @@ describe("ApprovalService", () => {
       revision: 1,
       threadId: request.threadId
     });
-    expect(result.nextApprovalRequest).toBeUndefined();
     expect((await store.listApprovalRequests({ runId: "run-1" }))).toHaveLength(1);
   });
 
@@ -146,11 +145,11 @@ describe("ApprovalService", () => {
       producer: "leader",
       sourceContextType: "blueprint_governance",
       sourceContextId: "blueprint-service-review",
-      responseIntent: "review_required",
+      responseIntent: "reply_required",
       title: "Review needed",
       bodyMarkdown: "Please review."
     })).resolves.toMatchObject({
-      responseIntent: "review_required",
+      responseIntent: "reply_required",
       status: "pending"
     });
 
@@ -221,22 +220,28 @@ describe("ApprovalService", () => {
       title: "Decision needed",
       bodyMarkdown: "Approve this request before replacement."
     });
-    await approvalService.returnForRevision(approval.id, "Regenerate with sources.", { mode: "keep_current_request" });
+    expect("returnForRevision" in approvalService).toBe(false);
+    expect("markSupersededByRevision" in approvalService).toBe(false);
     expect(await store.getHumanActionRequest(request.id)).toMatchObject({
       status: "pending"
     });
 
-    await expect(approvalService.markSupersededByRevision(approval.id, "approval-next-revision")).resolves.toMatchObject({
-      id: approval.id,
-      status: "superseded",
-      supersededByRequestId: "approval-next-revision"
+    await expect(approvalService.supersede(approval.id)).resolves.toMatchObject({
+      approvalRequest: {
+        id: approval.id,
+        status: "superseded"
+      },
+      decision: {
+        action: "supersede",
+        resultingStatus: "superseded"
+      }
     });
     expect(await store.getHumanActionRequest(request.id)).toMatchObject({
       status: "closed"
     });
     expect(await store.listApprovalDecisions(approval.id)).toEqual([
       expect.objectContaining({
-        action: "return_for_revision",
+        action: "supersede",
         resultingStatus: "superseded"
       })
     ]);
@@ -246,97 +251,12 @@ describe("ApprovalService", () => {
       status: "pending",
       updatedAt: "2026-06-04T00:10:00.000Z"
     });
-    await expect(approvalService.markSupersededByRevision(approval.id, "approval-duplicate-revision"))
+    await expect(approvalService.supersede(approval.id))
       .rejects.toThrow("Approval request is already closed.");
     expect(await store.getHumanActionRequest(request.id)).toMatchObject({
       status: "closed"
     });
     expect(await store.listApprovalDecisions(approval.id)).toHaveLength(1);
-  });
-
-  it("creates a superseding revision through return_for_revision when the request kind requires it", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-revise-"));
-    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
-    await store.init();
-    const service = new ApprovalService(store);
-
-    const request = await service.createRequest({
-      runId: "run-revise",
-      kind: "iteration_requirement_plan",
-      title: "Round 1 requirement",
-      body: "Initial plan",
-      requestedBy: {
-        type: "node",
-        label: "Top Manager",
-        nodeId: "manager"
-      }
-    });
-
-    const result = await service.returnForRevision(request.id, "Tighten scope.", { mode: "supersede_request" });
-    const original = await store.getApprovalRequest(request.id);
-    const requests = await store.listApprovalRequests({ runId: "run-revise" });
-    const decisions = await store.listApprovalDecisions(request.id);
-    const replies = await store.listApprovalReplies({ threadId: request.threadId });
-
-    expect(original).toMatchObject({
-      status: "superseded",
-      capabilities: expect.objectContaining({ approve: false, reply: false, returnForRevision: false })
-    });
-    expect(result.nextApprovalRequest).toMatchObject({
-      status: "pending",
-      threadId: request.threadId,
-      replacesRequestId: request.id,
-      revision: 2,
-      body: expect.stringContaining("Tighten scope.")
-    });
-    expect(original?.supersededByRequestId).toBe(result.nextApprovalRequest?.id);
-    expect(requests).toHaveLength(2);
-    expect(decisions).toEqual([
-      expect.objectContaining({
-        action: "return_for_revision",
-        resultingStatus: "superseded",
-        comment: "Tighten scope."
-      })
-    ]);
-    expect(replies).toEqual([]);
-  });
-
-  it("records return_for_revision as a lifecycle decision without appending a reply", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "hiveward-lifecycle-request-changes-"));
-    const store = new FileHivewardStore(join(dir, "hiveward-store.json"));
-    await store.init();
-    const service = new ApprovalService(store);
-
-    const request = await service.createRequest({
-      runId: "run-request-changes",
-      kind: "agent_proposal",
-      title: "Agent output",
-      body: "Draft output",
-      requestedBy: {
-        type: "node",
-        label: "Agent",
-        nodeId: "agent"
-      }
-    });
-
-    const result = await service.returnForRevision(request.id, "Regenerate with sources.", { mode: "keep_current_request" });
-    const decisions = await store.listApprovalDecisions(request.id);
-    const replies = await store.listApprovalReplies({ threadId: request.threadId });
-
-    expect(result.approvalRequest).toMatchObject({
-      status: "pending",
-      capabilities: expect.objectContaining({ approve: true, reply: true, returnForRevision: true })
-    });
-    expect(result.approvalRequest.capabilities).not.toHaveProperty("requestChanges");
-    expect(result.approvalRequest.capabilities).not.toHaveProperty("revise");
-    expect(decisions).toEqual([
-      expect.objectContaining({
-        action: "return_for_revision",
-        resultingStatus: "pending",
-        comment: "Regenerate with sources."
-      })
-    ]);
-    expect(replies).toEqual([]);
   });
 
   it("does not expose approval selection or persist selected reply facts", async () => {
@@ -492,7 +412,7 @@ describe("ApprovalService", () => {
       await store.upsertApprovalRequest({
         ...request,
         status: "approved",
-        capabilities: { approve: false, reject: false, reply: false, complete: false, terminate: false },
+        capabilities: { approve: false, reject: false, reply: false },
         updatedAt: "2026-05-29T00:00:00.000Z"
       });
       expect(await projector.verify(run.id)).toMatchObject({ ok: false, mismatches: [`drift:mail-${request.id}`] });

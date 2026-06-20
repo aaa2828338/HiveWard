@@ -14,7 +14,7 @@ import type {
   CompanyRoleProfile,
   HumanActionRequest,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   PendingApprovalItem,
   PortableBlueprintPackage,
   WorkspaceDashboard,
@@ -1229,7 +1229,7 @@ export class FileHivewardStore implements HivewardStore {
         throw new Error(`HumanActionResponse already exists: ${response.id}`);
       }
       index.humanActionResponses.push(response);
-      if (request.responseIntent === "reply_required" || request.responseIntent === "review_required") {
+      if (request.responseIntent === "reply_required") {
         index.humanActionRequests[requestIndex] = {
           ...request,
           status: "responded",
@@ -1251,14 +1251,14 @@ export class FileHivewardStore implements HivewardStore {
     });
   }
 
-  async listInboxProjections(filter: {
-    sourceContextType?: InboxProjection["sourceContextType"];
-    responseIntent?: InboxProjection["responseIntent"];
-    status?: InboxProjection["status"];
-  } = {}): Promise<InboxProjection[]> {
+  async listHumanActionQueue(filter: {
+    sourceContextType?: HumanActionQueueItem["sourceContextType"];
+    responseIntent?: HumanActionQueueItem["responseIntent"];
+    status?: HumanActionQueueItem["status"];
+  } = {}): Promise<HumanActionQueueItem[]> {
     return this.enqueue(async () => {
       const index = await this.readIndexUnlocked();
-      return projectInboxProjections(index.humanActionRequests, index.humanActionResponses)
+      return projectHumanActionQueueItems(index.humanActionRequests, index.humanActionResponses)
         .filter((projection) =>
           (!filter.sourceContextType || projection.sourceContextType === filter.sourceContextType) &&
           (!filter.responseIntent || projection.responseIntent === filter.responseIntent) &&
@@ -1442,7 +1442,6 @@ export class FileHivewardStore implements HivewardStore {
           const replies = pendingApprovalRepliesFromApprovalReplies(listApprovalRepliesFromIndex(index, { approvalRequestId: request.id }));
           const binding = index.approvalDiscussionBindings.find((candidate) => candidate.approvalRequestId === request.id);
           const upstream = readPendingApprovalUpstream(nodeRun?.input);
-          const canReturnForRevision = request.capabilities.returnForRevision === true;
           return {
             approvalRequestId: request.id,
             approvalThreadId: approvalThreadIdForRequest(request),
@@ -1469,10 +1468,7 @@ export class FileHivewardStore implements HivewardStore {
             ...(upstream ? { upstream } : {}),
             canApprove: request.capabilities.approve,
             canReject: request.capabilities.reject,
-            canReply: request.capabilities.reply,
-            canComplete: request.capabilities.complete,
-            canTerminate: request.capabilities.terminate,
-            canReturnForRevision
+            canReply: request.capabilities.reply
           };
         })
         .sort((left, right) => new Date(right.requestedAt).getTime() - new Date(left.requestedAt).getTime());
@@ -1579,16 +1575,6 @@ export class FileHivewardStore implements HivewardStore {
       upsertById(index.approvalThreads, approvalThreadFromRequest(input.nextRequest));
       upsertById(index.approvalDecisions, input.decision);
       appendApprovalReplyFromDecision(index, input.decision, input.nextRequest);
-      if (input.nextApprovalRequest) {
-        upsertById(index.approvalRequests, input.nextApprovalRequest);
-        upsertById(index.approvalThreads, approvalThreadFromRequest(input.nextApprovalRequest));
-        if (input.nextApprovalDiscussionBinding) {
-          if (input.nextApprovalDiscussionBinding.approvalRequestId !== input.nextApprovalRequest.id) {
-            throw new Error("Approval discussion binding must target the next approval request.");
-          }
-          insertApprovalDiscussionBindingStrict(index, input.nextApprovalDiscussionBinding);
-        }
-      }
       if (input.releaseReport) upsertById(index.releaseReports, input.releaseReport);
       if (input.timelineItem) {
         upsertById(index.runTimeline, {
@@ -1603,8 +1589,7 @@ export class FileHivewardStore implements HivewardStore {
       return {
         status: "applied",
         approvalRequest: input.nextRequest,
-        decision: input.decision,
-        nextApprovalRequest: input.nextApprovalRequest
+        decision: input.decision
       };
     });
   }
@@ -2854,10 +2839,10 @@ function closePendingBoundDecisionHumanActionsFromIndex(
   return closed;
 }
 
-function projectInboxProjections(
+function projectHumanActionQueueItems(
   requests: HumanActionRequest[],
   responses: HumanActionResponse[]
-): InboxProjection[] {
+): HumanActionQueueItem[] {
   const latestResponseByRequestId = new Map<string, string>();
   for (const response of responses) {
     const existing = latestResponseByRequestId.get(response.requestId);
@@ -2867,7 +2852,7 @@ function projectInboxProjections(
   }
   return requests
     .map((request) => ({
-      id: `inbox-projection-${request.id}`,
+      id: `human-action-queue-item-${request.id}`,
       humanActionRequestId: request.id,
       sourceContextType: request.sourceContextType,
       sourceContextId: request.sourceContextId,

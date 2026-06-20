@@ -20,10 +20,9 @@ import { Sidebar } from "./layouts/Sidebar";
 import { AppRoutes } from "./routes/AppRoutes";
 import { getRouteByPathname, type RouteId, type RouteSystemId } from "./routes/route-registry";
 import { WorkspaceRouteRenderer } from "./pages/WorkspaceRouteRenderer";
-import { hivewardHomeCopy, type OpenClawPanelCopy } from "./pages/system/SystemPages";
+import type { OpenClawPanelCopy } from "./pages/system/SystemPages";
 
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
-const hivewardRepositoryUrl = "https://github.com/Chaunyzhang/HiveWard";
 
 type AppTheme = "light" | "dark";
 type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes">;
@@ -53,12 +52,10 @@ export function App() {
   const systemMenuRef = useRef<HTMLDivElement | null>(null);
   const blueprintImportInputRef = useRef<HTMLInputElement | null>(null);
   const activeRouteId = getRouteByPathname(location.pathname)?.id;
-  const hivewardHomeUi = useMemo(() => hivewardHomeCopy(language), [language]);
 
   const workspace = useWorkspaceController({
     activeRouteId,
     chatPermissionModes,
-    forceHivewardUpdateConfirm: hivewardHomeUi.forceUpdateConfirm,
     language,
     navigate,
     t
@@ -258,8 +255,10 @@ export function App() {
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
   const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
+  const hivewardUpdateAvailableLabel = language === "zh-CN" ? "\u53d1\u73b0\u66f4\u65b0" : "Update available";
+  const hivewardUpdateBadge = language === "zh-CN" ? "\u66f4\u65b0" : "New";
   const hivewardVersionTitle = hivewardUpdate?.updateAvailable
-    ? `${hivewardHomeUi.updateAvailable}: ${hivewardVersionLabel}`
+    ? `${hivewardUpdateAvailableLabel}: ${hivewardVersionLabel}`
     : `Hiveward ${hivewardVersionLabel}`;
   const gatewaySettings = openClawConfig?.gateway;
   const gatewayStatusLabel = gatewaySettings?.url ? openClawPanelUi.configured : openClawPanelUi.notConfigured;
@@ -308,7 +307,7 @@ export function App() {
       blueprint: activeCountOrUndefined(dirtyBlueprintIds.size),
       runs: activeCountOrUndefined(activeTaskCount),
       approvals: activeCountOrUndefined(pendingApprovalCount + waitingUserKanbanCount),
-      schedule: activeCountOrUndefined(activeTaskCount + pendingApprovalCount + waitingUserKanbanCount),
+      monitor: activeCountOrUndefined(activeTaskCount + pendingApprovalCount + waitingUserKanbanCount),
       openclaw: activeCountOrUndefined(countHarnessStatusActivity(openClawHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.openclaw)),
       claudeCodeConfig: activeCountOrUndefined(countHarnessStatusActivity(claudeCodeHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.claudeCode)),
       codexConfig: activeCountOrUndefined(countHarnessStatusActivity(codexHarnessStatus) + countHarnessSkillActivity(harnessSkillStatuses.codex)),
@@ -411,8 +410,6 @@ export function App() {
       language={language}
       t={t}
       chatPermissionModes={chatPermissionModes}
-      hivewardHomeUi={hivewardHomeUi}
-      hivewardVersionLabel={hivewardVersionLabel}
       openClawPanelUi={openClawPanelUi}
       openClawVersionLabel={openClawVersionLabel}
       openClawVersionHealthy={openClawVersionHealthy}
@@ -462,7 +459,7 @@ export function App() {
           dashboardDirty={dashboardDirty}
           dirtyWorkspaceLabel={t.common.dirtyWorkspace}
           expandedSystems={expandedSystems}
-          hivewardHomeNewBadge={hivewardHomeUi.newBadge}
+          hivewardUpdateBadge={hivewardUpdateBadge}
           hivewardUpdateAvailable={Boolean(hivewardUpdate?.updateAvailable)}
           hivewardVersionLabel={hivewardVersionLabel}
           hivewardVersionTitle={hivewardVersionTitle}
@@ -489,7 +486,7 @@ export function App() {
         />
       }
     >
-      <AppRoutes renderRoute={renderRoute} selectedCompanyId={selectedCompanyId} />
+      <AppRoutes language={language} renderRoute={renderRoute} selectedCompanyId={selectedCompanyId} />
     </AppLayout>
   );
 }
@@ -602,8 +599,6 @@ function isApprovalInboxActionBusy(action: string | undefined): boolean {
     action === "approveApprovalRequest" ||
     action === "rejectApprovalRequest" ||
     action === "replyApprovalRequest" ||
-    action === "returnForRevisionApprovalRequest" ||
-    action === "completeRunApproval" ||
     action === "sendHumanActionResponse"
   ));
 }

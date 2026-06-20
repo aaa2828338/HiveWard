@@ -314,7 +314,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listHumanActionResponses({ requestId: humanActionRequest.id })).resolves.toEqual([
         expect.objectContaining({ id: humanActionResponse.id, messageMarkdown: "Scope clarified." })
       ]);
-      await expect(store.listInboxProjections()).resolves.toEqual([
+      await expect(store.listHumanActionQueue()).resolves.toEqual([
         expect.objectContaining({
           humanActionRequestId: humanActionRequest.id,
           title: "Clarify scope",
@@ -333,7 +333,7 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       await expect(store.listHumanActionRequests({ status: "pending" })).resolves.not.toEqual(
         expect.arrayContaining([expect.objectContaining({ id: humanActionRequest.id })])
       );
-      await expect(store.listInboxProjections({ status: "pending" })).resolves.toEqual([]);
+      await expect(store.listHumanActionQueue({ status: "pending" })).resolves.toEqual([]);
       await expect(store.updateHumanActionRequest({
         id: humanActionRequest.id,
         status: "waiting" as HumanActionRequest["status"]
@@ -470,9 +470,9 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         messageMarkdown: response.messageMarkdown
       });
 
-      await expect(store.listInboxProjections({ sourceContextType: "run_room" })).resolves.toEqual([
+      await expect(store.listHumanActionQueue({ sourceContextType: "run_room" })).resolves.toEqual([
         expect.objectContaining({
-          id: `inbox-projection-${request.id}`,
+          id: `human-action-queue-item-${request.id}`,
           humanActionRequestId: request.id,
           responseIntent: "decision_required",
           latestResponseAt: contractNow
@@ -628,7 +628,6 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         expect.objectContaining({
           approvalRequestId: approval.id,
           reviewOutput: "request body is the projection source",
-          canReturnForRevision: true,
           replies: [
             expect.objectContaining({
               id: "approval-fact-message",
@@ -723,28 +722,22 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
         approvalRequestId: "approval-human-action-owner"
       }))).rejects.toThrow(/can only bind decision_required/);
       await expect(store.appendHumanActionRequest(createHumanActionRequest({
-        id: "human-action-review-claims-owner",
-        responseIntent: "review_required",
+        id: "human-action-removed-review",
+        responseIntent: "review_required" as never,
         approvalRequestId: "approval-human-action-owner"
-      }))).rejects.toThrow(/can only bind decision_required/);
+      }))).rejects.toThrow(/HumanActionRequest\.responseIntent/);
       await expect(store.appendHumanActionRequest(createHumanActionRequest({
         id: "human-action-reply-normal",
         responseIntent: "reply_required"
       }))).resolves.toMatchObject({
         responseIntent: "reply_required"
       });
-      await expect(store.appendHumanActionRequest(createHumanActionRequest({
-        id: "human-action-review-normal",
-        responseIntent: "review_required"
-      }))).resolves.toMatchObject({
-        responseIntent: "review_required"
-      });
     } finally {
       close?.();
     }
   });
 
-  it("atomically responds to reply and review human actions and rejects later responses", async () => {
+  it("atomically responds to reply human actions and rejects later responses", async () => {
     const { store, close } = await createHarness();
     try {
       await store.appendHumanActionRequest(createHumanActionRequest({
@@ -767,23 +760,23 @@ describe.each(storeCases)("%s store contract", (_label, createHarness) => {
       }))).rejects.toThrow(/not pending/);
 
       await store.appendHumanActionRequest(createHumanActionRequest({
-        id: "human-action-review-atomic",
-        responseIntent: "review_required"
+        id: "human-action-second-reply-atomic",
+        responseIntent: "reply_required"
       }));
       const concurrentResponses = await Promise.allSettled([
         store.appendHumanActionResponse(createHumanActionResponse({
-          id: "human-action-response-review-first",
-          requestId: "human-action-review-atomic"
+          id: "human-action-response-second-reply-first",
+          requestId: "human-action-second-reply-atomic"
         })),
         store.appendHumanActionResponse(createHumanActionResponse({
-          id: "human-action-response-review-second",
-          requestId: "human-action-review-atomic"
+          id: "human-action-response-second-reply-second",
+          requestId: "human-action-second-reply-atomic"
         }))
       ]);
       expect(concurrentResponses.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(concurrentResponses.filter((result) => result.status === "rejected")).toHaveLength(1);
-      await expect(store.getHumanActionRequest("human-action-review-atomic")).resolves.toMatchObject({ status: "responded" });
-      await expect(store.listHumanActionResponses({ requestId: "human-action-review-atomic" })).resolves.toHaveLength(1);
+      await expect(store.getHumanActionRequest("human-action-second-reply-atomic")).resolves.toMatchObject({ status: "responded" });
+      await expect(store.listHumanActionResponses({ requestId: "human-action-second-reply-atomic" })).resolves.toHaveLength(1);
 
       await store.appendHumanActionRequest(createHumanActionRequest({
         id: "human-action-closed-response",
@@ -1301,7 +1294,7 @@ describe("SqliteHivewardStore runtime storage", () => {
 });
 
 function resolveClosedCapabilities() {
-  return { approve: false, reject: false, reply: false, complete: false, terminate: false };
+  return { approve: false, reject: false, reply: false };
 }
 
 function createDecision(

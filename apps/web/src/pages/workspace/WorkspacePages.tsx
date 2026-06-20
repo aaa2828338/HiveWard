@@ -16,6 +16,7 @@ import {
   MessageSquareText,
   PanelsTopLeft,
   Pencil,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -39,7 +40,7 @@ import type {
   DashboardWidget,
   DashboardWidgetType,
   HumanActionResponse,
-  InboxProjection,
+  HumanActionQueueItem,
   ApprovalRequest,
   ApprovalThread,
   PendingApprovalItem,
@@ -80,7 +81,26 @@ import { harnessLikeDisplayLabel } from "../../lib/harness-labels";
 import { formatWorkspacePathPlaceholder, joinWorkspacePath } from "../../lib/workspace-path";
 import { MarkdownRenderer } from "../../components/MarkdownRenderer";
 import { RunRoomOutputView } from "../../components/RunRoomOutputView";
-import { PageBody, PageHeader, PageShell } from "../../shared/ui";
+import {
+  Button,
+  CardHeader,
+  ConfirmDialog,
+  Dialog,
+  EmptyState,
+  FilterBar,
+  FormField,
+  IconButton,
+  LoadingState,
+  PageActions,
+  PageBody,
+  PageHeader,
+  PageShell,
+  PanelHeader,
+  SelectControl,
+  StatusBadge,
+  Toolbar,
+  type StatusBadgeTone
+} from "../../shared/ui";
 
 type TraceIssueStatus = "completed" | "in_progress" | "pending" | "failed";
 type IdentityKind = "model" | "agent" | "channel" | "provider";
@@ -97,28 +117,6 @@ type IdentitySpec = {
   initials: string;
   logoUrl?: string;
 };
-
-function AddIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      className="lucide lucide-plus local-add-icon"
-      xmlns="http://www.w3.org/2000/svg"
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path d="M5 12h14" />
-      <path d="M12 5v14" />
-    </svg>
-  );
-}
 
 const OPENAI_PRODUCT_ICON =
   "https://images.ctfassets.net/j22is2dtoxu1/intercom-img-d177d076c9a5453052925143/49d5d812b0a6fcc20a14faa8c629d9fb/icon-ios-1024_401x.png";
@@ -273,10 +271,12 @@ export function CompanyDirectoryPage({
   onDeleteCompany: (companyId: string) => void;
 }) {
   const [editingCompanyId, setEditingCompanyId] = useState<string | undefined>();
+  const [deleteTarget, setDeleteTarget] = useState<CompanyOverview | undefined>();
   const [renameValue, setRenameValue] = useState("");
   const copy =
     language === "zh-CN"
       ? {
+          loadingCompanies: "\u516c\u53f8\u52a0\u8f7d\u4e2d\u3002",
           noCompanies: "\u5F53\u524D\u6CA1\u6709\u53EF\u7528\u516C\u53F8\u3002",
           active: "\u5F53\u524D\u516C\u53F8",
           switchTitle: "\u516C\u53F8\u5217\u8868",
@@ -294,6 +294,7 @@ export function CompanyDirectoryPage({
           deleteConfirm: (name: string) => `\u5220\u9664\u516C\u53F8\u201C${name}\u201D\u4F1A\u79FB\u9664\u8BE5\u516C\u53F8\u4E0B\u7684\u84DD\u56FE\u548C\u8FD0\u884C\u8BB0\u5F55\u3002\u786E\u8BA4\u5220\u9664\uFF1F`
         }
       : {
+          loadingCompanies: "Companies are loading.",
           noCompanies: "No companies are available.",
           active: "Current company",
           switchTitle: "Companies",
@@ -352,120 +353,124 @@ export function CompanyDirectoryPage({
     });
   };
 
-  const deleteCompany = (company: CompanyOverview) => {
-    if (busy || !window.confirm(copy.deleteConfirm(company.name))) return;
+  const requestDeleteCompany = (company: CompanyOverview) => {
+    if (busy) return;
+    setDeleteTarget(company);
+  };
+
+  const confirmDeleteCompany = () => {
+    const company = deleteTarget;
+    if (!company || busy) return;
+    setDeleteTarget(undefined);
     onDeleteCompany(company.id);
   };
 
   return (
-    <section className="page-grid company-page-grid">
-      <div className="company-directory-header">
-        <div className="card-title-block">
-          <h3>{copy.switchTitle}</h3>
-          <p>{copy.switchSubtitle}</p>
-        </div>
-        <button
-          type="button"
-          className="primary-action"
-          disabled={busy}
-          onClick={createCompany}
-        >
-          {busy ? <Loader2 className="spin" size={16} /> : <AddIcon size={16} />}
-          {copy.addCompany}
-        </button>
-      </div>
+    <PageShell className="company-directory-page company-page-grid">
+      <PageHeader
+        title={copy.switchTitle}
+        description={copy.switchSubtitle}
+        actions={
+          <Button variant="primary" disabled={busy} icon={busy ? <Loader2 className="spin" size={16} /> : <Plus size={16} />} onClick={createCompany}>
+            {copy.addCompany}
+          </Button>
+        }
+      />
 
-      <div className="content-card stack-card company-selector-card">
-        {companies.length === 0 ? (
-          <div className="empty-state page-empty">{copy.noCompanies}</div>
-        ) : (
-          <div className="company-list-grid">
-            {companies.map((company) => (
-              <article
-                key={company.id}
-                className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
-              >
-                <div className="company-list-card-top">
-                  <div className="company-logo-small">
-                    {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : companyMonogram(company)}
+      <PageBody className="company-directory-body page-scroll">
+        <div className="content-card stack-card company-selector-card">
+          {busy && companies.length === 0 ? (
+            <LoadingState title={copy.loadingCompanies} icon={<Loader2 className="spin" size={16} />} />
+          ) : companies.length === 0 ? (
+            <EmptyState title={copy.noCompanies} />
+          ) : (
+            <div className="company-list-grid">
+              {companies.map((company) => (
+                <article
+                  key={company.id}
+                  className={`company-list-card ${company.id === selectedCompanyId ? "selected" : ""}`}
+                >
+                  <div className="company-list-card-top">
+                    <div className="company-logo-small">
+                      {company.logoUrl ? <img src={company.logoUrl} alt={company.name} /> : companyMonogram(company)}
+                    </div>
+                    <div className="company-list-card-copy">
+                      <strong>{company.name}</strong>
+                      <span>{company.businessGoal}</span>
+                    </div>
                   </div>
-                  <div className="company-list-card-copy">
-                    <strong>{company.name}</strong>
-                    <span>{company.businessGoal}</span>
+                  {company.id === selectedCompanyId && <span className="company-list-card-status">{copy.active}</span>}
+                  <div className="company-list-card-actions">
+                    <button type="button" className="primary-action" onClick={() => onEnterCompany(company.id)} disabled={busy}>
+                      <ChevronRight size={16} />
+                      {copy.enter}
+                    </button>
+                    <button type="button" onClick={() => openRenameDialog(company.id)} disabled={busy}>
+                      <Pencil size={16} />
+                      {copy.rename}
+                    </button>
+                    <button type="button" className="danger-action" onClick={() => requestDeleteCompany(company)} disabled={busy}>
+                      <Trash2 size={16} />
+                      {copy.delete}
+                    </button>
                   </div>
-                </div>
-                {company.id === selectedCompanyId && <span className="company-list-card-status">{copy.active}</span>}
-                <div className="company-list-card-actions">
-                  <button type="button" className="primary-action" onClick={() => onEnterCompany(company.id)} disabled={busy}>
-                    <ChevronRight size={16} />
-                    {copy.enter}
-                  </button>
-                  <button type="button" onClick={() => openRenameDialog(company.id)} disabled={busy}>
-                    <Pencil size={16} />
-                    {copy.rename}
-                  </button>
-                  <button type="button" className="danger-action" onClick={() => deleteCompany(company)} disabled={busy}>
-                    <Trash2 size={16} />
-                    {copy.delete}
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {editingCompanyId && (
-        <div className="node-modal-backdrop company-rename-backdrop" role="presentation" onMouseDown={closeRenameDialog}>
-          <section
-            className="node-modal company-rename-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="company-rename-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="node-modal-header">
-              <div>
-                <h3 id="company-rename-title">{copy.renameTitle}</h3>
-                <p>{editingCompany?.name ?? copy.draftCompanyName}</p>
-              </div>
-              <button type="button" className="node-modal-close" onClick={closeRenameDialog} disabled={busy} aria-label={copy.cancel}>
-                <X size={18} />
-              </button>
+                </article>
+              ))}
             </div>
-            <form
-              className="node-modal-form company-rename-form"
-              onSubmit={(event) => {
-                event.preventDefault();
-                submitRename();
-              }}
-            >
-              <label>
-                <span>{copy.companyName}</span>
-                <input
-                  autoFocus
-                  value={renameValue}
-                  onChange={(event) => setRenameValue(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Escape") closeRenameDialog();
-                  }}
-                  placeholder={copy.namePlaceholder}
-                />
-              </label>
-              <div className="node-modal-actions">
-                <button type="button" onClick={closeRenameDialog} disabled={busy}>
-                  {copy.cancel}
-                </button>
-                <button type="submit" className="primary-action" disabled={!canRenameCompany}>
-                  {busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
-                  {copy.save}
-                </button>
-              </div>
-            </form>
-          </section>
+          )}
         </div>
-      )}
-    </section>
+
+        <Dialog
+          open={Boolean(editingCompanyId)}
+          title={copy.renameTitle}
+          description={editingCompany?.name ?? copy.draftCompanyName}
+          closeLabel={copy.cancel}
+          className="company-rename-modal"
+          onClose={() => {
+            if (!busy) closeRenameDialog();
+          }}
+        >
+              <form
+                className="company-rename-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitRename();
+                }}
+              >
+                <FormField label={copy.companyName}>
+                  <input
+                    autoFocus
+                    value={renameValue}
+                    onChange={(event) => setRenameValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") closeRenameDialog();
+                    }}
+                    placeholder={copy.namePlaceholder}
+                  />
+                </FormField>
+                <PageActions>
+                  <Button onClick={closeRenameDialog} disabled={busy}>
+                    {copy.cancel}
+                  </Button>
+                  <Button type="submit" variant="primary" disabled={!canRenameCompany} icon={busy ? <Loader2 className="spin" size={16} /> : <Check size={16} />}>
+                    {copy.save}
+                  </Button>
+                </PageActions>
+              </form>
+        </Dialog>
+        <ConfirmDialog
+          open={Boolean(deleteTarget)}
+          title={copy.delete}
+          body={deleteTarget ? copy.deleteConfirm(deleteTarget.name) : ""}
+          confirmLabel={copy.delete}
+          cancelLabel={copy.cancel}
+          destructive
+          busy={busy}
+          onCancel={() => setDeleteTarget(undefined)}
+          onConfirm={confirmDeleteCompany}
+        />
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -507,7 +512,12 @@ export function CompanyPage({
   const selectedCompany = companies.find((company) => company.id === selectedCompanyId);
 
   return (
-    <section className="page-grid company-page-grid">
+    <PageShell className="company-page company-page-grid">
+      <PageHeader
+        title={selectedCompany?.name ?? copy.choose}
+        description={selectedCompany?.businessGoal ?? (companies.length === 0 ? copy.noCompanies : copy.noSelection)}
+      />
+      <PageBody className="company-page-body page-scroll">
       <div className="content-card stack-card company-hero-card">
         {selectedCompany ? (
           <div className="company-brand-poster" aria-label={selectedCompany.name}>
@@ -522,13 +532,15 @@ export function CompanyPage({
             </div>
           </div>
         ) : (
-          <div className="empty-state company-empty-state">
-            <strong>{copy.choose}</strong>
-            <span>{companies.length === 0 ? copy.noCompanies : copy.noSelection}</span>
-          </div>
+          <EmptyState
+            className="company-placeholder-state"
+            title={copy.choose}
+            description={companies.length === 0 ? copy.noCompanies : copy.noSelection}
+          />
         )}
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -705,108 +717,108 @@ export function RunsPage({
   };
 
   return (
-    <section className="page-grid trace-page-grid runs-page-grid">
-      <div className="trace-page-title">
-        <h2>{t.navigation.runs}</h2>
-        <div className="run-top-actions">
-          <div className="run-picker-wrap">
-            <button
-              type="button"
-              className="run-record-selector blueprint-selector-button"
-              title={activeRun ? t.trace.runOption(activeRun.run.id, formatDateTime(activeRun.run.startedAt, language)) : runRecordButtonLabel}
-              onClick={() => {
-                setRunHistoryOpen((current) => !current);
-                setBlueprintPickerOpen(false);
-              }}
-              disabled={!blueprint || blueprintRuns.length === 0}
-            >
-              <Clock3 size={16} />
-              <span>{runRecordButtonLabel}</span>
-            </button>
-            {runHistoryOpen && (
-              <div className="run-selection-panel run-history-panel">
-                <div className="run-history-list">
-                  {blueprintRuns.map((runView) => {
-                    const selected = runView.run.id === activeRun?.run.id;
-                    return (
-                      <button
-                        key={runView.run.id}
-                        type="button"
-                        className={`blueprint-card-button run-history-button${selected ? " selected" : ""}`}
-                        onClick={() => selectRunHistoryItem(runView.run.id)}
-                      >
-                        <span className="blueprint-card-icon">
-                          <Clock3 size={17} />
-                        </span>
-                        <strong>{t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}</strong>
-                        {selected && <Check className="blueprint-card-check" size={14} />}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-          <div className="run-picker-wrap">
-            <button
-              type="button"
-              className="run-blueprint-selector blueprint-selector-button"
-              title={t.fields.blueprint}
-              onClick={() => {
-                setBlueprintPickerOpen((current) => !current);
-                setRunHistoryOpen(false);
-              }}
-              disabled={blueprints.length === 0}
-            >
-              <LayoutTemplate size={16} />
-              <span>{blueprint?.name ?? t.empty.selectBlueprint}</span>
-            </button>
-            {blueprintPickerOpen && (
-              <div className="run-selection-panel run-blueprint-panel">
-                <div className="run-blueprint-card-list blueprint-card-list">
-                  {blueprints.length === 0 ? (
-                    <div className="empty-state compact-empty-state">{t.empty.selectBlueprint}</div>
-                  ) : (
-                    blueprints.map((item) => {
-                      const selected = item.id === blueprint?.id;
-                      const stats = blueprintRunStats.get(item.id);
-                      const terminalStatusSeen =
-                        item.id === blueprint?.id || (stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false);
-                      const activity = resolveBlueprintActivityState(stats?.latestStatus, terminalStatusSeen);
+    <PageShell className="runs-page">
+      <PageHeader
+        title={t.navigation.runs}
+        actions={
+          <Toolbar className="run-top-actions">
+            <div className="run-picker-wrap">
+              <Button
+                type="button"
+                className="run-record-selector blueprint-selector-button"
+                icon={<Clock3 size={16} />}
+                title={activeRun ? t.trace.runOption(activeRun.run.id, formatDateTime(activeRun.run.startedAt, language)) : runRecordButtonLabel}
+                onClick={() => {
+                  setRunHistoryOpen((current) => !current);
+                  setBlueprintPickerOpen(false);
+                }}
+                disabled={!blueprint || blueprintRuns.length === 0}
+              >
+                {runRecordButtonLabel}
+              </Button>
+              {runHistoryOpen && (
+                <div className="run-selection-panel run-history-panel">
+                  <div className="run-history-list">
+                    {blueprintRuns.map((runView) => {
+                      const selected = runView.run.id === activeRun?.run.id;
                       return (
                         <button
-                          key={item.id}
+                          key={runView.run.id}
                           type="button"
-                          className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
-                          onClick={() => selectBlueprintForRunPage(item.id)}
+                          className={`blueprint-card-button run-history-button${selected ? " selected" : ""}`}
+                          onClick={() => selectRunHistoryItem(runView.run.id)}
                         >
                           <span className="blueprint-card-icon">
-                            <LayoutTemplate size={17} />
+                            <Clock3 size={17} />
                           </span>
-                          <strong>{item.name}</strong>
+                          <strong>{t.trace.runOption(runView.run.id, formatDateTime(runView.run.startedAt, language))}</strong>
                           {selected && <Check className="blueprint-card-check" size={14} />}
                         </button>
                       );
-                    })
-                  )}
+                    })}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+              )}
+            </div>
+            <div className="run-picker-wrap">
+              <Button
+                type="button"
+                className="run-blueprint-selector blueprint-selector-button"
+                icon={<LayoutTemplate size={16} />}
+                title={t.fields.blueprint}
+                onClick={() => {
+                  setBlueprintPickerOpen((current) => !current);
+                  setRunHistoryOpen(false);
+                }}
+                disabled={blueprints.length === 0}
+              >
+                {blueprint?.name ?? t.empty.selectBlueprint}
+              </Button>
+              {blueprintPickerOpen && (
+                <div className="run-selection-panel run-blueprint-panel">
+                  <div className="run-blueprint-card-list blueprint-card-list">
+                    {blueprints.length === 0 ? (
+                      <EmptyState className="ui-state-compact" title={t.empty.selectBlueprint} />
+                    ) : (
+                      blueprints.map((item) => {
+                        const selected = item.id === blueprint?.id;
+                        const stats = blueprintRunStats.get(item.id);
+                        const terminalStatusSeen =
+                          item.id === blueprint?.id || (stats?.latestRunId ? acknowledgedTerminalRunIds.has(stats.latestRunId) : false);
+                        const activity = resolveBlueprintActivityState(stats?.latestStatus, terminalStatusSeen);
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            className={`blueprint-card-button blueprint-run-state-${activity}${selected ? " selected" : ""}`}
+                            onClick={() => selectBlueprintForRunPage(item.id)}
+                          >
+                            <span className="blueprint-card-icon">
+                              <LayoutTemplate size={17} />
+                            </span>
+                            <strong>{item.name}</strong>
+                            {selected && <Check className="blueprint-card-check" size={14} />}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Toolbar>
+        }
+      />
 
-      <section className="trace-layout">
+      <PageBody className="trace-layout runs-page-body">
         <div className="trace-column-shell">
-          <div className="trace-column-header">
-            <h3>{t.trace.issueList}</h3>
-          </div>
+          <PanelHeader className="trace-column-title" title={t.trace.issueList} />
           <div className={`content-card stack-card trace-issue-column trace-run-frame-${runFrameState}`}>
             <div className="trace-issue-list">
               {!blueprint ? (
-                <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                <EmptyState title={t.empty.selectBlueprint} />
               ) : issues.length === 0 ? (
-                <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                <EmptyState title={t.empty.noRunHistory} />
               ) : (
                 issues.map((issue) => (
                   <button
@@ -856,9 +868,7 @@ export function RunsPage({
         </div>
 
         <div className="trace-column-shell">
-          <div className="trace-column-header">
-            <h3>{t.trace.modelOutput}</h3>
-          </div>
+          <PanelHeader className="trace-column-title" title={t.trace.modelOutput} />
           <div className="content-card stack-card trace-output-column run-output-column" style={{ gridTemplateRows: "auto minmax(0, 1fr)" }}>
             <div className="run-output-tabs" role="tablist" aria-label={outputTabAriaLabel}>
               {outputTabs.map((tab) => (
@@ -880,7 +890,7 @@ export function RunsPage({
             <div className="run-output-panel-stack">
               <section className="run-output-panel" role="tabpanel" hidden={activeOutputTab !== "current"}>
                 {!blueprint ? (
-                  <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                  <EmptyState title={t.empty.selectBlueprint} />
                 ) : activeRun ? (
                   <div className="run-output-current-layout">
                     <RunRoomOutputView
@@ -913,7 +923,7 @@ export function RunsPage({
                     </form>
                   </div>
                 ) : (
-                  <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                  <EmptyState title={t.empty.noRunHistory} />
                 )}
               </section>
 
@@ -924,14 +934,14 @@ export function RunsPage({
                       <h4>{reportLayerCopy.artifactsTitle}</h4>
                       <p>{reportLayerCopy.artifactsHint}</p>
                     </div>
-                    <span className="status-pill status-default">{reportLayerCopy.count(artifacts.length)}</span>
+                    <StatusBadge label={reportLayerCopy.count(artifacts.length)} tone="neutral" />
                   </div>
                   {!blueprint ? (
-                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                    <EmptyState title={t.empty.selectBlueprint} />
                   ) : !activeRun ? (
-                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                    <EmptyState title={t.empty.noRunHistory} />
                   ) : artifacts.length === 0 ? (
-                    <div className="empty-state compact-empty-state">{reportLayerCopy.noArtifacts}</div>
+                    <EmptyState className="ui-state-compact" title={reportLayerCopy.noArtifacts} />
                   ) : (
                     <div className="run-artifact-list">
                       {artifacts.map((artifact) => (
@@ -961,24 +971,24 @@ export function RunsPage({
                       <h4>{reportLayerCopy.releaseTitle}</h4>
                       <p>{latestReleaseReport ? latestReleaseReport.title : reportLayerCopy.noReleaseHint}</p>
                     </div>
-                    {latestReleaseReport && <span className="status-pill status-default">v{latestReleaseReport.version}</span>}
+                    {latestReleaseReport && <StatusBadge label={`v${latestReleaseReport.version}`} tone="neutral" />}
                   </div>
                   {!blueprint ? (
-                    <div className="empty-state page-empty">{t.empty.selectBlueprint}</div>
+                    <EmptyState title={t.empty.selectBlueprint} />
                   ) : !activeRun ? (
-                    <div className="empty-state page-empty">{t.empty.noRunHistory}</div>
+                    <EmptyState title={t.empty.noRunHistory} />
                   ) : latestReleaseReport ? (
                     <MarkdownRenderer value={latestReleaseReport.summary} className="run-report-body" />
                   ) : (
-                    <div className="empty-state compact-empty-state">{reportLayerCopy.noRelease}</div>
+                    <EmptyState className="ui-state-compact" title={reportLayerCopy.noRelease} />
                   )}
                 </div>
               </section>
             </div>
           </div>
         </div>
-      </section>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -1333,33 +1343,29 @@ export function ApprovalsPage({
   approvals,
   approvalRequests = [],
   approvalThreads = [],
-  inboxProjections,
-  inboxResponsesByRequestId = {},
+  humanActionQueue,
+  humanActionResponsesByRequestId = {},
   language,
   t,
   actionPending = false,
   focusedEntryId,
   onApproveApprovalRequest,
-  onComplete,
   onRejectApprovalRequest,
   onReplyApprovalRequest,
-  onReturnForRevisionApprovalRequest,
   onSendHumanActionResponse
 }: {
   approvals: PendingApprovalItem[];
   approvalRequests?: ApprovalRequest[];
   approvalThreads?: ApprovalThread[];
-  inboxProjections: InboxProjection[];
-  inboxResponsesByRequestId?: Record<string, HumanActionResponse[]>;
+  humanActionQueue: HumanActionQueueItem[];
+  humanActionResponsesByRequestId?: Record<string, HumanActionResponse[]>;
   language: Language;
   t: Messages;
   actionPending?: boolean;
   focusedEntryId?: string;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
-  onReturnForRevisionApprovalRequest: (approvalRequestId: string, message: string) => void;
   onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void;
 }) {
   const approvalsPage = t.pages.approvals ?? { title: 'Approvals', description: '' };
@@ -1381,11 +1387,11 @@ export function ApprovalsPage({
       approvals,
       approvalRequestsById,
       approvalThreadsById,
-      projections: inboxProjections,
+      queue: humanActionQueue,
       language,
       copy
     }),
-    [approvalRequestsById, approvalThreadsById, approvals, copy, inboxProjections, language]
+    [approvalRequestsById, approvalThreadsById, approvals, copy, humanActionQueue, language]
   );
   const entries = useMemo(
     () => allEntries
@@ -1428,61 +1434,46 @@ export function ApprovalsPage({
     }
   };
 
-  const returnApprovalForRevision = (approval: ApprovalInboxControl, entryId: string, body: string) => {
-    if (!approval.approvalRequestId || approval.canReturnForRevision !== true || actionPending) return;
-    const trimmed = body.trim();
-    if (!trimmed) return;
-    onReturnForRevisionApprovalRequest(approval.approvalRequestId, trimmed);
-    clearDraft(entryId);
-  };
-
-  const sendHumanResponse = (projection: InboxProjection, entryId: string, body: string) => {
-    if (dispatchHumanActionProjectionResponse(projection, body, actionPending, onSendHumanActionResponse)) {
+  const sendHumanResponse = (queueItem: HumanActionQueueItem, entryId: string, body: string) => {
+    if (dispatchHumanActionQueueResponse(queueItem, body, actionPending, onSendHumanActionResponse)) {
       clearDraft(entryId);
     }
   };
 
   return (
-    <section className="page-grid approvals-page">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{approvalsPage.title}</h3>
-            <p>{copy.metric(entries.length, totalEntries, pendingEntries)}</p>
-          </div>
-          <div className="toolbar-cluster wrap">
-            <label className="filter-label">
-              <span>{copy.sourceFilter}</span>
-              <select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as HumanActionSourceFilter)}>
+    <PageShell className="approvals-page">
+      <PageHeader
+        title={approvalsPage.title}
+        description={copy.metric(entries.length, totalEntries, pendingEntries)}
+        actions={
+          <FilterBar>
+            <FormField label={copy.sourceFilter} compact>
+              <SelectControl value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value as HumanActionSourceFilter)}>
                 <option value="all">{copy.allSources}</option>
                 <option value="run_room">{copy.runRoom}</option>
                 <option value="executive_chat">{copy.executiveChat}</option>
                 <option value="blueprint_governance">{copy.blueprintGovernance}</option>
-              </select>
-            </label>
-            <label className="filter-label">
-              <span>{copy.timeFilter}</span>
-              <select value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as HumanActionTimeFilter)}>
+              </SelectControl>
+            </FormField>
+            <FormField label={copy.timeFilter} compact>
+              <SelectControl value={timeFilter} onChange={(event) => setTimeFilter(event.target.value as HumanActionTimeFilter)}>
                 <option value="all">{copy.allTime}</option>
                 <option value="today">{copy.today}</option>
                 <option value="week">{copy.week}</option>
-              </select>
-            </label>
-          </div>
-        </div>
-      </div>
+              </SelectControl>
+            </FormField>
+          </FilterBar>
+        }
+      />
 
-      <div className="inbox-shell">
+      <PageBody className="inbox-shell approvals-page-body">
         <div className="content-card stack-card inbox-list-card">
-          <div className="inbox-list-header">
-            <strong>{copy.queueTitle}</strong>
-            <span>{copy.entryCount(entries.length)}</span>
-          </div>
+          <CardHeader title={copy.queueTitle} actions={<StatusBadge label={copy.entryCount(entries.length)} tone="neutral" />} />
           {entries.length === 0 ? (
-            <div className="empty-state page-empty">
-              <strong>{totalEntries === 0 ? copy.emptyTitle : copy.emptyFilterTitle}</strong>
-              <p>{totalEntries === 0 ? copy.emptyBody : copy.emptyFilterBody}</p>
-            </div>
+            <EmptyState
+              title={totalEntries === 0 ? copy.emptyTitle : copy.emptyFilterTitle}
+              description={totalEntries === 0 ? copy.emptyBody : copy.emptyFilterBody}
+            />
           ) : (
             <div className="inbox-thread-list" role="listbox" aria-label={copy.queueTitle}>
               {entries.map((entry) => {
@@ -1513,7 +1504,7 @@ export function ApprovalsPage({
 
         <div className="content-card stack-card inbox-detail-card">
           {selectedEntry ? (
-            selectedEntry.kind === 'approval' || selectedEntry.kind === 'decision_projection' ? (
+            selectedEntry.kind === 'approval' || selectedEntry.kind === 'decision_queue_item' ? (
               <ApprovalRequestDetail
                 entry={selectedEntry}
                 draft={selectedDraft}
@@ -1523,11 +1514,9 @@ export function ApprovalsPage({
                 actionPending={actionPending}
                 onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
                 onSendReply={() => sendApprovalReply(selectedEntry.approval, selectedEntry.id, selectedDraft)}
-                onReturnForRevision={() => returnApprovalForRevision(selectedEntry.approval, selectedEntry.id, selectedDraft)}
                 onApprove={() => {
                   if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'approve', selectedDraft, actionPending, {
                     onApproveApprovalRequest,
-                    onComplete,
                     onRejectApprovalRequest
                   })) {
                     clearDraft(selectedEntry.id);
@@ -1536,41 +1525,36 @@ export function ApprovalsPage({
                 onReject={() => {
                   if (dispatchApprovalInboxDecisionAction(selectedEntry.approval, 'reject', selectedDraft, actionPending, {
                     onApproveApprovalRequest,
-                    onComplete,
                     onRejectApprovalRequest
                   })) {
                     clearDraft(selectedEntry.id);
                   }
                 }}
               />
-            ) : selectedEntry.kind === 'projection' ? (
-              <HumanActionProjectionDetail
+            ) : selectedEntry.kind === 'queue_item' ? (
+              <HumanActionQueueDetail
                 entry={selectedEntry}
-                responses={inboxResponsesByRequestId[selectedEntry.projection.humanActionRequestId] ?? []}
+                responses={humanActionResponsesByRequestId[selectedEntry.queueItem.humanActionRequestId] ?? []}
                 draft={selectedDraft}
                 language={language}
                 copy={copy}
                 actionPending={actionPending}
                 onDraftChange={(value) => updateDraft(selectedEntry.id, value)}
-                onSend={() => sendHumanResponse(selectedEntry.projection, selectedEntry.id, selectedDraft)}
+                onSend={() => sendHumanResponse(selectedEntry.queueItem, selectedEntry.id, selectedDraft)}
               />
             ) : (
-              <UnavailableDecisionProjectionDetail
+              <UnavailableDecisionQueueDetail
                 entry={selectedEntry}
                 language={language}
                 copy={copy}
               />
             )
           ) : (
-            <div className="empty-state page-empty">
-              <MessageSquareText size={22} />
-              <strong>{copy.noSelectionTitle}</strong>
-              <p>{copy.noSelectionBody}</p>
-            </div>
+            <EmptyState icon={<MessageSquareText size={22} />} title={copy.noSelectionTitle} description={copy.noSelectionBody} />
           )}
         </div>
-      </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -1582,42 +1566,42 @@ type HumanActionInboxEntry =
       subtitle: string;
       status: string;
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
       approval: ApprovalInboxControl;
       sourceApproval: PendingApprovalItem;
       thread?: ApprovalThread;
     }
   | {
-      kind: 'projection';
+      kind: 'queue_item';
       id: string;
       title: string;
       subtitle: string;
-      status: InboxProjection['status'];
+      status: HumanActionQueueItem['status'];
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
     }
   | {
-      kind: 'decision_projection';
+      kind: 'decision_queue_item';
       id: string;
       title: string;
       subtitle: string;
       status: string;
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
       approvalRequest: ApprovalRequest;
       approval: ApprovalInboxControl;
     }
   | {
-      kind: 'unavailable_decision_projection';
+      kind: 'unavailable_decision_queue_item';
       id: string;
       title: string;
       subtitle: string;
-      status: InboxProjection['status'];
+      status: HumanActionQueueItem['status'];
       updatedAt: string;
-      sourceContextType: InboxProjection['sourceContextType'];
-      projection: InboxProjection;
+      sourceContextType: HumanActionQueueItem['sourceContextType'];
+      queueItem: HumanActionQueueItem;
       unavailableReason: string;
     };
 
@@ -1629,9 +1613,6 @@ export type ApprovalInboxControl = {
   canApprove?: boolean;
   canReply?: boolean;
   canReject?: boolean;
-  canComplete?: boolean;
-  canTerminate?: boolean;
-  canReturnForRevision?: boolean;
   discussion?: PendingApprovalItem['discussion'];
 };
 
@@ -1639,11 +1620,10 @@ type ApprovalInboxDecisionAction = 'approve' | 'reject';
 
 type ApprovalInboxDecisionCallbacks = {
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
-  onComplete: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
 };
 
-type HumanActionSourceFilter = 'all' | InboxProjection['sourceContextType'];
+type HumanActionSourceFilter = 'all' | HumanActionQueueItem['sourceContextType'];
 type HumanActionTimeFilter = 'all' | 'today' | 'week';
 
 type HumanActionInboxCopy = {
@@ -1671,7 +1651,6 @@ type HumanActionInboxCopy = {
   messagePlaceholder: string;
   sendMessage: string;
   sendResponse: string;
-  returnForRevision: string;
   approvalDetail: string;
   humanActionDetail: string;
   decisionUnavailableTitle: string;
@@ -1681,7 +1660,6 @@ type HumanActionInboxCopy = {
   intent: string;
   createdBy: string;
   acceptAction: string;
-  completeAction: string;
   rejectAction: string;
 };
 
@@ -1694,11 +1672,10 @@ function ApprovalRequestDetail({
   actionPending,
   onDraftChange,
   onSendReply,
-  onReturnForRevision,
   onApprove,
   onReject
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'approval' | 'decision_projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'approval' | 'decision_queue_item' }>;
   draft: string;
   language: Language;
   t: Messages;
@@ -1706,29 +1683,24 @@ function ApprovalRequestDetail({
   actionPending: boolean;
   onDraftChange: (value: string) => void;
   onSendReply: () => void;
-  onReturnForRevision: () => void;
   onApprove: () => void;
   onReject: () => void;
 }) {
   const approval = entry.approval;
-  const canApprove = Boolean(approval.approvalRequestId && !actionPending && (approval.canApprove !== false || approval.canComplete === true));
+  const canApprove = Boolean(approval.approvalRequestId && !actionPending && approval.canApprove !== false);
   const canReject = Boolean(approval.approvalRequestId && !actionPending && approval.canReject === true);
   const canReply = Boolean(approval.approvalRequestId && !actionPending && canSendApprovalReply(approval));
-  const canReturn = Boolean(approval.approvalRequestId && !actionPending && approval.canReturnForRevision === true && draft.trim());
   const canEditDraft = (approval.status ?? 'pending') === 'pending' && !actionPending;
-  const approveLabel = approval.canApprove === false && approval.canComplete === true ? copy.completeAction : copy.acceptAction;
   void t;
 
   return (
     <div className="inbox-detail-stack">
-      <div className="inbox-detail-header">
-        <div>
-          <span className="eyebrow">{copy.approvalDetail}</span>
-          <h3>{entry.title}</h3>
-          <p>{entry.subtitle}</p>
-        </div>
-        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
-      </div>
+      <PanelHeader
+        eyebrow={copy.approvalDetail}
+        title={entry.title}
+        description={entry.subtitle}
+        actions={<StatusBadge label={humanActionStatusLabel(entry.status, language)} tone={humanActionStatusTone(entry.status)} />}
+      />
 
       <div className="inbox-content-block">
         <span>{copy.requestBody}</span>
@@ -1762,13 +1734,9 @@ function ApprovalRequestDetail({
           {actionPending ? <Loader2 className="spin" size={15} /> : <Send size={15} />}
           {copy.sendMessage}
         </button>
-        <button type="button" disabled={!canReturn} onClick={onReturnForRevision}>
-          <RefreshCw size={15} />
-          {copy.returnForRevision}
-        </button>
         <button type="button" className="primary-action" disabled={!canApprove} onClick={onApprove}>
           <BadgeCheck size={15} />
-          {approveLabel}
+          {copy.acceptAction}
         </button>
         <button type="button" className="danger-action" disabled={!canReject} onClick={onReject}>
           <X size={15} />
@@ -1779,7 +1747,7 @@ function ApprovalRequestDetail({
   );
 }
 
-function HumanActionProjectionDetail({
+function HumanActionQueueDetail({
   entry,
   responses,
   draft,
@@ -1789,7 +1757,7 @@ function HumanActionProjectionDetail({
   onDraftChange,
   onSend
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'queue_item' }>;
   responses: HumanActionResponse[];
   draft: string;
   language: Language;
@@ -1798,27 +1766,25 @@ function HumanActionProjectionDetail({
   onDraftChange: (value: string) => void;
   onSend: () => void;
 }) {
-  const projection = entry.projection;
-  const canRespond = projection.status === 'pending' && !actionPending;
+  const queueItem = entry.queueItem;
+  const canRespond = queueItem.status === 'pending' && !actionPending;
   return (
     <div className="inbox-detail-stack">
-      <div className="inbox-detail-header">
-        <div>
-          <span className="eyebrow">{copy.humanActionDetail}</span>
-          <h3>{entry.title}</h3>
-          <p>{entry.subtitle}</p>
-        </div>
-        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
-      </div>
+      <PanelHeader
+        eyebrow={copy.humanActionDetail}
+        title={entry.title}
+        description={entry.subtitle}
+        actions={<StatusBadge label={humanActionStatusLabel(entry.status, language)} tone={humanActionStatusTone(entry.status)} />}
+      />
 
       <div className="inbox-detail-facts">
-        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
-        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+        <span>{copy.context}: {humanActionContextLabel(queueItem.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(queueItem.responseIntent, language)}</span>
       </div>
 
       <div className="inbox-content-block">
         <span>{copy.requestBody}</span>
-        <MarkdownRenderer value={projection.bodyMarkdown} />
+        <MarkdownRenderer value={queueItem.bodyMarkdown} />
       </div>
 
       {responses.length > 0 && (
@@ -1853,40 +1819,35 @@ function HumanActionProjectionDetail({
   );
 }
 
-function UnavailableDecisionProjectionDetail({
+function UnavailableDecisionQueueDetail({
   entry,
   language,
   copy
 }: {
-  entry: Extract<HumanActionInboxEntry, { kind: 'unavailable_decision_projection' }>;
+  entry: Extract<HumanActionInboxEntry, { kind: 'unavailable_decision_queue_item' }>;
   language: Language;
   copy: HumanActionInboxCopy;
 }) {
-  const projection = entry.projection;
+  const queueItem = entry.queueItem;
   return (
     <div className="inbox-detail-stack">
-      <div className="inbox-detail-header">
-        <div>
-          <span className="eyebrow">{copy.decisionUnavailableTitle}</span>
-          <h3>{entry.title}</h3>
-          <p>{entry.subtitle}</p>
-        </div>
-        <span className={'status-pill ' + humanActionStatusClassName(entry.status)}>{humanActionStatusLabel(entry.status, language)}</span>
-      </div>
+      <PanelHeader
+        eyebrow={copy.decisionUnavailableTitle}
+        title={entry.title}
+        description={entry.subtitle}
+        actions={<StatusBadge label={humanActionStatusLabel(entry.status, language)} tone={humanActionStatusTone(entry.status)} />}
+      />
 
       <div className="inbox-detail-facts">
-        <span>{copy.context}: {humanActionContextLabel(projection.sourceContextType, language)}</span>
-        <span>{copy.intent}: {humanActionIntentLabel(projection.responseIntent, language)}</span>
+        <span>{copy.context}: {humanActionContextLabel(queueItem.sourceContextType, language)}</span>
+        <span>{copy.intent}: {humanActionIntentLabel(queueItem.responseIntent, language)}</span>
       </div>
 
-      <div className="empty-state compact-empty-state">
-        <strong>{copy.decisionUnavailableTitle}</strong>
-        <p>{entry.unavailableReason}</p>
-      </div>
+      <EmptyState className="ui-state-compact" title={copy.decisionUnavailableTitle} description={entry.unavailableReason} />
 
       <div className="inbox-content-block">
         <span>{copy.requestBody}</span>
-        <MarkdownRenderer value={projection.bodyMarkdown} />
+        <MarkdownRenderer value={queueItem.bodyMarkdown} />
       </div>
     </div>
   );
@@ -1919,7 +1880,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
       messagePlaceholder: "\u5199\u4e0b\u5904\u7406\u610f\u89c1...",
       sendMessage: "\u53d1\u9001\u6d88\u606f",
       sendResponse: "\u53d1\u9001\u5904\u7406\u7ed3\u679c",
-      returnForRevision: "\u8981\u6c42\u4fee\u8ba2",
       approvalDetail: "\u5ba1\u6279\u8bf7\u6c42",
       humanActionDetail: "\u4eba\u5de5\u5904\u7406\u8bf7\u6c42",
       decisionUnavailableTitle: "\u5ba1\u6279\u8bf7\u6c42\u4e0d\u53ef\u7528",
@@ -1929,7 +1889,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
       intent: "\u610f\u56fe",
       createdBy: "\u521b\u5efa\u8005",
       acceptAction: "\u901a\u8fc7",
-      completeAction: "\u5b8c\u6210",
       rejectAction: "\u62d2\u7edd"
     };
   }
@@ -1958,7 +1917,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     messagePlaceholder: 'Write a response...',
     sendMessage: 'Send message',
     sendResponse: 'Send response',
-    returnForRevision: 'Return for revision',
     approvalDetail: 'Approval request',
     humanActionDetail: 'Human action request',
     decisionUnavailableTitle: 'Approval request unavailable',
@@ -1968,7 +1926,6 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     intent: 'Intent',
     createdBy: 'Created by',
     acceptAction: 'Accept',
-    completeAction: 'Complete',
     rejectAction: 'Decline'
   };
 }
@@ -1977,14 +1934,14 @@ function buildHumanActionInboxEntries({
   approvals,
   approvalRequestsById,
   approvalThreadsById,
-  projections,
+  queue,
   language,
   copy
 }: {
   approvals: PendingApprovalItem[];
   approvalRequestsById: Map<string, ApprovalRequest>;
   approvalThreadsById: Map<string, ApprovalThread>;
-  projections: InboxProjection[];
+  queue: HumanActionQueueItem[];
   language: Language;
   copy: HumanActionInboxCopy;
 }): HumanActionInboxEntry[] {
@@ -2021,56 +1978,56 @@ function buildHumanActionInboxEntries({
       .map((entry) => [entry.approval.approvalRequestId, entry] as const)
       .filter((entry): entry is [string, Extract<HumanActionInboxEntry, { kind: 'approval' }>] => typeof entry[0] === 'string')
   );
-  const projectionEntries: HumanActionInboxEntry[] = [];
-  for (const projection of projections) {
-    if (projection.responseIntent === 'decision_required') {
-      const approvalRequestId = projection.approvalRequestId;
+  const queueEntries: HumanActionInboxEntry[] = [];
+  for (const queueItem of queue) {
+    if (queueItem.responseIntent === 'decision_required') {
+      const approvalRequestId = queueItem.approvalRequestId;
       if (approvalRequestId && approvalEntriesByRequestId.has(approvalRequestId)) {
         continue;
       }
       const approvalRequest = approvalRequestId ? approvalRequestsById.get(approvalRequestId) : undefined;
       if (approvalRequest?.status === 'pending') {
-        projectionEntries.push({
-          kind: 'decision_projection',
-          id: 'human:' + projection.humanActionRequestId,
-          title: projection.title || approvalRequest.title,
-          subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + approvalRequest.kind,
+        queueEntries.push({
+          kind: 'decision_queue_item',
+          id: 'human:' + queueItem.humanActionRequestId,
+          title: queueItem.title || approvalRequest.title,
+          subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + approvalRequest.kind,
           status: approvalRequest.status,
-          updatedAt: approvalRequest.updatedAt ?? projection.updatedAt,
-          sourceContextType: projection.sourceContextType,
-          projection,
+          updatedAt: approvalRequest.updatedAt ?? queueItem.updatedAt,
+          sourceContextType: queueItem.sourceContextType,
+          queueItem,
           approvalRequest,
           approval: approvalControlFromApprovalRequest(approvalRequest)
         });
         continue;
       }
-      projectionEntries.push({
-        kind: 'unavailable_decision_projection',
-        id: 'human:' + projection.humanActionRequestId,
-        title: projection.title,
-        subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
-        status: projection.status,
-        updatedAt: projection.updatedAt,
-        sourceContextType: projection.sourceContextType,
-        projection,
+      queueEntries.push({
+        kind: 'unavailable_decision_queue_item',
+        id: 'human:' + queueItem.humanActionRequestId,
+        title: queueItem.title,
+        subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + humanActionIntentLabel(queueItem.responseIntent, language),
+        status: queueItem.status,
+        updatedAt: queueItem.updatedAt,
+        sourceContextType: queueItem.sourceContextType,
+        queueItem,
         unavailableReason: approvalRequest ? copy.decisionUnavailableNotPending : copy.decisionUnavailableMissing
       });
       continue;
     }
 
-    projectionEntries.push({
-      kind: 'projection',
-      id: 'human:' + projection.humanActionRequestId,
-      title: projection.title,
-      subtitle: humanActionContextLabel(projection.sourceContextType, language) + ' / ' + humanActionIntentLabel(projection.responseIntent, language),
-      status: projection.status,
-      updatedAt: projection.updatedAt,
-      sourceContextType: projection.sourceContextType,
-      projection
+    queueEntries.push({
+      kind: 'queue_item',
+      id: 'human:' + queueItem.humanActionRequestId,
+      title: queueItem.title,
+      subtitle: humanActionContextLabel(queueItem.sourceContextType, language) + ' / ' + humanActionIntentLabel(queueItem.responseIntent, language),
+      status: queueItem.status,
+      updatedAt: queueItem.updatedAt,
+      sourceContextType: queueItem.sourceContextType,
+      queueItem
     });
   }
 
-  return [...approvalEntries, ...projectionEntries]
+  return [...approvalEntries, ...queueEntries]
     .sort((left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime());
 }
 
@@ -2083,9 +2040,6 @@ function approvalControlFromPendingApproval(approval: PendingApprovalItem): Appr
     canApprove: approval.canApprove,
     canReply: approval.canReply,
     canReject: approval.canReject,
-    canComplete: approval.canComplete,
-    canTerminate: approval.canTerminate,
-    canReturnForRevision: approval.canReturnForRevision,
     discussion: approval.discussion
   };
 }
@@ -2098,9 +2052,6 @@ function approvalControlFromApprovalRequest(approvalRequest: ApprovalRequest): A
     canApprove: approvalRequest.capabilities.approve,
     canReply: approvalRequest.capabilities.reply,
     canReject: approvalRequest.capabilities.reject,
-    canComplete: approvalRequest.capabilities.complete,
-    canTerminate: approvalRequest.capabilities.terminate,
-    canReturnForRevision: approvalRequest.capabilities.returnForRevision,
     discussion: {
       mode: approvalRequest.capabilities.reply ? 'message_only' : 'none',
       canStreamReply: false,
@@ -2119,11 +2070,7 @@ export function dispatchApprovalInboxDecisionAction(
   if (!approval.approvalRequestId || actionPending) return false;
   const comment = draft.trim() || undefined;
   if (action === 'approve') {
-    if (approval.canApprove === false && approval.canComplete !== true) return false;
-    if (approval.canApprove === false && approval.canComplete === true) {
-      callbacks.onComplete(approval.approvalRequestId, comment);
-      return true;
-    }
+    if (approval.canApprove === false) return false;
     callbacks.onApproveApprovalRequest(approval.approvalRequestId, comment);
     return true;
   }
@@ -2145,16 +2092,16 @@ export function dispatchApprovalInboxReplyAction(
   return true;
 }
 
-export function dispatchHumanActionProjectionResponse(
-  projection: InboxProjection,
+export function dispatchHumanActionQueueResponse(
+  queueItem: HumanActionQueueItem,
   body: string,
   actionPending: boolean,
   onSendHumanActionResponse: (requestId: string, messageMarkdown: string) => void
 ): boolean {
   const trimmed = body.trim();
-  if (projection.responseIntent === 'decision_required') return false;
-  if (projection.status !== 'pending' || !trimmed || actionPending) return false;
-  onSendHumanActionResponse(projection.humanActionRequestId, trimmed);
+  if (queueItem.responseIntent !== 'reply_required') return false;
+  if (queueItem.status !== 'pending' || !trimmed || actionPending) return false;
+  onSendHumanActionResponse(queueItem.humanActionRequestId, trimmed);
   return true;
 }
 
@@ -2188,6 +2135,13 @@ function humanActionStatusClassName(status: string): string {
   return 'neutral';
 }
 
+function humanActionStatusTone(status: string): StatusBadgeTone {
+  if (status === 'pending' || status === 'replying') return "warning";
+  if (status === 'responded' || status === 'completed' || status === 'approved') return "success";
+  if (status === 'rejected' || status === 'terminated' || status === 'cancelled') return "danger";
+  return "neutral";
+}
+
 function humanActionStatusLabel(status: string, language: Language): string {
   if (language === "zh-CN") {
     if (status === 'pending') return "\u5f85\u5904\u7406";
@@ -2213,7 +2167,7 @@ function humanActionStatusLabel(status: string, language: Language): string {
   return status.replaceAll('_', ' ');
 }
 
-function humanActionContextLabel(value: InboxProjection['sourceContextType'], language: Language): string {
+function humanActionContextLabel(value: HumanActionQueueItem['sourceContextType'], language: Language): string {
   if (language === "zh-CN") {
     if (value === 'run_room') return "\u8fd0\u884c\u623f\u95f4";
     if (value === 'executive_chat') return "Executive \u804a\u5929";
@@ -2224,15 +2178,13 @@ function humanActionContextLabel(value: InboxProjection['sourceContextType'], la
   return 'Blueprint governance';
 }
 
-function humanActionIntentLabel(value: InboxProjection['responseIntent'], language: Language): string {
+function humanActionIntentLabel(value: HumanActionQueueItem['responseIntent'], language: Language): string {
   if (language === "zh-CN") {
     if (value === 'decision_required') return "\u9700\u8981\u51b3\u7b56";
-    if (value === 'reply_required') return "\u9700\u8981\u56de\u590d";
-    return "\u9700\u8981\u5ba1\u9605";
+    return "\u9700\u8981\u56de\u590d";
   }
   if (value === 'decision_required') return 'decision required';
-  if (value === 'reply_required') return 'reply required';
-  return 'review required';
+  return 'reply required';
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -2272,9 +2224,21 @@ export function DashboardPage({
     { icon: Clock3, label: t.metrics.approvals(approvals.length) },
     { icon: Database, label: t.metrics.models(catalog?.models.length ?? 0) }
   ];
+  const dashboardCopy =
+    language === "zh-CN"
+      ? {
+          title: "工作台",
+          description: "查看当前工作区的蓝图、运行、审批和模型概览。"
+        }
+      : {
+          title: "Workspace",
+          description: "Review blueprint, run, approval, and model health for the current workspace."
+        };
 
   return (
-    <section className="page-grid">
+    <PageShell className="dashboard-page">
+      <PageHeader title={dashboardCopy.title} description={dashboardCopy.description} />
+      <PageBody className="page-grid page-scroll dashboard-page-body">
       <div className="content-card stack-card">
         <div className="metric-strip">
           {summary.map((item) => {
@@ -2291,22 +2255,24 @@ export function DashboardPage({
 
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.tables.widgets}</h3>
-            <p>{t.metrics.widgets(widgets.length)}</p>
-          </div>
-          <div className="toolbar-cluster wrap">
+          <CardHeader
+            title={t.tables.widgets}
+            description={t.metrics.widgets(widgets.length)}
+            actions={
+              <Toolbar>
             {(["pending_approvals", "runtime_overview", "catalog_status"] as DashboardWidgetType[]).map((type) => (
               <button key={type} type="button" onClick={() => onAddWidget(type)}>
                 <PanelsTopLeft size={16} />
                 {widgetTypeLabel(type, t)}
               </button>
             ))}
-          </div>
+              </Toolbar>
+            }
+          />
         </div>
         <div className="card-grid widget-grid">
           {widgets.length === 0 ? (
-            <div className="empty-state page-empty">{t.empty.noWidgets}</div>
+            <EmptyState title={t.empty.noWidgets} />
           ) : (
             widgets.map((widget) => (
               <WidgetCard
@@ -2324,7 +2290,8 @@ export function DashboardPage({
           )}
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -2454,16 +2421,21 @@ export function ModelsPage({
   };
 
   return (
-    <section className="page-grid">
-      <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{modelCopy.configuredModels}</h3>
-          </div>
+    <PageShell className="models-page">
+      <PageHeader
+        title={t.pages.models?.title ?? t.navigation.models}
+        description={t.pages.models?.description}
+        actions={
           <button type="button" title={t.actions.refreshCatalog} disabled={busy} onClick={onRefreshCatalog}>
             {busyAction === "refreshCatalog" ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
             {t.actions.refreshCatalog}
           </button>
+        }
+      />
+      <PageBody className="page-grid page-scroll models-page-body">
+      <div className="content-card stack-card">
+        <div className="card-toolbar">
+          <CardHeader title={modelCopy.configuredModels} />
         </div>
         <div className="model-card-grid">
           {orderedConfiguredModels.length ? (
@@ -2489,16 +2461,14 @@ export function ModelsPage({
               );
             })
           ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+            <EmptyState title={t.empty.noCatalog} />
           )}
         </div>
       </div>
 
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{wizardCopy.title}</h3>
-          </div>
+          <CardHeader title={wizardCopy.title} />
         </div>
 
         <div className="wizard-shell">
@@ -2512,7 +2482,7 @@ export function ModelsPage({
           />
 
           {modelProviders.length === 0 ? (
-            <div className="empty-state page-empty">{wizardCopy.empty}</div>
+            <EmptyState title={wizardCopy.empty} />
           ) : modelStep === "provider" ? (
             <>
               <label className="wizard-search">
@@ -2591,7 +2561,8 @@ export function ModelsPage({
         </div>
       </div>
 
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -2641,7 +2612,7 @@ export function ConfiguredModelCard({
     <article className={`model-card${className ? ` ${className}` : ""}`}>
       <div className="model-card-head">
         <IdentityTitle kind="model" id={model.provider} label={model.label} />
-        {visibleBadge && <span className="status-pill status-default">{visibleBadge}</span>}
+        {visibleBadge && <StatusBadge label={visibleBadge} tone="neutral" />}
       </div>
       <div className="model-card-usage" aria-label={copy.usage}>
         <div className="model-usage-head">
@@ -2722,20 +2693,20 @@ export function AgentsPage({
   const configuredAgents = openClawConfig?.configuredAgents ?? [];
 
   return (
-    <section className="page-grid">
+    <PageShell className="agents-page">
+      <PageHeader title={t.pages.agents?.title ?? t.navigation.agents} description={t.pages.agents?.description} />
+      <PageBody className="page-grid page-scroll agents-page-body">
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{copy.configuredAgents}</h3>
-          </div>
+          <CardHeader title={copy.configuredAgents} />
         </div>
         <div className="model-card-grid">
           {configuredAgents.length ? (
             configuredAgents.map((agent) => (
               <article key={agent.id} className="model-card">
-                <div className="model-card-head">
-                  <IdentityTitle kind="agent" id={agent.id} label={agent.name ?? agent.id} />
-                  {agent.isDefault && <span className="status-pill status-default">{t.common.defaultOption}</span>}
+                  <div className="model-card-head">
+                    <IdentityTitle kind="agent" id={agent.id} label={agent.name ?? agent.id} />
+                  {agent.isDefault && <StatusBadge label={t.common.defaultOption} tone="neutral" />}
                 </div>
                 <div className="model-card-main">
                   <code>{agent.agentDir}</code>
@@ -2747,16 +2718,14 @@ export function AgentsPage({
               </article>
             ))
           ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+            <EmptyState title={t.empty.noCatalog} />
           )}
         </div>
       </div>
 
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.actions.addAgent}</h3>
-          </div>
+          <CardHeader title={t.actions.addAgent} />
         </div>
         <div className="form-grid">
           <label>
@@ -2808,7 +2777,8 @@ export function AgentsPage({
           </button>
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -2836,16 +2806,14 @@ export function SkillsPage({
   const skills = catalog?.tools ?? [];
 
   return (
-    <section className="page-grid">
+    <PageShell className="skills-page">
+      <PageHeader
+        title={t.pages.skills?.title ?? "Skills"}
+        description={t.pages.skills?.description ?? copy.openclawCatalog}
+        actions={<StatusBadge label={copy.count(skills.length)} tone="info" />}
+      />
+      <PageBody className="page-grid page-scroll skills-page-body">
       <div className="content-card stack-card">
-        <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{t.pages.skills?.title ?? "Skills"}</h3>
-            <p>{t.pages.skills?.description ?? copy.openclawCatalog}</p>
-          </div>
-          <span className="status-pill status-running">{copy.count(skills.length)}</span>
-        </div>
-
         <div className="model-card-grid">
           {skills.length ? (
             skills.map((skill) => (
@@ -2855,7 +2823,7 @@ export function SkillsPage({
                     <strong>{skill.label}</strong>
                     <code>{skill.id}</code>
                   </div>
-                  <span className="status-pill status-succeeded">{skill.category || "Skill"}</span>
+                  <StatusBadge label={skill.category || "Skill"} tone="success" />
                 </div>
                 <div className="model-card-main">
                   <p>{skill.description || "-"}</p>
@@ -2867,11 +2835,12 @@ export function SkillsPage({
               </article>
             ))
           ) : (
-            <div className="empty-state page-empty">{t.empty.noSkills}</div>
+            <EmptyState title={t.empty.noSkills} />
           )}
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -2897,15 +2866,6 @@ function runResultPreview(runView: BlueprintRunView, t: Messages): string {
     return result.waitingApprovalNode?.nodeLabel ?? t.status.waiting_approval;
   }
   return t.trace.noOutput;
-}
-
-function runResultStatusClassName(runView: BlueprintRunView): string {
-  const state = runView.finalResult?.state;
-  if (state === "available") return "status-succeeded";
-  if (state === "failed") return "status-failed";
-  if (state === "waiting_approval") return "status-waiting_approval";
-  if (state === "empty") return "status-empty";
-  return `status-${runView.run.status}`;
 }
 
 function runResultStatusLabel(runView: BlueprintRunView, t: Messages, language: Language): string {
@@ -2960,62 +2920,61 @@ export function BlueprintKanbanPage({
 
   return (
     <PageShell className="blueprint-kanban-page">
-      <PageHeader className="blueprint-kanban-title">
-        <div>
-          <h2>{copy.title}</h2>
-          <p>{language === "zh-CN" ? "\u6309\u72b6\u6001\u67e5\u770b\u84dd\u56fe\u8fd0\u884c\u5165\u53e3" : "Track blueprint run entry points by current state."}</p>
-        </div>
-        <div className="toolbar-cluster wrap">
-          <label className="field-control compact">
-            <span>{copy.fromDate}</span>
-            <select
-              value={filters.sourceContextType}
-              onChange={(event) => {
-                const value = event.target.value;
-                setFilters((current) => ({
-                  ...current,
-                  sourceContextType: isBlueprintKanbanSourceFilter(value) ? value : "all"
-                }));
-              }}
-            >
-              <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
-              {humanActionRequestSourceContextTypes.map((sourceContextType) => (
-                <option key={sourceContextType} value={sourceContextType}>
-                  {humanActionContextLabel(sourceContextType, language)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field-control compact">
-            <span>{copy.toDate}</span>
-            <select
-              value={filters.responseIntent}
-              onChange={(event) => {
-                const value = event.target.value;
-                setFilters((current) => ({
-                  ...current,
-                  responseIntent: isBlueprintKanbanIntentFilter(value) ? value : "all"
-                }));
-              }}
-            >
-              <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
-              {humanActionRequestResponseIntents.map((responseIntent) => (
-                <option key={responseIntent} value={responseIntent}>
-                  {humanActionIntentLabel(responseIntent, language)}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      </PageHeader>
+      <PageHeader
+        title={copy.title}
+        description={language === "zh-CN" ? "\u6309\u72b6\u6001\u67e5\u770b\u84dd\u56fe\u8fd0\u884c\u5165\u53e3" : "Track blueprint run entry points by current state."}
+        actions={
+          <FilterBar>
+            <FormField label={copy.fromDate} compact>
+              <SelectControl
+                value={filters.sourceContextType}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setFilters((current) => ({
+                    ...current,
+                    sourceContextType: isBlueprintKanbanSourceFilter(value) ? value : "all"
+                  }));
+                }}
+              >
+                <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
+                {humanActionRequestSourceContextTypes.map((sourceContextType) => (
+                  <option key={sourceContextType} value={sourceContextType}>
+                    {humanActionContextLabel(sourceContextType, language)}
+                  </option>
+                ))}
+              </SelectControl>
+            </FormField>
+            <FormField label={copy.toDate} compact>
+              <SelectControl
+                value={filters.responseIntent}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setFilters((current) => ({
+                    ...current,
+                    responseIntent: isBlueprintKanbanIntentFilter(value) ? value : "all"
+                  }));
+                }}
+              >
+                <option value="all">{language === "zh-CN" ? "\u5168\u90e8" : "All"}</option>
+                {humanActionRequestResponseIntents.map((responseIntent) => (
+                  <option key={responseIntent} value={responseIntent}>
+                    {humanActionIntentLabel(responseIntent, language)}
+                  </option>
+                ))}
+              </SelectControl>
+            </FormField>
+          </FilterBar>
+        }
+      />
 
       <PageBody className="blueprint-kanban-layout">
         {blueprintKanbanLaneOrder.map((lane) => (
           <div key={lane} className="page-panel blueprint-kanban-lane" data-kanban-lane={lane}>
-            <div className="page-panel-header blueprint-kanban-lane-header">
-              <h3>{blueprintKanbanLaneLabel(lane, language)}</h3>
-              <span className={`status-pill status-${lane}`}>{lanes[lane].length}</span>
-            </div>
+            <PanelHeader
+              className="blueprint-kanban-lane-header"
+              title={blueprintKanbanLaneLabel(lane, language)}
+              actions={<StatusBadge label={lanes[lane].length.toLocaleString(language)} tone={blueprintKanbanLaneTone(lane)} />}
+            />
             <div className="page-scroll blueprint-kanban-card-list">
               {lanes[lane].length ? (
                 lanes[lane].map((card) => (
@@ -3030,7 +2989,7 @@ export function BlueprintKanbanPage({
                     <div className="blueprint-kanban-card-main">
                       <div className="blueprint-kanban-card-title-row">
                         <strong>{card.title}</strong>
-                        <span className={`status-pill status-${card.lane}`}>{blueprintKanbanLaneLabel(card.lane, language)}</span>
+                        <StatusBadge label={blueprintKanbanLaneLabel(card.lane, language)} tone={blueprintKanbanLaneTone(card.lane)} />
                       </div>
                       <p>{card.summary ?? card.runRoomId ?? card.id}</p>
                     </div>
@@ -3060,7 +3019,7 @@ export function BlueprintKanbanPage({
                   </button>
                 ))
               ) : (
-                <div className="empty-state page-empty">{copy.noRecords}</div>
+                <EmptyState title={copy.noRecords} />
               )}
             </div>
           </div>
@@ -3078,6 +3037,13 @@ function blueprintKanbanLaneLabel(lane: BlueprintKanbanCardLane, language: Langu
     failed: { en: "Failed", zh: "\u5931\u8d25" }
   };
   return language === "zh-CN" ? labels[lane].zh : labels[lane].en;
+}
+
+function blueprintKanbanLaneTone(lane: BlueprintKanbanCardLane): StatusBadgeTone {
+  if (lane === "running") return "info";
+  if (lane === "waiting_user") return "warning";
+  if (lane === "completed") return "success";
+  return "danger";
 }
 
 function isBlueprintKanbanSourceFilter(value: string): value is "all" | HumanActionRequestSourceContextType {
@@ -3201,12 +3167,12 @@ export function ChannelsPage({
   };
 
   return (
-    <section className="page-grid">
+    <PageShell className="channels-page">
+      <PageHeader title={t.pages.channels?.title ?? t.navigation.channels} description={t.pages.channels?.description} />
+      <PageBody className="page-grid page-scroll channels-page-body">
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{configCopy.configuredChannels}</h3>
-          </div>
+          <CardHeader title={configCopy.configuredChannels} />
         </div>
         <div className="model-card-grid">
           {configuredChannels.length ? (
@@ -3215,9 +3181,10 @@ export function ChannelsPage({
                 <article key={`${channel.id}:${account.id}`} className="model-card">
                   <div className="model-card-head">
                     <IdentityTitle kind="channel" id={channel.id} label={account.name ?? `${channel.label} / ${account.id}`} />
-                    <span className={`status-pill ${account.enabled && channel.enabled ? "status-succeeded" : "status-cancelled"}`}>
-                      {account.enabled && channel.enabled ? copy.enabled : copy.disabled}
-                    </span>
+                    <StatusBadge
+                      label={account.enabled && channel.enabled ? copy.enabled : copy.disabled}
+                      tone={account.enabled && channel.enabled ? "success" : "danger"}
+                    />
                   </div>
                   <div className="model-card-main">
                     <code>{`${channel.id}:${account.id}`}</code>
@@ -3232,23 +3199,21 @@ export function ChannelsPage({
               ))
             )
           ) : (
-            <div className="empty-state page-empty">{t.empty.noCatalog}</div>
+            <EmptyState title={t.empty.noCatalog} />
           )}
         </div>
       </div>
 
       <div className="content-card stack-card">
         <div className="card-toolbar">
-          <div className="card-title-block">
-            <h3>{wizardCopy.title}</h3>
-          </div>
+          <CardHeader title={wizardCopy.title} />
         </div>
 
         <div className="wizard-shell">
           <WizardPath items={[wizardCopy.channelStep, selectedChannel?.label, selectedChannel ? wizardCopy.detailsStep : undefined]} />
 
           {channelOptions.length === 0 ? (
-            <div className="empty-state page-empty">{wizardCopy.empty}</div>
+            <EmptyState title={wizardCopy.empty} />
           ) : channelStep === "channel" ? (
             <>
               <label className="wizard-search">
@@ -3294,7 +3259,8 @@ export function ChannelsPage({
           ) : null}
         </div>
       </div>
-    </section>
+      </PageBody>
+    </PageShell>
   );
 }
 
@@ -3324,9 +3290,7 @@ function WidgetCard({
           <strong>{widget.title}</strong>
           <p>{widgetTypeLabel(widget.type, t)}</p>
         </div>
-        <button type="button" className="icon-button" onClick={onRemove}>
-          <Trash2 size={16} />
-        </button>
+        <IconButton icon={<Trash2 size={16} />} label={t.actions.remove} onClick={onRemove} />
       </div>
       {widget.type === "pending_approvals" && (
         <div className="widget-list">
@@ -3546,7 +3510,7 @@ function WizardChoiceList<T extends { id: string; label: string; hint?: string }
   getIdentityId?: (option: T) => string;
   onSelect: (option: T) => void;
 }) {
-  if (options.length === 0) return <div className="empty-state page-empty">{emptyText}</div>;
+  if (options.length === 0) return <EmptyState title={emptyText} />;
 
   return (
     <div className="wizard-option-list">
@@ -3579,7 +3543,7 @@ function WizardFieldList({
   onChange: (values: Record<string, OpenClawWizardValue>) => void;
 }) {
   const visibleFields = fields.filter((field) => isWizardFieldVisible(field, values));
-  if (visibleFields.length === 0) return <div className="empty-state compact-empty-state">No additional options.</div>;
+  if (visibleFields.length === 0) return <EmptyState className="ui-state-compact" title="No additional options." />;
 
   return (
     <div className="form-grid form-grid-wide wizard-field-grid">

@@ -102,7 +102,7 @@ export class BlueprintKanbanService {
   }
 
   private cardFromHumanActionRequest(request: HumanActionRequest, runRoom: RunRoom | undefined): BlueprintKanbanCard {
-    const inboxProjectionId = `inbox-projection-${request.id}`;
+    const humanActionQueueItemId = `human-action-queue-item-${request.id}`;
     return {
       id: `blueprint-kanban-human-action-${request.id}`,
       runRoomId: request.runRoomId,
@@ -110,7 +110,7 @@ export class BlueprintKanbanService {
       blueprintId: runRoom?.blueprintId,
       runId: runRoom?.runId,
       humanActionRequestId: request.id,
-      inboxProjectionId,
+      humanActionQueueItemId,
       lane: "waiting_user",
       sourceContextType: request.sourceContextType,
       responseIntent: request.responseIntent,
@@ -118,8 +118,8 @@ export class BlueprintKanbanService {
       summary: request.bodyMarkdown,
       updatedAt: request.updatedAt,
       targetRef: {
-        type: "inbox_projection",
-        inboxProjectionId,
+        type: "human_action_queue_item",
+        humanActionQueueItemId,
         humanActionRequestId: request.id,
         runRoomId: request.runRoomId
       }

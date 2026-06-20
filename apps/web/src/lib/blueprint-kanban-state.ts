@@ -43,7 +43,7 @@ export function groupBlueprintKanbanCards(
 
 export function blueprintKanbanCardIsNavigationOnly(card: BlueprintKanbanCard): boolean {
   return card.targetRef.type === "run_room" ||
-    card.targetRef.type === "inbox_projection" ||
+    card.targetRef.type === "human_action_queue_item" ||
     card.targetRef.type === "blueprint";
 }
 

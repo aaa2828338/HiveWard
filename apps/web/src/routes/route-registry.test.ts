@@ -25,8 +25,21 @@ describe("routeRegistry", () => {
     expect(routePathById.blueprint).toBe("/blueprint");
     expect(routePathById.runs).toBe("/runs");
     expect(routePathById.approvals).toBe("/approvals");
+    expect(routePathById.monitor).toBe("/monitor");
     expect(routePathById.company).toBe("/company");
     expect(routePathById.companyDirectory).toBe("/companies");
+  });
+
+  it("does not retain old history routing as a normal route", () => {
+    expect(routeRegistry.map((route) => route.id)).not.toContain("schedule");
+    expect(routeRegistry.map((route) => route.path)).not.toContain("/history");
+  });
+
+  it("does not retain removed public entry routes as normal routes", () => {
+    expect(routeRegistry.map((route) => route.id)).not.toContain("hivewardHome");
+    expect(routeRegistry.map((route) => route.path)).not.toContain("/");
+    expect(routeRegistry.map((route) => route.path)).not.toContain("/inbox");
+    expect(routeRegistry.map((route) => route.path)).not.toContain("/run/:runId");
   });
 
   it("keeps company-required routing in an explicit guard field", () => {

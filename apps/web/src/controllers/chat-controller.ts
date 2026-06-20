@@ -616,7 +616,7 @@ export async function streamChatMessage({
   messages,
   modelId,
   modelOptions,
-  onInboxProjectionsRefreshNeeded,
+  onHumanActionQueueRefreshNeeded,
   rebuildFromHivewardHistory,
   selectedBlueprintScopeId,
   selectedCompanyId,
@@ -645,7 +645,7 @@ export async function streamChatMessage({
   messages: ChatMessage[];
   modelId: string;
   modelOptions: SelectOption[];
-  onInboxProjectionsRefreshNeeded?: () => void | Promise<void>;
+  onHumanActionQueueRefreshNeeded?: () => void | Promise<void>;
   rebuildFromHivewardHistory: boolean;
   selectedBlueprintScopeId?: string;
   selectedCompanyId?: string;
@@ -781,7 +781,7 @@ export async function streamChatMessage({
   } finally {
     if (progressTimer !== undefined) window.clearInterval(progressTimer);
     if (streamAbortRef.current === controller) streamAbortRef.current = null;
-    await onInboxProjectionsRefreshNeeded?.();
+    await onHumanActionQueueRefreshNeeded?.();
     setIsSending(false);
   }
 }
@@ -795,7 +795,7 @@ export async function submitBlueprintProposal({
   setError,
   setProposalSubmittingMessageId,
   setSubmittedBlueprintProposalMessageIds,
-  onInboxProjectionsRefreshNeeded
+  onHumanActionQueueRefreshNeeded
 }: {
   activeSessionView?: HivewardSessionView;
   copy: ChatControllerCopy;
@@ -805,7 +805,7 @@ export async function submitBlueprintProposal({
   setError: Dispatch<SetStateAction<string | undefined>>;
   setProposalSubmittingMessageId: Dispatch<SetStateAction<string | undefined>>;
   setSubmittedBlueprintProposalMessageIds: Dispatch<SetStateAction<Set<string>>>;
-  onInboxProjectionsRefreshNeeded?: () => void | Promise<void>;
+  onHumanActionQueueRefreshNeeded?: () => void | Promise<void>;
 }) {
   if (!activeSessionView || !canSubmitBlueprintProposalMessage(message, activeSessionView)) return;
   const sourceRole = executiveSourceRoleForSession(activeSessionView);
@@ -830,7 +830,7 @@ export async function submitBlueprintProposal({
       }
     });
     setSubmittedBlueprintProposalMessageIds((current) => new Set(current).add(message.id));
-    await onInboxProjectionsRefreshNeeded?.();
+    await onHumanActionQueueRefreshNeeded?.();
   } catch (submitError) {
     setError(submitError instanceof Error ? submitError.message : copy.blueprintProposalSubmitFailed);
   } finally {
