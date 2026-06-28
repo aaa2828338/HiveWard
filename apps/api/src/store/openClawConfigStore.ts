@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -84,7 +84,7 @@ export class OpenClawConfigStore {
   async getVersion(): Promise<OpenClawVersionInfo> {
     const resolvedAt = new Date().toISOString();
     try {
-      const raw = await runOpenClawCli(["--version"], { timeoutMs: 15_000 });
+      const raw = await runOpenClawCli(["--version"], { timeoutMs: 30_000 });
       return {
         version: parseOpenClawVersion(raw),
         raw: raw || undefined,
@@ -104,6 +104,18 @@ export class OpenClawConfigStore {
 
   async updateDefaultModel(modelId: string): Promise<OpenClawConfigState> {
     await writeDefaultModel(modelId);
+    return this.getState();
+  }
+
+  async updateGateway(url: string, token?: string): Promise<OpenClawConfigState> {
+    const config = await this.readConfig();
+    if (!config.gateway) config.gateway = {};
+    if (!config.gateway.remote) config.gateway.remote = {};
+    config.gateway.remote.url = url;
+    if (token !== undefined) {
+      config.gateway.remote.token = token || undefined;
+    }
+    await writeFile(this.configPath, JSON.stringify(config, null, 2), "utf8");
     return this.getState();
   }
 

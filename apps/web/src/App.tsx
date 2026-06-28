@@ -75,6 +75,7 @@ export function App() {
     busyAction,
     dashboardDirty,
     error,
+    clearError,
     mutateDashboard,
     checkHivewardUpdate,
     importBlueprintFile
@@ -201,7 +202,12 @@ export function App() {
               stale: "\u9700\u66f4\u65b0",
               unsupported: "\u672a\u652f\u6301",
               error: "\u5f02\u5e38"
-            }
+            },
+            switchThirdParty: "\u5207\u6362\u7b2c\u4e09\u65b9OpenClaw",
+            gatewayUrlPlaceholder: "\u4f8b\u5982 ws://127.0.0.1:3007",
+            gatewayTokenPlaceholder: "\u53ef\u9009\u7684\u8ba4\u8bc1 Token",
+            gatewaySave: "\u4fdd\u5b58\u7f51\u5173",
+            gatewaySaving: "\u4fdd\u5b58\u4e2d"
           }
         : {
             title: "OpenClaw Control Panel",
@@ -247,20 +253,25 @@ export function App() {
               stale: "Update needed",
               unsupported: "Unsupported",
               error: "Error"
-            }
+            },
+            switchThirdParty: "Switch to third-party OpenClaw",
+            gatewayUrlPlaceholder: "e.g. ws://127.0.0.1:3007",
+            gatewayTokenPlaceholder: "Optional auth token",
+            gatewaySave: "Save gateway",
+            gatewaySaving: "Saving"
           },
     [language]
   );
   const openClawVersionLabel = openClawVersion?.version
     ? `${systemUi.versionPrefix}${openClawVersion.version}`
     : `${systemUi.versionPrefix}--`;
-  const openClawVersionHealthy = Boolean(openClawVersion?.version && !openClawVersion.error);
+  const gatewaySettings = openClawConfig?.gateway;
+  const openClawVersionHealthy = Boolean((openClawVersion?.version && !openClawVersion.error) || gatewaySettings?.url);
   const hivewardUpdateAvailableLabel = language === "zh-CN" ? "\u53d1\u73b0\u66f4\u65b0" : "Update available";
   const hivewardUpdateBadge = language === "zh-CN" ? "\u66f4\u65b0" : "New";
   const hivewardVersionTitle = hivewardUpdate?.updateAvailable
     ? `${hivewardUpdateAvailableLabel}: ${hivewardVersionLabel}`
     : `Hiveward ${hivewardVersionLabel}`;
-  const gatewaySettings = openClawConfig?.gateway;
   const gatewayStatusLabel = gatewaySettings?.url ? openClawPanelUi.configured : openClawPanelUi.notConfigured;
   const gatewaySourceLabel =
     gatewaySettings?.source === "environment"
@@ -275,6 +286,7 @@ export function App() {
     .filter(Boolean)
     .join(" / ") || openClawPanelUi.notConfigured;
   const openClawPanelBusy = busyAction === "checkOpenClawUpdates";
+  const gatewaySaving = busyAction === "switchOpenClawGateway";
   const installingOpenClawSkills = busyAction === "installHarnessSkills:openclaw";
   const installingClaudeCodeSkills = busyAction === "installHarnessSkills:claudeCode";
   const installingCodexSkills = busyAction === "installHarnessSkills:codex";
@@ -418,6 +430,8 @@ export function App() {
       gatewaySourceLabel={gatewaySourceLabel}
       gatewayAuthLabel={gatewayAuthLabel}
       openClawPanelBusy={openClawPanelBusy}
+      gatewaySaving={gatewaySaving}
+      onSwitchGateway={workspace.switchOpenClawGateway}
       openClawHarnessStatus={openClawHarnessStatus}
       claudeCodeHarnessStatus={claudeCodeHarnessStatus}
       codexHarnessStatus={codexHarnessStatus}
@@ -440,6 +454,7 @@ export function App() {
   return (
     <AppLayout
       error={error}
+      onErrorDismiss={clearError}
       importControl={
         <input
           ref={blueprintImportInputRef}

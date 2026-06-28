@@ -63,6 +63,7 @@ import { isActiveRunView, selectRunPollingTarget, syncApprovalsForRun, syncRunDe
 const RUN_STATE_POLL_INTERVAL_MS = 2500;
 const WORKSPACE_BLUEPRINT_REFRESH_INTERVAL_MS = 20000;
 const WORKSPACE_BLUEPRINT_AUTOSAVE_INTERVAL_MS = 60 * 1000;
+const INBOX_POLL_INTERVAL_MS = 5000;
 const HIVEWARD_UPDATE_POLL_INTERVAL_MS = 60 * 60 * 1000;
 const HIVEWARD_REPOSITORY_URL = "https://github.com/Chaunyzhang/HiveWard";
 const harnessSkillHarnessIds: HarnessId[] = ["codex", "claudeCode", "openclaw", "hermes", "google", "cursor", "opencode"];
@@ -218,9 +219,6 @@ export function useWorkspaceController({
         nextOpenClawConfig,
         nextOpenClawWizard,
         nextOpenClawModelUsage,
-        nextHarnessStatuses,
-        nextHermesConfig,
-        nextClaudeCodeModelResponse,
         nextHarnessSkillStatuses,
         nextRunSummaries,
         nextApprovals,
@@ -238,9 +236,6 @@ export function useWorkspaceController({
         api.getOpenClawConfig(),
         api.getOpenClawConfigWizard(),
         api.getOpenClawModelUsage().catch(() => []),
-        api.getHarnessStatus().catch(() => []),
-        api.getHermesConfig().catch(() => undefined),
-        api.getClaudeCodeModelConfig().catch(() => undefined),
         loadHarnessSkillStatuses(),
         api.listBlueprintRuns(),
         api.listPendingApprovals(),
@@ -270,11 +265,6 @@ export function useWorkspaceController({
       setOpenClawConfig(nextOpenClawConfig);
       setOpenClawWizard(nextOpenClawWizard);
       setOpenClawModelUsage(nextOpenClawModelUsage);
-      setHarnessStatuses(nextHarnessStatuses);
-      setHermesConfig(nextHermesConfig);
-      setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
-      setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
-      setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
       setHarnessSkillStatuses(nextHarnessSkillStatuses);
       setRunSummaries(nextRunSummaries);
       setRunDetailsById((current) => syncRunDetails(current, nextRunSummaries, nextRunView));
@@ -288,6 +278,21 @@ export function useWorkspaceController({
       setDashboard(nextDashboard);
       setRuntime(nextRuntime);
       setDashboardDirty(false);
+
+      // Async load harness-status and hermes-config (slow APIs)
+      Promise.all([
+        api.getHarnessStatus().catch(() => []),
+        api.getHermesConfig().catch(() => undefined),
+        api.getClaudeCodeModelConfig().catch(() => undefined)
+      ]).then(([nextHarnessStatuses, nextHermesConfig, nextClaudeCodeModelResponse]) => {
+        setHarnessStatuses(nextHarnessStatuses);
+        setHermesConfig(nextHermesConfig);
+        setClaudeCodeModelConfig(nextClaudeCodeModelResponse?.config);
+        setClaudeCodeModelPresets(nextClaudeCodeModelResponse?.presets ?? []);
+        setClaudeCodeSavedModelProfiles(nextClaudeCodeModelResponse?.savedProfiles ?? []);
+      }).catch(() => {
+        // Ignore errors for async loaded data
+      });
 
       const preferredBlueprintId = options?.blueprintId ?? selectedBlueprintStateIdRef.current ?? hydratedBlueprints[0]?.id;
       const nextBlueprint = hydratedBlueprints.find((item) => item.id === preferredBlueprintId) ?? hydratedBlueprints[0];
@@ -623,6 +628,15 @@ export function useWorkspaceController({
         setHarnessStatuses(nextHarnessStatuses);
         setHarnessSkillStatuses(nextHarnessSkillStatuses);
         setRuntime(nextRuntime);
+      }),
+    [runWorkspaceTask]
+  );
+
+  const switchOpenClawGateway = useCallback(
+    (url: string, token?: string) =>
+      runWorkspaceTask("switchOpenClawGateway", async () => {
+        const nextConfig = await api.updateOpenClawGateway(url, token);
+        setOpenClawConfig(nextConfig);
       }),
     [runWorkspaceTask]
   );
@@ -1028,6 +1042,48 @@ export function useWorkspaceController({
   }, []);
 
   useEffect(() => {
+    if (!selectedCompanyId) return;
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    const pollInbox = async () => {
+      try {
+        const [nextApprovals, loadedApprovalRequests, nextApprovalThreads, nextHumanActionQueue, nextBlueprintKanbanBoard] = await Promise.all([
+          api.listPendingApprovals(),
+          api.listApprovalRequests(),
+          api.listApprovalThreads({ status: "open" }).catch(() => []),
+          api.listHumanActionQueue(),
+          api.listBlueprintKanban().catch(() => emptyBlueprintKanbanBoard())
+        ]);
+        if (cancelled) return;
+        setApprovals(nextApprovals);
+        setApprovalRequests(loadedApprovalRequests);
+        setApprovalThreads(nextApprovalThreads);
+        setHumanActionQueue(nextHumanActionQueue);
+        setBlueprintKanbanBoard(nextBlueprintKanbanBoard);
+      } catch {
+        // Background inbox poll is opportunistic; user-triggered actions surface errors.
+      }
+    };
+
+    const scheduleNextPoll = () => {
+      timer = window.setTimeout(() => {
+        void pollInbox().finally(() => {
+          if (!cancelled) scheduleNextPoll();
+        });
+      }, INBOX_POLL_INTERVAL_MS);
+    };
+
+    scheduleNextPoll();
+
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [selectedCompanyId]);
+
+  useEffect(() => {
     if (!selectedRunId || runDetailsById[selectedRunId]) return;
 
     let cancelled = false;
@@ -1227,6 +1283,7 @@ export function useWorkspaceController({
     deleteCompany,
     refreshCatalog,
     checkOpenClawUpdates,
+    switchOpenClawGateway,
     checkHivewardUpdate,
     refreshHarnessStatus,
     addHermesProfile,
@@ -1252,7 +1309,8 @@ export function useWorkspaceController({
     rejectApprovalRequest,
     replyToApprovalRequest,
     sendHumanActionResponse,
-    refreshInboxAndApprovals
+    refreshInboxAndApprovals,
+    clearError: () => setError(undefined)
   };
 }
 

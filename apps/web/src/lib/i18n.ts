@@ -34,6 +34,7 @@ export interface Messages {
     saveBlueprint: string;
     saveWorkspace: string;
     switchLanguage: string;
+    switchThirdPartyOpenClaw: string;
   };
   common: {
     allStatuses: string;
@@ -291,7 +292,8 @@ export const messages: Record<Language, Messages> = {
       saveModel: "Save model",
       saveBlueprint: "Save blueprint",
       saveWorkspace: "Save workspace",
-      switchLanguage: "Switch language"
+      switchLanguage: "Switch language",
+      switchThirdPartyOpenClaw: "Switch to third-party OpenClaw"
     },
     common: {
       allStatuses: "All statuses",
@@ -688,7 +690,8 @@ export const messages: Record<Language, Messages> = {
       saveModel: "保存模型",
       saveBlueprint: "\u4fdd\u5b58\u84dd\u56fe",
       saveWorkspace: "保存工作区",
-      switchLanguage: "切换语言"
+      switchLanguage: "切换语言",
+      switchThirdPartyOpenClaw: "切换第三方OpenClaw"
     },
     common: {
       allStatuses: "全部状态",

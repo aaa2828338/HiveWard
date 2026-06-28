@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Cloud,
+  Globe,
   Plus,
   Puzzle,
   RefreshCw,
@@ -86,6 +87,11 @@ export type OpenClawPanelCopy = {
   installSkills: string;
   installingSkills: string;
   skillStatus: Record<HarnessSkillInstallStatus, string>;
+  switchThirdParty: string;
+  gatewayUrlPlaceholder: string;
+  gatewayTokenPlaceholder: string;
+  gatewaySave: string;
+  gatewaySaving: string;
 };
 
 export function OpenClawControlPanelPage({
@@ -106,7 +112,9 @@ export function OpenClawControlPanelPage({
   skillStatus,
   skillBusy,
   onCheckUpdates,
-  onInstallSkills
+  onInstallSkills,
+  onSwitchGateway,
+  gatewaySaving
 }: {
   ui: OpenClawPanelCopy;
   language: Language;
@@ -126,7 +134,12 @@ export function OpenClawControlPanelPage({
   skillBusy: boolean;
   onCheckUpdates: () => void;
   onInstallSkills: () => void;
+  onSwitchGateway: (url: string, token?: string) => void;
+  gatewaySaving: boolean;
 }) {
+  const [showGatewayForm, setShowGatewayForm] = useState(false);
+  const [gatewayUrl, setGatewayUrl] = useState(gatewaySettings?.url ?? "");
+  const [gatewayToken, setGatewayToken] = useState("");
   return (
     <PageShell className="openclaw-control-page">
       <PageHeader
@@ -138,6 +151,10 @@ export function OpenClawControlPanelPage({
             <span className={`openclaw-panel-state ${openClawVersionHealthy ? "online" : "offline"}`}>
               {openClawVersionHealthy ? ui.available : ui.unavailable}
             </span>
+            <button type="button" onClick={() => setShowGatewayForm(!showGatewayForm)} disabled={gatewaySaving}>
+              <Globe size={14} />
+              {ui.switchThirdParty}
+            </button>
             <button type="button" onClick={onCheckUpdates} disabled={busy}>
               <RefreshCw size={14} className={busy ? "spin" : undefined} />
               {busy ? ui.checking : ui.checkUpdates}
@@ -147,6 +164,47 @@ export function OpenClawControlPanelPage({
       />
 
       <PageBody className="page-grid page-scroll openclaw-control-page-body">
+      {showGatewayForm && (
+        <div className="content-card stack-card" style={{ padding: "1rem" }}>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "flex-end", flexWrap: "wrap" }}>
+            <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: 1, minWidth: "200px" }}>
+              <span style={{ fontSize: "0.75rem", opacity: 0.7 }}>Gateway URL</span>
+              <input
+                type="text"
+                value={gatewayUrl}
+                onChange={(e) => setGatewayUrl(e.target.value)}
+                placeholder={ui.gatewayUrlPlaceholder}
+                style={{ padding: "0.4rem 0.6rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)" }}
+              />
+            </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "0.25rem", flex: 1, minWidth: "200px" }}>
+              <span style={{ fontSize: "0.75rem", opacity: 0.7 }}>Token ({ui.auth})</span>
+              <input
+                type="text"
+                value={gatewayToken}
+                onChange={(e) => setGatewayToken(e.target.value)}
+                placeholder={ui.gatewayTokenPlaceholder}
+                style={{ padding: "0.4rem 0.6rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--fg)" }}
+              />
+            </label>
+            <button
+              type="button"
+              disabled={gatewaySaving || !gatewayUrl.trim()}
+              onClick={() => {
+                onSwitchGateway(gatewayUrl.trim(), gatewayToken.trim() || undefined);
+                setShowGatewayForm(false);
+              }}
+            >
+              <Save size={14} className={gatewaySaving ? "spin" : undefined} />
+              {gatewaySaving ? ui.gatewaySaving : ui.gatewaySave}
+            </button>
+            <button type="button" onClick={() => setShowGatewayForm(false)}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="content-card stack-card openclaw-status-card">
         <div className="openclaw-panel-metrics">
           <OpenClawPanelMetric label={ui.version} value={openClawVersionLabel} />

@@ -1349,6 +1349,7 @@ export function ApprovalsPage({
   t,
   actionPending = false,
   focusedEntryId,
+  onRefresh,
   onApproveApprovalRequest,
   onRejectApprovalRequest,
   onReplyApprovalRequest,
@@ -1363,6 +1364,7 @@ export function ApprovalsPage({
   t: Messages;
   actionPending?: boolean;
   focusedEntryId?: string;
+  onRefresh?: () => void;
   onApproveApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onRejectApprovalRequest: (approvalRequestId: string, comment?: string) => void;
   onReplyApprovalRequest: (approvalRequestId: string, message: string) => void;
@@ -1462,6 +1464,11 @@ export function ApprovalsPage({
                 <option value="week">{copy.week}</option>
               </SelectControl>
             </FormField>
+            {onRefresh && (
+              <button type="button" className="ui-icon-button ui-icon-button-ghost" title={copy.refresh} onClick={onRefresh}>
+                <RefreshCw size={15} />
+              </button>
+            )}
           </FilterBar>
         }
       />
@@ -1631,6 +1638,7 @@ type HumanActionInboxCopy = {
   entryCount: (count: number) => string;
   sourceFilter: string;
   timeFilter: string;
+  refresh: string;
   allSources: string;
   allTime: string;
   today: string;
@@ -1860,6 +1868,7 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
       entryCount: (count) => count + " \u6761",
       sourceFilter: "\u6765\u6e90",
       timeFilter: "\u65f6\u95f4",
+      refresh: "\u5237\u65b0",
       allSources: "\u5168\u90e8\u6765\u6e90",
       allTime: "\u5168\u90e8\u65f6\u95f4",
       today: "\u4eca\u5929",
@@ -1897,6 +1906,7 @@ function getHumanActionInboxCopy(language: Language): HumanActionInboxCopy {
     entryCount: (count) => count + ' items',
     sourceFilter: 'Source',
     timeFilter: 'Time',
+    refresh: 'Refresh',
     allSources: 'All sources',
     allTime: 'All time',
     today: 'Today',

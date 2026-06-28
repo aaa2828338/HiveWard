@@ -358,10 +358,73 @@ export class SqliteHivewardStore implements HivewardStore {
   }
 
   async listCompanies(): Promise<{ companies: CompanyOverview[]; selectedCompanyId?: string }> {
-    const index = this.readIndexSnapshot();
+    // Optimized: only query needed tables instead of full readIndexSnapshot()
+    const companies = this.listCompanyProfiles();
+    const selectedCompanyId = this.getSelectedCompanyId() ?? companies[0]?.id ?? null;
+
+    // Aggregate blueprint counts by company
+    const blueprintCounts = new Map<string, number>();
+    for (const row of this.driver.db.prepare("SELECT company_id, COUNT(*) as cnt FROM blueprints GROUP BY company_id").all() as Row[]) {
+      blueprintCounts.set(requireString(row.company_id), readNumber(row.cnt, 0));
+    }
+
+    // Aggregate run stats by company
+    const runStats = new Map<string, { count: number; totalInputTokens: number; totalOutputTokens: number; totalCostUsd: number; latestRunAt?: string }>();
+    for (const row of this.driver.db.prepare(
+      "SELECT company_id, COUNT(*) as cnt, SUM(total_input_tokens) as input_tokens, SUM(total_output_tokens) as output_tokens, SUM(total_cost_usd) as cost, MAX(COALESCE(ended_at, started_at)) as latest FROM runs GROUP BY company_id"
+    ).all() as Row[]) {
+      const companyId = requireString(row.company_id);
+      runStats.set(companyId, {
+        count: readNumber(row.cnt, 0),
+        totalInputTokens: readNumber(row.input_tokens, 0),
+        totalOutputTokens: readNumber(row.output_tokens, 0),
+        totalCostUsd: readNumber(row.cost, 0),
+        latestRunAt: readString(row.latest) ?? undefined
+      });
+    }
+
+    // Aggregate pending approval counts by company (via runs)
+    const pendingApprovalsByCompany = new Map<string, number>();
+    for (const row of this.driver.db.prepare(
+      `SELECT r.company_id, COUNT(*) as cnt FROM approval_requests ar
+       JOIN runs r ON ar.run_id = r.id
+       WHERE ar.status = 'pending'
+       GROUP BY r.company_id`
+    ).all() as Row[]) {
+      pendingApprovalsByCompany.set(requireString(row.company_id), readNumber(row.cnt, 0));
+    }
+
+    // Aggregate pending human action counts by company (via run_rooms)
+    const pendingHumanActionsByCompany = new Map<string, number>();
+    for (const row of this.driver.db.prepare(
+      `SELECT rr.company_id, COUNT(*) as cnt FROM human_action_requests har
+       JOIN run_rooms rr ON har.run_room_id = rr.id
+       WHERE har.status = 'pending'
+       GROUP BY rr.company_id`
+    ).all() as Row[]) {
+      pendingHumanActionsByCompany.set(requireString(row.company_id), readNumber(row.cnt, 0));
+    }
+
+    const result: CompanyOverview[] = companies.map((company) => {
+      const dashboard = this.getDashboard(company.id) ?? createDefaultWorkspaceDashboard(new Date().toISOString());
+      const stats = runStats.get(company.id);
+      return {
+        ...company,
+        blueprintCount: blueprintCounts.get(company.id) ?? 0,
+        runCount: stats?.count ?? 0,
+        totalTokens: (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0),
+        totalCostUsd: Number((stats?.totalCostUsd ?? 0).toFixed(6)),
+        dashboardWidgetCount: dashboard.dashboardWidgets.length,
+        savedViewCount: dashboard.savedViews.length,
+        noteCount: dashboard.notes.length,
+        activeApprovalCount: (pendingApprovalsByCompany.get(company.id) ?? 0) + (pendingHumanActionsByCompany.get(company.id) ?? 0),
+        latestRunAt: stats?.latestRunAt
+      };
+    });
+
     return {
-      companies: this.buildCompanyOverviews(index),
-      selectedCompanyId: index.selectedCompanyId ?? undefined
+      companies: result,
+      selectedCompanyId: selectedCompanyId ?? undefined
     };
   }
 

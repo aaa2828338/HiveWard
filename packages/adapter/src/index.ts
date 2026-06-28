@@ -438,6 +438,15 @@ export class SdkRoutingRuntimeAdapter implements RuntimeAdapter {
   sendChannelMessage(input: SendChannelInput): Promise<SendChannelResult> {
     return this.baseAdapter.sendChannelMessage(input);
   }
+
+  refreshGatewayConfig(): void {
+    if (typeof (this.baseAdapter as any).refreshGatewayConfig === "function") {
+      const nextConfig = resolveGatewayAdapterConfig();
+      if (nextConfig) {
+        (this.baseAdapter as any).refreshGatewayConfig(nextConfig);
+      }
+    }
+  }
 }
 
 export function createRuntimeAdapter(options: CreateRuntimeAdapterOptions): RuntimeAdapter {

@@ -47,6 +47,7 @@ import type {
   SummaryNodeConfig,
   UpdateCompanyRequest,
   UpdateOpenClawDefaultModelRequest,
+  UpdateOpenClawGatewayRequest,
   SelectCompanyRequest,
   SaveDashboardStateRequest,
   SaveArchitectureBlueprintLayoutRequest,
@@ -497,6 +498,23 @@ export function createApiRouter({ store, openClawConfigStore, adapter, worker, a
     try {
       const body = req.body as UpdateOpenClawDefaultModelRequest;
       res.json({ config: await openClawConfigStore.updateDefaultModel(body.modelId) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put("/api/openclaw-config/gateway", async (req, res, next) => {
+    try {
+      const body = req.body as UpdateOpenClawGatewayRequest;
+      if (!body.url?.trim()) {
+        res.status(400).json({ error: "Gateway URL is required." });
+        return;
+      }
+      const config = await openClawConfigStore.updateGateway(body.url.trim(), body.token);
+      if (typeof (adapter as any).refreshGatewayConfig === "function") {
+        (adapter as any).refreshGatewayConfig();
+      }
+      res.json({ config });
     } catch (error) {
       next(error);
     }
@@ -3568,10 +3586,11 @@ function buildOpenClawHarnessStatus(
   config: OpenClawConfigState,
   checkedAt: string
 ): HarnessStatus {
-  const installed = Boolean(version.version && !version.error);
+  const cliInstalled = Boolean(version.version && !version.error);
   const gatewayConfigured = Boolean(config.gateway?.url);
-  const environmentOk = installed && Boolean(config.configPath);
-  const connectionState = installed ? (gatewayConfigured ? "connected" : "available") : "unavailable";
+  const installed = cliInstalled || gatewayConfigured;
+  const environmentOk = (cliInstalled && Boolean(config.configPath)) || gatewayConfigured;
+  const connectionState = gatewayConfigured ? "connected" : cliInstalled ? "available" : "unavailable";
   return {
     id: "openclaw",
     label: "OpenClaw",
@@ -3594,18 +3613,18 @@ function buildOpenClawHarnessStatus(
     installed,
     environmentOk,
     connectionState,
-    summary: installed
-      ? gatewayConfigured
-        ? `OpenClaw ${version.version} detected with Gateway configured.`
-        : `OpenClaw ${version.version} detected. Gateway is not configured.`
-      : `OpenClaw is not available${version.error ? `: ${version.error}` : "."}`,
+    summary: gatewayConfigured
+      ? `OpenClaw Gateway configured at ${config.gateway!.url}.`
+      : cliInstalled
+        ? `OpenClaw ${version.version} detected. Gateway is not configured.`
+        : `OpenClaw is not available${version.error ? `: ${version.error}` : "."}`,
     checkedAt,
     checks: [
       {
         id: "openclaw-version",
         label: "OpenClaw CLI",
-        status: installed ? "pass" : "fail",
-        detail: installed ? `Version ${version.version}` : version.error ?? "No version was resolved."
+        status: cliInstalled ? "pass" : gatewayConfigured ? "warning" : "fail",
+        detail: cliInstalled ? `Version ${version.version}` : gatewayConfigured ? "Not required (gateway mode)" : version.error ?? "No version was resolved."
       },
       {
         id: "openclaw-config",
@@ -3819,13 +3838,25 @@ function buildCliHarnessStatus({
   };
 }
 
+// Cache for hermes profiles
+let hermesProfilesCache: { result: HarnessProfileOption[]; timestamp: number } | null = null;
+const HERMES_PROFILES_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 function readHermesProfiles(): HarnessProfileOption[] {
+  // Check cache first
+  if (hermesProfilesCache && Date.now() - hermesProfilesCache.timestamp < HERMES_PROFILES_CACHE_TTL) {
+    return hermesProfilesCache.result;
+  }
+
   try {
-    const result = runHermesCli(["profile", "list"], 2_000);
-    if (result.error || result.status !== 0) return [];
+    const result = runHermesCli(["profile", "list"], 30_000);
+    if (result.error || result.status !== 0) {
+      hermesProfilesCache = { result: [], timestamp: Date.now() };
+      return [];
+    }
     const homePath = resolveHermesHome();
     const rootConfig = readHermesProfileConfig(homePath);
-    return parseHermesProfileList(result.stdout || result.stderr || "").map((profile) => {
+    const profiles = parseHermesProfileList(result.stdout || result.stderr || "").map((profile) => {
       const profilePath = resolveHermesProfilePath(homePath, profile.id);
       const localConfig = {
         ...rootConfig,
@@ -3839,7 +3870,10 @@ function readHermesProfiles(): HarnessProfileOption[] {
         workspace: localConfig.workspace
       };
     });
+    hermesProfilesCache = { result: profiles, timestamp: Date.now() };
+    return profiles;
   } catch {
+    hermesProfilesCache = { result: [], timestamp: Date.now() };
     return [];
   }
 }
@@ -4061,30 +4095,48 @@ function isMissingHermesProfileCell(value: string): boolean {
   return value === "-" || value === "—";
 }
 
+// Cache for CLI version detection results
+const cliVersionCache = new Map<string, { result: { installed: boolean; version?: string; error?: string }; timestamp: number }>();
+const CLI_VERSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 function detectCliVersion(command: string): { installed: boolean; version?: string; error?: string } {
+  // Check cache first
+  const cached = cliVersionCache.get(command);
+  if (cached && Date.now() - cached.timestamp < CLI_VERSION_CACHE_TTL) {
+    return cached.result;
+  }
+
   try {
     const result = process.platform === "win32"
       ? spawnSync(`${command} --version`, {
           encoding: "utf8",
           shell: true,
-          timeout: 2_000,
+          timeout: 30_000,
           windowsHide: true
         })
       : spawnSync(command, ["--version"], {
           encoding: "utf8",
-          timeout: 2_000
+          timeout: 30_000
         });
     if (result.error) {
-      return { installed: false, error: result.error.message };
+      const res = { installed: false, error: result.error.message };
+      cliVersionCache.set(command, { result: res, timestamp: Date.now() });
+      return res;
     }
     if (result.status !== 0) {
       const detail = (result.stderr || result.stdout || "").trim();
-      return { installed: false, error: detail || `${command} --version exited with ${result.status}.` };
+      const res = { installed: false, error: detail || `${command} --version exited with ${result.status}.` };
+      cliVersionCache.set(command, { result: res, timestamp: Date.now() });
+      return res;
     }
     const version = (result.stdout || result.stderr || "").trim().split(/\r?\n/)[0];
-    return { installed: true, version };
+    const res = { installed: true, version };
+    cliVersionCache.set(command, { result: res, timestamp: Date.now() });
+    return res;
   } catch (error) {
-    return { installed: false, error: error instanceof Error ? error.message : String(error) };
+    const res = { installed: false, error: error instanceof Error ? error.message : String(error) };
+    cliVersionCache.set(command, { result: res, timestamp: Date.now() });
+    return res;
   }
 }
 

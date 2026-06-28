@@ -37,7 +37,16 @@ export class GatewayOpenClawAdapter implements RuntimeAdapter {
   private sharedSessionPromise: Promise<GatewaySession> | undefined;
   private readonly inflightAgentTasks = new Map<string, InflightAgentTask>();
 
-  constructor(private readonly config: GatewayAdapterConfig) {}
+  constructor(private config: GatewayAdapterConfig) {}
+
+  refreshGatewayConfig(newConfig: GatewayAdapterConfig): void {
+    this.config = newConfig;
+    if (this.sharedSession) {
+      this.sharedSession.close();
+      this.sharedSession = undefined;
+    }
+    this.sharedSessionPromise = undefined;
+  }
 
   async listModels(): Promise<RuntimeModel[]> {
     return this.withSession(async (session) => {

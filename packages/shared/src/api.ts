@@ -792,6 +792,11 @@ export interface UpdateOpenClawDefaultModelRequest {
   modelId: string;
 }
 
+export interface UpdateOpenClawGatewayRequest {
+  url: string;
+  token?: string;
+}
+
 export interface CreateOpenClawModelRequest {
   provider: string;
   modelId: string;

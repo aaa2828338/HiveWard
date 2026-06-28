@@ -306,6 +306,14 @@ export const api = {
     return response.config;
   },
 
+  async updateOpenClawGateway(url: string, token?: string): Promise<OpenClawConfigState> {
+    const response = await request<OpenClawConfigResponse>("/api/openclaw-config/gateway", {
+      method: "PUT",
+      body: JSON.stringify({ url, token })
+    });
+    return response.config;
+  },
+
   async getOpenClawConfigWizard(): Promise<OpenClawConfigWizardMetadata> {
     const response = await request<OpenClawConfigWizardResponse>("/api/openclaw-config/wizard");
     return response.wizard;

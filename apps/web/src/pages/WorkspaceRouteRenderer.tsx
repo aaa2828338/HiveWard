@@ -50,6 +50,8 @@ export type PageProps = {
   gatewaySourceLabel: string;
   gatewayAuthLabel: string;
   openClawPanelBusy: boolean;
+  gatewaySaving: boolean;
+  onSwitchGateway: (url: string, token?: string) => void;
   openClawHarnessStatus?: HarnessStatus;
   claudeCodeHarnessStatus?: HarnessStatus;
   codexHarnessStatus?: HarnessStatus;
@@ -82,6 +84,8 @@ export function WorkspaceRouteRenderer({
   gatewaySourceLabel,
   gatewayAuthLabel,
   openClawPanelBusy,
+  gatewaySaving,
+  onSwitchGateway,
   openClawHarnessStatus,
   claudeCodeHarnessStatus,
   codexHarnessStatus,
@@ -148,6 +152,7 @@ export function WorkspaceRouteRenderer({
     deleteCompany,
     refreshCatalog,
     checkOpenClawUpdates,
+    switchOpenClawGateway,
     refreshHarnessStatus,
     addHermesProfile,
     addHermesChannel,
@@ -229,6 +234,8 @@ export function WorkspaceRouteRenderer({
           skillBusy={installingOpenClawSkills}
           onCheckUpdates={checkOpenClawUpdates}
           onInstallSkills={() => installHarnessSkills("openclaw")}
+          onSwitchGateway={onSwitchGateway}
+          gatewaySaving={gatewaySaving}
         />
       );
     }
@@ -294,6 +301,7 @@ export function WorkspaceRouteRenderer({
           t={t}
           actionPending={isApprovalInboxActionBusy(busyAction)}
           focusedEntryId={focusedHumanActionEntryId}
+          onRefresh={refreshInboxAndApprovals}
           onApproveApprovalRequest={approveApprovalRequest}
           onRejectApprovalRequest={rejectApprovalRequest}
           onReplyApprovalRequest={replyToApprovalRequest}

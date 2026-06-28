@@ -978,7 +978,14 @@ export function ChatPage({
                 </div>
               )}
               {activeSessionView?.status === "ended" && <div className="chat-inline-error">{copy.sessionEnded}</div>}
-              {error && <div className="chat-inline-error">{error}</div>}
+              {error && (
+                <div className="chat-inline-error">
+                  <span>{error}</span>
+                  <button type="button" onClick={() => setError(undefined)} title="关闭">
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
               {attachments.length > 0 && (
                 <div className="chat-attachment-list">
                   {attachments.map((attachment) => (
