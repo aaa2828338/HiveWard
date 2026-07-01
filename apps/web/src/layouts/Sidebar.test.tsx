@@ -5,6 +5,7 @@ import { Sidebar, type SidebarProps } from "./Sidebar";
 
 const baseSidebarProps: SidebarProps = {
   activityMeta: {},
+  availableThemes: ["dark", "light", "warm-paper", "midnight", "coral", "deep-think", "grass-aroma"],
   companySwitcherLabel: "Choose company",
   dashboardDirty: false,
   dirtyWorkspaceLabel: "Dirty workspace",
@@ -42,10 +43,20 @@ const baseSidebarProps: SidebarProps = {
     title: "System"
   },
   theme: "light",
+  themeNames: {
+    dark: "Night",
+    light: "Day",
+    "warm-paper": "Warm Paper",
+    midnight: "Midnight",
+    coral: "Coral",
+    "deep-think": "Deep Think",
+    "grass-aroma": "Grass Aroma"
+  },
   themeToggleLabel: "Day",
   themeToggleTitle: "Switch theme",
   onCheckHivewardUpdate: () => undefined,
   onCloseSystemMenu: () => undefined,
+  onSetTheme: () => undefined,
   onToggleLanguage: () => undefined,
   onToggleSystemGroup: () => undefined,
   onToggleSystemMenu: () => undefined,

@@ -2,6 +2,7 @@ import type { RefObject } from "react";
 import {
   Bot,
   Building2,
+  Check,
   ChevronDown,
   ChevronRight,
   Database,
@@ -11,11 +12,10 @@ import {
   ListChecks,
   MessageSquareText,
   Monitor,
-  Moon,
+  Palette,
   Puzzle,
   Radio,
-  Settings,
-  Sun
+  Settings
 } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import { HarnessLabel } from "../components/HarnessLabel";
@@ -27,6 +27,14 @@ import {
   type RouteId,
   type RouteSystemId
 } from "../routes/route-registry";
+
+type AppTheme = "light" | "dark" | "warm-paper" | "midnight" | "coral" | "deep-think" | "grass-aroma";
+
+const DARK_THEMES: AppTheme[] = ["dark", "midnight"];
+
+function isDarkTheme(theme: AppTheme): boolean {
+  return DARK_THEMES.includes(theme);
+}
 
 const sidebarIcons: Partial<Record<RouteId, typeof Building2>> = {
   company: Building2,
@@ -55,6 +63,7 @@ const sidebarIcons: Partial<Record<RouteId, typeof Building2>> = {
 
 export type SidebarProps = {
   activityMeta: Partial<Record<RouteId, number>>;
+  availableThemes: AppTheme[];
   companySwitcherLabel: string;
   dashboardDirty: boolean;
   dirtyWorkspaceLabel: string;
@@ -77,11 +86,13 @@ export type SidebarProps = {
     theme: string;
     title: string;
   };
-  theme: "light" | "dark";
+  theme: AppTheme;
+  themeNames: Record<AppTheme, string>;
   themeToggleLabel: string;
   themeToggleTitle: string;
   onCheckHivewardUpdate: () => void;
   onCloseSystemMenu: () => void;
+  onSetTheme: (theme: AppTheme) => void;
   onToggleLanguage: () => void;
   onToggleSystemGroup: (systemId: RouteSystemId) => void;
   onToggleSystemMenu: () => void;
@@ -90,6 +101,7 @@ export type SidebarProps = {
 
 export function Sidebar({
   activityMeta,
+  availableThemes,
   companySwitcherLabel,
   dashboardDirty,
   dirtyWorkspaceLabel,
@@ -108,10 +120,12 @@ export function Sidebar({
   systemMenuRef,
   systemUi,
   theme,
+  themeNames,
   themeToggleLabel,
   themeToggleTitle,
   onCheckHivewardUpdate,
   onCloseSystemMenu,
+  onSetTheme,
   onToggleLanguage,
   onToggleSystemGroup,
   onToggleSystemMenu,
@@ -129,7 +143,7 @@ export function Sidebar({
         <div>
           <img
             className="brand-wordmark"
-            src={theme === "dark" ? "/brand/hiveward-wordmark-on-dark.png" : "/brand/hiveward-wordmark.png"}
+            src={isDarkTheme(theme) ? "/brand/hiveward-wordmark-on-dark.png" : "/brand/hiveward-wordmark.png"}
             alt="Hiveward"
           />
         </div>
@@ -237,11 +251,16 @@ export function Sidebar({
             </button>
             {systemMenuOpen && (
               <div className="sidebar-system-menu" aria-label={systemUi.title}>
-                <button type="button" title={themeToggleTitle} aria-label={themeToggleTitle} onClick={onToggleTheme}>
-                  {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
-                  <span>{systemUi.theme}</span>
-                  <strong>{themeToggleLabel}</strong>
-                </button>
+                <ThemeSubmenu
+                  availableThemes={availableThemes}
+                  currentTheme={theme}
+                  themeNames={themeNames}
+                  themeLabel={systemUi.theme}
+                  onSelectTheme={(t) => {
+                    onSetTheme(t);
+                    onCloseSystemMenu();
+                  }}
+                />
                 <button type="button" title={languageSwitchTitle} aria-label={languageSwitchTitle} onClick={onToggleLanguage}>
                   <Languages size={14} />
                   <span>{systemUi.language}</span>
@@ -253,6 +272,66 @@ export function Sidebar({
         </div>
       </div>
     </aside>
+  );
+}
+
+function ThemeSubmenu({
+  availableThemes,
+  currentTheme,
+  themeNames,
+  themeLabel,
+  onSelectTheme
+}: {
+  availableThemes: AppTheme[];
+  currentTheme: AppTheme;
+  themeNames: Record<AppTheme, string>;
+  themeLabel: string;
+  onSelectTheme: (theme: AppTheme) => void;
+}) {
+  return (
+    <div className="sidebar-theme-submenu">
+      <div className="sidebar-theme-submenu-header">
+        <Palette size={14} />
+        <span>{themeLabel}</span>
+      </div>
+      <div className="sidebar-theme-grid">
+        {availableThemes.map((t) => (
+          <button
+            key={t}
+            type="button"
+            className={`sidebar-theme-option ${t === currentTheme ? "active" : ""}`}
+            title={themeNames[t] ?? t}
+            aria-label={themeNames[t] ?? t}
+            onClick={() => onSelectTheme(t)}
+          >
+            <span className="sidebar-theme-option-dot">
+              {t === currentTheme && <Check size={12} className="sidebar-theme-option-check" />}
+            </span>
+            <ThemeDot theme={t} />
+            <span>{themeNames[t] ?? t}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const THEME_DOT_COLORS: Record<AppTheme, string> = {
+  dark: "#f59a0b",
+  light: "#f59a0b",
+  "warm-paper": "#537D96",
+  midnight: "#C99AAF",
+  coral: "#F37E63",
+  "deep-think": "#636AE8",
+  "grass-aroma": "#5BA88C"
+};
+
+function ThemeDot({ theme }: { theme: AppTheme }) {
+  return (
+    <span
+      className="sidebar-theme-dot"
+      style={{ background: THEME_DOT_COLORS[theme] }}
+    />
   );
 }
 

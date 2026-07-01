@@ -1,0 +1,324 @@
+/*
+ * Theme: Deep Think (深思)
+ * 灵感来源 HanaAgent — 冷调纯白底 + 蓝紫 accent，极简克制
+ */
+html[data-theme="deep-think"] {
+  color-scheme: light;
+  --paper: #FCFCFD;
+  --paper-strong: #FFFFFF;
+  --paper-raised: #F8F8FA;
+  --line: rgba(0, 0, 0, 0.09);
+  --line-strong: rgba(0, 0, 0, 0.16);
+  --text: #1D1D1F;
+  --muted: #95959C;
+  --muted-strong: #4A4A52;
+  --accent: #636AE8;
+  --accent-strong: #5158D4;
+  --accent-soft: rgba(99, 106, 232, 0.08);
+  --accent-line: rgba(99, 106, 232, 0.30);
+  --nav: #F0F0F2;
+  --nav-soft: #E8E8EC;
+  --semantic-green: #34A853;
+  --semantic-red: #D9746C;
+  --semantic-blue: #4A9FD9;
+  --semantic-green-bg: rgba(52, 168, 83, 0.10);
+  --semantic-red-bg: rgba(217, 116, 108, 0.10);
+  --semantic-blue-bg: rgba(74, 159, 217, 0.10);
+  --danger: #8B3A3A;
+  --warning: #9A7B30;
+  --success: var(--semantic-green);
+  --running: var(--semantic-blue);
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.06);
+}
+
+html[data-theme="deep-think"],
+html[data-theme="deep-think"] body,
+html[data-theme="deep-think"] #root,
+html[data-theme="deep-think"] .app-shell,
+html[data-theme="deep-think"] .app-content-shell {
+  background: #FCFCFD;
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-shell,
+html[data-theme="deep-think"] .topbar {
+  background: #FFFFFF;
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .brand-mark {
+  background: transparent;
+  color: inherit;
+}
+
+html[data-theme="deep-think"] button,
+html[data-theme="deep-think"] input,
+html[data-theme="deep-think"] select,
+html[data-theme="deep-think"] textarea {
+  border-color: var(--line);
+  background: #FFFFFF;
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] button:hover:not(:disabled) {
+  border-color: rgba(99, 106, 232, 0.28);
+  background: #F5F5FF;
+}
+
+html[data-theme="deep-think"] .primary-action,
+html[data-theme="deep-think"] .primary-action:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+html[data-theme="deep-think"] .content-card,
+html[data-theme="deep-think"] .inspector-card,
+html[data-theme="deep-think"] .run-panel,
+html[data-theme="deep-think"] .feature-card,
+html[data-theme="deep-think"] .company-detail-card,
+html[data-theme="deep-think"] .company-stat-card,
+html[data-theme="deep-think"] .company-list-card,
+html[data-theme="deep-think"] .metric-chip,
+html[data-theme="deep-think"] .table-row,
+html[data-theme="deep-think"] .card-list-row,
+html[data-theme="deep-think"] .mini-row,
+html[data-theme="deep-think"] .wizard-option,
+html[data-theme="deep-think"] .wizard-stage-toolbar,
+html[data-theme="deep-think"] .skill-item,
+html[data-theme="deep-think"] .node-modal-section,
+html[data-theme="deep-think"] .node-modal {
+  border-color: var(--line);
+  background: #FFFFFF;
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .company-switcher,
+html[data-theme="deep-think"] .company-menu,
+html[data-theme="deep-think"] .node-menu-popover,
+html[data-theme="deep-think"] .node-context-menu,
+html[data-theme="deep-think"] .node-modal {
+  background: #FFFFFF;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.08);
+}
+
+html[data-theme="deep-think"] .nav-item {
+  color: #4A4A52;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+html[data-theme="deep-think"] .nav-item:hover:not(:disabled) {
+  border-color: transparent;
+  background: rgba(99, 106, 232, 0.06);
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .nav-item.active {
+  border-color: transparent;
+  background: rgba(99, 106, 232, 0.10);
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+html[data-theme="deep-think"] .sidebar-company-switcher {
+  background: rgba(99, 106, 232, 0.05);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-company-switcher:hover:not(:disabled) {
+  background: rgba(99, 106, 232, 0.10);
+}
+
+html[data-theme="deep-think"] .sidebar-company-switcher.active {
+  background: rgba(99, 106, 232, 0.14);
+  border-color: var(--accent-line);
+}
+
+html[data-theme="deep-think"] .sidebar-company-switcher .company-switcher-copy span {
+  color: var(--muted);
+}
+
+html[data-theme="deep-think"] .company-switcher.active,
+html[data-theme="deep-think"] .company-menu-item.active {
+  background: #F0F0FF;
+  border-color: var(--line-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+html[data-theme="deep-think"] .card-list-row.selected,
+html[data-theme="deep-think"] .wizard-option.selected,
+html[data-theme="deep-think"] .trace-issue-card.selected,
+html[data-theme="deep-think"] .company-list-card.selected {
+  background: var(--paper-strong);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--selection-ring-width) rgba(99, 106, 232, 0.16);
+}
+
+html[data-theme="deep-think"] .company-switcher-avatar,
+html[data-theme="deep-think"] .company-logo-small,
+html[data-theme="deep-think"] .company-logo-large {
+  border-color: var(--line);
+  background: #F0F0F2;
+  color: #1D1D1F;
+}
+
+html[data-theme="deep-think"] .company-switcher-copy strong,
+html[data-theme="deep-think"] .company-menu-copy strong,
+html[data-theme="deep-think"] .company-brand-copy h3,
+html[data-theme="deep-think"] .company-list-card-copy strong,
+html[data-theme="deep-think"] .list-row-main strong,
+html[data-theme="deep-think"] .feature-card strong,
+html[data-theme="deep-think"] .table-row strong,
+html[data-theme="deep-think"] .mini-column strong,
+html[data-theme="deep-think"] .node-label {
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .company-switcher-copy span,
+html[data-theme="deep-think"] .company-menu-copy span,
+html[data-theme="deep-think"] .company-brand-copy p,
+html[data-theme="deep-think"] .company-list-card-copy span,
+html[data-theme="deep-think"] .list-row-main span,
+html[data-theme="deep-think"] .table-row p,
+html[data-theme="deep-think"] .mini-column p,
+html[data-theme="deep-think"] .node-kind,
+html[data-theme="deep-think"] .feature-card-header p,
+html[data-theme="deep-think"] .supporting-copy,
+html[data-theme="deep-think"] .hero-copy p {
+  color: var(--muted);
+}
+
+html[data-theme="deep-think"] .sidebar-brand h1,
+html[data-theme="deep-think"] .sidebar-brand p {
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-brand p {
+  color: var(--muted);
+}
+
+html[data-theme="deep-think"] .sidebar-status .sidebar-company-switcher {
+  background: rgba(99, 106, 232, 0.05);
+  border-color: var(--line);
+}
+
+html[data-theme="deep-think"] .sidebar-system-version {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-system-version strong {
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-system-settings {
+  border-color: var(--line);
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-system-settings:hover:not(:disabled),
+html[data-theme="deep-think"] .sidebar-system-settings.active {
+  border-color: var(--accent-line);
+  background: rgba(99, 106, 232, 0.08);
+}
+
+html[data-theme="deep-think"] .sidebar-system-menu {
+  background: #FFFFFF;
+  border-color: var(--line);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.12);
+}
+
+html[data-theme="deep-think"] .sidebar-system-menu button {
+  color: var(--text);
+}
+
+html[data-theme="deep-think"] .sidebar-system-menu button:hover:not(:disabled) {
+  background: rgba(99, 106, 232, 0.06);
+}
+
+html[data-theme="deep-think"] .nav-count,
+html[data-theme="deep-think"] .status-badge {
+  background: rgba(99, 106, 232, 0.08);
+  color: var(--muted-strong);
+}
+
+html[data-theme="deep-think"] .company-menu-empty {
+  background: #F5F5F7;
+  color: var(--muted);
+}
+
+html[data-theme="deep-think"] .company-list-card-metrics span,
+html[data-theme="deep-think"] .company-list-card-action {
+  border-color: var(--line);
+  background: #F5F5F7;
+}
+
+html[data-theme="deep-think"] .company-list-card-action {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+html[data-theme="deep-think"] .blueprint-canvas-panel {
+  border-color: var(--line);
+  background: #F5F5F7;
+}
+
+html[data-theme="deep-think"] .blueprint-node {
+  border-color: var(--line);
+  background: #FFFFFF;
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+html[data-theme="deep-think"] .blueprint-node.selected {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 2px rgba(99, 106, 232, 0.12);
+}
+
+html[data-theme="deep-think"] .node-type,
+html[data-theme="deep-think"] .node-status {
+  border-color: var(--line);
+  background: #F0F0F2;
+}
+
+html[data-theme="deep-think"] .node-type-loop {
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+html[data-theme="deep-think"] .node-start-badge {
+  border-color: var(--accent-line);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+html[data-theme="deep-think"] .node-handle {
+  border-color: #FFFFFF;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.16);
+}
+
+html[data-theme="deep-think"] .floating-run-pill,
+html[data-theme="deep-think"] .node-menu-trigger {
+  border-color: var(--line);
+  background: #FFFFFF;
+  color: var(--accent-strong);
+}
+
+html[data-theme="deep-think"] .inline-note,
+html[data-theme="deep-think"] .output-block,
+html[data-theme="deep-think"] .node-output-row pre {
+  border-color: #273244;
+  background: #111827;
+  color: #e5edf7;
+}
+
+html[data-theme="deep-think"] .hiveward-home-notice {
+  border-color: rgba(99, 106, 232, 0.20);
+  background: rgba(99, 106, 232, 0.06);
+}

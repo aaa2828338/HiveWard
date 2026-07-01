@@ -24,7 +24,12 @@ import type { OpenClawPanelCopy } from "./pages/system/SystemPages";
 
 const hivewardVersionLabel = `v${hivewardPackage.version}`;
 
-type AppTheme = "light" | "dark";
+type AppTheme = "light" | "dark" | "warm-paper" | "midnight" | "coral" | "deep-think" | "grass-aroma";
+const APP_THEMES: AppTheme[] = ["dark", "light", "warm-paper", "midnight", "coral", "deep-think", "grass-aroma"];
+const LIGHT_THEMES: AppTheme[] = ["light", "warm-paper", "coral", "deep-think", "grass-aroma"];
+function isDarkTheme(theme: AppTheme): boolean {
+  return !LIGHT_THEMES.includes(theme);
+}
 type SdkChatHarnessId = Extract<HarnessId, "claudeCode" | "codex" | "google" | "cursor" | "opencode" | "hermes">;
 const CHAT_PERMISSION_MODES_STORAGE_KEY = "hiveward-chat-permission-modes";
 const CHAT_PERMISSION_MODES_STORAGE_VERSION = 2;
@@ -140,7 +145,16 @@ export function App() {
             switchToNight: "\u5207\u6362\u5230\u591c\u95f4\u6a21\u5f0f",
             day: "\u65e5\u95f4",
             night: "\u591c\u95f4",
-            versionPrefix: "v"
+            versionPrefix: "v",
+            themeNames: {
+              dark: "\u591c\u95f4",
+              light: "\u65e5\u95f4",
+              "warm-paper": "\u6696\u7eb8",
+              midnight: "\u9752\u591c",
+              coral: "\u73ca\u7469",
+              "deep-think": "\u6df1\u601d",
+              "grass-aroma": "\u8349\u9999"
+            } as Record<AppTheme, string>
           }
         : {
             title: "System",
@@ -151,7 +165,16 @@ export function App() {
             switchToNight: "Switch to night mode",
             day: "Day",
             night: "Night",
-            versionPrefix: "v"
+            versionPrefix: "v",
+            themeNames: {
+              dark: "Night",
+              light: "Day",
+              "warm-paper": "Warm Paper",
+              midnight: "Midnight",
+              coral: "Coral",
+              "deep-think": "Deep Think",
+              "grass-aroma": "Grass Aroma"
+            } as Record<AppTheme, string>
           },
     [language]
   );
@@ -301,8 +324,8 @@ export function App() {
   const cursorHarnessStatus = harnessStatuses.find((status) => status.id === "cursor");
   const opencodeHarnessStatus = harnessStatuses.find((status) => status.id === "opencode");
   const hermesHarnessStatus = harnessStatuses.find((status) => status.id === "hermes");
-  const themeToggleTitle = theme === "dark" ? systemUi.switchToDay : systemUi.switchToNight;
-  const themeToggleLabel = theme === "dark" ? systemUi.day : systemUi.night;
+  const themeToggleTitle = systemUi.themeNames[theme] ?? theme;
+  const themeToggleLabel = systemUi.themeNames[theme] ?? theme;
   const companySwitcherLabel = language === "zh-CN" ? "\u9009\u62E9\u516C\u53F8" : "Choose company";
   const activeTaskCount = useMemo(
     () => runs.filter(isActiveRunView).length,
@@ -396,7 +419,14 @@ export function App() {
   }, []);
 
   const toggleTheme = useCallback(() => {
-    setTheme((current) => (current === "dark" ? "light" : "dark"));
+    setTheme((current) => {
+      const idx = APP_THEMES.indexOf(current);
+      return APP_THEMES[(idx + 1) % APP_THEMES.length] ?? "dark";
+    });
+  }, []);
+
+  const setThemeValue = useCallback((t: AppTheme) => {
+    setTheme(t);
   }, []);
 
   const setSdkChatPermissionMode = useCallback((harnessId: SdkChatHarnessId, permissionMode: ChatPermissionMode) => {
@@ -470,6 +500,7 @@ export function App() {
       sidebar={
         <Sidebar
           activityMeta={sidebarActivityMeta}
+          availableThemes={APP_THEMES}
           companySwitcherLabel={companySwitcherLabel}
           dashboardDirty={dashboardDirty}
           dirtyWorkspaceLabel={t.common.dirtyWorkspace}
@@ -488,12 +519,14 @@ export function App() {
           systemMenuRef={systemMenuRef}
           systemUi={systemUi}
           theme={theme}
+          themeNames={systemUi.themeNames}
           themeToggleLabel={themeToggleLabel}
           themeToggleTitle={themeToggleTitle}
           onCheckHivewardUpdate={() => {
             void checkHivewardUpdate();
           }}
           onCloseSystemMenu={() => setSystemMenuOpen(false)}
+          onSetTheme={setThemeValue}
           onToggleLanguage={toggleLanguage}
           onToggleSystemGroup={toggleSystemGroup}
           onToggleSystemMenu={() => setSystemMenuOpen((current) => !current)}
@@ -508,6 +541,7 @@ export function App() {
 
 function getInitialTheme(): AppTheme {
   const stored = localStorage.getItem("hiveward-theme");
+  if (stored && APP_THEMES.includes(stored as AppTheme)) return stored as AppTheme;
   if (stored === "light" || stored === "dark") return stored;
   if (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches) return "light";
   return "dark";
